@@ -284,6 +284,24 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
   return json({ redirect: loc }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": clearTkt });
 }
 
+/** GET the pending authorize request so the consent UI can render it on a fresh load. */
+async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ error: "no_session" }, 401, cors);
+  const tkt = cookies[`__Host-${TKT_COOKIE}`];
+  const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
+  if (!envlp) return json({ error: "no_request" }, 400, cors);
+  const client = await getClient(db, envlp.r.clientId);
+  if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
+  return json(
+    { client: { name: client.displayName ?? client.clientId, logo: client.logoUrl }, scope: envlp.r.scope, csrf: session.csrf },
+    200,
+    { ...cors, ...securityHeaders() },
+  );
+}
+
 async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
@@ -387,6 +405,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // Everything below may touch the DB → ensure the schema once per isolate.
   await ensureSchema(deps);
 
+  if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, deps, cors);
   if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, deps, cors);
   if (pathname === "/signup" && m === "POST") return handleSignup(req, env, deps, cors);
   if (pathname === "/login" && m === "POST") return handleLogin(req, env, deps, cors);

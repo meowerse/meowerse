@@ -147,6 +147,26 @@ test("consent POST without a pending request → 400 no_request", async () => {
   expect(r.status).toBe(400);
 });
 
+test("GET /authorize/pending returns client+scope+csrf for the consent UI; 401/400 otherwise", async () => {
+  const { env, deps } = await fixture();
+  const { sess } = await signupUser(env, deps, "neko_pend");
+  // no pending request yet → 400
+  const empty = await handle(new Request("https://iss/authorize/pending", { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  expect(empty.status).toBe(400);
+  // no session → 401
+  const noSess = await handle(new Request("https://iss/authorize/pending"), env as never, deps as never);
+  expect(noSess.status).toBe(401);
+  // with a pending request → 200 with details
+  const a = await handle(new Request(authzUrl("mw_full", "http://localhost:4321/cb2", "openid telegram"), { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  const tkt = cookieValue(a.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
+  const r = await handle(new Request("https://iss/authorize/pending", { headers: { Cookie: `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}` } }), env as never, deps as never);
+  const b = (await r.json()) as { client: { name: string }; scope: string[]; csrf: string };
+  expect(r.status).toBe(200);
+  expect(b.client.name).toBe("Full");
+  expect(b.scope).toEqual(["openid", "telegram"]);
+  expect(b.csrf).toBeTruthy();
+});
+
 test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/STATE_SECRET are omitted", async () => {
   const store = memStore();
   const keys = await genSigningKeys("k1", "active");
