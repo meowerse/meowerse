@@ -25,8 +25,11 @@ Built to maximize the Cloudflare free tier (100k req/day, 10ms CPU/req):
 | POST   | `/api/batch` | yes  | `{ops:[{op:"create",text}]}`, ≤25 ops → `{results:[{status,...}]}`. |
 | *      | other        | —    | 404 JSON. OPTIONS → 204 preflight. |
 
-After a write the next `GET` within the 10s TTL may be slightly stale — an
-accepted tradeoff to keep writes cheap (no per-write cache purge).
+Every successful write (`POST /api/meows`, `POST /api/batch`) purges the cached
+list entry so a create-then-reload sees the new row. Cloudflare's cache is
+per-colo, so the purge is colo-local: the writer's colo is strongly consistent,
+other colos refresh within the 10s TTL (globally eventually-consistent in ≤10s).
+The purge is best-effort (errors ignored — staleness self-heals at TTL).
 
 ## Security
 

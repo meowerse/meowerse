@@ -59,6 +59,81 @@ describe("edge cache (Cache API)", () => {
   });
 });
 
+describe("write-through cache purge", () => {
+  let store: Map<string, Response>;
+  let deletes: string[];
+  beforeEach(() => {
+    store = new Map();
+    deletes = [];
+    (globalThis as { caches?: unknown }).caches = {
+      default: {
+        async match(key: Request) {
+          return store.get(key.url)?.clone();
+        },
+        async put(key: Request, res: Response) {
+          store.set(key.url, res.clone());
+        },
+        async delete(key: Request) {
+          deletes.push(key.url);
+          return store.delete(key.url);
+        },
+      },
+    };
+  });
+  afterEach(() => {
+    delete (globalThis as { caches?: unknown }).caches;
+  });
+
+  const listKey = "https://api/api/meows";
+
+  it("purges the list cache entry after a successful POST /api/meows", async () => {
+    const db = fakeDb();
+    const deps = { getDb: () => db, schemaReady: undefined as Promise<void> | undefined };
+    // Prime the cache so there is something to purge.
+    store.set(listKey, new Response("[]"));
+
+    const res = await handle(
+      new Request(listKey, {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:4321",
+          Authorization: "Bearer s3cret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: "fresh" }),
+      }),
+      env,
+      deps,
+    );
+    expect(res.status).toBe(201);
+    expect(deletes).toContain(listKey);
+    expect(store.has(listKey)).toBe(false);
+  });
+
+  it("purges the list cache entry after a successful POST /api/batch", async () => {
+    const db = fakeDb();
+    const deps = { getDb: () => db, schemaReady: undefined as Promise<void> | undefined };
+    store.set(listKey, new Response("[]"));
+
+    const res = await handle(
+      new Request("https://api/api/batch", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:4321",
+          Authorization: "Bearer s3cret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ops: [{ op: "create", text: "a" }] }),
+      }),
+      env,
+      deps,
+    );
+    expect(res.status).toBe(200);
+    expect(deletes).toContain(listKey);
+    expect(store.has(listKey)).toBe(false);
+  });
+});
+
 describe("ensureSchema memoization", () => {
   it("runs the migration only once across many calls", async () => {
     const db = fakeDb();

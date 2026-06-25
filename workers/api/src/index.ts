@@ -28,10 +28,44 @@ async function readJson(req: Request): Promise<unknown | undefined> {
   }
 }
 
+/** The default edge cache, or undefined in environments without the Cache API. */
+function listCache(): Cache | undefined {
+  return (globalThis as { caches?: { default?: Cache } }).caches?.default;
+}
+
+/**
+ * Cache key for the list endpoint at the current request's origin/path. Built
+ * the same way for read (handleList) and purge (purgeListCache) so a write
+ * deletes exactly the entry a read would have stored.
+ */
+function listCacheKey(req: Request): Request {
+  const url = new URL(req.url);
+  url.pathname = "/api/meows";
+  url.search = "";
+  return new Request(url.toString(), { method: "GET" });
+}
+
+/**
+ * Best-effort purge of the list cache entry after a successful write. NOTE:
+ * Cloudflare's cache is per-colo, so this deletes the entry only in the colo
+ * that served the write — other colos stay consistent within the 10s TTL. That
+ * makes the list strongly consistent for the writer's colo and globally
+ * eventually-consistent within 10s (the honest correctness level here).
+ */
+async function purgeListCache(req: Request): Promise<void> {
+  const cache = listCache();
+  if (!cache) return;
+  try {
+    await cache.delete(listCacheKey(req));
+  } catch {
+    // Ignore purge failures — staleness self-heals at TTL expiry.
+  }
+}
+
 /** GET /api/meows — public, edge-cached. */
 async function handleList(req: Request, deps: Deps, cors: Record<string, string>): Promise<Response> {
-  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
-  const cacheKey = new Request(new URL(req.url).toString(), { method: "GET" });
+  const cache = listCache();
+  const cacheKey = listCacheKey(req);
   if (cache) {
     const hit = await cache.match(cacheKey);
     if (hit) return hit;
@@ -53,8 +87,9 @@ async function handleCreate(req: Request, deps: Deps, cors: Record<string, strin
   if (!v.ok) return json({ error: v.error }, 400, cors);
   await ensureSchema(deps);
   const meow = await createMeow(deps.getDb(), v.text, v.slug);
-  // The next GET within the 10s TTL may serve a slightly stale list — accepted
-  // tradeoff; we do not purge per-write to keep writes cheap on the CPU budget.
+  // Purge the cached list so a create-then-reload sees the new row immediately
+  // (in this colo); other colos refresh within the 10s TTL.
+  await purgeListCache(req);
   return json(meow, 201, cors);
 }
 
@@ -69,6 +104,9 @@ async function handleBatch(req: Request, deps: Deps, cors: Record<string, string
   const db = deps.getDb();
   const results: BatchOpResult[] = [];
   for (const op of ops) results.push(await runBatchOp(db, op));
+  // A batch may have created rows; purge the cached list (best-effort) so the
+  // next reload reflects them.
+  await purgeListCache(req);
   return json({ results }, 200, cors);
 }
 
