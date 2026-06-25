@@ -33,8 +33,10 @@ test("rejects tampered signature, unknown kid, malformed, expired, aud mismatch"
   const { active, jwks } = await setup();
   const token = await signJwt({ kid: "k1" }, { aud: "client", exp: 9999999999 }, active.key);
 
-  // tamper: flip the last char of the signature
-  const tampered = token.slice(0, -1) + (token.endsWith("A") ? "B" : "A");
+  // tamper: flip the FIRST signature char (top bits of byte 0 — unlike the last
+  // char, whose low bits are dropped from a 64-byte ECDSA sig).
+  const [th, tp, ts] = token.split(".") as [string, string, string];
+  const tampered = `${th}.${tp}.${ts[0] === "A" ? "B" : "A"}${ts.slice(1)}`;
   await expect(verifyJwt(tampered, jwks)).rejects.toBeInstanceOf(JwtError);
 
   const wrongKid = await signJwt({ kid: "nope" }, { exp: 9999999999 }, active.key);
