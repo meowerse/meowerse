@@ -35,34 +35,21 @@ jobs:
           if ! git cat-file -e "$base" 2>/dev/null; then base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"; fi
           diff="$(git diff --name-only "$base" ${{ github.sha }})"
           echo "$diff"
-          grep -qE '^(apps/api/|packages/go-shared/|go.work)' <<<"$diff" && echo "api=1" >> "$GITHUB_OUTPUT" || echo "api=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^(workers/api/|packages/ts-shared/)' <<<"$diff" && echo "api=1" >> "$GITHUB_OUTPUT" || echo "api=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(apps/web/|packages/ts-shared/)' <<<"$diff" && echo "web=1" >> "$GITHUB_OUTPUT" || echo "web=0" >> "$GITHUB_OUTPUT"
           grep -qE '^workers/edge/' <<<"$diff" && echo "worker=1" >> "$GITHUB_OUTPUT" || echo "worker=0" >> "$GITHUB_OUTPUT"
 
       - run: bun install --frozen-lockfile
 
-      - name: Deploy api (GHCR image + Northflank)
-        if: steps.changed.outputs.api == '1' && env.NF != ''
+      - name: Deploy api (Cloudflare Worker)
+        if: steps.changed.outputs.api == '1' && env.CF != ''
         env:
-          NF: ${{ secrets.NORTHFLANK_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_AUTH_TOKEN: ${{ secrets.DATABASE_AUTH_TOKEN }}
-          API_TOKEN: ${{ secrets.API_TOKEN }}
-          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          SHA="$(git rev-parse --short HEAD)"
-          IMAGE="ghcr.io/${{ github.repository_owner }}/meowerse-api"
-          echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker build -f apps/api/Dockerfile -t "$IMAGE:$SHA" -t "$IMAGE:latest" .
-          docker push "$IMAGE:$SHA"; docker push "$IMAGE:latest"
-          runtime=$(python3 -c "import json,os;print(json.dumps({'DATABASE_URL':os.environ['DATABASE_URL'],'DATABASE_AUTH_TOKEN':os.environ['DATABASE_AUTH_TOKEN'],'API_TOKEN':os.environ['API_TOKEN'],'CORS_ORIGINS':os.environ.get('CORS_ORIGINS','https://meow.alxnko.eu.org'),'PORT':'8080'}))")
-          NFAPI="https://api.northflank.com/v1"; A=(-H "Authorization: Bearer $NF" -H "Content-Type: application/json")
-          if curl -s -o /dev/null -w '%{http_code}' "${A[@]}" "$NFAPI/projects/alxnko/services/meowerse-api" | grep -q 200; then
-            curl -s "${A[@]}" -X PATCH "$NFAPI/projects/alxnko/services/meowerse-api/deployment" -d "{\"external\":{\"imagePath\":\"$IMAGE:$SHA\",\"credentials\":null},\"runtimeEnvironment\":$runtime}" >/dev/null
-          else
-            curl -s "${A[@]}" -X POST "$NFAPI/projects/alxnko/services" -d "{\"name\":\"meowerse-api\",\"billing\":{\"deploymentPlan\":\"nf-compute-20\"},\"deployment\":{\"type\":\"deployment\",\"instances\":1,\"external\":{\"imagePath\":\"$IMAGE:$SHA\",\"credentials\":null}},\"ports\":[{\"name\":\"http\",\"internalPort\":8080,\"public\":true,\"protocol\":\"HTTP\"}],\"runtimeEnvironment\":$runtime}" >/dev/null
-          fi
+          (cd workers/api && bunx wrangler deploy)
           bash infra/record-deploy.sh api "run-${{ github.run_id }}"
 
       - name: Deploy web (Cloudflare Pages)

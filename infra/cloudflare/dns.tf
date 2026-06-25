@@ -1,5 +1,6 @@
-# DNS records. Pages/Worker/Northflank deploys are owned by their own tools;
-# Terraform owns the DNS that points the custom domains at them.
+# DNS records owned by Terraform. Note: api.meow.alxnko.eu.org is NOT here —
+# it's a Cloudflare Worker custom domain (workers/api/wrangler.jsonc), so wrangler
+# provisions that DNS + cert automatically.
 
 # Web: meow.alxnko.eu.org -> Cloudflare Pages (proxied; Pages manages the cert).
 resource "cloudflare_dns_record" "web" {
@@ -10,18 +11,4 @@ resource "cloudflare_dns_record" "web" {
   ttl     = 1
   proxied = true
   comment = "Astro web app (Cloudflare Pages: meowerse-web)"
-}
-
-# API: api.meow.alxnko.eu.org -> Northflank service.
-# DNS-only (proxied=false) so Northflank can validate + issue its own TLS cert.
-# Gated until the Northflank host is known (var.northflank_api_host).
-resource "cloudflare_dns_record" "api" {
-  count   = var.northflank_api_host != "" ? 1 : 0
-  zone_id = var.cloudflare_zone_id
-  name    = "api.meow"
-  type    = "CNAME"
-  content = var.northflank_api_host
-  ttl     = 1
-  proxied = false
-  comment = "Go api (Northflank)"
 }

@@ -5,7 +5,7 @@
 # Keep in sync with local.services in infra/cloudflare/deploy.tf.
 service_paths() {
   case "$1" in
-    api)    echo "apps/api packages/go-shared go.work" ;;
+    api)    echo "workers/api packages/ts-shared" ;;   # deployed api = Cloudflare Worker
     web)    echo "apps/web packages/ts-shared" ;;
     worker) echo "workers/edge" ;;
     *)      return 1 ;;

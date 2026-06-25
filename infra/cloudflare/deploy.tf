@@ -17,8 +17,8 @@
 locals {
   services = {
     api = {
-      paths  = "apps/api packages/go-shared go.work"
-      script = "infra/northflank/deploy.sh"
+      paths  = "workers/api packages/ts-shared"
+      script = "infra/cloudflare/deploy-api.sh"
     }
     web = {
       paths  = "apps/web packages/ts-shared"

@@ -106,10 +106,10 @@ build:
 deploy-status:
     bash infra/deploy-status.sh
 
-# Build + push the Go api image to GHCR and upsert the Northflank service.
-# Reads secrets from .env. Refuses dirty api source unless ALLOW_DIRTY=1.
+# Deploy the api (Cloudflare Worker) via wrangler + record version.
+# (Go apps/api + infra/northflank kept for a future container host, not deployed.)
 deploy-api:
-    bash -c 'set -a; source .env; set +a; bash infra/northflank/deploy.sh'
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-api.sh'
 
 # Deploy the web app to Cloudflare Pages (direct upload) + record version.
 deploy-web:
