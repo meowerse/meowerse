@@ -172,6 +172,8 @@ export const STATEMENTS: string[] = [...SCHEMA, ...SEED];
 export interface Deps {
   getDb: () => DbClient;
   schemaReady?: Promise<void>;
+  /** Unix-seconds clock; injected in tests for determinism. Defaults to wall time. */
+  clock?: () => number;
 }
 
 /** Build production Deps from env, lazily creating one libsql/web client. */
