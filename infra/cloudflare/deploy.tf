@@ -28,6 +28,14 @@ locals {
       paths  = "workers/edge"
       script = "infra/cloudflare/deploy-worker.sh"
     }
+    auth = {
+      paths  = "workers/auth packages/auth-shared"
+      script = "infra/cloudflare/deploy-auth.sh"
+    }
+    auth-web = {
+      paths  = "apps/auth-web"
+      script = "infra/cloudflare/deploy-auth-web.sh"
+    }
   }
 }
 
