@@ -9,6 +9,23 @@
         "typescript": "^6.0.3",
       },
     },
+    "apps/auth-web": {
+      "name": "@meowerse/auth-web",
+      "dependencies": {
+        "@astrojs/react": "^6.0.0",
+        "astro": "^7.0.2",
+        "react": "^19.2.7",
+        "react-dom": "^19.2.7",
+      },
+      "devDependencies": {
+        "@astrojs/check": "^0.9.9",
+        "@types/react": "^19.2.17",
+        "@types/react-dom": "^19.2.3",
+        "@vitest/coverage-v8": "^4.1.9",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.9",
+      },
+    },
     "apps/web": {
       "name": "@meowerse/web",
       "dependencies": {
@@ -360,6 +377,8 @@
     "@meowerse/api-worker": ["@meowerse/api-worker@workspace:workers/api"],
 
     "@meowerse/auth-shared": ["@meowerse/auth-shared@workspace:packages/auth-shared"],
+
+    "@meowerse/auth-web": ["@meowerse/auth-web@workspace:apps/auth-web"],
 
     "@meowerse/auth-worker": ["@meowerse/auth-worker@workspace:workers/auth"],
 
