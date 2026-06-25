@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // meowerse API Worker — the DEPLOYED backend (replaces the Go Fiber api at
+  // deploy time; the Go apps/api stays in the repo for a future container host).
+  //
+  // SECRETS (never in this file): set with wrangler before first deploy —
+  //   bunx wrangler secret put DATABASE_URL
+  //   bunx wrangler secret put DATABASE_AUTH_TOKEN
+  //   bunx wrangler secret put API_TOKEN
+  "name": "meowerse-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  // @libsql/client/web pulls in node builtins (events, util); nodejs_compat
+  // lets them resolve in workerd.
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CORS_ORIGINS": "https://meow.alxnko.eu.org,http://localhost:4321"
+  },
+  // Custom domain — Cloudflare provisions the cert + DNS for this hostname.
+  "routes": [{ "pattern": "api.meow.alxnko.eu.org", "custom_domain": true }]
+}

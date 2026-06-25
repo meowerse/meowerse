@@ -1,0 +1,8 @@
+# Local wrangler dev secrets. Copy to `.dev.vars` (gitignored) and fill in.
+# In production these are Worker SECRETS, set via `wrangler secret put <NAME>`
+# — NEVER commit real values.
+DATABASE_URL="libsql://your-db.turso.io"
+DATABASE_AUTH_TOKEN="your-turso-auth-token"
+API_TOKEN="set-a-long-random-bearer-token"
+# Optional override of the CORS allowlist (defaults baked into wrangler.jsonc):
+# CORS_ORIGINS="https://meow.alxnko.eu.org,http://localhost:4321"
