@@ -1,15 +1,15 @@
-module github.com/alxnko/meowerse/api
+module github.com/meowerse/meowerse/api
 
 go 1.26
 
 require (
-	github.com/alxnko/meowerse/go-shared v0.0.0
 	github.com/gofiber/fiber/v2 v2.52.13
+	github.com/meowerse/meowerse/go-shared v0.0.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20260528064733-9d5d30a29a60
 	modernc.org/sqlite v1.53.0
 )
 
-replace github.com/alxnko/meowerse/go-shared => ../../packages/go-shared
+replace github.com/meowerse/meowerse/go-shared => ../../packages/go-shared
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect

@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/alxnko/meowerse/api/internal/auth"
-	"github.com/alxnko/meowerse/api/internal/health"
-	"github.com/alxnko/meowerse/api/internal/meow"
+	"github.com/meowerse/meowerse/api/internal/auth"
+	"github.com/meowerse/meowerse/api/internal/health"
+	"github.com/meowerse/meowerse/api/internal/meow"
 	"github.com/gofiber/fiber/v2"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 )

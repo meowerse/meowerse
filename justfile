@@ -7,7 +7,7 @@
 #   genuinely logic-free code, justified below.
 #
 #   Excluded packages (regex matched against `go list ./...` import paths):
-#     - github.com/alxnko/meowerse/api  (apps/api/main.go)
+#     - github.com/meowerse/meowerse/api  (apps/api/main.go)
 #         Reason: main.go is pure wiring — it opens the libSQL connector from
 #         env, runs Migrate, mounts health + auth + meow routes, and calls
 #         Listen. There are no branches or business logic to test; the logic it
@@ -15,7 +15,7 @@
 #         The gate therefore measures the api module over ./internal/... only,
 #         so main.go's lack of tests cannot game the number, and every other
 #         package is held to the real 90% bar.
-COVERAGE_IGNORE := "github.com/alxnko/meowerse/api$"
+COVERAGE_IGNORE := "github.com/meowerse/meowerse/api$"
 
 set shell := ["bash", "-uc"]
 

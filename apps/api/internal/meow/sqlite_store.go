@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/alxnko/meowerse/go-shared/slug"
+	"github.com/meowerse/meowerse/go-shared/slug"
 )
 
 // ErrEmptyText is returned when a meow's text is blank after trimming.
