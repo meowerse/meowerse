@@ -1,11 +1,11 @@
 name: deploy
+# Manual-only for now — we deploy locally (`just deploy-*`). Re-enable auto by
+# adding a `push:` trigger when ready. Does NOT push back to the deploy branch.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
-# Allow committing the updated deploy-state.json back to the repo.
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 concurrency:
@@ -87,16 +87,5 @@ jobs:
           set -euo pipefail
           (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
           bash infra/record-deploy.sh worker "run-${{ github.run_id }}"
-
-      - name: Commit deploy-state.json
-        run: |
-          set -euo pipefail
-          if git status --porcelain -- infra/deploy-state.json | grep -q .; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add infra/deploy-state.json
-            git commit -m "chore: record deploy versions [skip ci]"
-            git push
-          else
-            echo "no deploy-state changes"
-          fi
+      # No commit-back: we never push to the deploy branch from CI. deploy-state
+      # is maintained by local `just deploy-*` runs.

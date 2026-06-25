@@ -6,11 +6,11 @@ import (
 	"log"
 	"os"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/meowerse/meowerse/api/internal/auth"
 	"github.com/meowerse/meowerse/api/internal/health"
 	"github.com/meowerse/meowerse/api/internal/httpx"
 	"github.com/meowerse/meowerse/api/internal/meow"
-	"github.com/gofiber/fiber/v2"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 )
 
