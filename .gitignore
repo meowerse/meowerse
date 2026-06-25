@@ -4,3 +4,5 @@ node_modules/
 dist/
 *.tfstate*
 .terraform/
+coverage.out
+coverage/
