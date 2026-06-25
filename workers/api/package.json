@@ -1,0 +1,25 @@
+{
+  "name": "@meowerse/api-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "wrangler deploy --dry-run --outdir /tmp/wr-api",
+    "test": "vitest run --coverage",
+    "secret:db-url": "wrangler secret put DATABASE_URL",
+    "secret:db-token": "wrangler secret put DATABASE_AUTH_TOKEN",
+    "secret:api-token": "wrangler secret put API_TOKEN"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "@meowerse/ts-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260625.1",
+    "@vitest/coverage-v8": "^4.1.9",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.105.0"
+  }
+}
