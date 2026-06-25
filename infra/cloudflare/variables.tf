@@ -22,3 +22,16 @@ variable "r2_bucket_name" {
   default     = "meowerse-media"
   description = "R2 bucket for object storage (only created when enable_r2 = true)."
 }
+
+variable "deploy_apps" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    When true, `terraform apply` also deploys app/worker code whose source
+    changed since the last apply (via terraform_data + local-exec calling the
+    deploy scripts). Requires local tooling: docker (api), bun + wrangler
+    (web/worker), and a populated .env. Set false for infra-only applies
+    (e.g. `terraform apply -var deploy_apps=false` to just change DNS/R2).
+  EOT
+}
+

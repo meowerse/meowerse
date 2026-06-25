@@ -113,23 +113,12 @@ deploy-api:
 
 # Deploy the web app to Cloudflare Pages (direct upload) + record version.
 deploy-web:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    set -a; source .env; set +a
-    if git status --porcelain -- apps/web packages/ts-shared | grep -q .; then
-        [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted web changes. commit or ALLOW_DIRTY=1"; exit 1; }
-    fi
-    ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/web build
-    bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --commit-hash "$(git rev-parse HEAD)"
-    bash infra/record-deploy.sh web "$(git rev-parse --short HEAD)"
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-web.sh'
 
 # Deploy the edge worker via wrangler + record version.
 deploy-worker:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    set -a; source .env; set +a
-    if git status --porcelain -- workers/edge | grep -q .; then
-        [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted worker changes. commit or ALLOW_DIRTY=1"; exit 1; }
-    fi
-    (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
-    bash infra/record-deploy.sh worker "$(git rev-parse --short HEAD)"
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-worker.sh'
+
+# Deploy everything changed via Terraform (infra + apps). `tf apply` UX.
+deploy-all:
+    bash -c 'cd infra/cloudflare && set -a; source ../../.env; set +a; export TF_VAR_cloudflare_account_id="$CLOUDFLARE_ACCOUNT_ID" TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"; terraform apply'

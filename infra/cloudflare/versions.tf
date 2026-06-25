@@ -12,5 +12,9 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 5.21"
     }
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
+    }
   }
 }
