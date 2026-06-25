@@ -101,3 +101,35 @@ lint-go:
 # Build the JS workspace via Turbo.
 build:
     bun run build
+
+# Show deploy status per service: deployed SHA vs source SHA (+ dirty flag).
+deploy-status:
+    bash infra/deploy-status.sh
+
+# Build + push the Go api image to GHCR and upsert the Northflank service.
+# Reads secrets from .env. Refuses dirty api source unless ALLOW_DIRTY=1.
+deploy-api:
+    bash -c 'set -a; source .env; set +a; bash infra/northflank/deploy.sh'
+
+# Deploy the web app to Cloudflare Pages (direct upload) + record version.
+deploy-web:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source .env; set +a
+    if git status --porcelain -- apps/web packages/ts-shared | grep -q .; then
+        [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted web changes. commit or ALLOW_DIRTY=1"; exit 1; }
+    fi
+    ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/web build
+    bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --commit-hash "$(git rev-parse HEAD)"
+    bash infra/record-deploy.sh web "$(git rev-parse --short HEAD)"
+
+# Deploy the edge worker via wrangler + record version.
+deploy-worker:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source .env; set +a
+    if git status --porcelain -- workers/edge | grep -q .; then
+        [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted worker changes. commit or ALLOW_DIRTY=1"; exit 1; }
+    fi
+    (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
+    bash infra/record-deploy.sh worker "$(git rev-parse --short HEAD)"
