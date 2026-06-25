@@ -101,3 +101,24 @@ lint-go:
 # Build the JS workspace via Turbo.
 build:
     bun run build
+
+# Show deploy status per service: deployed SHA vs source SHA (+ dirty flag).
+deploy-status:
+    bash infra/deploy-status.sh
+
+# Build + push the Go api image to GHCR and upsert the Northflank service.
+# Reads secrets from .env. Refuses dirty api source unless ALLOW_DIRTY=1.
+deploy-api:
+    bash -c 'set -a; source .env; set +a; bash infra/northflank/deploy.sh'
+
+# Deploy the web app to Cloudflare Pages (direct upload) + record version.
+deploy-web:
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-web.sh'
+
+# Deploy the edge worker via wrangler + record version.
+deploy-worker:
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-worker.sh'
+
+# Deploy everything changed via Terraform (infra + apps). `tf apply` UX.
+deploy-all:
+    bash -c 'cd infra/cloudflare && set -a; source ../../.env; set +a; export TF_VAR_cloudflare_account_id="$CLOUDFLARE_ACCOUNT_ID" TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"; terraform apply'
