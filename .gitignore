@@ -2,6 +2,7 @@
 node_modules/
 .turbo/
 dist/
+.astro/
 *.tfstate*
 .terraform/
 coverage.out
