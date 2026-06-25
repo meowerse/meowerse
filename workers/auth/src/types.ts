@@ -11,6 +11,7 @@ export interface Env {
   DATABASE_URL?: string;
   DATABASE_AUTH_TOKEN?: string;
   AUTH_SIGNING_KEYS?: string;
+  STATE_SECRET?: string;
   WRITE_BUDGET_PER_MIN?: string;
 }
 

@@ -68,7 +68,8 @@ export const SCHEMA: string[] = [
     nonce TEXT, code_challenge TEXT NOT NULL, code_challenge_method TEXT NOT NULL,
     account_id TEXT NOT NULL, session_id_hash TEXT NOT NULL, auth_time INTEGER NOT NULL,
     jti_family TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at INTEGER NOT NULL
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at INTEGER NOT NULL,
+    consumed_at TEXT
   )`,
   // --- Token revocation index + refresh (refresh = slice 2) ---
   `CREATE TABLE IF NOT EXISTS access_tokens (
