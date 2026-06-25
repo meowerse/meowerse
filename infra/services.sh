@@ -5,10 +5,12 @@
 # Keep in sync with local.services in infra/cloudflare/deploy.tf.
 service_paths() {
   case "$1" in
-    api)    echo "workers/api packages/ts-shared" ;;   # deployed api = Cloudflare Worker
-    web)    echo "apps/web packages/ts-shared" ;;
-    worker) echo "workers/edge" ;;
-    *)      return 1 ;;
+    api)      echo "workers/api packages/ts-shared" ;;   # deployed api = Cloudflare Worker
+    web)      echo "apps/web packages/ts-shared" ;;
+    worker)   echo "workers/edge" ;;
+    auth)     echo "workers/auth packages/auth-shared" ;; # OIDC identity provider Worker
+    auth-web) echo "apps/auth-web" ;;                      # auth UI (Cloudflare Pages)
+    *)        return 1 ;;
   esac
 }
 

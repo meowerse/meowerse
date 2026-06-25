@@ -38,6 +38,8 @@ jobs:
           grep -qE '^(workers/api/|packages/ts-shared/)' <<<"$diff" && echo "api=1" >> "$GITHUB_OUTPUT" || echo "api=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(apps/web/|packages/ts-shared/)' <<<"$diff" && echo "web=1" >> "$GITHUB_OUTPUT" || echo "web=0" >> "$GITHUB_OUTPUT"
           grep -qE '^workers/edge/' <<<"$diff" && echo "worker=1" >> "$GITHUB_OUTPUT" || echo "worker=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^(workers/auth/|packages/auth-shared/)' <<<"$diff" && echo "auth=1" >> "$GITHUB_OUTPUT" || echo "auth=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^apps/auth-web/' <<<"$diff" && echo "authweb=1" >> "$GITHUB_OUTPUT" || echo "authweb=0" >> "$GITHUB_OUTPUT"
 
       - run: bun install --frozen-lockfile
 
@@ -74,5 +76,28 @@ jobs:
           set -euo pipefail
           (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
           bash infra/record-deploy.sh worker "run-${{ github.run_id }}"
+
+      - name: Deploy auth (Cloudflare Worker)
+        if: steps.changed.outputs.auth == '1' && env.CF != ''
+        env:
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd workers/auth && bunx wrangler deploy)
+          bash infra/record-deploy.sh auth "run-${{ github.run_id }}"
+
+      - name: Deploy auth-web (Cloudflare Pages)
+        if: steps.changed.outputs.authweb == '1' && env.CF != ''
+        env:
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          bun run --filter @meowerse/auth-web build
+          bunx wrangler pages deploy apps/auth-web/dist --project-name meowerse-auth-web --commit-hash "$(git rev-parse HEAD)"
+          bash infra/record-deploy.sh auth-web "run-${{ github.run_id }}"
       # No commit-back: we never push to the deploy branch from CI. deploy-state
       # is maintained by local `just deploy-*` runs.

@@ -1,0 +1,9 @@
+---
+import Layout from "../layouts/Layout.astro";
+import ConsentForm from "../components/ConsentForm.tsx";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+---
+
+<Layout title="Authorize · Meowerse">
+  <ConsentForm client:load base={base} />
+</Layout>

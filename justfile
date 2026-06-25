@@ -119,6 +119,14 @@ deploy-web:
 deploy-worker:
     bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-worker.sh'
 
+# Deploy the auth OIDC worker via wrangler + record version.
+deploy-auth:
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-auth.sh'
+
+# Deploy the auth UI to Cloudflare Pages + record version.
+deploy-auth-web:
+    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-auth-web.sh'
+
 # Deploy everything changed via Terraform (infra + apps). `tf apply` UX.
 deploy-all:
     bash -c 'cd infra/cloudflare && set -a; source ../../.env; set +a; export TF_VAR_cloudflare_account_id="$CLOUDFLARE_ACCOUNT_ID" TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID"; terraform apply'

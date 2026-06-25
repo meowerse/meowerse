@@ -1,0 +1,12 @@
+# Local wrangler dev secrets. Copy to `.dev.vars` (gitignored) and fill in.
+# In production these are Worker SECRETS, set via `wrangler secret put <NAME>`
+# — NEVER commit real values.
+DATABASE_URL="libsql://your-db.turso.io"
+DATABASE_AUTH_TOKEN="your-turso-auth-token"
+# ES256 signing keys: JSON array of { kid, status, privateJwk, publicJwk }.
+# Generate with: node scripts/gen-signing-key.mjs  (status "active" for one).
+AUTH_SIGNING_KEYS='[{"kid":"dev1","status":"active","privateJwk":{...},"publicJwk":{...}}]'
+# Optional overrides (defaults baked into wrangler.jsonc):
+# CORS_ORIGINS="https://auth.alxnko.eu.org,http://localhost:4321"
+# ISSUER="https://auth.alxnko.eu.org"
+# RESOURCE_AUD="https://api.meow.alxnko.eu.org"

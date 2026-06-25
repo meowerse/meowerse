@@ -1,0 +1,36 @@
+---
+interface Props {
+  title: string;
+}
+const { title } = Astro.props;
+// Defense-in-depth: the same no-referrer/no-store posture the worker sets, also
+// applied at the page response (the Pages _headers file covers static assets).
+Astro.response.headers.set("Referrer-Policy", "no-referrer");
+Astro.response.headers.set("Cache-Control", "no-store");
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+      h1 { font-size: 1.5rem; }
+      .auth-form label { display: block; margin: 0.75rem 0; }
+      .auth-form input { display: block; width: 100%; padding: 0.5rem; margin-top: 0.25rem; box-sizing: border-box; }
+      button { padding: 0.55rem 1rem; cursor: pointer; }
+      .error { color: #c0392b; }
+      .actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+      .secondary { opacity: 0.75; }
+      .muted { opacity: 0.7; font-size: 0.9rem; }
+      code { background: rgba(127,127,127,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
