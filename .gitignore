@@ -6,3 +6,6 @@ dist/
 .terraform/
 coverage.out
 coverage/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example

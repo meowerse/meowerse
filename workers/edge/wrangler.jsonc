@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Manages the existing "bot0" worker (Telegram chat bot). Code + deploy are
+  // owned by wrangler; Terraform is NOT used for worker content (avoids state
+  // churn on every byte change). PATH_SECRET is a Worker secret, never in code:
+  //   bunx wrangler secret put PATH_SECRET   (value lives in gitignored .env)
+  "name": "bot0",
+  "main": "src/index.js",
+  "compatibility_date": "2025-06-01",
+  "workers_dev": true
+  // BOT_KV is referenced optionally in code (env?.BOT_KV). No KV namespace is
+  // currently bound in production. To enable sleep-mode dedup, create one and add:
+  // "kv_namespaces": [{ "binding": "BOT_KV", "id": "<namespace_id>" }]
+}
