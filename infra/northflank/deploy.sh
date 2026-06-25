@@ -11,8 +11,9 @@ set -euo pipefail
 PROJECT="${NF_PROJECT:-alxnko}"
 SERVICE="${NF_SERVICE:-meowerse-api}"
 PLAN="${NF_PLAN:-nf-compute-20}"          # free Sandbox tier
-GHCR_USER="${GHCR_USER:-meowerse}"
-IMAGE="ghcr.io/${GHCR_USER}/meowerse-api"
+GHCR_OWNER="${GHCR_OWNER:-meowerse}"   # image namespace (org or user)
+GHCR_USER="${GHCR_USER:-alxnko}"        # github login used for docker login
+IMAGE="ghcr.io/${GHCR_OWNER}/meowerse-api"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TAG="$(git -C "$ROOT" rev-parse --short HEAD)"
 # Dirty guard: refuse to deploy uncommitted api source unless ALLOW_DIRTY=1.

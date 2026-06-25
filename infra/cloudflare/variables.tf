@@ -23,6 +23,12 @@ variable "r2_bucket_name" {
   description = "R2 bucket for object storage (only created when enable_r2 = true)."
 }
 
+variable "northflank_api_host" {
+  type        = string
+  default     = ""
+  description = "Northflank service hostname (e.g. xxx.code.run) for the api.meow CNAME. Empty = api DNS not created yet."
+}
+
 variable "deploy_apps" {
   type        = bool
   default     = true
