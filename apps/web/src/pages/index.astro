@@ -1,0 +1,18 @@
+---
+import MeowList from "../components/MeowList.tsx";
+
+const base = import.meta.env.PUBLIC_API_URL ?? "https://api.meow.alxnko.eu.org";
+const token = import.meta.env.PUBLIC_DEMO_TOKEN ?? "";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>meowerse</title>
+  </head>
+  <body>
+    <h1>meowerse</h1>
+    <MeowList client:load base={base} token={token} />
+  </body>
+</html>
