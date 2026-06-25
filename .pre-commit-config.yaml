@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: gofmt (go-shared)
+        entry: bash -c 'gofmt -l packages/go-shared | (! grep .)'
+        language: system
+        pass_filenames: false
+
+      - id: just-test
+        name: just test (coverage gate)
+        entry: just test
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
