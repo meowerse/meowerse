@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // meowerse AUTH Worker — the OIDC identity provider ("Auth with Meowerse").
+  // Mirrors workers/api: thin DI router, Turso via @libsql/client/web, custom
+  // domain, secrets out of source.
+  //
+  // SECRETS (never in this file): set with wrangler before first deploy —
+  //   bunx wrangler secret put DATABASE_URL
+  //   bunx wrangler secret put DATABASE_AUTH_TOKEN
+  //   bunx wrangler secret put AUTH_SIGNING_KEYS   (JSON array of ES256 JWKs)
+  "name": "meowerse-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  // @libsql/client/web pulls node builtins; nodejs_compat resolves them in workerd.
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CORS_ORIGINS": "https://auth.alxnko.eu.org,http://localhost:4321",
+    "ISSUER": "https://auth.alxnko.eu.org",
+    "RESOURCE_AUD": "https://api.meow.alxnko.eu.org"
+  },
+  // Custom domain — Cloudflare provisions cert + DNS for the API hostname.
+  "routes": [{ "pattern": "auth-api.alxnko.eu.org", "custom_domain": true }]
+}
