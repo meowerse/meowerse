@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Record a deploy: record-deploy.sh <service> <sha-tag>
-# Updates infra/deploy-state.json with {service: {sha, at}}. Commit it for an
-# auditable deploy history. `at` is passed in (CI) or "local".
+# Record a deploy: record-deploy.sh <service> [at]
+# Stores the service's SOURCE sha (last commit touching its paths) in
+# infra/deploy-state.json, so deploy-status can compare deployed-source vs
+# current-source. Commit the file for an auditable deploy history.
 set -euo pipefail
-svc="${1:?service}"; sha="${2:?sha}"; at="${3:-local}"
+svc="${1:?service}"; at="${2:-local}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
+. "$root/infra/services.sh"
+sha="$(service_source_sha "$root" "$svc")"
 f="$root/infra/deploy-state.json"
 [ -f "$f" ] || echo '{}' > "$f"
 python - "$f" "$svc" "$sha" "$at" <<'PY'

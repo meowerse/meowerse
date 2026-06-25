@@ -69,5 +69,5 @@ else
     | python -c 'import sys,json;d=json.load(sys.stdin);print("created:",d.get("data",{}).get("id") or d.get("error"))'
 fi
 # 5. record what we deployed (version tracking)
-"$ROOT/infra/record-deploy.sh" api "$TAG"
+"$ROOT/infra/record-deploy.sh" api
 echo "done. set custom domain api.meow.alxnko.eu.org in Northflank, then CNAME it in Cloudflare."

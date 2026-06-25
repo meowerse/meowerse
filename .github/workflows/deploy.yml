@@ -63,7 +63,7 @@ jobs:
           else
             curl -s "${A[@]}" -X POST "$NFAPI/projects/alxnko/services" -d "{\"name\":\"meowerse-api\",\"billing\":{\"deploymentPlan\":\"nf-compute-20\"},\"deployment\":{\"type\":\"deployment\",\"instances\":1,\"external\":{\"imagePath\":\"$IMAGE:$SHA\",\"credentials\":null}},\"ports\":[{\"name\":\"http\",\"internalPort\":8080,\"public\":true,\"protocol\":\"HTTP\"}],\"runtimeEnvironment\":$runtime}" >/dev/null
           fi
-          bash infra/record-deploy.sh api "$SHA" "run-${{ github.run_id }}"
+          bash infra/record-deploy.sh api "run-${{ github.run_id }}"
 
       - name: Deploy web (Cloudflare Pages)
         if: steps.changed.outputs.web == '1' && env.CF != ''
@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           bun run --filter @meowerse/web build
           bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --commit-hash "$(git rev-parse HEAD)"
-          bash infra/record-deploy.sh web "$(git rev-parse --short HEAD)" "run-${{ github.run_id }}"
+          bash infra/record-deploy.sh web "run-${{ github.run_id }}"
 
       - name: Deploy worker (wrangler)
         if: steps.changed.outputs.worker == '1' && env.CF != ''
@@ -86,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
-          bash infra/record-deploy.sh worker "$(git rev-parse --short HEAD)" "run-${{ github.run_id }}"
+          bash infra/record-deploy.sh worker "run-${{ github.run_id }}"
 
       - name: Commit deploy-state.json
         run: |

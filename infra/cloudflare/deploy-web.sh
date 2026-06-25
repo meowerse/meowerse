@@ -10,4 +10,4 @@ if git status --porcelain -- apps/web packages/ts-shared | grep -q .; then
 fi
 ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/web build
 bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --commit-hash "$(git rev-parse HEAD)"
-bash infra/record-deploy.sh web "$(git rev-parse --short HEAD)"
+bash infra/record-deploy.sh web
