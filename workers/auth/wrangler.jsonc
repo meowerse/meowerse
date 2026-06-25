@@ -15,7 +15,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "CORS_ORIGINS": "https://auth.alxnko.eu.org,http://localhost:4321",
-    "ISSUER": "https://auth.alxnko.eu.org",
+    // Issuer = the API origin so {issuer}/.well-known/openid-configuration and
+    // /jwks are same-origin on this worker (no Pages proxy). WEB_ORIGIN is the
+    // user-facing UI (Astro on Pages) the authorize flow redirects into.
+    "ISSUER": "https://auth-api.alxnko.eu.org",
+    "WEB_ORIGIN": "https://auth.alxnko.eu.org",
     "RESOURCE_AUD": "https://api.meow.alxnko.eu.org"
   },
   // Custom domain — Cloudflare provisions cert + DNS for the API hostname.

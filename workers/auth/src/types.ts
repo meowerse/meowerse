@@ -6,6 +6,7 @@
 export interface Env {
   CORS_ORIGINS?: string;
   ISSUER?: string;
+  WEB_ORIGIN?: string;
   RESOURCE_AUD?: string;
   DATABASE_URL?: string;
   DATABASE_AUTH_TOKEN?: string;
