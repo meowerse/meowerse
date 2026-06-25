@@ -9,6 +9,8 @@ coverage.out
 coverage/
 # wrangler `--dry-run --outdir /tmp/...` lands here under git-bash on Windows
 workers/*/tmp/
+# wrangler local dev/state cache
+.wrangler/
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
