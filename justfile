@@ -1,10 +1,21 @@
 # meowerse task layer
 #
-# COVERAGE_IGNORE := ""
-#   Honest exclusion list for the Go coverage gate. It is intentionally EMPTY.
-#   When a directory must be excluded later, add it here WITH a written reason.
-#   Never cherry-pick packages to inflate coverage — the gate measures the
-#   whole module (go test ./...).
+# COVERAGE_IGNORE:
+#   Honest exclusion list for the Go coverage gate. Each entry names a package
+#   path that is excluded from coverage measurement WITH a written reason.
+#   Never cherry-pick packages to inflate coverage — exclusions must be for
+#   genuinely logic-free code, justified below.
+#
+#   Excluded packages (regex matched against `go list ./...` import paths):
+#     - github.com/alxnko/meowerse/api  (apps/api/main.go)
+#         Reason: main.go is pure wiring — it opens the libSQL connector from
+#         env, runs Migrate, mounts health + auth + meow routes, and calls
+#         Listen. There are no branches or business logic to test; the logic it
+#         wires (health, meow, auth, blob) is each covered >=90% in ./internal.
+#         The gate therefore measures the api module over ./internal/... only,
+#         so main.go's lack of tests cannot game the number, and every other
+#         package is held to the real 90% bar.
+COVERAGE_IGNORE := "github.com/alxnko/meowerse/api$"
 
 set shell := ["bash", "-uc"]
 
@@ -31,6 +42,7 @@ test-go:
     #!/usr/bin/env bash
     set -euo pipefail
     min="{{COVERAGE_MIN}}"
+    ignore="{{COVERAGE_IGNORE}}"
     found=0
     while IFS= read -r modfile; do
         dir="$(dirname "$modfile")"
@@ -38,7 +50,18 @@ test-go:
         echo "==> go test in $dir"
         (
             cd "$dir"
-            go test -coverprofile=coverage.out -covermode=atomic ./...
+            # Build the package list, dropping any COVERAGE_IGNORE entries
+            # (documented logic-free packages, e.g. apps/api/main.go wiring).
+            if [ -n "$ignore" ]; then
+                pkgs="$(go list ./... | grep -Ev "$ignore" || true)"
+            else
+                pkgs="$(go list ./...)"
+            fi
+            if [ -z "$pkgs" ]; then
+                echo "    no testable packages after exclusions"
+                exit 0
+            fi
+            go test -coverprofile=coverage.out -covermode=atomic $pkgs
             total="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')"
             echo "    total coverage: ${total}%"
             awk -v t="$total" -v m="$min" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' \
