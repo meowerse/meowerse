@@ -8,6 +8,7 @@ import (
 
 	"github.com/meowerse/meowerse/api/internal/auth"
 	"github.com/meowerse/meowerse/api/internal/health"
+	"github.com/meowerse/meowerse/api/internal/httpx"
 	"github.com/meowerse/meowerse/api/internal/meow"
 	"github.com/gofiber/fiber/v2"
 	"github.com/tursodatabase/libsql-client-go/libsql"
@@ -32,6 +33,7 @@ func main() {
 	}
 
 	app := fiber.New()
+	app.Use(httpx.CORS(os.Getenv("CORS_ORIGINS")))
 	app.Get("/healthz", health.Handler)
 	api := app.Group("/api", auth.RequireToken(os.Getenv("API_TOKEN")))
 	meow.RegisterRoutes(api, store)
