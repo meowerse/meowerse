@@ -1,6 +1,5 @@
 # Supplied via environment: TF_VAR_cloudflare_account_id, TF_VAR_cloudflare_zone_id
-# (sourced from the gitignored .env — never committed).
-# CLOUDFLARE_API_TOKEN is read directly by the provider from the environment.
+# (sourced from the gitignored .env). CLOUDFLARE_API_TOKEN is read by the provider.
 
 variable "cloudflare_account_id" {
   type        = string
@@ -15,7 +14,7 @@ variable "cloudflare_zone_id" {
 variable "enable_r2" {
   type        = bool
   default     = false
-  description = "R2 requires a payment method even on the free tier. Keep false until enabled in the dashboard; flipping to true brings R2 resources into plan/apply."
+  description = "R2 needs a payment method even on the free tier. Keep false until enabled in the dashboard; true brings R2 into plan/apply."
 }
 
 variable "r2_bucket_name" {
