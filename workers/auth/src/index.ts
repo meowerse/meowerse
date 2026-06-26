@@ -17,6 +17,7 @@ import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC } from "./accoun
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
 import { consentDecision, getConsent, grantConsent } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
+import { createRefreshToken, rotateRefresh } from "./refresh";
 import { userinfoClaims } from "./userinfo";
 import { checkRateLimit } from "./ratelimit";
 
@@ -302,47 +303,76 @@ async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<st
   );
 }
 
-async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
-  const p = await readParams(req);
-  const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
-  if (p.grant_type !== "authorization_code") return json({ error: "unsupported_grant_type" }, 400, { ...cors, ...noStore });
+/** Mint the token response (id+access, optional refresh) and persist the jti. */
+async function mintResponse(
+  env: Env,
+  deps: Deps,
+  cors: Record<string, string>,
+  noStore: Record<string, string>,
+  i: { accountId: string; clientId: string; scope: string[]; nonce: string | null; authTime: number; family: string; issueRefresh?: boolean; refreshToken?: string },
+): Promise<Response> {
   const db = deps.getDb();
-  const ex = await exchangeCode(db, {
-    code: p.code ?? "",
-    verifier: p.code_verifier ?? "",
-    clientId: p.client_id ?? "",
-    redirectUri: p.redirect_uri ?? "",
-    now: now(deps),
-  });
-  if (!ex.ok) return json({ error: ex.error }, 400, { ...cors, ...noStore });
-
-  const verified = await deriveVerified(db, ex.accountId);
+  const verified = await deriveVerified(db, i.accountId);
   const signing = await getSigning(env);
   const tokens = await mintTokens({
-    accountId: ex.accountId,
-    clientId: p.client_id ?? "",
-    scope: ex.scope,
-    nonce: ex.nonce,
-    authTime: ex.authTime,
+    accountId: i.accountId,
+    clientId: i.clientId,
+    scope: i.scope,
+    nonce: i.nonce,
+    authTime: i.authTime,
     verified,
     issuer: issuer(env),
     resourceAud: env.RESOURCE_AUD ?? "https://api.meow.alxnko.eu.org",
     signingKey: signing.active.key,
     kid: signing.active.kid,
-    family: ex.family,
+    family: i.family,
     now: now(deps),
   });
-  await recordAccessToken(db, {
-    jti: tokens.jti,
-    accountId: ex.accountId,
-    clientId: p.client_id ?? "",
-    scope: ex.scope,
-    family: ex.family,
-    now: now(deps),
-  });
+  await recordAccessToken(db, { jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
   const { jti: _jti, ...body } = tokens;
   void _jti;
-  return json(body, 200, { ...cors, ...noStore });
+  let refresh = i.refreshToken;
+  if (i.issueRefresh && !refresh) {
+    refresh = await createRefreshToken(db, { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
+  }
+  return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
+}
+
+async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const p = await readParams(req);
+  const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
+  const db = deps.getDb();
+  const clientId = p.client_id ?? "";
+
+  if (p.grant_type === "authorization_code") {
+    const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
+    if (!ex.ok) return json({ error: ex.error }, 400, { ...cors, ...noStore });
+    return mintResponse(env, deps, cors, noStore, {
+      accountId: ex.accountId,
+      clientId,
+      scope: ex.scope,
+      nonce: ex.nonce,
+      authTime: ex.authTime,
+      family: ex.family,
+      issueRefresh: ex.scope.includes("offline_access"),
+    });
+  }
+
+  if (p.grant_type === "refresh_token") {
+    const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
+    if (!rot.ok) return json({ error: rot.error }, 400, { ...cors, ...noStore });
+    return mintResponse(env, deps, cors, noStore, {
+      accountId: rot.accountId,
+      clientId,
+      scope: rot.scope,
+      nonce: null,
+      authTime: now(deps),
+      family: rot.family,
+      refreshToken: rot.newRefresh,
+    });
+  }
+
+  return json({ error: "unsupported_grant_type" }, 400, { ...cors, ...noStore });
 }
 
 async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {

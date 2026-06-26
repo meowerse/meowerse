@@ -20,12 +20,14 @@ async function fixture() {
   };
   // extra clients for the gated/expanded-scope branches
   store.tables.oauth_clients.push(
-    { client_id: "mw_full", status: "active", client_type: "public", display_name: "Full", logo_url: null, allowed_scopes: '["openid","profile","telegram"]', verified_only: 0, first_party: 0 },
-    { client_id: "mw_vo", status: "active", client_type: "public", display_name: "VO", logo_url: null, allowed_scopes: '["openid","profile"]', verified_only: 1, first_party: 0 },
+    { client_id: "mw_full", status: "active", client_type: "public", display_name: "Full", logo_url: null, allowed_scopes: '["openid","profile","telegram"]', allow_offline_access: 0, verified_only: 0, first_party: 0 },
+    { client_id: "mw_vo", status: "active", client_type: "public", display_name: "VO", logo_url: null, allowed_scopes: '["openid","profile"]', allow_offline_access: 0, verified_only: 1, first_party: 0 },
+    { client_id: "mw_rt", status: "active", client_type: "public", display_name: "RT", logo_url: null, allowed_scopes: '["openid","profile","offline_access"]', allow_offline_access: 1, verified_only: 0, first_party: 0 },
   );
   store.tables.oauth_client_redirect_uris.push(
     { client_id: "mw_full", redirect_uri: "http://localhost:4321/cb2" },
     { client_id: "mw_vo", redirect_uri: "http://localhost:4321/cb3" },
+    { client_id: "mw_rt", redirect_uri: "http://localhost:4321/cb4" },
   );
   return { env, deps: { getDb: () => store.db, clock: () => 1000 }, store };
 }
@@ -165,6 +167,37 @@ test("GET /authorize/pending returns client+scope+csrf for the consent UI; 401/4
   expect(b.client.name).toBe("Full");
   expect(b.scope).toEqual(["openid", "telegram"]);
   expect(b.csrf).toBeTruthy();
+});
+
+test("refresh token: issued with offline_access, rotates, reuse revokes family", async () => {
+  const { env, deps } = await fixture();
+  const RT_REDIRECT = "http://localhost:4321/cb4";
+  // authorize (logged out) → tkt
+  const r1 = await handle(new Request(authzUrl("mw_rt", RT_REDIRECT, "openid offline_access")), env as never, deps as never);
+  const tkt = cookieValue(r1.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
+  // signup → session
+  const r2 = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tkt=${tkt}` }, body: JSON.stringify({ username: "neko_rt", password: "abcdefghijkl" }) }), env as never, deps as never);
+  const b2 = (await r2.json()) as { csrf: string };
+  const sess = cookieValue(r2.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  // consent allow → code
+  const r3 = await handle(new Request("https://iss/consent", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}` }, body: JSON.stringify({ decision: "allow", csrf: b2.csrf }) }), env as never, deps as never);
+  const code = new URL(((await r3.json()) as { redirect: string }).redirect).searchParams.get("code")!;
+  // token → includes refresh_token
+  const r4 = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_rt", redirect_uri: RT_REDIRECT }) }), env as never, deps as never);
+  const b4 = (await r4.json()) as { refresh_token: string; scope: string };
+  expect(b4.refresh_token?.startsWith("rt_")).toBe(true);
+  expect(b4.scope).toBe("openid offline_access");
+
+  // refresh grant → new tokens + rotated refresh
+  const r5 = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "refresh_token", refresh_token: b4.refresh_token, client_id: "mw_rt" }) }), env as never, deps as never);
+  const b5 = (await r5.json()) as { refresh_token: string; access_token: string };
+  expect(r5.status).toBe(200);
+  expect(b5.refresh_token).not.toBe(b4.refresh_token);
+  expect(b5.access_token).toBeTruthy();
+
+  // reusing the FIRST (now-consumed) refresh → invalid_grant (family revoked)
+  const r6 = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "refresh_token", refresh_token: b4.refresh_token, client_id: "mw_rt" }) }), env as never, deps as never);
+  expect(r6.status).toBe(400);
 });
 
 test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/STATE_SECRET are omitted", async () => {

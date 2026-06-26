@@ -47,6 +47,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     sessions: [],
     oauth_codes: [],
     access_tokens: [],
+    refresh_tokens: [],
     oauth_clients: [],
     oauth_client_redirect_uris: [],
     consents: [],
@@ -199,6 +200,33 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       if (/FROM access_tokens WHERE jti/.test(sql))
         return { rows: t.access_tokens.filter((r) => r.jti === a[0]).map((r) => ({ expires_at: r.expires_at, revoked_at: r.revoked_at })) };
+
+      // --- refresh tokens ---
+      if (/INSERT INTO refresh_tokens/.test(sql)) {
+        t.refresh_tokens.push({
+          token_hash: a[0],
+          family_id: a[1],
+          client_id: a[2],
+          account_id: a[3],
+          scope: a[4],
+          prev_id: a[5],
+          used_at: null,
+          idle_expires_at: a[6],
+          absolute_expires_at: a[7],
+        });
+        return { rows: [] };
+      }
+      if (/SELECT \* FROM refresh_tokens WHERE token_hash/.test(sql))
+        return { rows: t.refresh_tokens.filter((r) => r.token_hash === a[0]) };
+      if (/UPDATE refresh_tokens SET used_at .* WHERE token_hash/.test(sql)) {
+        const row = t.refresh_tokens.find((r) => r.token_hash === a[0] && r.used_at == null);
+        if (row) row.used_at = "used";
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
+      if (/UPDATE refresh_tokens SET used_at .* WHERE family_id/.test(sql)) {
+        for (const r of t.refresh_tokens) if (r.family_id === a[0] && r.used_at == null) r.used_at = "used";
+        return { rows: [] };
+      }
 
       // --- rate limits ---
       if (/FROM rate_limits WHERE bucket/.test(sql))
