@@ -52,6 +52,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     oauth_client_redirect_uris: [],
     consents: [],
     rate_limits: [],
+    login_tickets: [],
   };
   const db: DbClient = {
     execute: async (stmt) => {
@@ -96,8 +97,18 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       // --- accounts / credentials ---
       if (/SELECT id FROM accounts WHERE username/.test(sql))
         return { rows: t.accounts.filter((r) => r.username === a[0]).map((r) => ({ id: r.id })) };
+      // telegram-shaped insert: (id, username=NULL, display_name, avatar_url, verified=1)
+      if (/INSERT INTO accounts \(id, username, display_name, avatar_url, verified\)/.test(sql)) {
+        t.accounts.push({ id: a[0], username: null, display_name: a[1], avatar_url: a[2], verified: 1 });
+        return { rows: [] };
+      }
       if (/INSERT INTO accounts/.test(sql)) {
         t.accounts.push({ id: a[0], username: a[1], display_name: a[2], avatar_url: null, verified: 0 });
+        return { rows: [] };
+      }
+      if (/UPDATE accounts SET verified = 1 WHERE id/.test(sql)) {
+        const row = t.accounts.find((r) => r.id === a[0]);
+        if (row) row.verified = 1;
         return { rows: [] };
       }
       if (/SELECT username, display_name, avatar_url FROM accounts WHERE id/.test(sql))
@@ -113,9 +124,40 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [] };
       }
 
-      // --- telegram (always empty in slice 1) ---
+      // --- telegram ---
+      if (/SELECT account_id FROM telegram_links WHERE telegram_id/.test(sql))
+        return { rows: t.telegram_links.filter((r) => r.telegram_id === a[0]).map((r) => ({ account_id: r.account_id })) };
+      if (/telegram_id, telegram_username FROM telegram_links/.test(sql))
+        return { rows: t.telegram_links.filter((r) => r.account_id === a[0]).map((r) => ({ telegram_id: r.telegram_id, telegram_username: r.telegram_username })) };
       if (/FROM telegram_links WHERE account_id/.test(sql))
         return { rows: t.telegram_links.filter((r) => r.account_id === a[0]) };
+      if (/INSERT INTO telegram_links/.test(sql)) {
+        t.telegram_links.push({ telegram_id: a[0], account_id: a[1], telegram_username: a[2], display_name: a[3], avatar_url: a[4] });
+        return { rows: [] };
+      }
+      if (/UPDATE telegram_links SET telegram_username/.test(sql)) {
+        const row = t.telegram_links.find((r) => r.telegram_id === a[3]);
+        if (row) row.telegram_username = a[0];
+        return { rows: [] };
+      }
+
+      // --- login tickets ---
+      if (/INSERT INTO login_tickets/.test(sql)) {
+        t.login_tickets.push({ ticket_id: a[0], nonce_hash: a[1], owner_hash: a[2], kind: a[3], account_id: a[4], rid: a[5], status: "pending", expires_at: a[6] });
+        return { rows: [] };
+      }
+      if (/SELECT \* FROM login_tickets WHERE nonce_hash/.test(sql))
+        return { rows: t.login_tickets.filter((r) => r.nonce_hash === a[0]) };
+      if (/SELECT \* FROM login_tickets WHERE ticket_id/.test(sql))
+        return { rows: t.login_tickets.filter((r) => r.ticket_id === a[0]) };
+      if (/UPDATE login_tickets SET status = 'consumed'/.test(sql)) {
+        const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending");
+        if (row) {
+          row.status = "consumed";
+          row.account_id = a[0];
+        }
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
 
       // --- sessions ---
       if (/INSERT INTO sessions/.test(sql)) {

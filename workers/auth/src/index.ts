@@ -18,6 +18,18 @@ import { issueSession, lookupSession, rotateSession, revokeSession } from "./ses
 import { consentDecision, getConsent, grantConsent } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
 import { createRefreshToken, rotateRefresh } from "./refresh";
+import {
+  verifyLoginWidget,
+  verifyInternalConfirm,
+  signInOrSignUpTelegram,
+  linkTelegramToAccount,
+  createTicket,
+  findPendingTicketByNonce,
+  consumeTicket,
+  getTicket,
+  TICKET_TTL,
+} from "./telegram";
+import { constantTimeEqual } from "@meowerse/auth-shared";
 import { userinfoClaims } from "./userinfo";
 import { checkRateLimit } from "./ratelimit";
 
@@ -375,6 +387,96 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   return json({ error: "unsupported_grant_type" }, 400, { ...cors, ...noStore });
 }
 
+const TGOWN_COOKIE = "mw_tgown";
+
+/** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
+async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const p = await readParams(req);
+  const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  let accountId: string | null = null;
+  if (kind === "VERIFY_EXISTING") {
+    const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+    if (!session) return json({ error: "no_session" }, 401, cors);
+    accountId = session.accountId;
+  }
+  const ownerSecret = randomId(32);
+  const t = await createTicket(db, { kind, ownerHash: await sha256Hex(ownerSecret), accountId, now: now(deps) });
+  const botUser = env.BOT_USERNAME ?? "meowerse_auth_bot";
+  return json({ ticketId: t.ticketId, deepLink: `https://t.me/${botUser}?start=${t.nonce}` }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(TGOWN_COOKIE, ownerSecret, { maxAge: TICKET_TTL }),
+  });
+}
+
+/** POST /internal/tg/confirm — HMAC-signed callback from the auth-bot worker (no cookies). */
+async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const body = await readParams(req);
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!env.INTERNAL_HMAC_KEY || !(await verifyInternalConfirm(body, sig, env.INTERNAL_HMAC_KEY, now(deps)))) {
+    return json({ error: "unauthorized" }, 401, cors);
+  }
+  const db = deps.getDb();
+  const ticket = await findPendingTicketByNonce(db, body.nonce ?? "", now(deps));
+  if (!ticket) return json({ error: "invalid_ticket" }, 400, cors);
+  const tg = {
+    telegramId: body.telegram_id ?? "",
+    username: body.username || null,
+    displayName: body.display_name || null,
+    avatarUrl: body.avatar_url || null,
+  };
+  let accountId: string;
+  if (ticket.kind === "VERIFY_EXISTING") {
+    if (!ticket.account_id) return json({ error: "invalid_ticket" }, 400, cors);
+    const r = await linkTelegramToAccount(db, ticket.account_id, tg);
+    if (!r.ok) return json({ error: r.error }, 409, cors);
+    accountId = ticket.account_id;
+  } else {
+    accountId = (await signInOrSignUpTelegram(db, tg)).accountId;
+  }
+  if (!(await consumeTicket(db, ticket.ticket_id, accountId))) return json({ error: "already_consumed" }, 409, cors);
+  return json({ ok: true }, 200, cors);
+}
+
+/** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
+async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const ticketId = new URL(req.url).searchParams.get("ticket") ?? "";
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const owner = cookies[`__Host-${TGOWN_COOKIE}`];
+  const ticket = await getTicket(db, ticketId);
+  // owner mismatch / unconsumed → "not ready" (never leak; ticket_id grants nothing)
+  if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash)) return json({ ready: false }, 200, cors);
+  if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
+  const sess = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
+  const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+  return json({ ready: true, csrf: sess.csrf, next }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
+  });
+}
+
+/** POST /tg/widget — Telegram Login Widget sign-in/up. */
+async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const data = await readParams(req);
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram_unconfigured" }, 503, cors);
+  const v = await verifyLoginWidget(data, env.TELEGRAM_BOT_TOKEN, now(deps));
+  if (!v.ok || !v.telegram) return json({ error: "invalid" }, 401, cors);
+  const db = deps.getDb();
+  const r = await signInOrSignUpTelegram(db, v.telegram);
+  const sess = await issueSession(db, { accountId: r.accountId, amr: "tg", authTime: now(deps), now: now(deps) });
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], r.accountId, sess.idHash, now(deps));
+  return json({ ok: true, csrf: sess.csrf, next }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
+  });
+}
+
 async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const noStore = { "Cache-Control": "no-store" };
   const auth = req.headers.get("Authorization") ?? "";
@@ -443,6 +545,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/token" && m === "POST") return handleToken(req, env, deps, cors);
   if (pathname === "/token/revoke" && m === "POST") return handleRevoke(req, env, deps, cors);
   if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, deps, cors);
+  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, deps, cors);
+  if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, deps, cors);
+  if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
+  if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
