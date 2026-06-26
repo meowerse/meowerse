@@ -51,6 +51,39 @@ export async function getPending(base: string): Promise<PendingResponse> {
   return (await res.json()) as PendingResponse;
 }
 
+export interface ClientSummary {
+  clientId: string;
+  name: string;
+  displayName: string | null;
+  clientType: string;
+  allowedScopes: string[];
+  verifiedOnly: boolean;
+  status: string;
+}
+
+export async function tgStart(base: string): Promise<{ ticketId?: string; deepLink?: string; error?: string }> {
+  const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: "{}" });
+  return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string };
+}
+
+export async function tgStatus(base: string, ticketId: string): Promise<{ ready: boolean; next?: NextStep }> {
+  const res = await fetch(`${base}/tg/status?ticket=${encodeURIComponent(ticketId)}`, { credentials: "include" });
+  return (await res.json()) as { ready: boolean; next?: NextStep };
+}
+
+export async function listClients(base: string): Promise<{ clients?: ClientSummary[]; csrf?: string; error?: string }> {
+  const res = await fetch(`${base}/api/dev/clients`, { credentials: "include" });
+  return (await res.json()) as { clients?: ClientSummary[]; csrf?: string; error?: string };
+}
+
+export async function createClient(
+  base: string,
+  body: { csrf: string; name: string; display_name?: string; client_type: string; redirect_uris: string; scopes: string; verified_only?: string },
+): Promise<{ ok?: boolean; clientId?: string; clientSecret?: string; error?: string }> {
+  const res = await fetch(`${base}/api/dev/clients`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return (await res.json()) as { ok?: boolean; clientId?: string; clientSecret?: string; error?: string };
+}
+
 /** Where the browser should go for a given post-auth `next` step (pure, testable). */
 export function nextLocation(next: NextStep | undefined): string {
   if (!next) return "/account";

@@ -1,0 +1,25 @@
+{
+  "name": "@meowerse/auth-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "wrangler deploy --dry-run --outdir tmp/wr-authbot",
+    "test": "vitest run --coverage",
+    "secret:bot-token": "wrangler secret put TELEGRAM_BOT_TOKEN",
+    "secret:webhook": "wrangler secret put TELEGRAM_WEBHOOK_SECRET",
+    "secret:hmac": "wrangler secret put INTERNAL_HMAC_KEY",
+    "secret:path": "wrangler secret put PATH_SECRET"
+  },
+  "dependencies": {
+    "@meowerse/auth-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260625.1",
+    "@vitest/coverage-v8": "^4.1.9",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.105.0"
+  }
+}

@@ -20,7 +20,7 @@ export function discoveryDoc(env: Env): Record<string, unknown> {
     revocation_endpoint: `${iss}/token/revoke`,
     introspection_endpoint: `${iss}/token/introspect`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     id_token_signing_alg_values_supported: ["ES256"],
     token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],

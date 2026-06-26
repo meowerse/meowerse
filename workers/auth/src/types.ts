@@ -12,6 +12,9 @@ export interface Env {
   DATABASE_AUTH_TOKEN?: string;
   AUTH_SIGNING_KEYS?: string;
   STATE_SECRET?: string;
+  BOT_USERNAME?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  INTERNAL_HMAC_KEY?: string;
   WRITE_BUDGET_PER_MIN?: string;
 }
 

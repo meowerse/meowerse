@@ -17,6 +17,28 @@ import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC } from "./accoun
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
 import { consentDecision, getConsent, grantConsent } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
+import { createRefreshToken, rotateRefresh } from "./refresh";
+import {
+  verifyLoginWidget,
+  verifyInternalConfirm,
+  signInOrSignUpTelegram,
+  linkTelegramToAccount,
+  createTicket,
+  findPendingTicketByNonce,
+  consumeTicket,
+  getTicket,
+  TICKET_TTL,
+} from "./telegram";
+import { constantTimeEqual } from "@meowerse/auth-shared";
+import {
+  createClient,
+  listClients,
+  deleteClient,
+  rotateSecret,
+  createManagementToken,
+  verifyManagementToken,
+  upsertClientByName,
+} from "./dashboard";
 import { userinfoClaims } from "./userinfo";
 import { checkRateLimit } from "./ratelimit";
 
@@ -302,47 +324,166 @@ async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<st
   );
 }
 
-async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
-  const p = await readParams(req);
-  const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
-  if (p.grant_type !== "authorization_code") return json({ error: "unsupported_grant_type" }, 400, { ...cors, ...noStore });
+/** Mint the token response (id+access, optional refresh) and persist the jti. */
+async function mintResponse(
+  env: Env,
+  deps: Deps,
+  cors: Record<string, string>,
+  noStore: Record<string, string>,
+  i: { accountId: string; clientId: string; scope: string[]; nonce: string | null; authTime: number; family: string; issueRefresh?: boolean; refreshToken?: string },
+): Promise<Response> {
   const db = deps.getDb();
-  const ex = await exchangeCode(db, {
-    code: p.code ?? "",
-    verifier: p.code_verifier ?? "",
-    clientId: p.client_id ?? "",
-    redirectUri: p.redirect_uri ?? "",
-    now: now(deps),
-  });
-  if (!ex.ok) return json({ error: ex.error }, 400, { ...cors, ...noStore });
-
-  const verified = await deriveVerified(db, ex.accountId);
+  const verified = await deriveVerified(db, i.accountId);
   const signing = await getSigning(env);
   const tokens = await mintTokens({
-    accountId: ex.accountId,
-    clientId: p.client_id ?? "",
-    scope: ex.scope,
-    nonce: ex.nonce,
-    authTime: ex.authTime,
+    accountId: i.accountId,
+    clientId: i.clientId,
+    scope: i.scope,
+    nonce: i.nonce,
+    authTime: i.authTime,
     verified,
     issuer: issuer(env),
     resourceAud: env.RESOURCE_AUD ?? "https://api.meow.alxnko.eu.org",
     signingKey: signing.active.key,
     kid: signing.active.kid,
-    family: ex.family,
+    family: i.family,
     now: now(deps),
   });
-  await recordAccessToken(db, {
-    jti: tokens.jti,
-    accountId: ex.accountId,
-    clientId: p.client_id ?? "",
-    scope: ex.scope,
-    family: ex.family,
-    now: now(deps),
-  });
+  await recordAccessToken(db, { jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
   const { jti: _jti, ...body } = tokens;
   void _jti;
-  return json(body, 200, { ...cors, ...noStore });
+  let refresh = i.refreshToken;
+  if (i.issueRefresh && !refresh) {
+    refresh = await createRefreshToken(db, { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
+  }
+  return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
+}
+
+async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const p = await readParams(req);
+  const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
+  const db = deps.getDb();
+  const clientId = p.client_id ?? "";
+
+  if (p.grant_type === "authorization_code") {
+    const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
+    if (!ex.ok) return json({ error: ex.error }, 400, { ...cors, ...noStore });
+    return mintResponse(env, deps, cors, noStore, {
+      accountId: ex.accountId,
+      clientId,
+      scope: ex.scope,
+      nonce: ex.nonce,
+      authTime: ex.authTime,
+      family: ex.family,
+      issueRefresh: ex.scope.includes("offline_access"),
+    });
+  }
+
+  if (p.grant_type === "refresh_token") {
+    const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
+    if (!rot.ok) return json({ error: rot.error }, 400, { ...cors, ...noStore });
+    return mintResponse(env, deps, cors, noStore, {
+      accountId: rot.accountId,
+      clientId,
+      scope: rot.scope,
+      nonce: null,
+      authTime: now(deps),
+      family: rot.family,
+      refreshToken: rot.newRefresh,
+    });
+  }
+
+  return json({ error: "unsupported_grant_type" }, 400, { ...cors, ...noStore });
+}
+
+const TGOWN_COOKIE = "mw_tgown";
+
+/** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
+async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const p = await readParams(req);
+  const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  let accountId: string | null = null;
+  if (kind === "VERIFY_EXISTING") {
+    const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+    if (!session) return json({ error: "no_session" }, 401, cors);
+    accountId = session.accountId;
+  }
+  const ownerSecret = randomId(32);
+  const t = await createTicket(db, { kind, ownerHash: await sha256Hex(ownerSecret), accountId, now: now(deps) });
+  const botUser = env.BOT_USERNAME ?? "meowerse_auth_bot";
+  return json({ ticketId: t.ticketId, deepLink: `https://t.me/${botUser}?start=${t.nonce}` }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(TGOWN_COOKIE, ownerSecret, { maxAge: TICKET_TTL }),
+  });
+}
+
+/** POST /internal/tg/confirm — HMAC-signed callback from the auth-bot worker (no cookies). */
+async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const body = await readParams(req);
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!env.INTERNAL_HMAC_KEY || !(await verifyInternalConfirm(body, sig, env.INTERNAL_HMAC_KEY, now(deps)))) {
+    return json({ error: "unauthorized" }, 401, cors);
+  }
+  const db = deps.getDb();
+  const ticket = await findPendingTicketByNonce(db, body.nonce ?? "", now(deps));
+  if (!ticket) return json({ error: "invalid_ticket" }, 400, cors);
+  const tg = {
+    telegramId: body.telegram_id ?? "",
+    username: body.username || null,
+    displayName: body.display_name || null,
+    avatarUrl: body.avatar_url || null,
+  };
+  let accountId: string;
+  if (ticket.kind === "VERIFY_EXISTING") {
+    if (!ticket.account_id) return json({ error: "invalid_ticket" }, 400, cors);
+    const r = await linkTelegramToAccount(db, ticket.account_id, tg);
+    if (!r.ok) return json({ error: r.error }, 409, cors);
+    accountId = ticket.account_id;
+  } else {
+    accountId = (await signInOrSignUpTelegram(db, tg)).accountId;
+  }
+  if (!(await consumeTicket(db, ticket.ticket_id, accountId))) return json({ error: "already_consumed" }, 409, cors);
+  return json({ ok: true }, 200, cors);
+}
+
+/** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
+async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const ticketId = new URL(req.url).searchParams.get("ticket") ?? "";
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const owner = cookies[`__Host-${TGOWN_COOKIE}`];
+  const ticket = await getTicket(db, ticketId);
+  // owner mismatch / unconsumed → "not ready" (never leak; ticket_id grants nothing)
+  if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash)) return json({ ready: false }, 200, cors);
+  if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
+  const sess = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
+  const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+  return json({ ready: true, csrf: sess.csrf, next }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
+  });
+}
+
+/** POST /tg/widget — Telegram Login Widget sign-in/up. */
+async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const data = await readParams(req);
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram_unconfigured" }, 503, cors);
+  const v = await verifyLoginWidget(data, env.TELEGRAM_BOT_TOKEN, now(deps));
+  if (!v.ok || !v.telegram) return json({ error: "invalid" }, 401, cors);
+  const db = deps.getDb();
+  const r = await signInOrSignUpTelegram(db, v.telegram);
+  const sess = await issueSession(db, { accountId: r.accountId, amr: "tg", authTime: now(deps), now: now(deps) });
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], r.accountId, sess.idHash, now(deps));
+  return json({ ok: true, csrf: sess.csrf, next }, 200, {
+    ...cors,
+    ...securityHeaders(),
+    "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
+  });
 }
 
 async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
@@ -381,6 +522,72 @@ async function handleIntrospect(req: Request, _env: Env, deps: Deps, cors: Recor
   return json(res, 200, cors);
 }
 
+function splitList(v: string | undefined): string[] {
+  return (v ?? "").split(/[\s,]+/).filter(Boolean);
+}
+function asBool(v: string | undefined): boolean {
+  return v === "true" || v === "1";
+}
+
+/** Developer dashboard API (session-authed, owner-scoped). Spec §8. */
+async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ error: "no_session" }, 401, cors);
+
+  if (sub === "clients" && req.method === "GET") {
+    return json({ clients: await listClients(db, session.accountId), csrf: session.csrf }, 200, { ...cors, ...securityHeaders() });
+  }
+  const p = await readParams(req);
+  if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+
+  if (sub === "clients") {
+    const res = await createClient(db, {
+      ownerId: session.accountId,
+      name: p.name ?? "",
+      displayName: p.display_name,
+      clientType: p.client_type ?? "public",
+      redirectUris: splitList(p.redirect_uris),
+      allowedScopes: splitList(p.scopes),
+      verifiedOnly: asBool(p.verified_only),
+      allowOfflineAccess: asBool(p.offline),
+    });
+    return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
+  }
+  if (sub === "clients/delete") {
+    return json({ ok: await deleteClient(db, session.accountId, p.client_id ?? "") }, 200, cors);
+  }
+  if (sub === "clients/rotate-secret") {
+    const r = await rotateSecret(db, session.accountId, p.client_id ?? "");
+    return r.ok ? json(r, 200, { ...cors, ...securityHeaders() }) : json({ error: "not_rotatable" }, 400, cors);
+  }
+  if (sub === "tokens") {
+    const token = await createManagementToken(db, session.accountId, p.label);
+    return json({ token }, 200, { ...cors, ...securityHeaders() });
+  }
+  return json({ error: "not_found" }, 404, cors);
+}
+
+/** Management API for config-as-code IaC (PAT-authed upsert by name). Spec §9. */
+async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const auth = req.headers.get("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const ownerId = await verifyManagementToken(deps.getDb(), token);
+  if (!ownerId) return json({ error: "unauthorized" }, 401, cors);
+  const p = await readParams(req);
+  const res = await upsertClientByName(deps.getDb(), ownerId, {
+    name: p.name ?? "",
+    displayName: p.display_name,
+    clientType: p.client_type ?? "public",
+    redirectUris: splitList(p.redirect_uris),
+    allowedScopes: splitList(p.scopes),
+    verifiedOnly: asBool(p.verified_only),
+    allowOfflineAccess: asBool(p.offline),
+  });
+  return "error" in res ? json({ error: res.error }, 400, cors) : json(res, 200, { ...cors, ...securityHeaders() });
+}
+
 const CACHE_1H = { "Cache-Control": "public, max-age=3600" };
 
 /**
@@ -413,6 +620,12 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/token" && m === "POST") return handleToken(req, env, deps, cors);
   if (pathname === "/token/revoke" && m === "POST") return handleRevoke(req, env, deps, cors);
   if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, deps, cors);
+  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, deps, cors);
+  if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, deps, cors);
+  if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
+  if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
+  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 

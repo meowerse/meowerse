@@ -1,11 +1,14 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import SignupForm from "../components/SignupForm.tsx";
+import TelegramButton from "../components/TelegramButton.tsx";
 const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
 ---
 
 <Layout title="Create account · Meowerse">
   <h1>Create a Meowerse account</h1>
   <SignupForm client:load base={base} />
+  <p class="muted">— or —</p>
+  <TelegramButton client:load base={base} />
   <p class="muted">Already have one? <a href="/login">Sign in</a>.</p>
 </Layout>

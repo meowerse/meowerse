@@ -56,6 +56,16 @@ test("telegram + verified claims are derived live when scoped", async () => {
   expect(res.claims.preferred_username).toBeUndefined(); // profile not scoped
 });
 
+test("telegram scope but no link omits the telegram claims", async () => {
+  const res = await userinfoClaims(routedDb([accRoute, [/telegram_id, telegram_username FROM telegram_links/, () => ({ rows: [] })]]), {
+    header: { typ: TYP.ACCESS },
+    payload: { token_use: TOKEN_USE.ACCESS, sub: "acct_1", scope: "openid telegram", aud: RES },
+    resourceAud: RES,
+  });
+  expect(res.ok).toBe(true);
+  if (res.ok) expect(res.claims.telegram_id).toBeUndefined();
+});
+
 test("missing account or missing sub → not ok", async () => {
   expect(
     (await userinfoClaims(routedDb([[/FROM accounts/, () => ({ rows: [] })]]), {

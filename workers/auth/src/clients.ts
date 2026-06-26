@@ -8,6 +8,7 @@ export interface LoadedClient {
   displayName: string | null;
   logoUrl: string | null;
   allowedScopes: string[];
+  allowOfflineAccess: boolean;
   verifiedOnly: boolean;
   firstParty: boolean;
   redirectUris: string[];
@@ -17,7 +18,7 @@ export interface LoadedClient {
 export async function getClient(db: DbClient, clientId: string): Promise<LoadedClient | null> {
   if (!clientId) return null;
   const c = await db.execute({
-    sql: `SELECT client_id, status, client_type, display_name, logo_url, allowed_scopes, verified_only, first_party
+    sql: `SELECT client_id, status, client_type, display_name, logo_url, allowed_scopes, allow_offline_access, verified_only, first_party
           FROM oauth_clients WHERE client_id = ?`,
     args: [clientId],
   });
@@ -41,6 +42,7 @@ export async function getClient(db: DbClient, clientId: string): Promise<LoadedC
     displayName: row.display_name == null ? null : String(row.display_name),
     logoUrl: row.logo_url == null ? null : String(row.logo_url),
     allowedScopes,
+    allowOfflineAccess: Number(row.allow_offline_access) === 1,
     verifiedOnly: Number(row.verified_only) === 1,
     firstParty: Number(row.first_party) === 1,
     redirectUris: r.rows.map((x) => String(x.redirect_uri)),
