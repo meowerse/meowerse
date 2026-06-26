@@ -85,6 +85,19 @@
         "wrangler": "^4.105.0",
       },
     },
+    "workers/auth-bot": {
+      "name": "@meowerse/auth-bot",
+      "version": "0.0.0",
+      "dependencies": {
+        "@meowerse/auth-shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260625.1",
+        "@vitest/coverage-v8": "^4.1.9",
+        "vitest": "^4.1.9",
+        "wrangler": "^4.105.0",
+      },
+    },
     "workers/edge": {
       "name": "@meowerse/edge-worker",
       "version": "0.0.0",
@@ -375,6 +388,8 @@
     "@libsql/win32-x64-msvc": ["@libsql/win32-x64-msvc@0.5.29", "", { "os": "win32", "cpu": "x64" }, "sha512-4/0CvEdhi6+KjMxMaVbFM2n2Z44escBRoEYpR+gZg64DdetzGnYm8mcNLcoySaDJZNaBd6wz5DNdgRmcI4hXcg=="],
 
     "@meowerse/api-worker": ["@meowerse/api-worker@workspace:workers/api"],
+
+    "@meowerse/auth-bot": ["@meowerse/auth-bot@workspace:workers/auth-bot"],
 
     "@meowerse/auth-shared": ["@meowerse/auth-shared@workspace:packages/auth-shared"],
 

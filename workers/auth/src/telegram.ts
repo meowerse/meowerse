@@ -1,5 +1,7 @@
-import { constantTimeEqual } from "@meowerse/auth-shared";
+import { constantTimeEqual, internalConfirmString } from "@meowerse/auth-shared";
 import { sha256Hex, hmacSha256Hex } from "./crypto";
+
+export { internalConfirmString } from "@meowerse/auth-shared";
 import { randomId } from "./security";
 import type { DbClient } from "./types";
 
@@ -47,18 +49,6 @@ export async function verifyLoginWidget(
 function tgUserFromWidget(d: Record<string, string>): TgUser {
   const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || null;
   return { telegramId: String(d.id), username: d.username ?? null, displayName: name, avatarUrl: d.photo_url ?? null };
-}
-
-/** Canonical string the bot HMAC-signs over (order is fixed and total). */
-export function internalConfirmString(p: {
-  nonce: string;
-  telegramId: string;
-  username: string;
-  displayName: string;
-  avatarUrl: string;
-  ts: string;
-}): string {
-  return [p.nonce, p.telegramId, p.username, p.displayName, p.avatarUrl, p.ts].join("\n");
 }
 
 /** Verify the HMAC-signed internal callback from the auth-bot worker (spec §6). */

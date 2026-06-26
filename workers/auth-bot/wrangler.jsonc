@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // meowerse AUTH-BOT — Telegram webhook worker for "Continue with Telegram"
+  // deep-links (spec §6). Mirrors workers/edge bot0: secret in the URL path +
+  // the Telegram secret-token header. Deploys to workers.dev (set the Telegram
+  // webhook to https://<this>.workers.dev/tg/<PATH_SECRET>).
+  //
+  // SECRETS (never in this file):
+  //   wrangler secret put TELEGRAM_BOT_TOKEN      (from @BotFather)
+  //   wrangler secret put TELEGRAM_WEBHOOK_SECRET (random; pass to setWebhook)
+  //   wrangler secret put INTERNAL_HMAC_KEY       (MUST match the auth worker's)
+  //   wrangler secret put PATH_SECRET             (random; part of the webhook URL)
+  "name": "meowerse-auth-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "vars": {
+    "AUTH_CONFIRM_URL": "https://auth-api.alxnko.eu.org/internal/tg/confirm",
+    "BOT_USERNAME": "meowerse_auth_bot"
+  }
+}
