@@ -63,6 +63,11 @@ test("verifyInternalConfirm checks HMAC + ts freshness", async () => {
   expect(await verifyInternalConfirm(body, sig, "ikey", 99999)).toBe(false); // stale ts
 });
 
+test("verifyInternalConfirm tolerates missing optional body fields (default to empty)", async () => {
+  const sig = await hmacSha256Hex("k", internalConfirmString({ nonce: "n", telegramId: "1", username: "", displayName: "", avatarUrl: "", ts: "1000" }));
+  expect(await verifyInternalConfirm({ nonce: "n", telegram_id: "1", ts: "1000" }, sig, "k", 1010)).toBe(true);
+});
+
 test("findAccountByTelegram + signInOrSignUp create vs reuse", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   // existing link

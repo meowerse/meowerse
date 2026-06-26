@@ -82,6 +82,13 @@ test("loginVerify falls back to the default dummy hash when none injected", asyn
   expect((await loginVerify(db, { username: "ghost", password: "whatever12345" })).ok).toBe(false);
 });
 
+test("signup and loginVerify tolerate a missing username field", async () => {
+  const db = routedDb([[/SELECT id FROM accounts WHERE username/, () => ({ rows: [] })]]);
+  expect((await signup(db, { password: "abcdefghijkl" } as never, OPTS)).ok).toBe(false);
+  const phc = await hashPassword("zzz", FAST);
+  expect((await loginVerify(db, { password: "abcdefghijkl" } as never, { dummyPhc: phc })).ok).toBe(false);
+});
+
 test("deriveVerified reflects a live telegram link", async () => {
   expect(await deriveVerified(routedDb([[/FROM telegram_links WHERE account_id/, () => ({ rows: [{ "1": 1 }] })]]), "a")).toBe(
     true,

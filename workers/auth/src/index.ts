@@ -30,6 +30,15 @@ import {
   TICKET_TTL,
 } from "./telegram";
 import { constantTimeEqual } from "@meowerse/auth-shared";
+import {
+  createClient,
+  listClients,
+  deleteClient,
+  rotateSecret,
+  createManagementToken,
+  verifyManagementToken,
+  upsertClientByName,
+} from "./dashboard";
 import { userinfoClaims } from "./userinfo";
 import { checkRateLimit } from "./ratelimit";
 
@@ -513,6 +522,72 @@ async function handleIntrospect(req: Request, _env: Env, deps: Deps, cors: Recor
   return json(res, 200, cors);
 }
 
+function splitList(v: string | undefined): string[] {
+  return (v ?? "").split(/[\s,]+/).filter(Boolean);
+}
+function asBool(v: string | undefined): boolean {
+  return v === "true" || v === "1";
+}
+
+/** Developer dashboard API (session-authed, owner-scoped). Spec §8. */
+async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ error: "no_session" }, 401, cors);
+
+  if (sub === "clients" && req.method === "GET") {
+    return json({ clients: await listClients(db, session.accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+  const p = await readParams(req);
+  if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+
+  if (sub === "clients") {
+    const res = await createClient(db, {
+      ownerId: session.accountId,
+      name: p.name ?? "",
+      displayName: p.display_name,
+      clientType: p.client_type ?? "public",
+      redirectUris: splitList(p.redirect_uris),
+      allowedScopes: splitList(p.scopes),
+      verifiedOnly: asBool(p.verified_only),
+      allowOfflineAccess: asBool(p.offline),
+    });
+    return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
+  }
+  if (sub === "clients/delete") {
+    return json({ ok: await deleteClient(db, session.accountId, p.client_id ?? "") }, 200, cors);
+  }
+  if (sub === "clients/rotate-secret") {
+    const r = await rotateSecret(db, session.accountId, p.client_id ?? "");
+    return r.ok ? json(r, 200, { ...cors, ...securityHeaders() }) : json({ error: "not_rotatable" }, 400, cors);
+  }
+  if (sub === "tokens") {
+    const token = await createManagementToken(db, session.accountId, p.label);
+    return json({ token }, 200, { ...cors, ...securityHeaders() });
+  }
+  return json({ error: "not_found" }, 404, cors);
+}
+
+/** Management API for config-as-code IaC (PAT-authed upsert by name). Spec §9. */
+async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const auth = req.headers.get("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const ownerId = await verifyManagementToken(deps.getDb(), token);
+  if (!ownerId) return json({ error: "unauthorized" }, 401, cors);
+  const p = await readParams(req);
+  const res = await upsertClientByName(deps.getDb(), ownerId, {
+    name: p.name ?? "",
+    displayName: p.display_name,
+    clientType: p.client_type ?? "public",
+    redirectUris: splitList(p.redirect_uris),
+    allowedScopes: splitList(p.scopes),
+    verifiedOnly: asBool(p.verified_only),
+    allowOfflineAccess: asBool(p.offline),
+  });
+  return "error" in res ? json({ error: res.error }, 400, cors) : json(res, 200, { ...cors, ...securityHeaders() });
+}
+
 const CACHE_1H = { "Cache-Control": "public, max-age=3600" };
 
 /**
@@ -549,6 +624,8 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, deps, cors);
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
+  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
