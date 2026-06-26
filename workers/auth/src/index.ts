@@ -537,7 +537,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   if (!session) return json({ error: "no_session" }, 401, cors);
 
   if (sub === "clients" && req.method === "GET") {
-    return json({ clients: await listClients(db, session.accountId) }, 200, { ...cors, ...securityHeaders() });
+    return json({ clients: await listClients(db, session.accountId), csrf: session.csrf }, 200, { ...cors, ...securityHeaders() });
   }
   const p = await readParams(req);
   if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
