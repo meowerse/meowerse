@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Serve the built Astro site (./dist) as a Cloudflare Worker with static
+  // assets, on the auth.alxnko.eu.org custom domain. This uses the Worker
+  // deploy path (reliable) instead of Pages direct-upload (which was 502-ing).
+  // _headers in dist is honored by Workers static assets (Referrer-Policy/CSP).
+  "name": "meowerse-authweb",
+  "compatibility_date": "2025-06-01",
+  "assets": { "directory": "./dist" },
+  "routes": [{ "pattern": "auth.alxnko.eu.org", "custom_domain": true }]
+}

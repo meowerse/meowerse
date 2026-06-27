@@ -13,15 +13,7 @@ resource "cloudflare_dns_record" "web" {
   comment = "Astro web app (Cloudflare Pages: meowerse-web)"
 }
 
-# Auth UI: auth.alxnko.eu.org -> Cloudflare Pages. The auth API
-# (auth-api.alxnko.eu.org) is NOT here — it's a Worker custom domain
-# (workers/auth/wrangler.jsonc), provisioned by wrangler like api.meow.
-resource "cloudflare_dns_record" "auth_web" {
-  zone_id = var.cloudflare_zone_id
-  name    = "auth"
-  type    = "CNAME"
-  content = "meowerse-auth-web.pages.dev"
-  ttl     = 1
-  proxied = true
-  comment = "Auth UI (Cloudflare Pages: meowerse-auth-web)"
-}
+# Auth UI (auth.alxnko.eu.org) and auth API (auth-api.alxnko.eu.org) are NOT
+# here — both are Cloudflare Worker custom domains (apps/auth-web/wrangler.jsonc
+# serves the static site via Workers static-assets; workers/auth is the API), so
+# wrangler provisions their DNS + certs automatically, like api.meow.
