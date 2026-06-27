@@ -170,3 +170,16 @@ export async function getTicket(db: DbClient, ticketId: string): Promise<TicketR
   const r = await db.execute({ sql: "SELECT * FROM login_tickets WHERE ticket_id = ?", args: [ticketId] });
   return r.rows[0] ? (r.rows[0] as unknown as TicketRow) : null;
 }
+
+/** Telegram link status for the account page (spec R14). */
+export async function getTelegramLink(db: DbClient, accountId: string): Promise<{ linked: boolean; username: string | null }> {
+  const r = await db.execute({ sql: "SELECT telegram_username FROM telegram_links WHERE account_id = ?", args: [accountId] });
+  const row = r.rows[0];
+  return row ? { linked: true, username: row.telegram_username == null ? null : String(row.telegram_username) } : { linked: false, username: null };
+}
+
+/** Unlink Telegram: removes verified status and bumps identity_epoch so any armed silent grant can't fire (§10/#9). */
+export async function unlinkTelegram(db: DbClient, accountId: string): Promise<void> {
+  await db.execute({ sql: "DELETE FROM telegram_links WHERE account_id = ?", args: [accountId] });
+  await db.execute({ sql: "UPDATE accounts SET verified = 0, identity_epoch = identity_epoch + 1 WHERE id = ?", args: [accountId] });
+}

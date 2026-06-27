@@ -13,9 +13,9 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
-import { consentDecision, getConsent, grantConsent } from "./consent";
+import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
 import { createRefreshToken, rotateRefresh } from "./refresh";
 import {
@@ -27,6 +27,8 @@ import {
   findPendingTicketByNonce,
   consumeTicket,
   getTicket,
+  getTelegramLink,
+  unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
 import { constantTimeEqual } from "@meowerse/auth-shared";
@@ -602,6 +604,56 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   return json({ error: "not_found" }, 404, cors);
 }
 
+/** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
+async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ error: "no_session" }, 401, cors);
+  const accountId = session.accountId;
+
+  if (sub === "" && req.method === "GET") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    return json(
+      {
+        ...info,
+        verified: await deriveVerified(db, accountId),
+        telegram: await getTelegramLink(db, accountId),
+        recoveryRemaining: await countRecoveryCodes(db, accountId),
+        csrf: session.csrf,
+      },
+      200,
+      { ...cors, ...securityHeaders() },
+    );
+  }
+  if (sub === "grants" && req.method === "GET") {
+    return json({ grants: await listGrants(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+
+  const p = await readParams(req);
+  if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+
+  if (sub === "password") {
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
+    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
+  }
+  if (sub === "grants/revoke") {
+    await revokeGrant(db, accountId, p.client_id ?? "");
+    return json({ ok: true }, 200, cors);
+  }
+  if (sub === "telegram/unlink") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info?.hasPassword) return json({ error: "no_password_fallback" }, 409, cors); // refuse → avoid lockout
+    await unlinkTelegram(db, accountId);
+    return json({ ok: true }, 200, cors);
+  }
+  if (sub === "recovery-codes") {
+    return json({ recoveryCodes: await regenerateRecoveryCodes(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+  return json({ error: "not_found" }, 404, cors);
+}
+
 /** Management API for config-as-code IaC (PAT-authed upsert by name). Spec §9. */
 async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const auth = req.headers.get("Authorization") ?? "";
@@ -658,6 +710,9 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
   if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
+    return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length));
+  }
   if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);

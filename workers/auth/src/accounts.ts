@@ -108,3 +108,61 @@ export async function deriveVerified(db: DbClient, accountId: string): Promise<b
   const res = await db.execute({ sql: "SELECT 1 FROM telegram_links WHERE account_id = ? LIMIT 1", args: [accountId] });
   return res.rows.length > 0;
 }
+
+// --- account self-service (spec R14) ---
+
+export interface AccountInfo {
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  hasPassword: boolean;
+}
+
+/** Profile + whether a password credential exists (telegram-only accounts have none). */
+export async function getAccountInfo(db: DbClient, accountId: string): Promise<AccountInfo | null> {
+  const a = await db.execute({ sql: "SELECT username, display_name, avatar_url FROM accounts WHERE id = ?", args: [accountId] });
+  const row = a.rows[0];
+  if (!row) return null;
+  const pw = await db.execute({ sql: "SELECT 1 FROM password_credentials WHERE account_id = ?", args: [accountId] });
+  return {
+    username: row.username == null ? null : String(row.username),
+    displayName: row.display_name == null ? null : String(row.display_name),
+    avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
+    hasPassword: pw.rows.length > 0,
+  };
+}
+
+/** Change password — verify the current one, validate + hash the new one. */
+export async function changePassword(
+  db: DbClient,
+  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params },
+): Promise<{ ok: boolean; error?: string }> {
+  const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [i.accountId] });
+  const row = cred.rows[0];
+  if (!row) return { ok: false, error: "no_password" };
+  if (!(await verifyPassword(i.currentPassword, String(row.phc)))) return { ok: false, error: "wrong_password" };
+  const pw = validatePassword(i.newPassword);
+  if (!pw.ok) return { ok: false, error: pw.error };
+  const phc = await hashPassword(pw.password, i.pbkdf2 ?? DEFAULT_PBKDF2);
+  await db.execute({ sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] });
+  return { ok: true };
+}
+
+/** Replace all recovery codes; returns the new plaintext set ONCE. */
+export async function regenerateRecoveryCodes(db: DbClient, accountId: string, params?: Pbkdf2Params): Promise<string[]> {
+  await db.execute({ sql: "DELETE FROM recovery_codes WHERE account_id = ?", args: [accountId] });
+  const codes = genRecoveryCodes();
+  for (const code of codes) {
+    await db.execute({
+      sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, ?)",
+      args: [accountId, await hashPassword(normalizeRecoveryCode(code), params ?? CHEAP_PBKDF2)],
+    });
+  }
+  return codes;
+}
+
+/** How many unused recovery codes remain. */
+export async function countRecoveryCodes(db: DbClient, accountId: string): Promise<number> {
+  const r = await db.execute({ sql: "SELECT COUNT(*) AS n FROM recovery_codes WHERE account_id = ? AND used_at IS NULL", args: [accountId] });
+  return Number(r.rows[0]?.n ?? 0);
+}
