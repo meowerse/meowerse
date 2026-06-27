@@ -88,7 +88,7 @@ jobs:
           (cd workers/auth && bunx wrangler deploy)
           bash infra/record-deploy.sh auth "run-${{ github.run_id }}"
 
-      - name: Deploy auth-web (Cloudflare Pages)
+      - name: Deploy auth-web (Cloudflare Worker static assets)
         if: steps.changed.outputs.authweb == '1' && env.CF != ''
         env:
           CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           bun run --filter @meowerse/auth-web build
-          bunx wrangler pages deploy apps/auth-web/dist --project-name meowerse-auth-web --commit-hash "$(git rev-parse HEAD)"
+          (cd apps/auth-web && bunx wrangler deploy)
           bash infra/record-deploy.sh auth-web "run-${{ github.run_id }}"
       # No commit-back: we never push to the deploy branch from CI. deploy-state
       # is maintained by local `just deploy-*` runs.
