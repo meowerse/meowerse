@@ -1,4 +1,36 @@
+import { verifyPassword } from "./crypto";
 import type { DbClient } from "./types";
+
+/**
+ * Authenticate a client at the token/revoke/introspect endpoints (RFC 6749 §2.3,
+ * RFC 9700). Public clients carry no secret (PKCE is their proof). Confidential
+ * clients MUST present a secret matching a stored (non-expired) PBKDF2 hash —
+ * constant-time via verifyPassword. Returns invalid_client on any mismatch.
+ */
+export async function authenticateClient(
+  db: DbClient,
+  clientId: string,
+  clientSecret: string | undefined,
+): Promise<{ ok: boolean; clientType?: string; error?: string }> {
+  if (!clientId) return { ok: false, error: "invalid_client" };
+  const c = await db.execute({
+    sql: "SELECT client_type, status FROM oauth_clients WHERE client_id = ? AND deleted_at IS NULL",
+    args: [clientId],
+  });
+  const row = c.rows[0];
+  if (!row || String(row.status) !== "active") return { ok: false, error: "invalid_client" };
+  const clientType = String(row.client_type);
+  if (clientType === "public") return { ok: true, clientType };
+  if (!clientSecret) return { ok: false, error: "invalid_client" };
+  const secs = await db.execute({
+    sql: "SELECT secret_phc FROM oauth_client_secrets WHERE client_id = ? AND (not_after IS NULL OR not_after > datetime('now'))",
+    args: [clientId],
+  });
+  for (const s of secs.rows) {
+    if (await verifyPassword(clientSecret, String(s.secret_phc))) return { ok: true, clientType };
+  }
+  return { ok: false, error: "invalid_client" };
+}
 
 /** A client plus its registered redirect URIs and parsed allowed scopes. */
 export interface LoadedClient {

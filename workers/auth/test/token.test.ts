@@ -165,13 +165,15 @@ test("record/revoke/introspect access token lifecycle", async () => {
   });
   expect(log.some((c) => c.sql.includes("INSERT INTO access_tokens"))).toBe(true);
 
-  await revokeAccessToken(routedDb([], log), "at_1");
-  expect(log.some((c) => c.sql.includes("UPDATE access_tokens SET revoked_at"))).toBe(true);
+  await revokeAccessToken(routedDb([], log), "at_1", "mw_c");
+  const rev = log.find((c) => c.sql.includes("UPDATE access_tokens SET revoked_at"));
+  expect(rev?.sql).toContain("client_id"); // scoped to the authenticated client
+  expect(rev?.args).toEqual(["at_1", "mw_c"]);
 
-  const active = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [{ expires_at: 9_999_999_999, revoked_at: null }] })]]), "at_1", 1000);
+  const active = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [{ expires_at: 9_999_999_999, revoked_at: null }] })]]), "at_1", 1000, "mw_c");
   expect(active.active).toBe(true);
-  const revoked = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [{ expires_at: 9_999_999_999, revoked_at: "2026" }] })]]), "at_1", 1000);
+  const revoked = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [{ expires_at: 9_999_999_999, revoked_at: "2026" }] })]]), "at_1", 1000, "mw_c");
   expect(revoked.active).toBe(false);
-  const gone = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [] })]]), "at_1", 1000);
+  const gone = await introspect(routedDb([[/FROM access_tokens WHERE jti/, () => ({ rows: [] })]]), "at_1", 1000, "mw_c");
   expect(gone.active).toBe(false);
 });

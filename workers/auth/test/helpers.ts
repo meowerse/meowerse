@@ -50,6 +50,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     refresh_tokens: [],
     oauth_clients: [],
     oauth_client_redirect_uris: [],
+    oauth_client_secrets: [],
     consents: [],
     rate_limits: [],
     login_tickets: [],
@@ -93,6 +94,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.oauth_clients.filter((r) => r.client_id === a[0]) };
       if (/FROM oauth_client_redirect_uris WHERE client_id/.test(sql))
         return { rows: t.oauth_client_redirect_uris.filter((r) => r.client_id === a[0]).map((r) => ({ redirect_uri: r.redirect_uri })) };
+      if (/FROM oauth_client_secrets WHERE client_id/.test(sql))
+        return { rows: t.oauth_client_secrets.filter((r) => r.client_id === a[0]).map((r) => ({ secret_phc: r.secret_phc })) };
+      if (/INSERT INTO oauth_client_secrets/.test(sql)) {
+        t.oauth_client_secrets.push({ client_id: a[0], secret_phc: a[1] });
+        return { rows: [] };
+      }
 
       // --- accounts / credentials ---
       if (/SELECT id FROM accounts WHERE username/.test(sql))

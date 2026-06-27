@@ -1,6 +1,31 @@
 import { test, expect } from "vitest";
-import { getClient } from "../src/clients";
+import { getClient, authenticateClient } from "../src/clients";
+import { hashPassword } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
+
+const FAST = { rounds: 1, iter: 500 };
+
+test("authenticateClient: public passes secret-less; unknown/inactive/missing-id fail", async () => {
+  const pub = routedDb([[/SELECT client_type, status FROM oauth_clients/, () => ({ rows: [{ client_type: "public", status: "active" }] })]]);
+  expect(await authenticateClient(pub, "mw_p", undefined)).toMatchObject({ ok: true, clientType: "public" });
+  expect(await authenticateClient(routedDb([]), "", undefined)).toEqual({ ok: false, error: "invalid_client" });
+  expect(await authenticateClient(routedDb([[/oauth_clients/, () => ({ rows: [] })]]), "ghost", undefined)).toEqual({ ok: false, error: "invalid_client" });
+  const disabled = routedDb([[/SELECT client_type, status FROM oauth_clients/, () => ({ rows: [{ client_type: "public", status: "disabled" }] })]]);
+  expect((await authenticateClient(disabled, "mw_p", undefined)).ok).toBe(false);
+});
+
+test("authenticateClient: confidential requires a matching secret", async () => {
+  const phc = await hashPassword("mws_realsecret", FAST);
+  const routes: Route[] = [
+    [/SELECT client_type, status FROM oauth_clients/, () => ({ rows: [{ client_type: "confidential", status: "active" }] })],
+    [/SELECT secret_phc FROM oauth_client_secrets/, () => ({ rows: [{ secret_phc: phc }] })],
+  ];
+  expect((await authenticateClient(routedDb(routes), "mw_c", "mws_realsecret")).ok).toBe(true);
+  expect((await authenticateClient(routedDb(routes), "mw_c", "mws_WRONG")).ok).toBe(false);
+  // missing secret on a confidential client → rejected (no secret query needed)
+  const noSecretRoutes: Route[] = [[/SELECT client_type, status FROM oauth_clients/, () => ({ rows: [{ client_type: "confidential", status: "active" }] })]];
+  expect((await authenticateClient(routedDb(noSecretRoutes), "mw_c", undefined)).ok).toBe(false);
+});
 
 const clientRoutes: Route[] = [
   [
