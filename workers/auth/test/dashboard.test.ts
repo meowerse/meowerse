@@ -7,6 +7,7 @@ import {
   createManagementToken,
   verifyManagementToken,
   upsertClientByName,
+  updateClient,
   isRegisterableRedirect,
 } from "../src/dashboard";
 import { sha256Hex } from "../src/crypto";
@@ -112,6 +113,25 @@ test("rotateSecret only for owned confidential clients", async () => {
   expect((await rotateSecret(pub, "o", "mw_1")).ok).toBe(false);
   const missing = routedDb([[/SELECT client_type FROM oauth_clients/, () => ({ rows: [] })]]);
   expect((await rotateSecret(missing, "o", "mw_1")).ok).toBe(false);
+});
+
+test("updateClient: owner-scoped; not-found + bad redirect rejected; updates scopes/verified/redirects", async () => {
+  const owned: Route[] = [[/SELECT 1 FROM oauth_clients WHERE client_id .* AND owner_account_id/, () => ({ rows: [{ "1": 1 }] })]];
+  const log: { sql: string; args: unknown[] }[] = [];
+  const r = await updateClient(routedDb(owned, log), "o", { clientId: "mw_1", allowedScopes: ["openid", "profile"], verifiedOnly: true, redirectUris: ["https://app/cb"] });
+  expect(r).toEqual({ ok: true });
+  expect(log.some((c) => c.sql.includes("UPDATE oauth_clients SET"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("DELETE FROM oauth_client_redirect_uris"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("INSERT INTO oauth_client_redirect_uris"))).toBe(true);
+
+  // minimal update (offline + displayName only; no scopes/verified/redirects) still UPDATEs, no redirect rewrite
+  const log2: { sql: string; args: unknown[] }[] = [];
+  expect((await updateClient(routedDb(owned, log2), "o", { clientId: "mw_1", allowOfflineAccess: true, displayName: "New" })).ok).toBe(true);
+  expect(log2.some((c) => c.sql.includes("DELETE FROM oauth_client_redirect_uris"))).toBe(false);
+
+  expect(await updateClient(routedDb([[/SELECT 1 FROM oauth_clients/, () => ({ rows: [] })]]), "o", { clientId: "mw_1" })).toEqual({ ok: false, error: "not_found" });
+  expect((await updateClient(routedDb(owned), "o", { clientId: "mw_1", redirectUris: ["http://evil/cb"] })).error).toBe("invalid_redirect_uri");
+  expect((await updateClient(routedDb(owned), "o", { clientId: "mw_1", redirectUris: [] })).error).toBe("redirect_uri_required");
 });
 
 test("management tokens: create + verify; revoked/unknown → null", async () => {

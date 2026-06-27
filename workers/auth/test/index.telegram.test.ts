@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
 import { handle } from "../src/index";
-import { hmacSha256Hex } from "../src/crypto";
+import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
@@ -96,6 +96,16 @@ test("internal confirm with an unknown nonce → 400", async () => {
   const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce: "ghost", telegramId: "1", username: "", displayName: "", avatarUrl: "", ts: "1000" }));
   const r = await handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
   expect(r.status).toBe(400);
+});
+
+test("tg/start is IP-rate-limited (429)", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  store.tables.rate_limits.push({ bucket: "tgstart:" + (await sha256Hex("|tgstart")), count: 30, window_start: 1000 });
+  const r = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  expect(r.status).toBe(429);
 });
 
 test("tg/start VERIFY_EXISTING without a session → 401", async () => {

@@ -81,6 +81,20 @@ test("verified-only client + unverified user → /verify (and interaction_requir
   expect(new URL(pn.headers.get("Location")!).searchParams.get("error")).toBe("interaction_required");
 });
 
+test("granular consent grants only the checked scopes (openid always kept)", async () => {
+  const { env, deps, store } = await fixture();
+  const { sess, csrf } = await signupUser(env, deps, "neko_gran");
+  const account = store.tables.accounts.find((a) => a.username === "neko_gran")!;
+  // authorize mw_full requesting openid+telegram → consent needed
+  const a = await handle(new Request(authzUrl("mw_full", "http://localhost:4321/cb2", "openid telegram"), { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  const tkt = cookieValue(a.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
+  // approve ONLY openid (uncheck telegram)
+  const r = await handle(new Request("https://iss/consent", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}` }, body: JSON.stringify({ decision: "allow", csrf, scopes: "openid" }) }), env as never, deps as never);
+  expect(r.status).toBe(200);
+  const grant = store.tables.consents.find((c) => c.account_id === account.id && c.client_id === "mw_full")!;
+  expect(JSON.parse(String(grant.approved_scope_snapshot))).toEqual(["openid"]); // telegram NOT granted
+});
+
 test("consent deny → access_denied redirect", async () => {
   const { env, deps } = await fixture();
   const { sess, csrf } = await signupUser(env, deps, "neko_deny");

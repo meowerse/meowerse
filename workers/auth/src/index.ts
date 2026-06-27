@@ -37,6 +37,7 @@ import {
   listClients,
   deleteClient,
   rotateSecret,
+  updateClient,
   createManagementToken,
   verifyManagementToken,
   upsertClientByName,
@@ -295,11 +296,15 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
 
   const verified = await deriveVerified(db, session.accountId);
   if (client.verifiedOnly && !verified) return json({ error: "verification_required" }, 403, cors);
+  // Granular consent (R20): grant only the scopes the user checked. `openid` is
+  // always kept; absent `scopes` means accept-all (backward compatible).
+  const approvedRaw = p.scopes !== undefined ? splitList(p.scopes) : request.scope;
+  const approved = request.scope.filter((s) => s === "openid" || approvedRaw.includes(s));
   const consent = await getConsent(db, session.accountId, request.clientId);
   const scope = await grantConsent(db, {
     accountId: session.accountId,
     clientId: request.clientId,
-    requested: request.scope,
+    requested: approved,
     clientAllowed: client.allowedScopes,
     priorMax: consent?.scopeSetMax ?? null,
   });
@@ -376,10 +381,18 @@ function parseClientAuth(req: Request, p: Record<string, string>): { clientId: s
   return { clientId: p.client_id ?? "", clientSecret: p.client_secret };
 }
 
+/** Per-IP write throttle behind the edge limiter (spec §10/#10). */
+async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
+  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+  const rl = await checkRateLimit(deps.getDb(), `${tag}:${ipHash}`, { limit, windowSec, now: now(deps) });
+  return rl.allowed;
+}
+
 async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
   const db = deps.getDb();
+  if (!(await ipThrottle(req, deps, "token", 120, 60))) return json({ error: "rate_limited" }, 429, { ...cors, ...noStore });
   const { clientId, clientSecret } = parseClientAuth(req, p);
 
   // Authenticate the client: confidential clients MUST present a valid secret;
@@ -423,6 +436,7 @@ const TGOWN_COOKIE = "mw_tgown";
 
 /** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
 async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (!(await ipThrottle(req, deps, "tgstart", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
   const db = deps.getDb();
   const p = await readParams(req);
   const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
@@ -596,6 +610,16 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   if (sub === "clients/rotate-secret") {
     const r = await rotateSecret(db, session.accountId, p.client_id ?? "");
     return r.ok ? json(r, 200, { ...cors, ...securityHeaders() }) : json({ error: "not_rotatable" }, 400, cors);
+  }
+  if (sub === "clients/update") {
+    const r = await updateClient(db, session.accountId, {
+      clientId: p.client_id ?? "",
+      redirectUris: p.redirect_uris !== undefined ? splitList(p.redirect_uris) : undefined,
+      allowedScopes: p.scopes !== undefined ? splitList(p.scopes) : undefined,
+      verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
+      displayName: p.display_name,
+    });
+    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
   if (sub === "tokens") {
     const token = await createManagementToken(db, session.accountId, p.label);

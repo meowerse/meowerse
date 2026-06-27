@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
 import { handle } from "../src/index";
-import { hashPassword } from "../src/crypto";
+import { hashPassword, sha256Hex } from "../src/crypto";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
 async function fixture() {
@@ -93,6 +93,16 @@ test("token: unsupported grant_type → 400 no-store (public client passes auth)
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "password", client_id: "mw_demo" }) }), env, deps);
   expect(r.status).toBe(400);
   expect(r.headers.get("Cache-Control")).toContain("no-store");
+});
+
+test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  store.tables.rate_limits.push({ bucket: "token:" + (await sha256Hex("|token")), count: 120, window_start: 1000 });
+  const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_demo" }) }), env as never, deps as never);
+  expect(r.status).toBe(429);
 });
 
 test("token: confidential client with no secret → 401 invalid_client", async () => {
