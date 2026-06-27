@@ -1,9 +1,9 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import AccountSettings from "../components/AccountSettings.tsx";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
 ---
 
-<Layout title="Signed in · Meowerse">
-  <h1>You’re signed in</h1>
-  <p>Your Meowerse session is active. Apps you authorize will return you here.</p>
-  <p><a href="/login"><button class="secondary">Switch account</button></a></p>
+<Layout title="Account · Meowerse">
+  <AccountSettings client:load base={base} />
 </Layout>

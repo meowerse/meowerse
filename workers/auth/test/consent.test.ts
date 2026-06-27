@@ -1,6 +1,19 @@
 import { test, expect } from "vitest";
-import { consentDecision, getConsent, grantConsent } from "../src/consent";
+import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "../src/consent";
 import { routedDb } from "./helpers";
+
+test("listGrants parses scopes (bad json → []); revokeGrant drops consent + kills app tokens", async () => {
+  const db = routedDb([[/FROM consents WHERE account_id/, () => ({ rows: [{ client_id: "mw_1", approved_scope_snapshot: '["openid"]', updated_at: "t" }, { client_id: "mw_2", approved_scope_snapshot: "bad", updated_at: null }] })]]);
+  const g = await listGrants(db, "a");
+  expect(g[0]).toMatchObject({ clientId: "mw_1", approvedScopes: ["openid"], updatedAt: "t" });
+  expect(g[1]?.approvedScopes).toEqual([]);
+
+  const log: { sql: string; args: unknown[] }[] = [];
+  await revokeGrant(routedDb([], log), "a", "mw_1");
+  expect(log.some((c) => c.sql.includes("DELETE FROM consents"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("UPDATE access_tokens SET revoked_at"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("UPDATE refresh_tokens SET used_at"))).toBe(true);
+});
 
 const base = {
   requested: ["openid", "profile"],

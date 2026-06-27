@@ -177,16 +177,19 @@ export async function recordAccessToken(
   });
 }
 
-/** RFC 7009 revoke by jti (best-effort; always 200 to the caller). */
-export async function revokeAccessToken(db: DbClient, jti: string): Promise<void> {
-  await db.execute({ sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE jti = ?", args: [jti] });
+/** RFC 7009 revoke by jti, scoped to the authenticated client (best-effort, 200). */
+export async function revokeAccessToken(db: DbClient, jti: string, clientId: string): Promise<void> {
+  await db.execute({
+    sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE jti = ? AND client_id = ?",
+    args: [jti, clientId],
+  });
 }
 
-/** RFC 7662 introspection by jti. */
-export async function introspect(db: DbClient, jti: string, now: number): Promise<{ active: boolean }> {
+/** RFC 7662 introspection by jti, scoped to the authenticated client (no cross-client oracle). */
+export async function introspect(db: DbClient, jti: string, now: number, clientId: string): Promise<{ active: boolean }> {
   const res = await db.execute({
-    sql: "SELECT expires_at, revoked_at FROM access_tokens WHERE jti = ?",
-    args: [jti],
+    sql: "SELECT expires_at, revoked_at FROM access_tokens WHERE jti = ? AND client_id = ?",
+    args: [jti, clientId],
   });
   const row = res.rows[0];
   if (!row || row.revoked_at != null || Number(row.expires_at) < now) return { active: false };

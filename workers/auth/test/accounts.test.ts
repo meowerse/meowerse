@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { signup, loginVerify, deriveVerified } from "../src/accounts";
+import { signup, loginVerify, deriveVerified, changePassword, getAccountInfo, countRecoveryCodes } from "../src/accounts";
 import { hashPassword } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
 
@@ -87,6 +87,31 @@ test("signup and loginVerify tolerate a missing username field", async () => {
   expect((await signup(db, { password: "abcdefghijkl" } as never, OPTS)).ok).toBe(false);
   const phc = await hashPassword("zzz", FAST);
   expect((await loginVerify(db, { password: "abcdefghijkl" } as never, { dummyPhc: phc })).ok).toBe(false);
+});
+
+test("changePassword: no password row → no_password; wrong current → wrong_password; weak new → policy error; ok → updates", async () => {
+  const noPw = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [] })]]);
+  expect(await changePassword(noPw, { accountId: "a", currentPassword: "x", newPassword: "y".repeat(12), pbkdf2: FAST })).toEqual({ ok: false, error: "no_password" });
+
+  const phc = await hashPassword("currentpass12", FAST);
+  const has = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]]);
+  expect((await changePassword(has, { accountId: "a", currentPassword: "WRONG", newPassword: "newpass123456", pbkdf2: FAST })).error).toBe("wrong_password");
+  expect((await changePassword(has, { accountId: "a", currentPassword: "currentpass12", newPassword: "short", pbkdf2: FAST })).ok).toBe(false);
+
+  const log: { sql: string; args: unknown[] }[] = [];
+  const db = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]], log);
+  expect((await changePassword(db, { accountId: "a", currentPassword: "currentpass12", newPassword: "newpass123456", pbkdf2: FAST })).ok).toBe(true);
+  expect(log.some((c) => c.sql.includes("UPDATE password_credentials SET phc"))).toBe(true);
+});
+
+test("getAccountInfo + countRecoveryCodes", async () => {
+  const db = routedDb([
+    [/SELECT username, display_name, avatar_url FROM accounts WHERE id/, () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: null }] })],
+    [/SELECT 1 FROM password_credentials/, () => ({ rows: [{ "1": 1 }] })],
+  ]);
+  expect(await getAccountInfo(db, "a")).toEqual({ username: "neko", displayName: "Neko", avatarUrl: null, hasPassword: true });
+  expect(await getAccountInfo(routedDb([[/FROM accounts WHERE id/, () => ({ rows: [] })]]), "ghost")).toBeNull();
+  expect(await countRecoveryCodes(routedDb([[/COUNT/, () => ({ rows: [{ n: 5 }] })]]), "a")).toBe(5);
 });
 
 test("deriveVerified reflects a live telegram link", async () => {

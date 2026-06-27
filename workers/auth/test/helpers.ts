@@ -50,6 +50,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     refresh_tokens: [],
     oauth_clients: [],
     oauth_client_redirect_uris: [],
+    oauth_client_secrets: [],
     consents: [],
     rate_limits: [],
     login_tickets: [],
@@ -61,6 +62,42 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       const sql = raw.replace(/\s+/g, " ").trim();
 
       if (/^CREATE /i.test(sql)) return { rows: [] };
+
+      // --- account self-service (specific patterns first so they win) ---
+      if (/UPDATE password_credentials SET phc/.test(sql)) {
+        const row = t.password_credentials.find((r) => r.account_id === a[1]);
+        if (row) row.phc = a[0];
+        return { rows: [] };
+      }
+      if (/DELETE FROM recovery_codes WHERE account_id/.test(sql)) {
+        t.recovery_codes = t.recovery_codes.filter((r) => r.account_id !== a[0]);
+        return { rows: [] };
+      }
+      if (/SELECT COUNT\(\*\) AS n FROM recovery_codes/.test(sql))
+        return { rows: [{ n: t.recovery_codes.filter((r) => r.account_id === a[0] && r.used_at == null).length }] };
+      if (/SELECT client_id, approved_scope_snapshot, updated_at FROM consents WHERE account_id/.test(sql))
+        return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null })) };
+      if (/DELETE FROM consents WHERE account_id/.test(sql)) {
+        t.consents = t.consents.filter((r) => !(r.account_id === a[0] && r.client_id === a[1]));
+        return { rows: [] };
+      }
+      if (/UPDATE access_tokens SET revoked_at .* WHERE account_id/.test(sql)) {
+        for (const r of t.access_tokens) if (r.account_id === a[0] && r.client_id === a[1]) r.revoked_at = "revoked";
+        return { rows: [] };
+      }
+      if (/UPDATE refresh_tokens SET used_at .* WHERE account_id/.test(sql)) {
+        for (const r of t.refresh_tokens) if (r.account_id === a[0] && r.client_id === a[1]) r.used_at = "used";
+        return { rows: [] };
+      }
+      if (/DELETE FROM telegram_links WHERE account_id/.test(sql)) {
+        t.telegram_links = t.telegram_links.filter((r) => r.account_id !== a[0]);
+        return { rows: [] };
+      }
+      if (/UPDATE accounts SET verified = 0/.test(sql)) {
+        const row = t.accounts.find((r) => r.id === a[0]);
+        if (row) row.verified = 0;
+        return { rows: [] };
+      }
 
       // --- seed (INSERT OR IGNORE) ---
       if (/INSERT OR IGNORE INTO accounts/.test(sql)) {
@@ -93,6 +130,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.oauth_clients.filter((r) => r.client_id === a[0]) };
       if (/FROM oauth_client_redirect_uris WHERE client_id/.test(sql))
         return { rows: t.oauth_client_redirect_uris.filter((r) => r.client_id === a[0]).map((r) => ({ redirect_uri: r.redirect_uri })) };
+      if (/FROM oauth_client_secrets WHERE client_id/.test(sql))
+        return { rows: t.oauth_client_secrets.filter((r) => r.client_id === a[0]).map((r) => ({ secret_phc: r.secret_phc })) };
+      if (/INSERT INTO oauth_client_secrets/.test(sql)) {
+        t.oauth_client_secrets.push({ client_id: a[0], secret_phc: a[1] });
+        return { rows: [] };
+      }
 
       // --- accounts / credentials ---
       if (/SELECT id FROM accounts WHERE username/.test(sql))

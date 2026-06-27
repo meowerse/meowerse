@@ -10,6 +10,8 @@ import {
   findPendingTicketByNonce,
   consumeTicket,
   getTicket,
+  getTelegramLink,
+  unlinkTelegram,
 } from "../src/telegram";
 import { hmacSha256Hex } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
@@ -98,6 +100,18 @@ test("linkTelegramToAccount: new link sets verified, same is idempotent, elsewhe
 
   const elsewhere = routedDb([[/SELECT account_id FROM telegram_links/, () => ({ rows: [{ account_id: "acct_other" }] })]]);
   expect(await linkTelegramToAccount(elsewhere, "acct_1", { telegramId: "42", username: "u", displayName: "N", avatarUrl: null })).toEqual({ ok: false, error: "linked_elsewhere" });
+});
+
+test("getTelegramLink (linked/not) + unlinkTelegram clears link and verified", async () => {
+  const linked = routedDb([[/telegram_username FROM telegram_links WHERE account_id/, () => ({ rows: [{ telegram_username: "u" }] })]]);
+  expect(await getTelegramLink(linked, "a")).toEqual({ linked: true, username: "u" });
+  const none = routedDb([[/telegram_username FROM telegram_links WHERE account_id/, () => ({ rows: [] })]]);
+  expect(await getTelegramLink(none, "a")).toEqual({ linked: false, username: null });
+
+  const log: { sql: string; args: unknown[] }[] = [];
+  await unlinkTelegram(routedDb([], log), "a");
+  expect(log.some((c) => c.sql.includes("DELETE FROM telegram_links"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("UPDATE accounts SET verified = 0"))).toBe(true);
 });
 
 test("tickets: create, find-pending (status/expiry), consume race, get", async () => {

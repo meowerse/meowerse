@@ -1,5 +1,24 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { postSignup, postLogin, postConsent, getPending, nextLocation, tgStart, tgStatus, listClients, createClient } from "./authApi";
+import {
+  postSignup,
+  postLogin,
+  postConsent,
+  getPending,
+  nextLocation,
+  tgStart,
+  tgStatus,
+  listClients,
+  createClient,
+  getAccount,
+  postAccountPassword,
+  getGrants,
+  revokeGrant,
+  unlinkTelegram,
+  regenerateRecoveryCodes,
+  deleteClient,
+  rotateClientSecret,
+  postManagementToken,
+} from "./authApi";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -64,6 +83,55 @@ test("listClients GETs and createClient POSTs the manifest", async () => {
   expect(b.mock.calls[0][0]).toBe("http://x/api/dev/clients");
   expect(b.mock.calls[0][1].method).toBe("POST");
   expect(r.clientId).toBe("mw_2");
+});
+
+test("account helpers hit the right endpoints", async () => {
+  const a = mockJson({ username: "neko", verified: false, hasPassword: true, telegram: { linked: false, username: null }, recoveryRemaining: 8, csrf: "c" });
+  expect((await getAccount("http://x")).username).toBe("neko");
+  expect(a.mock.calls[0][0]).toBe("http://x/api/account");
+
+  const pw = mockJson({ ok: true });
+  await postAccountPassword("http://x", "c", "old", "new");
+  expect(pw.mock.calls[0][0]).toBe("http://x/api/account/password");
+  expect(JSON.parse(pw.mock.calls[0][1].body)).toMatchObject({ current_password: "old", new_password: "new" });
+
+  const gr = mockJson({ grants: [{ clientId: "mw_1", approvedScopes: ["openid"], updatedAt: null }] });
+  expect((await getGrants("http://x")).grants?.length).toBe(1);
+  expect(gr.mock.calls[0][0]).toBe("http://x/api/account/grants");
+
+  const rv = mockJson({ ok: true });
+  await revokeGrant("http://x", "c", "mw_1");
+  expect(rv.mock.calls[0][0]).toBe("http://x/api/account/grants/revoke");
+
+  const ul = mockJson({ ok: true });
+  await unlinkTelegram("http://x", "c");
+  expect(ul.mock.calls[0][0]).toBe("http://x/api/account/telegram/unlink");
+
+  const rc = mockJson({ recoveryCodes: ["A", "B"] });
+  expect((await regenerateRecoveryCodes("http://x", "c")).recoveryCodes?.length).toBe(2);
+  expect(rc.mock.calls[0][0]).toBe("http://x/api/account/recovery-codes");
+});
+
+test("dashboard mutation helpers + tg kind + granular consent scopes", async () => {
+  const del = mockJson({ ok: true });
+  await deleteClient("http://x", "c", "mw_1");
+  expect(del.mock.calls[0][0]).toBe("http://x/api/dev/clients/delete");
+
+  const rot = mockJson({ ok: true, clientSecret: "mws_new" });
+  expect((await rotateClientSecret("http://x", "c", "mw_1")).clientSecret).toBe("mws_new");
+  expect(rot.mock.calls[0][0]).toBe("http://x/api/dev/clients/rotate-secret");
+
+  const mt = mockJson({ token: "mgmt_t" });
+  expect((await postManagementToken("http://x", "c")).token).toBe("mgmt_t");
+  expect(mt.mock.calls[0][0]).toBe("http://x/api/dev/tokens");
+
+  const tg = mockJson({ ticketId: "t", deepLink: "d" });
+  await tgStart("http://x", "VERIFY_EXISTING");
+  expect(JSON.parse(tg.mock.calls[0][1].body)).toEqual({ kind: "VERIFY_EXISTING" });
+
+  const cons = mockJson({ redirect: "https://app/cb" });
+  await postConsent("http://x", "allow", "c", ["openid", "profile"]);
+  expect(JSON.parse(cons.mock.calls[0][1].body)).toMatchObject({ decision: "allow", scopes: "openid profile" });
 });
 
 test("nextLocation maps every action", () => {

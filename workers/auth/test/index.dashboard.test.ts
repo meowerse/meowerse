@@ -134,6 +134,24 @@ test("management API: PAT-authed upsert by name; no token → 401", async () => 
   expect((await ok.json()) as { created: boolean }).toMatchObject({ created: true });
 });
 
+test("dev update client (session+csrf, owner-scoped)", async () => {
+  const e = await env();
+  const routes: Route[] = [SESSION, [/SELECT 1 FROM oauth_clients WHERE client_id .* AND owner_account_id/, () => ({ rows: [{ "1": 1 }] })]];
+  const r = await handle(
+    new Request("https://iss/api/dev/clients/update", { method: "POST", headers: { "Content-Type": "application/json", Cookie: "__Host-mw_sess=x" }, body: JSON.stringify({ csrf: "csrf1", client_id: "mw_1", scopes: "openid profile", verified_only: "true", redirect_uris: "https://app/cb" }) }),
+    e as never,
+    deps(routes) as never,
+  );
+  expect(r.status).toBe(200);
+  // not-owned → 400
+  const nf = await handle(
+    new Request("https://iss/api/dev/clients/update", { method: "POST", headers: { "Content-Type": "application/json", Cookie: "__Host-mw_sess=x" }, body: JSON.stringify({ csrf: "csrf1", client_id: "mw_x", scopes: "openid" }) }),
+    e as never,
+    deps([SESSION, [/SELECT 1 FROM oauth_clients/, () => ({ rows: [] })]]) as never,
+  );
+  expect(nf.status).toBe(400);
+});
+
 test("mgmt rejects an invalid manifest (bad name) → 400", async () => {
   const e = await env();
   const routes: Route[] = [[/FROM management_tokens WHERE token_hash/, () => ({ rows: [{ owner_account_id: "owner1", revoked_at: null }] })]];

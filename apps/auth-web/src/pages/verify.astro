@@ -1,12 +1,15 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import TelegramButton from "../components/TelegramButton.tsx";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
 ---
 
-<Layout title="Verification required · Meowerse">
-  <h1>Verification required</h1>
-  <p>This app only accepts verified accounts. Verification links your Telegram to
-    your Meowerse account.</p>
-  <p class="muted">Telegram verification arrives in the next release. For now, this
-    app is unavailable to unverified accounts.</p>
-  <p><a href="/login"><button class="secondary">Back to sign in</button></a></p>
+<Layout title="Verify with Telegram · Meowerse">
+  <h1>Verify your account</h1>
+  <p>Link your Telegram to verify your Meowerse account. Some apps only accept
+    verified accounts; verifying also lets you sign in with Telegram.</p>
+  <TelegramButton client:load base={base} kind="VERIFY_EXISTING" label="Verify with Telegram" />
+  <p class="muted">Open the bot, tap <strong>Start</strong>, and you’ll be verified
+    automatically. You’ll return here when it’s done.</p>
+  <p><a href="/account">Back to account</a></p>
 </Layout>

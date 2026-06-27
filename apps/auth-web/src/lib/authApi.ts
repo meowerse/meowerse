@@ -42,8 +42,8 @@ export function postLogin(base: string, username: string, password: string): Pro
   return postJson<AuthResponse>(`${base}/login`, { username, password });
 }
 
-export function postConsent(base: string, decision: "allow" | "deny", csrf: string): Promise<{ redirect?: string; error?: string }> {
-  return postJson(`${base}/consent`, { decision, csrf });
+export function postConsent(base: string, decision: "allow" | "deny", csrf: string, scopes?: string[]): Promise<{ redirect?: string; error?: string }> {
+  return postJson(`${base}/consent`, { decision, csrf, scopes: scopes ? scopes.join(" ") : undefined });
 }
 
 export async function getPending(base: string): Promise<PendingResponse> {
@@ -61,9 +61,57 @@ export interface ClientSummary {
   status: string;
 }
 
-export async function tgStart(base: string): Promise<{ ticketId?: string; deepLink?: string; error?: string }> {
-  const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: "{}" });
+export async function tgStart(base: string, kind?: "VERIFY_EXISTING"): Promise<{ ticketId?: string; deepLink?: string; error?: string }> {
+  const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kind ? { kind } : {}) });
   return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string };
+}
+
+// --- account self-service ---
+export interface AccountInfo {
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  verified: boolean;
+  hasPassword: boolean;
+  telegram: { linked: boolean; username: string | null };
+  recoveryRemaining: number;
+  csrf: string;
+  error?: string;
+}
+export interface Grant {
+  clientId: string;
+  approvedScopes: string[];
+  updatedAt: string | null;
+}
+
+export async function getAccount(base: string): Promise<AccountInfo> {
+  return (await fetch(`${base}/api/account`, { credentials: "include" })).json() as Promise<AccountInfo>;
+}
+export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/account/password`, { csrf, current_password: current, new_password: next });
+}
+export async function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {
+  return (await fetch(`${base}/api/account/grants`, { credentials: "include" })).json() as Promise<{ grants?: Grant[]; error?: string }>;
+}
+export function revokeGrant(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/account/grants/revoke`, { csrf, client_id: clientId });
+}
+export function unlinkTelegram(base: string, csrf: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/account/telegram/unlink`, { csrf });
+}
+export function regenerateRecoveryCodes(base: string, csrf: string): Promise<{ recoveryCodes?: string[]; error?: string }> {
+  return postJson(`${base}/api/account/recovery-codes`, { csrf });
+}
+
+// --- developer dashboard (mutations) ---
+export function deleteClient(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/dev/clients/delete`, { csrf, client_id: clientId });
+}
+export function rotateClientSecret(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; clientSecret?: string; error?: string }> {
+  return postJson(`${base}/api/dev/clients/rotate-secret`, { csrf, client_id: clientId });
+}
+export function postManagementToken(base: string, csrf: string): Promise<{ token?: string; error?: string }> {
+  return postJson(`${base}/api/dev/tokens`, { csrf });
 }
 
 export async function tgStatus(base: string, ticketId: string): Promise<{ ready: boolean; next?: NextStep }> {

@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
 import { handle } from "../src/index";
+import { hashPassword, sha256Hex } from "../src/crypto";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
 async function fixture() {
@@ -87,11 +88,32 @@ test("consent without a session → 401; bad csrf → 403", async () => {
   expect(noSess.status).toBe(401);
 });
 
-test("token: unsupported grant_type → 400 no-store", async () => {
+test("token: unsupported grant_type → 400 no-store (public client passes auth)", async () => {
   const { env, deps } = await fixture();
-  const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "password" }) }), env, deps);
+  const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "password", client_id: "mw_demo" }) }), env, deps);
   expect(r.status).toBe(400);
   expect(r.headers.get("Cache-Control")).toContain("no-store");
+});
+
+test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  store.tables.rate_limits.push({ bucket: "token:" + (await sha256Hex("|token")), count: 120, window_start: 1000 });
+  const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_demo" }) }), env as never, deps as never);
+  expect(r.status).toBe(429);
+});
+
+test("token: confidential client with no secret → 401 invalid_client", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  store.tables.oauth_clients.push({ client_id: "mw_conf", status: "active", client_type: "confidential", display_name: "C", logo_url: null, allowed_scopes: '["openid"]', allow_offline_access: 0, verified_only: 0, first_party: 0 });
+  const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_conf", code: "x", code_verifier: "y" }) }), env as never, deps as never);
+  expect(r.status).toBe(401);
+  expect(((await r.json()) as { error: string }).error).toBe("invalid_client");
 });
 
 test("userinfo without a bearer → 401", async () => {
@@ -108,11 +130,28 @@ test("logout revokes + clears the session cookie and redirects to the UI", async
   expect(cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")).toBe("");
 });
 
-test("revoke always 200; introspect reports inactive for unknown jti", async () => {
-  const { env, deps } = await fixture();
-  const rev = await handle(new Request("https://iss/token/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "at_x" }) }), env, deps);
+test("revoke/introspect require a confidential client; unauthenticated → 401", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+
+  // unauthenticated → 401 (closes the token-oracle / revoke-DoS hole)
+  const un = await handle(new Request("https://iss/token/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "at_x" }) }), env as never, deps as never);
+  expect(un.status).toBe(401);
+
+  const phc = await hashPassword("mws_sec", { rounds: 1, iter: 500 });
+  store.tables.oauth_clients.push({ client_id: "mw_conf", status: "active", client_type: "confidential", display_name: "C", logo_url: null, allowed_scopes: '["openid"]', allow_offline_access: 0, verified_only: 0, first_party: 0 });
+  store.tables.oauth_client_secrets.push({ client_id: "mw_conf", secret_phc: phc });
+
+  const rev = await handle(new Request("https://iss/token/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_id: "mw_conf", client_secret: "mws_sec", token: "at_x" }) }), env as never, deps as never);
   expect(rev.status).toBe(200);
-  const intro = await handle(new Request("https://iss/token/introspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "at_x" }) }), env, deps);
+
+  // same, but via HTTP Basic client auth (RFC 6749 §2.3.1)
+  const basic = "Basic " + btoa("mw_conf:mws_sec");
+  const revBasic = await handle(new Request("https://iss/token/revoke", { method: "POST", headers: { "Content-Type": "application/json", Authorization: basic }, body: JSON.stringify({ token: "at_x" }) }), env as never, deps as never);
+  expect(revBasic.status).toBe(200);
+  const intro = await handle(new Request("https://iss/token/introspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_id: "mw_conf", client_secret: "mws_sec", token: "at_x" }) }), env as never, deps as never);
   expect(((await intro.json()) as { active: boolean }).active).toBe(false);
 });
 
@@ -127,7 +166,7 @@ test("authorize and userinfo also accept POST", async () => {
 
 test("token endpoint parses form-urlencoded bodies", async () => {
   const { env, deps } = await fixture();
-  const body = new URLSearchParams({ grant_type: "password" }).toString();
+  const body = new URLSearchParams({ grant_type: "password", client_id: "mw_demo" }).toString();
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }), env, deps);
   expect(r.status).toBe(400); // unsupported_grant_type — but exercised the form parser
 });

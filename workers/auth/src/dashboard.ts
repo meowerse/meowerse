@@ -118,6 +118,48 @@ export async function deleteClient(db: DbClient, ownerId: string, clientId: stri
   return true;
 }
 
+/** Edit an existing owned client: redirect URIs, scopes, verified-only, display name (spec R15). */
+export async function updateClient(
+  db: DbClient,
+  ownerId: string,
+  i: { clientId: string; redirectUris?: string[]; allowedScopes?: string[]; verifiedOnly?: boolean; allowOfflineAccess?: boolean; displayName?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const own = await db.execute({
+    sql: "SELECT 1 FROM oauth_clients WHERE client_id = ? AND owner_account_id = ? AND deleted_at IS NULL",
+    args: [i.clientId, ownerId],
+  });
+  if (!own.rows.length) return { ok: false, error: "not_found" };
+  if (i.redirectUris) {
+    if (i.redirectUris.length === 0) return { ok: false, error: "redirect_uri_required" };
+    for (const u of i.redirectUris) if (!isRegisterableRedirect(u)) return { ok: false, error: "invalid_redirect_uri" };
+  }
+  const scopes = i.allowedScopes ? normalizeScopes(i.allowedScopes) : undefined;
+  await db.execute({
+    sql: `UPDATE oauth_clients SET
+            allowed_scopes = COALESCE(?, allowed_scopes),
+            verified_only = COALESCE(?, verified_only),
+            allow_offline_access = COALESCE(?, allow_offline_access),
+            display_name = COALESCE(?, display_name),
+            updated_at = datetime('now')
+          WHERE client_id = ? AND owner_account_id = ?`,
+    args: [
+      scopes ? JSON.stringify(scopes) : null,
+      i.verifiedOnly === undefined ? null : i.verifiedOnly ? 1 : 0,
+      i.allowOfflineAccess === undefined ? null : i.allowOfflineAccess ? 1 : 0,
+      i.displayName ?? null,
+      i.clientId,
+      ownerId,
+    ],
+  });
+  if (i.redirectUris) {
+    await db.execute({ sql: "DELETE FROM oauth_client_redirect_uris WHERE client_id = ?", args: [i.clientId] });
+    for (const u of i.redirectUris) {
+      await db.execute({ sql: "INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri) VALUES (?, ?)", args: [i.clientId, u] });
+    }
+  }
+  return { ok: true };
+}
+
 /** Rotate a confidential client's secret (owner-scoped). Returns the new one-time secret. */
 export async function rotateSecret(db: DbClient, ownerId: string, clientId: string): Promise<{ ok: boolean; clientSecret?: string }> {
   const r = await db.execute({

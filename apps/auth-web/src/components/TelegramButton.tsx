@@ -2,14 +2,14 @@ import { useRef, useState } from "react";
 import { tgStart, tgStatus, nextLocation, type NextStep } from "../lib/authApi";
 
 /** "Continue with Telegram" via the bot deep-link: start a ticket, open the bot, poll until linked. */
-export default function TelegramButton({ base }: { base: string }) {
+export default function TelegramButton({ base, kind, label }: { base: string; kind?: "VERIFY_EXISTING"; label?: string }) {
   const [link, setLink] = useState<string | null>(null);
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function start() {
     setError("");
-    const res = await tgStart(base).catch(() => ({ error: "network" }) as { error: string });
+    const res = await tgStart(base, kind).catch(() => ({ error: "network" }) as { error: string });
     if (!("deepLink" in res) || !res.deepLink || !res.ticketId) {
       setError("Telegram sign-in isn’t available right now.");
       return;
@@ -36,7 +36,7 @@ export default function TelegramButton({ base }: { base: string }) {
   }
   return (
     <>
-      <button onClick={start} className="secondary">Continue with Telegram</button>
+      <button onClick={start} className="secondary">{label ?? "Continue with Telegram"}</button>
       {error && <p role="alert" className="error">{error}</p>}
     </>
   );

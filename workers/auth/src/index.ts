@@ -5,7 +5,7 @@ import { sha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
 import { discoveryDoc } from "./oidc";
-import { getClient } from "./clients";
+import { getClient, authenticateClient } from "./clients";
 import {
   parseAuthorizeQuery,
   validateAuthorizeParams,
@@ -13,9 +13,9 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
-import { consentDecision, getConsent, grantConsent } from "./consent";
+import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
 import { createRefreshToken, rotateRefresh } from "./refresh";
 import {
@@ -27,6 +27,8 @@ import {
   findPendingTicketByNonce,
   consumeTicket,
   getTicket,
+  getTelegramLink,
+  unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
 import { constantTimeEqual } from "@meowerse/auth-shared";
@@ -35,6 +37,7 @@ import {
   listClients,
   deleteClient,
   rotateSecret,
+  updateClient,
   createManagementToken,
   verifyManagementToken,
   upsertClientByName,
@@ -293,11 +296,15 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
 
   const verified = await deriveVerified(db, session.accountId);
   if (client.verifiedOnly && !verified) return json({ error: "verification_required" }, 403, cors);
+  // Granular consent (R20): grant only the scopes the user checked. `openid` is
+  // always kept; absent `scopes` means accept-all (backward compatible).
+  const approvedRaw = p.scopes !== undefined ? splitList(p.scopes) : request.scope;
+  const approved = request.scope.filter((s) => s === "openid" || approvedRaw.includes(s));
   const consent = await getConsent(db, session.accountId, request.clientId);
   const scope = await grantConsent(db, {
     accountId: session.accountId,
     clientId: request.clientId,
-    requested: request.scope,
+    requested: approved,
     clientAllowed: client.allowedScopes,
     priorMax: consent?.scopeSetMax ?? null,
   });
@@ -359,11 +366,40 @@ async function mintResponse(
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
 
+/** Parse client credentials from HTTP Basic (RFC 6749 §2.3.1) or the request body. */
+function parseClientAuth(req: Request, p: Record<string, string>): { clientId: string; clientSecret?: string } {
+  const auth = req.headers.get("Authorization") ?? "";
+  if (auth.startsWith("Basic ")) {
+    try {
+      const decoded = atob(auth.slice(6));
+      const i = decoded.indexOf(":");
+      if (i >= 0) return { clientId: decodeURIComponent(decoded.slice(0, i)), clientSecret: decodeURIComponent(decoded.slice(i + 1)) };
+    } catch {
+      /* fall through to body */
+    }
+  }
+  return { clientId: p.client_id ?? "", clientSecret: p.client_secret };
+}
+
+/** Per-IP write throttle behind the edge limiter (spec §10/#10). */
+async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
+  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+  const rl = await checkRateLimit(deps.getDb(), `${tag}:${ipHash}`, { limit, windowSec, now: now(deps) });
+  return rl.allowed;
+}
+
 async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
   const db = deps.getDb();
-  const clientId = p.client_id ?? "";
+  if (!(await ipThrottle(req, deps, "token", 120, 60))) return json({ error: "rate_limited" }, 429, { ...cors, ...noStore });
+  const { clientId, clientSecret } = parseClientAuth(req, p);
+
+  // Authenticate the client: confidential clients MUST present a valid secret;
+  // public clients pass (PKCE is their proof). Closes the leaked-refresh-token
+  // replay and "confidential isn't confidential" holes.
+  const ca = await authenticateClient(db, clientId, clientSecret);
+  if (!ca.ok) return json({ error: "invalid_client" }, 401, { ...cors, ...noStore, "WWW-Authenticate": "Basic" });
 
   if (p.grant_type === "authorization_code") {
     const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
@@ -400,6 +436,7 @@ const TGOWN_COOKIE = "mw_tgown";
 
 /** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
 async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (!(await ipThrottle(req, deps, "tgstart", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
   const db = deps.getDb();
   const p = await readParams(req);
   const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
@@ -510,15 +547,27 @@ async function handleLogout(req: Request, env: Env, deps: Deps, cors: Record<str
   return redirect(webOrigin(env), { ...securityHeaders(), "Set-Cookie": clearHostCookie(SESS_COOKIE) });
 }
 
+// Revoke/introspect are confidential-client-only (RFC 7009/7662 require client
+// auth). This closes the cross-client token oracle + revoke-by-jti DoS.
+async function authedConfidentialClient(req: Request, deps: Deps, p: Record<string, string>): Promise<string | null> {
+  const { clientId, clientSecret } = parseClientAuth(req, p);
+  const ca = await authenticateClient(deps.getDb(), clientId, clientSecret);
+  return ca.ok && ca.clientType === "confidential" ? clientId : null;
+}
+
 async function handleRevoke(req: Request, _env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
-  if (p.token) await revokeAccessToken(deps.getDb(), p.token);
-  return json({}, 200, cors); // RFC 7009: always 200
+  const clientId = await authedConfidentialClient(req, deps, p);
+  if (!clientId) return json({ error: "invalid_client" }, 401, { ...cors, "WWW-Authenticate": "Basic" });
+  if (p.token) await revokeAccessToken(deps.getDb(), p.token, clientId);
+  return json({}, 200, cors); // RFC 7009: always 200 after client auth
 }
 
 async function handleIntrospect(req: Request, _env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
-  const res = p.token ? await introspect(deps.getDb(), p.token, now(deps)) : { active: false };
+  const clientId = await authedConfidentialClient(req, deps, p);
+  if (!clientId) return json({ error: "invalid_client" }, 401, { ...cors, "WWW-Authenticate": "Basic" });
+  const res = p.token ? await introspect(deps.getDb(), p.token, now(deps), clientId) : { active: false };
   return json(res, 200, cors);
 }
 
@@ -562,9 +611,69 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
     const r = await rotateSecret(db, session.accountId, p.client_id ?? "");
     return r.ok ? json(r, 200, { ...cors, ...securityHeaders() }) : json({ error: "not_rotatable" }, 400, cors);
   }
+  if (sub === "clients/update") {
+    const r = await updateClient(db, session.accountId, {
+      clientId: p.client_id ?? "",
+      redirectUris: p.redirect_uris !== undefined ? splitList(p.redirect_uris) : undefined,
+      allowedScopes: p.scopes !== undefined ? splitList(p.scopes) : undefined,
+      verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
+      displayName: p.display_name,
+    });
+    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
+  }
   if (sub === "tokens") {
     const token = await createManagementToken(db, session.accountId, p.label);
     return json({ token }, 200, { ...cors, ...securityHeaders() });
+  }
+  return json({ error: "not_found" }, 404, cors);
+}
+
+/** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
+async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ error: "no_session" }, 401, cors);
+  const accountId = session.accountId;
+
+  if (sub === "" && req.method === "GET") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    return json(
+      {
+        ...info,
+        verified: await deriveVerified(db, accountId),
+        telegram: await getTelegramLink(db, accountId),
+        recoveryRemaining: await countRecoveryCodes(db, accountId),
+        csrf: session.csrf,
+      },
+      200,
+      { ...cors, ...securityHeaders() },
+    );
+  }
+  if (sub === "grants" && req.method === "GET") {
+    return json({ grants: await listGrants(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+
+  const p = await readParams(req);
+  if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+
+  if (sub === "password") {
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
+    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
+  }
+  if (sub === "grants/revoke") {
+    await revokeGrant(db, accountId, p.client_id ?? "");
+    return json({ ok: true }, 200, cors);
+  }
+  if (sub === "telegram/unlink") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info?.hasPassword) return json({ error: "no_password_fallback" }, 409, cors); // refuse → avoid lockout
+    await unlinkTelegram(db, accountId);
+    return json({ ok: true }, 200, cors);
+  }
+  if (sub === "recovery-codes") {
+    return json({ recoveryCodes: await regenerateRecoveryCodes(db, accountId) }, 200, { ...cors, ...securityHeaders() });
   }
   return json({ error: "not_found" }, 404, cors);
 }
@@ -625,6 +734,9 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
   if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
+    return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length));
+  }
   if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
