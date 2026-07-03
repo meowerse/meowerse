@@ -75,3 +75,8 @@
 .mw-toast { pointer-events: auto; font-size: var(--text-sm); padding: 9px 14px; border-radius: var(--radius); border: 0.5px solid var(--border); background: var(--surface-2); color: var(--text-primary); box-shadow: 0 4px 16px rgba(0,0,0,.12); }
 .mw-toast--success { border-color: var(--success); }
 .mw-toast--error { border-color: var(--danger); }
+
+.mw-recovery { border: 0.5px solid var(--border); border-radius: var(--radius); padding: var(--gap-md); }
+.mw-recovery__grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-sm); }
+.mw-recovery__grid li { font-family: var(--font-mono); font-size: var(--text-sm); }
+.mw-recovery__actions { margin-top: var(--gap-md); }
