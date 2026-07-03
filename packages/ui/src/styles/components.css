@@ -1,1 +1,7 @@
 /* mw component styles are appended per component task */
+
+.mw-spinner { display: inline-block; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--mw-green); animation: mw-spin .7s linear infinite; }
+.mw-spinner--sm { width: 14px; height: 14px; }
+.mw-spinner--md { width: 20px; height: 20px; }
+.mw-spinner--lg { width: 32px; height: 32px; border-width: 3px; }
+@keyframes mw-spin { to { transform: rotate(360deg); } }
