@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
 import { Field } from "./Field";
@@ -15,6 +15,8 @@ export function ConfirmDialog({
 }) {
   const [typed, setTyped] = useState("");
   const [pw, setPw] = useState("");
+  // Reset when closed so a cancelled destructive dialog never reopens pre-armed.
+  useEffect(() => { if (!open) { setTyped(""); setPw(""); } }, [open]);
   const phraseOk = !confirmPhrase || typed === confirmPhrase;
   const pwOk = !requirePassword || pw.length > 0;
   const canConfirm = phraseOk && pwOk && !loading;

@@ -23,4 +23,16 @@ describe("ConfirmDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "unlink" }));
     expect(onConfirm).toHaveBeenCalledWith({ password: "hunter2hunter2" });
   });
+  it("resets the typed phrase when closed, so it reopens disarmed", async () => {
+    const onConfirm = vi.fn();
+    const { rerender } = render(<ConfirmDialog open onCancel={() => {}} onConfirm={onConfirm}
+      title="delete app" description="d" confirmLabel="delete" confirmPhrase="meowsenger" />);
+    await userEvent.type(screen.getByLabelText(/type/i), "meowsenger");
+    expect(screen.getByRole("button", { name: "delete" })).toBeEnabled();
+    rerender(<ConfirmDialog open={false} onCancel={() => {}} onConfirm={onConfirm}
+      title="delete app" description="d" confirmLabel="delete" confirmPhrase="meowsenger" />);
+    rerender(<ConfirmDialog open onCancel={() => {}} onConfirm={onConfirm}
+      title="delete app" description="d" confirmLabel="delete" confirmPhrase="meowsenger" />);
+    expect(screen.getByRole("button", { name: "delete" })).toBeDisabled();
+  });
 });
