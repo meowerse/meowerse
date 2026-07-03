@@ -22,4 +22,19 @@ describe("Modal", () => {
     await userEvent.click(screen.getByTestId("mw-modal-backdrop"));
     expect(onClose).toHaveBeenCalled();
   });
+  it("traps Tab focus within the panel (wraps at both edges)", async () => {
+    render(
+      <Modal open onClose={() => {}} title="t">
+        <button>first</button>
+        <button>last</button>
+      </Modal>,
+    );
+    const first = screen.getByRole("button", { name: "first" });
+    const last = screen.getByRole("button", { name: "last" });
+    last.focus();
+    await userEvent.tab();
+    expect(first).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(last).toHaveFocus();
+  });
 });
