@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { signup, loginVerify, deriveVerified, changePassword, getAccountInfo, countRecoveryCodes } from "../src/accounts";
+import { signup, loginVerify, deriveVerified, changePassword, getAccountInfo, countRecoveryCodes, deleteAccount } from "../src/accounts";
 import { hashPassword } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
 
@@ -119,4 +119,24 @@ test("deriveVerified reflects a live telegram link", async () => {
     true,
   );
   expect(await deriveVerified(routedDb([[/FROM telegram_links WHERE account_id/, () => ({ rows: [] })]]), "a")).toBe(false);
+});
+
+test("deleteAccount deletes owned-client children + all account-keyed rows, accounts LAST", async () => {
+  const log: { sql: string; args: unknown[] }[] = [];
+  const db = routedDb(
+    [[/SELECT client_id FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [{ client_id: "app1" }] })]],
+    log,
+  );
+  await deleteAccount(db, "acct_x");
+  const deletes = log.map((l) => l.sql.replace(/\s+/g, " ").trim()).filter((s) => s.startsWith("DELETE"));
+  // owned-client children present
+  expect(deletes.some((s) => /oauth_client_secrets WHERE client_id/.test(s))).toBe(true);
+  expect(deletes.some((s) => /oauth_client_redirect_uris WHERE client_id/.test(s))).toBe(true);
+  // account-keyed tables present
+  for (const tbl of ["recovery_codes", "password_credentials", "telegram_links", "sessions", "access_tokens", "refresh_tokens", "oauth_codes"]) {
+    expect(deletes.some((s) => new RegExp(`DELETE FROM ${tbl} WHERE account_id`).test(s))).toBe(true);
+  }
+  // owned clients deleted, then the account row LAST
+  expect(deletes.some((s) => /oauth_clients WHERE owner_account_id/.test(s))).toBe(true);
+  expect(deletes[deletes.length - 1]).toMatch(/DELETE FROM accounts WHERE id/);
 });

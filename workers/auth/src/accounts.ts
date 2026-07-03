@@ -166,3 +166,30 @@ export async function countRecoveryCodes(db: DbClient, accountId: string): Promi
   const r = await db.execute({ sql: "SELECT COUNT(*) AS n FROM recovery_codes WHERE account_id = ? AND used_at IS NULL", args: [accountId] });
   return Number(r.rows[0]?.n ?? 0);
 }
+
+/**
+ * Erase an account and everything it owns. `DbClient` has no `.batch()` and
+ * cross-execute transactions don't hold over Turso HTTP, so we delete
+ * sequentially, children first and the `accounts` row LAST — a partial failure
+ * leaves the account intact and a retry completes it. Table names below are a
+ * fixed allow-list (never user input), so the string interpolation is safe.
+ */
+export async function deleteAccount(db: DbClient, accountId: string): Promise<void> {
+  const owned = await db.execute({ sql: "SELECT client_id FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
+  for (const row of owned.rows) {
+    const cid = String(row.client_id);
+    await db.execute({ sql: "DELETE FROM oauth_client_secrets WHERE client_id = ?", args: [cid] });
+    await db.execute({ sql: "DELETE FROM oauth_client_redirect_uris WHERE client_id = ?", args: [cid] });
+    await db.execute({ sql: "DELETE FROM consents WHERE client_id = ?", args: [cid] });
+  }
+  const accountKeyed = [
+    "recovery_codes", "password_credentials", "telegram_links", "sessions",
+    "consents", "access_tokens", "refresh_tokens", "management_tokens",
+    "oauth_codes", "login_requests", "login_tickets",
+  ];
+  for (const tbl of accountKeyed) {
+    await db.execute({ sql: `DELETE FROM ${tbl} WHERE account_id = ?`, args: [accountId] });
+  }
+  await db.execute({ sql: "DELETE FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
+  await db.execute({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
+}
