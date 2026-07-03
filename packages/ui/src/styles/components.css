@@ -46,3 +46,10 @@
 .mw-badge--verified { background: color-mix(in srgb, var(--mw-green) 16%, transparent); color: var(--text-accent); }
 .mw-badge--neutral { background: var(--surface-muted); color: var(--text-secondary); }
 .mw-badge--danger { background: var(--bg-danger); color: var(--text-danger); }
+
+.mw-alert { display: flex; align-items: flex-start; gap: var(--gap-sm); font-size: var(--text-sm); padding: 9px 11px; border-radius: var(--radius); }
+.mw-alert__body { flex: 1; }
+.mw-alert__x { background: none; border: none; color: inherit; cursor: pointer; opacity: .7; }
+.mw-alert--error { background: var(--bg-danger); color: var(--text-danger); }
+.mw-alert--success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.mw-alert--info { background: var(--surface-muted); color: var(--text-secondary); }
