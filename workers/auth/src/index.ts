@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes, deleteAccount } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
@@ -689,6 +689,14 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   }
   if (sub === "recovery-codes") {
     return json({ recoveryCodes: await regenerateRecoveryCodes(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+  if (sub === "delete") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    const expected = info.username ?? info.displayName ?? "";
+    if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
+    await deleteAccount(db, accountId);
+    return json({ ok: true }, 200, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
   }
   return json({ error: "not_found" }, 404, cors);
 }

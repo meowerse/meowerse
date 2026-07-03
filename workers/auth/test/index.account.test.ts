@@ -77,3 +77,17 @@ test("unknown /api/account sub-path → 404", async () => {
   const { env, deps, sess, csrf } = await loggedIn("neko_404");
   expect((await post(env, deps, "/api/account/bogus", sess, { csrf })).status).toBe(404);
 });
+
+test("POST /api/account/delete: bad csrf 403, wrong confirm 400, correct erases + clears cookie + kills session", async () => {
+  const { env, deps, sess, csrf } = await loggedIn("neko_del");
+  // bad csrf
+  expect((await post(env, deps, "/api/account/delete", sess, { csrf: "WRONG", confirm: "neko_del" })).status).toBe(403);
+  // wrong confirmation phrase
+  expect((await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "nope" })).status).toBe(400);
+  // correct
+  const ok = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_del" });
+  expect(ok.status).toBe(200);
+  expect(ok.headers.get("Set-Cookie")).toContain("mw_sess");
+  // session is gone → the same cookie now 401s
+  expect((await get(env, deps, "/api/account", sess)).status).toBe(401);
+});
