@@ -32,3 +32,9 @@
 .mw-check { display: flex; align-items: center; gap: var(--gap-sm); font-size: var(--text-base); cursor: pointer; }
 .mw-check input { width: 18px; height: 18px; accent-color: var(--mw-green); cursor: pointer; }
 .mw-check:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+
+.mw-radio { border: 0.5px solid var(--border); border-radius: var(--radius); margin: 0; padding: var(--gap-sm) var(--gap-md); display: flex; flex-direction: column; gap: var(--gap-sm); }
+.mw-radio legend { padding: 0 6px; font-size: var(--text-xs); color: var(--text-secondary); }
+.mw-radio__opt { display: flex; align-items: center; gap: var(--gap-sm); font-size: var(--text-base); cursor: pointer; }
+.mw-radio__opt input { accent-color: var(--mw-green); }
+.mw-radio__hint { display: block; font-style: normal; font-size: var(--text-xs); color: var(--text-muted); }
