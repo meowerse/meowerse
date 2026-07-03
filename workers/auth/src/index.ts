@@ -742,7 +742,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   }
 
   // Everything below may touch the DB → ensure the schema once per isolate.
-  await ensureSchema(deps);
+  // In prod (SKIP_MIGRATIONS=1) the tables already exist, so we skip the ~18 DDL
+  // round-trips entirely (they'd otherwise slow every cold isolate). Tests leave
+  // the flag unset so the schema + seed still run against the in-memory fake.
+  if (env.SKIP_MIGRATIONS !== "1") await ensureSchema(deps);
 
   if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, deps, cors);
   if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, deps, cors);
@@ -768,10 +771,17 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   return json({ error: "not_found" }, 404, cors);
 }
 
+// Cache Deps at module scope so the libsql client + the schema-migration promise
+// (`schemaReady`) live for the whole isolate, not one request. Previously
+// prodDeps(env) ran per request, re-executing the ~18 DDL/seed round-trips to
+// Turso on EVERY call (~3s each); now the migration runs at most once per isolate.
+let cachedDeps: Deps | undefined;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
-      return await handle(request, env, prodDeps(env));
+      cachedDeps ??= prodDeps(env);
+      return await handle(request, env, cachedDeps);
     } catch {
       return json({ error: "internal_error" }, 500, corsHeaders(request.headers.get("Origin"), env));
     }

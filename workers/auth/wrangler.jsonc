@@ -20,7 +20,9 @@
     // user-facing UI (Astro on Pages) the authorize flow redirects into.
     "ISSUER": "https://auth-api.alxnko.eu.org",
     "WEB_ORIGIN": "https://auth.alxnko.eu.org",
-    "RESOURCE_AUD": "https://api.meow.alxnko.eu.org"
+    "RESOURCE_AUD": "https://api.meow.alxnko.eu.org",
+    "BOT_USERNAME": "meowersebot",
+    "SKIP_MIGRATIONS": "1"
   },
   // Custom domain — Cloudflare provisions cert + DNS for the API hostname.
   "routes": [{ "pattern": "auth-api.alxnko.eu.org", "custom_domain": true }]

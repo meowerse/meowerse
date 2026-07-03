@@ -16,6 +16,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   INTERNAL_HMAC_KEY?: string;
   WRITE_BUDGET_PER_MIN?: string;
+  SKIP_MIGRATIONS?: string;
 }
 
 /**

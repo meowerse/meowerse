@@ -282,3 +282,12 @@ test("GET /api/session falls back to displayName for a username-less (telegram-o
   expect(r.status).toBe(200);
   expect(await r.json()).toMatchObject({ authenticated: true, username: "Neko TG", verified: true });
 });
+
+test("SKIP_MIGRATIONS=1 skips the schema migration on the request path", async () => {
+  const store = memStore();
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  const env = { CORS_ORIGINS: "https://web", SKIP_MIGRATIONS: "1" };
+  const r = await handle(new Request("https://iss/api/session"), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: false });
+});
