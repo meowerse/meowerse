@@ -332,13 +332,15 @@ Two small, tested endpoints — everything else already exists.
   clears the session cookie, returns `{ok:true}`. Right-to-erasure path for the privacy policy.
   - **Do NOT rely on `ON DELETE CASCADE`.** The schema declares it (`db.ts`), but the worker
     never sets `PRAGMA foreign_keys = ON` and Turso's stateless HTTP won't persist it, so
-    SQLite FK enforcement stays off and cascades silently no-op. Instead delete explicitly
-    from every child table in a single `db.batch([...], "write")` (one atomic transaction),
-    FK-safe order: recovery_codes, password_credentials, telegram_links, sessions, consents,
-    access_tokens, refresh_tokens, management_tokens, login_requests/tickets, then
-    oauth_client_secrets + redirect_uris + consents for owned clients, owned oauth_clients,
-    finally the accounts row. Owned clients breaking their RP integrations is expected and
-    documented on the confirm modal.
+    SQLite FK enforcement stays off and cascades silently no-op. The worker's `DbClient`
+    interface also exposes only `.execute()` (no `.batch()`), and cross-execute transactions
+    don't hold over stateless HTTP — so delete with **sequential `db.execute` `DELETE`s,
+    children first and the `accounts` row LAST** (retry-safe: a partial failure leaves the
+    account intact so a retry completes it). Order: for each owned client — its secrets,
+    redirect_uris, consents; then account-keyed rows — recovery_codes, password_credentials,
+    telegram_links, sessions, consents, access_tokens, refresh_tokens, management_tokens,
+    oauth_codes, login_requests, login_tickets; then owned oauth_clients; finally accounts.
+    Owned clients breaking their RP integrations is expected and documented on the confirm modal.
 - Tests (vitest, repo 90% branch gate): `/api/session` authed vs guest; delete happy-path,
   wrong-confirmation rejected, missing-CSRF rejected, and **every child table emptied**
   verified via `memStore` (proves the explicit batch, not a cascade that never runs).
