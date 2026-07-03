@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { applyTheme, getTheme, toggleTheme, THEME_INIT_SCRIPT } from "./theme";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyTheme, getTheme, resolvedTheme, toggleTheme, THEME_INIT_SCRIPT } from "./theme";
 
 describe("theme", () => {
   beforeEach(() => {
@@ -36,5 +36,16 @@ describe("theme", () => {
   it("exports a non-empty init script string", () => {
     expect(typeof THEME_INIT_SCRIPT).toBe("string");
     expect(THEME_INIT_SCRIPT).toContain("data-theme");
+  });
+
+  it("resolvedTheme follows matchMedia when the stored theme is system", () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    expect(resolvedTheme()).toBe("dark");
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    expect(resolvedTheme()).toBe("light");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 });
