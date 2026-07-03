@@ -5,3 +5,17 @@
 .mw-spinner--md { width: 20px; height: 20px; }
 .mw-spinner--lg { width: 32px; height: 32px; border-width: 3px; }
 @keyframes mw-spin { to { transform: rotate(360deg); } }
+
+.mw-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-sm); font: inherit; font-weight: 500; border-radius: var(--radius); border: 0.5px solid transparent; cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.mw-btn:active { transform: scale(.98); }
+.mw-btn:disabled { opacity: .55; cursor: not-allowed; }
+.mw-btn--md { padding: 8px 16px; font-size: var(--text-base); }
+.mw-btn--sm { padding: 6px 12px; font-size: var(--text-sm); }
+.mw-btn--primary { background: var(--mw-green); color: var(--mw-on-green); }
+.mw-btn--primary:not(:disabled):hover { background: var(--mw-green-hover); }
+.mw-btn--secondary { background: transparent; color: var(--text-primary); border-color: var(--border-strong); }
+.mw-btn--secondary:not(:disabled):hover { background: var(--surface-muted); }
+.mw-btn--ghost { background: transparent; color: var(--text-secondary); }
+.mw-btn--ghost:not(:disabled):hover { background: var(--surface-muted); }
+.mw-btn--danger { background: var(--danger); color: var(--on-danger); }
+.mw-btn--danger:not(:disabled):hover { filter: brightness(.94); }
