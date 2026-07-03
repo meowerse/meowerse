@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Button, Field, Alert, Card, RecoveryCodes } from "@meowerse/ui";
+import { Button, Field, Alert, Card, RecoveryCodes, clearSessionCache } from "@meowerse/ui";
 import { postSignup, nextLocation, type NextStep } from "../lib/authApi";
 
 export default function SignupForm({ base }: { base: string }) {
@@ -27,7 +27,7 @@ export default function SignupForm({ base }: { base: string }) {
         <p className="mw-muted">shown once. store them somewhere safe — each works a single time if you lose access.</p>
         <RecoveryCodes codes={codes} />
         <div style={{ marginTop: "var(--gap-lg)" }}>
-          <Button variant="primary" onClick={() => (window.location.href = nextLocation(next))}>i've saved them — continue</Button>
+          <Button variant="primary" onClick={() => { clearSessionCache(); window.location.href = nextLocation(next); }}>i've saved them — continue</Button>
         </div>
       </Card>
     );

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner } from "@meowerse/ui";
+import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, type AccountInfo, type Grant } from "../lib/authApi";
 
 export default function AccountSettings({ base }: { base: string }) {
@@ -37,14 +37,14 @@ export default function AccountSettings({ base }: { base: string }) {
         toast({ message: "access revoked", variant: "success" });
       } else if (confirm.kind === "unlink") {
         const r = await unlinkTelegram(base, acct.csrf);
-        if (r.ok) { toast({ message: "telegram unlinked", variant: "success" }); reload(); }
+        if (r.ok) { clearSessionCache(); toast({ message: "telegram unlinked", variant: "success" }); reload(); }
         else toast({ message: "set a password first — unlinking would lock you out", variant: "error" });
       } else if (confirm.kind === "regen") {
         const r = await regenerateRecoveryCodes(base, acct.csrf);
         if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
       } else if (confirm.kind === "delete") {
         const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
-        if (r.ok) window.location.href = "/";
+        if (r.ok) { clearSessionCache(); window.location.href = "/"; }
         else toast({ message: "could not delete account", variant: "error" });
       }
     } finally { setBusy(false); setConfirm(null); }
@@ -102,7 +102,7 @@ export default function AccountSettings({ base }: { base: string }) {
         <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
       </Card>
 
-      <p><a href="/logout"><Button variant="secondary">sign out</Button></a></p>
+      <p><a href="/logout" onClick={() => clearSessionCache()}><Button variant="secondary">sign out</Button></a></p>
 
       <ConfirmDialog open={confirm?.kind === "revoke"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="revoke access?" description="the app will immediately lose access to your account. you can re-authorize any time."

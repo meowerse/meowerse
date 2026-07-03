@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Button, Field, Alert } from "@meowerse/ui";
+import { Button, Field, Alert, clearSessionCache } from "@meowerse/ui";
 import { postLogin, nextLocation } from "../lib/authApi";
 
 export default function LoginForm({ base }: { base: string }) {
@@ -13,7 +13,7 @@ export default function LoginForm({ base }: { base: string }) {
     setError(""); setBusy(true);
     try {
       const res = await postLogin(base, username, password);
-      if (res.ok) window.location.href = nextLocation(res.next);
+      if (res.ok) { clearSessionCache(); window.location.href = nextLocation(res.next); }
       else setError(res.error === "invalid_credentials" ? "wrong username or password." : res.error ?? "login failed.");
     } catch { setError("network error — please try again."); }
     setBusy(false);
