@@ -134,8 +134,12 @@ export default defineConfig({
 
 - [ ] **Step 4: Write `test/setup.ts`**
 
+Use the explicit `expect.extend` form — under bun's isolated linker the `/vitest` convenience entry resolves a different vitest instance and every jest-dom matcher throws `Invalid Chai property`:
+
 ```ts
-import "@testing-library/jest-dom/vitest";
+import { expect } from "vitest";
+import * as matchers from "@testing-library/jest-dom/matchers";
+expect.extend(matchers);
 ```
 
 - [ ] **Step 5: Write a temporary `src/index.ts` stub**
