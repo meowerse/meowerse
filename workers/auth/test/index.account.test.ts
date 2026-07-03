@@ -91,3 +91,27 @@ test("POST /api/account/delete: bad csrf 403, wrong confirm 400, correct erases 
   // session is gone → the same cookie now 401s
   expect((await get(env, deps, "/api/account", sess)).status).toBe(401);
 });
+
+test("POST /api/account/delete on a session whose account already vanished → 404", async () => {
+  const { store, env, deps, sess, csrf } = await loggedIn("neko_ghost");
+  // drop the account row but keep the session valid
+  store.tables.accounts = store.tables.accounts.filter((a) => a.username !== "neko_ghost");
+  const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_ghost" });
+  expect(r.status).toBe(404);
+});
+
+test("POST /api/account/delete confirms against displayName for a username-less (telegram-only) account", async () => {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  const idHash = await (await import("../src/crypto")).sha256Hex("delraw");
+  store.tables.accounts.push({ id: "acct_tgd", username: null, display_name: "TG Del", avatar_url: null, verified: 1 });
+  store.tables.telegram_links.push({ telegram_id: "7", account_id: "acct_tgd", telegram_username: "tgd" });
+  store.tables.sessions.push({ id_hash: idHash, account_id: "acct_tgd", auth_time: 1000, amr: "tg", csrf_token: "csrfd", idle_expires_at: 9e9, absolute_expires_at: 9e9, revoked_at: null });
+  // confirm must equal the displayName (username is null)
+  expect((await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "wrong" })).status).toBe(400);
+  const ok = await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "TG Del" });
+  expect(ok.status).toBe(200);
+  expect(store.tables.accounts.some((a) => a.id === "acct_tgd")).toBe(false);
+});

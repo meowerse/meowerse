@@ -140,3 +140,17 @@ test("deleteAccount deletes owned-client children + all account-keyed rows, acco
   expect(deletes.some((s) => /oauth_clients WHERE owner_account_id/.test(s))).toBe(true);
   expect(deletes[deletes.length - 1]).toMatch(/DELETE FROM accounts WHERE id/);
 });
+
+test("deleteAccount with zero owned clients still deletes account-keyed rows, accounts LAST", async () => {
+  const log: { sql: string; args: unknown[] }[] = [];
+  // owned-clients query returns no rows → the per-client child loop is skipped
+  const db = routedDb([[/SELECT client_id FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [] })]], log);
+  await deleteAccount(db, "acct_solo");
+  const deletes = log.map((l) => l.sql.replace(/\s+/g, " ").trim()).filter((s) => s.startsWith("DELETE"));
+  // no per-client child deletes were emitted (loop body never ran)
+  expect(deletes.some((s) => /oauth_client_secrets WHERE client_id/.test(s))).toBe(false);
+  // account-keyed tables still deleted
+  expect(deletes.some((s) => /DELETE FROM sessions WHERE account_id/.test(s))).toBe(true);
+  expect(deletes.some((s) => /DELETE FROM oauth_clients WHERE owner_account_id/.test(s))).toBe(true);
+  expect(deletes[deletes.length - 1]).toMatch(/DELETE FROM accounts WHERE id/);
+});

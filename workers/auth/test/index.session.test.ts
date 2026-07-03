@@ -262,3 +262,23 @@ test("GET /api/session reports a guest with no session (200, not 401)", async ()
   expect(r.status).toBe(200);
   expect(await r.json()).toMatchObject({ authenticated: false });
 });
+
+test("GET /api/session with a session whose account was deleted → authenticated:false", async () => {
+  const { store, env, deps, sess } = await login("sess_gone");
+  // drop the account row out from under a still-valid session cookie
+  store.tables.accounts = store.tables.accounts.filter((a) => a.username !== "sess_gone");
+  const r = await handle(new Request("https://iss/api/session", { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: false });
+});
+
+test("GET /api/session falls back to displayName for a username-less (telegram-only) account", async () => {
+  const { store, env, deps } = await login("sess_seed"); // just to build env/deps + a memStore
+  const idHash = await (await import("../src/crypto")).sha256Hex("tgraw");
+  store.tables.accounts.push({ id: "acct_tgs", username: null, display_name: "Neko TG", avatar_url: null, verified: 1 });
+  store.tables.telegram_links.push({ telegram_id: "9", account_id: "acct_tgs", telegram_username: "nekotg" });
+  store.tables.sessions.push({ id_hash: idHash, account_id: "acct_tgs", auth_time: 1000, amr: "tg", csrf_token: "c", idle_expires_at: 9e9, absolute_expires_at: 9e9, revoked_at: null });
+  const r = await handle(new Request("https://iss/api/session", { headers: { Cookie: "__Host-mw_sess=tgraw" } }), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: true, username: "Neko TG", verified: true });
+});
