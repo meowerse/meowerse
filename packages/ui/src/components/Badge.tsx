@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export function Badge({ variant = "neutral", icon, children, className }: {
@@ -6,7 +7,7 @@ export function Badge({ variant = "neutral", icon, children, className }: {
 }) {
   return (
     <span className={cx("mw-badge", `mw-badge--${variant}`, className)}>
-      {icon && <i className={`ti ti-${icon}`} aria-hidden="true" />}
+      {icon && <Icon name={icon} size={14} />}
       {children}
     </span>
   );

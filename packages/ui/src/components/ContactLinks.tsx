@@ -1,3 +1,4 @@
+import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export type Contact = { label: string; href: string; icon: string };
@@ -18,7 +19,7 @@ export function ContactLinks({ contacts = DEFAULT_CONTACTS, className }:
         <a key={c.label} href={c.href} aria-label={c.label} className="mw-contacts__link"
           target={c.href.startsWith("http") ? "_blank" : undefined}
           rel={c.href.startsWith("http") ? "noreferrer noopener" : undefined}>
-          <i className={`ti ti-${c.icon}`} aria-hidden="true" />
+          <Icon name={c.icon} size={19} />
         </a>
       ))}
     </nav>

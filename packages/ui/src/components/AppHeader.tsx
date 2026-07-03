@@ -6,7 +6,9 @@ import { cx } from "../lib/cx";
 export function AppHeader({ session, className }: { session: Session; className?: string }) {
   return (
     <header className={cx("mw-header", className)}>
-      <a className="mw-header__brand" href="/"><span className="mw-header__paw" aria-hidden="true">🐾</span> meowerse</a>
+      <a className="mw-header__brand" href="/" aria-label="meowerse auth — home">
+        <span className="mw-brand-meow">meowerse</span><span className="mw-brand-auth">auth</span>
+      </a>
       <nav className="mw-header__nav" aria-label="primary">
         {!session.loading && !session.authenticated && (
           <>

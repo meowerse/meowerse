@@ -1,4 +1,5 @@
 import { forwardRef, useId, useState, type InputHTMLAttributes } from "react";
+import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export type FieldProps = Omit<InputHTMLAttributes<HTMLInputElement>, "id"> & {
@@ -21,7 +22,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
         {isPw && (
           <button type="button" className="mw-field__reveal"
             aria-label={reveal ? "hide password" : "show password"} onClick={() => setReveal((v) => !v)}>
-            <i className={reveal ? "ti ti-eye-off" : "ti ti-eye"} aria-hidden="true" />
+            <Icon name={reveal ? "eye-off" : "eye"} size={17} />
           </button>
         )}
       </div>
