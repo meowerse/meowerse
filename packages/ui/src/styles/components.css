@@ -57,3 +57,8 @@
 .mw-code { display: inline-flex; align-items: center; gap: 6px; }
 .mw-code code { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--surface-muted); color: var(--text-primary); padding: 3px 8px; border-radius: var(--radius-sm); word-break: break-all; }
 .mw-code__copy { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 2px; }
+
+.mw-avatar { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: color-mix(in srgb, var(--mw-green) 18%, transparent); color: var(--text-accent); font-weight: 600; }
+.mw-avatar--sm { width: 28px; height: 28px; font-size: var(--text-xs); }
+.mw-avatar--md { width: 36px; height: 36px; font-size: var(--text-sm); }
+.mw-avatar--lg { width: 48px; height: 48px; font-size: var(--text-md); }
