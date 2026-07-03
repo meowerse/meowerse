@@ -53,3 +53,7 @@
 .mw-alert--error { background: var(--bg-danger); color: var(--text-danger); }
 .mw-alert--success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
 .mw-alert--info { background: var(--surface-muted); color: var(--text-secondary); }
+
+.mw-code { display: inline-flex; align-items: center; gap: 6px; }
+.mw-code code { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--surface-muted); color: var(--text-primary); padding: 3px 8px; border-radius: var(--radius-sm); word-break: break-all; }
+.mw-code__copy { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 2px; }
