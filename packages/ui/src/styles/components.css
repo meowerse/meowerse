@@ -28,3 +28,7 @@
 .mw-field__reveal { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; }
 .mw-field__hint { font-size: var(--text-xs); color: var(--text-muted); }
 .mw-field__error { font-size: var(--text-xs); color: var(--text-danger); }
+
+.mw-check { display: flex; align-items: center; gap: var(--gap-sm); font-size: var(--text-base); cursor: pointer; }
+.mw-check input { width: 18px; height: 18px; accent-color: var(--mw-green); cursor: pointer; }
+.mw-check:has(input:disabled) { opacity: .55; cursor: not-allowed; }
