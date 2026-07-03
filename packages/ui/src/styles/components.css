@@ -41,3 +41,8 @@
 
 .mw-card { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: var(--radius-lg); padding: var(--gap-lg) var(--gap-xl); }
 .mw-card__title { font-size: var(--text-md); font-weight: 600; margin: 0 0 var(--gap-md); }
+
+.mw-badge { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-xs); padding: 3px 9px; border-radius: var(--radius-pill); }
+.mw-badge--verified { background: color-mix(in srgb, var(--mw-green) 16%, transparent); color: var(--text-accent); }
+.mw-badge--neutral { background: var(--surface-muted); color: var(--text-secondary); }
+.mw-badge--danger { background: var(--bg-danger); color: var(--text-danger); }
