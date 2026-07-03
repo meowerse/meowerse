@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Button, Field, Alert } from "@meowerse/ui";
 import { postLogin, nextLocation } from "../lib/authApi";
-
-type Submit = { preventDefault: () => void };
 
 export default function LoginForm({ base }: { base: string }) {
   const [username, setUsername] = useState("");
@@ -9,32 +8,24 @@ export default function LoginForm({ base }: { base: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: Submit) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError("");
-    setBusy(true);
+    setError(""); setBusy(true);
     try {
       const res = await postLogin(base, username, password);
       if (res.ok) window.location.href = nextLocation(res.next);
-      else setError(res.error === "invalid_credentials" ? "Wrong username or password." : res.error ?? "Login failed.");
-    } catch {
-      setError("Network error — please try again.");
-    }
+      else setError(res.error === "invalid_credentials" ? "wrong username or password." : res.error ?? "login failed.");
+    } catch { setError("network error — please try again."); }
     setBusy(false);
   }
 
   return (
-    <form onSubmit={onSubmit} className="auth-form">
-      <label>
-        Username
-        <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-      </label>
-      <label>
-        Password
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-      </label>
-      {error && <p role="alert" className="error">{error}</p>}
-      <button type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+    <form onSubmit={onSubmit} className="mw-stack mw-narrow">
+      <Field label="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
+      <Field label="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+      {error && <Alert variant="error">{error}</Alert>}
+      <Button variant="primary" type="submit" loading={busy}>sign in</Button>
+      <p className="mw-muted">new here? <a href="/signup">create an account</a></p>
     </form>
   );
 }

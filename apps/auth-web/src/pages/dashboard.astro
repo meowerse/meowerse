@@ -1,10 +1,7 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import Dashboard from "../components/Dashboard.tsx";
-const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
 ---
-
-<Layout title="Developer dashboard · Meowerse">
-  <Dashboard client:load base={base} />
-  <p class="muted"><a href="/account">Back to account</a></p>
+<Layout title="developers · meowerse">
+  <p>redirecting to <a href="/developers">developers</a>…</p>
+  <script is:inline>location.replace("/developers");</script>
 </Layout>

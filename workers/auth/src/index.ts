@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes, deleteAccount } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
@@ -628,6 +628,21 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   return json({ error: "not_found" }, 404, cors);
 }
 
+/** Cheap whoami for the web header + client route guards. Always 200. */
+async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const db = deps.getDb();
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  if (!session) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
+  const info = await getAccountInfo(db, session.accountId);
+  if (!info) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
+  return json(
+    { authenticated: true, username: info.username ?? info.displayName ?? "you", verified: await deriveVerified(db, session.accountId) },
+    200,
+    { ...cors, ...securityHeaders() },
+  );
+}
+
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
   const db = deps.getDb();
@@ -674,6 +689,14 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   }
   if (sub === "recovery-codes") {
     return json({ recoveryCodes: await regenerateRecoveryCodes(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+  }
+  if (sub === "delete") {
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    const expected = info.username ?? info.displayName ?? "";
+    if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
+    await deleteAccount(db, accountId);
+    return json({ ok: true }, 200, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
   }
   return json({ error: "not_found" }, 404, cors);
 }
@@ -734,6 +757,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
   if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if (pathname === "/api/session" && m === "GET") return handleSession(req, env, deps, cors);
   if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
     return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length));
   }

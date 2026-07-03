@@ -1,0 +1,67 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { Card, ContactLinks } from "@meowerse/ui";
+---
+<Layout title="privacy · meowerse">
+  <div class="mw-stack">
+    <h1>privacy policy</h1>
+    <p class="mw-muted">Last updated 2026-07-03. Meowerse accounts is operated by an individual (alxnko) on a best-effort basis. This describes exactly what the service does with your data — nothing more.</p>
+
+    <Card title="what we collect">
+      <ul>
+        <li>Your username, and an optional display name and avatar URL.</li>
+        <li>Your password — stored only as a salted PBKDF2-SHA256 hash (600,000 iterations). We never store or log it in plain text.</li>
+        <li>Eight one-time recovery codes, stored hashed.</li>
+        <li>If you link Telegram: your Telegram id, username, display name, and avatar URL. Your "verified" status is derived from whether a Telegram link exists.</li>
+        <li>Timestamps for account creation and updates.</li>
+      </ul>
+    </Card>
+
+    <Card title="security & session data">
+      <ul>
+        <li>A session is a cookie holding a random id whose hash is stored server-side; the cookie is <code class="mono" data-case="preserve">__Host-</code> prefixed, HttpOnly, Secure, and SameSite=Lax.</li>
+        <li>OAuth authorization codes and tokens are stored as hashes/ids with short lifetimes.</li>
+        <li>Abuse-prevention counters are keyed on a <strong>hashed</strong> IP (at signup) or <strong>hashed</strong> username (at login). We do not store your raw IP address.</li>
+      </ul>
+    </Card>
+
+    <Card title="what we share with apps">
+      <p>Only with your explicit, per-scope consent — and you can revoke it any time from your account:</p>
+      <ul>
+        <li><code class="mono" data-case="preserve">openid</code> — an opaque account identifier (no personal information).</li>
+        <li><code class="mono" data-case="preserve">profile</code> — your username, display name, and avatar.</li>
+        <li><code class="mono" data-case="preserve">telegram</code> — your Telegram id and username.</li>
+        <li><code class="mono" data-case="preserve">verified</code> — whether your account is verified (true/false).</li>
+      </ul>
+    </Card>
+
+    <Card title="what we do not do">
+      <ul>
+        <li>No email address is collected, and we send no email.</li>
+        <li>No SMS, no analytics, no advertising, no third-party trackers or cookies.</li>
+        <li>We never sell or share your data beyond the processors below.</li>
+      </ul>
+    </Card>
+
+    <Card title="processors">
+      <ul>
+        <li>Turso — the database that stores your account data.</li>
+        <li>Cloudflare — hosts the workers and pages, and keeps short-lived edge request logs.</li>
+        <li>Telegram — only involved if you use Telegram sign-in or verification.</li>
+      </ul>
+    </Card>
+
+    <Card title="retention & your rights">
+      <ul>
+        <li>Sessions last at most 30 days; access tokens minutes; authorization codes 60 seconds.</li>
+        <li>Your account data is kept until you delete your account or unlink Telegram.</li>
+        <li>You can view your data on your account page, edit your display name and avatar, revoke app access, unlink Telegram, and <strong>permanently delete your account</strong> (which erases all of the above).</li>
+      </ul>
+    </Card>
+
+    <div class="mw-section">
+      <h2>questions or requests</h2>
+      <ContactLinks />
+    </div>
+  </div>
+</Layout>

@@ -1,12 +1,13 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import LandingCta from "../components/LandingCta.tsx";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
 ---
-
-<Layout title="Meowerse Accounts">
-  <h1>Meowerse Accounts</h1>
-  <p>One account to sign in across the meowerse.</p>
-  <p class="actions">
-    <a href="/login"><button>Sign in</button></a>
-    <a href="/signup"><button class="secondary">Create account</button></a>
-  </p>
+<Layout title="meowerse accounts">
+  <div class="mw-stack">
+    <h1>one login for everything meowerse</h1>
+    <p class="mw-muted">sign in once, verify with telegram, and control exactly which apps see which data.</p>
+    <LandingCta client:load base={base} />
+    <p class="mw-muted"><a href="/developers">building an app?</a> · <a href="/about">about</a></p>
+  </div>
 </Layout>

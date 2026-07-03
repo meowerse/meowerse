@@ -93,6 +93,14 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.telegram_links = t.telegram_links.filter((r) => r.account_id !== a[0]);
         return { rows: [] };
       }
+      if (/DELETE FROM sessions WHERE account_id/.test(sql)) {
+        t.sessions = t.sessions.filter((r) => r.account_id !== a[0]);
+        return { rows: [] };
+      }
+      if (/DELETE FROM accounts WHERE id/.test(sql)) {
+        t.accounts = t.accounts.filter((r) => r.id !== a[0]);
+        return { rows: [] };
+      }
       if (/UPDATE accounts SET verified = 0/.test(sql)) {
         const row = t.accounts.find((r) => r.id === a[0]);
         if (row) row.verified = 0;

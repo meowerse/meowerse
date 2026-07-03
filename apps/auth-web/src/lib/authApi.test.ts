@@ -1,5 +1,6 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
 import {
+  deleteAccount,
   postSignup,
   postLogin,
   postConsent,
@@ -20,7 +21,10 @@ import {
   postManagementToken,
 } from "./authApi";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function mockJson(value: unknown, init?: ResponseInit) {
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(value), init));
@@ -141,4 +145,21 @@ test("nextLocation maps every action", () => {
   expect(nextLocation({ action: "verify_required" })).toBe("/verify");
   expect(nextLocation({ action: "done" })).toBe("/account");
   expect(nextLocation(undefined)).toBe("/account");
+});
+
+describe("authApi status-aware GET", () => {
+  it("maps a 401 to {error:'no_session'} instead of parsing the body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 401 }));
+    expect(await getAccount("https://api")).toEqual({ error: "no_session" });
+  });
+  it("maps a non-ok non-401 to {error:'http'}", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
+    expect(await getAccount("https://api")).toEqual({ error: "http" });
+  });
+  it("deleteAccount posts csrf + confirm", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await deleteAccount("https://api", "csrf1", "neko");
+    const body = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ csrf: "csrf1", confirm: "neko" });
+  });
 });
