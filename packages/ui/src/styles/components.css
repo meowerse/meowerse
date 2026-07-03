@@ -100,3 +100,5 @@
 .mw-header__nav a { color: var(--text-secondary); text-decoration: none; font-size: var(--text-sm); }
 .mw-header__nav a:hover { color: var(--text-primary); }
 .mw-header__user { display: inline-flex; align-items: center; gap: var(--gap-sm); font-size: var(--text-sm); }
+
+.mw-gate { display: flex; align-items: center; justify-content: center; min-height: 40vh; }
