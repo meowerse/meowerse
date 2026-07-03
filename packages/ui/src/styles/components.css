@@ -83,3 +83,7 @@
 
 .mw-themetoggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; background: transparent; border: 0.5px solid var(--border); border-radius: var(--radius); color: var(--text-secondary); cursor: pointer; }
 .mw-themetoggle:hover { background: var(--surface-muted); }
+
+.mw-contacts { display: flex; gap: var(--gap-md); }
+.mw-contacts__link { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: var(--radius); color: var(--text-secondary); font-size: 18px; }
+.mw-contacts__link:hover { background: var(--surface-muted); color: var(--text-primary); }
