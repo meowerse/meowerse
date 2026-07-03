@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Button, Field, Alert, Card, RecoveryCodes } from "@meowerse/ui";
 import { postSignup, nextLocation, type NextStep } from "../lib/authApi";
-
-type Submit = { preventDefault: () => void };
 
 export default function SignupForm({ base }: { base: string }) {
   const [username, setUsername] = useState("");
@@ -11,55 +10,44 @@ export default function SignupForm({ base }: { base: string }) {
   const [codes, setCodes] = useState<string[] | null>(null);
   const [next, setNext] = useState<NextStep | undefined>(undefined);
 
-  async function onSubmit(e: Submit) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError("");
-    setBusy(true);
+    setError(""); setBusy(true);
     try {
       const res = await postSignup(base, username, password);
-      if (res.ok) {
-        setCodes(res.recoveryCodes ?? []);
-        setNext(res.next);
-      } else {
-        setError(errorText(res.error));
-      }
-    } catch {
-      setError("Network error — please try again.");
-    }
+      if (res.ok) { setCodes(res.recoveryCodes ?? []); setNext(res.next); }
+      else setError(errorText(res.error));
+    } catch { setError("network error — please try again."); }
     setBusy(false);
   }
 
   if (codes) {
     return (
-      <div className="recovery">
-        <h2>Save your recovery codes</h2>
-        <p>These are shown once. Store them somewhere safe — each works a single time if you lose access.</p>
-        <ul>{codes.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
-        <button onClick={() => (window.location.href = nextLocation(next))}>I’ve saved them — continue</button>
-      </div>
+      <Card title="save your recovery codes" className="mw-narrow">
+        <p className="mw-muted">shown once. store them somewhere safe — each works a single time if you lose access.</p>
+        <RecoveryCodes codes={codes} />
+        <div style={{ marginTop: "var(--gap-lg)" }}>
+          <Button variant="primary" onClick={() => (window.location.href = nextLocation(next))}>i've saved them — continue</Button>
+        </div>
+      </Card>
     );
   }
 
   return (
-    <form onSubmit={onSubmit} className="auth-form">
-      <label>
-        Username
-        <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} />
-      </label>
-      <label>
-        Password
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={12} />
-      </label>
-      {error && <p role="alert" className="error">{error}</p>}
-      <button type="submit" disabled={busy}>{busy ? "Creating…" : "Create account"}</button>
+    <form onSubmit={onSubmit} className="mw-stack mw-narrow">
+      <Field label="username" hint="3–32 letters, numbers, or underscores" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} />
+      <Field label="password" hint="12–128 characters" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={12} />
+      {error && <Alert variant="error">{error}</Alert>}
+      <Button variant="primary" type="submit" loading={busy}>create account</Button>
+      <p className="mw-muted">already have one? <a href="/login">sign in</a></p>
     </form>
   );
 }
 
 function errorText(error: string | undefined): string {
-  if (error === "unavailable") return "That username is taken.";
-  if (error === "rate_limited") return "Too many attempts — try again later.";
-  if (error?.includes("password")) return "Password must be 12–128 characters.";
-  if (error?.includes("username")) return "Usernames are 3–32 letters, numbers, or underscores.";
-  return error ?? "Sign-up failed.";
+  if (error === "unavailable") return "that username is taken.";
+  if (error === "rate_limited") return "too many attempts — try again later.";
+  if (error?.includes("password")) return "password must be 12–128 characters.";
+  if (error?.includes("username")) return "usernames are 3–32 letters, numbers, or underscores.";
+  return error ?? "sign-up failed.";
 }
