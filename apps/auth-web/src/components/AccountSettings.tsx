@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner } from "@meowerse/ui";
+import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, type AccountInfo, type Grant } from "../lib/authApi";
 
 export default function AccountSettings({ base }: { base: string }) {
@@ -37,14 +37,14 @@ export default function AccountSettings({ base }: { base: string }) {
         toast({ message: "access revoked", variant: "success" });
       } else if (confirm.kind === "unlink") {
         const r = await unlinkTelegram(base, acct.csrf);
-        if (r.ok) { toast({ message: "telegram unlinked", variant: "success" }); reload(); }
+        if (r.ok) { clearSessionCache(); toast({ message: "telegram unlinked", variant: "success" }); reload(); }
         else toast({ message: "set a password first — unlinking would lock you out", variant: "error" });
       } else if (confirm.kind === "regen") {
         const r = await regenerateRecoveryCodes(base, acct.csrf);
         if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
       } else if (confirm.kind === "delete") {
         const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
-        if (r.ok) window.location.href = "/";
+        if (r.ok) { clearSessionCache(); window.location.href = "/"; }
         else toast({ message: "could not delete account", variant: "error" });
       }
     } finally { setBusy(false); setConfirm(null); }
@@ -56,7 +56,7 @@ export default function AccountSettings({ base }: { base: string }) {
   return (
     <div className="mw-stack">
       <h1>account</h1>
-      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)" }}>
+      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
         <strong>{acct.username ?? acct.displayName ?? "telegram account"}</strong>
         {acct.verified ? <Badge variant="verified" icon="rosette-discount-check">verified</Badge> : <Badge>unverified</Badge>}
       </p>
@@ -83,7 +83,7 @@ export default function AccountSettings({ base }: { base: string }) {
         {grants.length === 0 ? <p className="mw-muted">no apps have access.</p> : (
           <div className="mw-stack">
             {grants.map((g) => (
-              <div key={g.clientId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--gap-md)" }}>
+              <div key={g.clientId} className="mw-row">
                 <span><code className="mono" data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}</span>
                 <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "revoke", clientId: g.clientId })}>revoke</Button>
               </div>
@@ -102,7 +102,7 @@ export default function AccountSettings({ base }: { base: string }) {
         <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
       </Card>
 
-      <p><a href="/logout"><Button variant="secondary">sign out</Button></a></p>
+      <p><a href="/logout" onClick={() => clearSessionCache()}><Button variant="secondary">sign out</Button></a></p>
 
       <ConfirmDialog open={confirm?.kind === "revoke"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="revoke access?" description="the app will immediately lose access to your account. you can re-authorize any time."

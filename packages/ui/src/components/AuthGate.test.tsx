@@ -1,7 +1,12 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthGate } from "./AuthGate";
+import { clearSessionCache } from "../lib/useSession";
 
+beforeEach(() => {
+  sessionStorage.clear();
+  clearSessionCache();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("AuthGate", () => {

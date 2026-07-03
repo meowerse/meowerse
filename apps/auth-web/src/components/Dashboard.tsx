@@ -72,9 +72,9 @@ export default function Dashboard({ base }: { base: string }) {
         {clients.length === 0 ? <p className="mw-muted">no apps yet.</p> : (
           <div className="mw-stack">
             {clients.map((c) => (
-              <div key={c.clientId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--gap-md)", flexWrap: "wrap" }}>
+              <div key={c.clientId} className="mw-row">
                 <span><strong>{c.displayName ?? c.name}</strong> — <code className="mono" data-case="preserve">{c.clientId}</code> ({c.clientType}{c.verifiedOnly ? ", verified-only" : ""}) · {c.allowedScopes.join(", ")}</span>
-                <span style={{ display: "flex", gap: "var(--gap-sm)" }}>
+                <span style={{ display: "flex", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
                   {c.clientType === "confidential" && <Button size="sm" variant="secondary" onClick={() => onRotate(c.clientId)}>rotate secret</Button>}
                   <Button size="sm" variant="danger" onClick={() => setToDelete(c)}>delete</Button>
                 </span>
