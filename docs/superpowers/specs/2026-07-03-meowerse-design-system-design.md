@@ -169,8 +169,11 @@ Dropdown, DatePicker until a real screen needs them.
 | `Avatar` | initials circle | name, size sm/md/lg |
 | `Toast` | action feedback | message, `variant`, auto-dismiss; provider + `useToast()` |
 | `Spinner` | loading | size |
-| `AppHeader` | brand + nav + theme toggle | nav links, current path |
+| `AppHeader` | brand + nav + theme toggle | two states (guest/authed), current path |
+| `Footer` | site footer | brand, legal + dev links, `ContactLinks` |
+| `ContactLinks` | icon links to owner channels | email/telegram/instagram/github/linkedin, `aria-label`ed |
 | `ThemeToggle` | light/dark switch | reads/writes localStorage |
+| `AuthGate` | client-side page guard | checks `/api/session`; renders skeleton → content or redirects to `/login?next=` |
 
 All components: className passthrough, forwardRef where it matters, aria wired, keyboard
 support, focus-visible green ring.
@@ -187,6 +190,7 @@ Confirmation friction scales with blast radius, so it's protective without being
 | regenerate recovery codes | 1 — confirm modal | "your old codes stop working now"; show new codes after |
 | sign out everywhere | 1 — confirm modal | danger |
 | delete an OAuth client | 2 — type-to-confirm | type the app name; breaks the integration for all its users |
+| **delete your account** | 2 — type-to-confirm | type username; irreversible, cascades all data; needs new `POST /api/account/delete` |
 | change password | 3 — re-auth | already requires current password ✓ (keep) |
 | unlink Telegram when it's the only auth factor | 3 — hard warn | warn user they may lock themselves out; block if truly last factor |
 
@@ -201,6 +205,10 @@ Confirmation friction scales with blast radius, so it's protective without being
 - `ThemeToggle` writes `localStorage.mw-theme` and flips `data-theme`.
 - CSS: `:root` = light; `[data-theme="dark"]` = dark; plus a `@media (prefers-color-scheme: dark)`
   block scoped to `:root:not([data-theme="light"])` so system dark works before JS runs.
+- **No transition slide on init** (review caveat): the sync script adds `.mw-no-transitions`
+  to `<html>` while it sets the theme, removed on the next frame (`requestAnimationFrame`).
+  Surface/background tokens carry no global `transition` — only interactive states do — so
+  first paint never animates a color slide.
 
 ## 8. Accessibility
 
@@ -216,8 +224,12 @@ Confirmation friction scales with blast radius, so it's protective without being
 
 ### apps/auth-web (full)
 - Add `@meowerse/ui` (`workspace:*`) dep.
-- `Layout.astro`: drop the inline `<style>`, `import "@meowerse/ui/tokens.css"`, add the
-  no-flash theme script, render `AppHeader` + `ThemeToggle`.
+- `Layout.astro`: drop the inline `<style>`, `import "@meowerse/ui/tokens.css"` **in the
+  Astro layout frontmatter** (not inside a React island — review caveat: Astro may not copy
+  font CSS imported only across the island barrier; importing in the layout guarantees the
+  woff2 land in `dist/`), add the no-flash theme script, render `AppHeader` + `Footer`.
+  Components must carry **no implicit global-style dependency** (no Tailwind, no ambient
+  reset) — they read only `@meowerse/ui` tokens, so the single layout import is enough.
 - Rebuild all components on primitives: `LoginForm`, `SignupForm`, `ConsentForm`
   (scope `Checkbox`es), `AccountSettings`, `Dashboard`, `TelegramButton`, `verify`.
 - Wire confirm tiers into: revoke app, delete client (type-to-confirm), rotate secret,
@@ -262,3 +274,106 @@ Confirmation friction scales with blast radius, so it's protective without being
   with no FOUC, all lowercase with codes case-preserved, confirm tiers wired.
 - `just lint` + `just test` green across the monorepo.
 - Both apps deploy to Cloudflare Pages unchanged and render correctly in both themes.
+
+## 14. auth-web information architecture & route protection
+
+Static Astro pages, so **guards are UX; the API is the real wall** (every `/api/account`
+and `/api/dev` route already returns `401 {error:"no_session"}` for guests). No page
+guard can leak data because the server enforces auth on every call.
+
+### Session detection
+Add `GET /api/session` (see §15) → `{authenticated, username, verified}`. The header and
+guarded pages call it once. The `__Host-mw_sess` cookie is HttpOnly, so JS can't read auth
+state directly — this cheap endpoint is the sanctioned way to know.
+
+### Header — two states
+Neutral first paint (brand + theme toggle only) to avoid a flash of the wrong nav; then
+`/api/session` resolves it:
+- **guest** → brand · about · developers · `log in` · `sign up` · theme
+- **authed** → brand · account · developers · theme · avatar menu (username → sign out)
+
+### AuthGate (fixes the infinite-load bug)
+`/account` and `/developers` wrap their island in `AuthGate`: render a skeleton, call
+`/api/session`; if not authenticated → `location.replace("/login?next=<path>")`; else mount
+the real island. Guests never mount the heavy island, so they never hit the fallthrough.
+Root cause of the current infinite load: `AccountSettings` renders `Loading…` forever when
+`getAccount` errors with anything other than `no_session` (no generic error branch). Fixes:
+1. `authApi` helpers become status-aware — inspect `res.status`, return typed
+   `{error: "no_session" | "http" | "network"}` deterministically (never silently `.json()`
+   a 401/404).
+2. Every guarded component renders a resolved state for every case (content · sign-in ·
+   error-with-retry) — no unbounded loading fallback.
+3. Verify the worker's `401` responses carry CORS headers (else the browser blocks the body
+   read and the client sees a network error).
+
+### Pages vs modals
+- **Pages** (deep-linkable / OIDC targets / full decisions): `/`, `/login`, `/signup`,
+  `/consent`, `/verify`, `/account`, `/developers`, `/about`, `/privacy`, `/terms`,
+  `/error`, `/404`.
+- **Modals** (sub-actions, not deep-linked): change password, revoke app, delete client
+  (type-to-confirm), rotate secret, unlink Telegram, regenerate recovery codes, sign out
+  everywhere, delete account (type-to-confirm), create client.
+- **Developers split**: a public "build on meowerse" marketing view for guests (kills the
+  current create-account-looking form a guest sees), and the real dashboard for authed
+  owners. Login/signup stay separate pages (OIDC deep-links) but cross-link.
+- Every page gets the shared `Footer` (about · privacy · terms · developers · `ContactLinks`).
+
+## 15. Backend additions (workers/auth)
+
+Two small, tested endpoints — everything else already exists.
+
+- `GET /api/session` — reads the session cookie, returns `{authenticated: bool, username?,
+  verified?}` (no PII beyond username; `verified` derived live). 200 always (guests get
+  `{authenticated:false}`), CORS + `no-store`. Cheap; powers header + `AuthGate`.
+- `POST /api/account/delete` — session + CSRF + **type-username confirmation** in body;
+  deletes the account (cascade removes credentials, recovery codes, telegram link, sessions,
+  consents, owned clients, tokens per existing `ON DELETE CASCADE`), clears the session
+  cookie, returns `{ok:true}`. This is the right-to-erasure path the privacy policy needs.
+- Tests (vitest, repo 90% branch gate): `/api/session` authed vs guest; delete happy-path,
+  wrong-confirmation rejected, missing-CSRF rejected, cascade verified via `memStore`.
+
+## 16. Legal & content pages
+
+Written from the **real** data model (§ investigation), honest personal-project framing, no
+invented claims, plain language, GDPR-friendly. Contact via `ContactLinks`
+(email `aleksandrnyrko@gmail.com`, Telegram `t.me/ALXNK0`, Instagram/GitHub/LinkedIn `alxnko`).
+
+### /about
+What meowerse accounts is: a personal-project single sign-on (OIDC identity provider) that
+lets you use one meowerse login across meowerse apps, verify with Telegram, and control which
+apps see which data. What it is not: a company, not ad-supported, no tracking.
+
+### /privacy (truthful, from the schema)
+- **What we collect**: username; optional display name + avatar URL; a password (stored only
+  as a salted PBKDF2-SHA256 hash, 600k iterations — never plaintext); 8 one-time recovery
+  codes (stored hashed); if you link Telegram — your Telegram id, username, display name,
+  avatar URL; a verified flag (derived from whether Telegram is linked); timestamps.
+- **Sessions & security data**: a hashed session id + CSRF token (cookie is `__Host-`,
+  HttpOnly, Secure, SameSite=Lax); OAuth codes/tokens stored as hashes/ids with short TTLs;
+  rate-limit counters keyed on a **hashed** IP (signup) or **hashed** username (login) — we
+  do not store your raw IP.
+- **What we share with apps** — only with your per-scope consent, and you can revoke anytime:
+  `openid` → an opaque account id (no personal info); `profile` → username, display name,
+  avatar; `telegram` → Telegram id + username; `verified` → true/false.
+- **What we do NOT do**: no email collected, no SMS, no analytics or trackers, no third-party
+  advertising cookies, no selling or sharing data beyond the processors below.
+- **Processors**: Turso (database), Cloudflare (Workers + Pages hosting, edge request logs),
+  Telegram (only if you use Telegram sign-in/verify).
+- **Retention**: sessions ≤30 days, tokens minutes, auth codes 60s; account data kept until
+  you delete your account or unlink Telegram.
+- **Your rights**: see your data (account page), edit display name/avatar, **delete your
+  account** (§15), revoke app access, withdraw consent. Contact via `ContactLinks`.
+
+### /terms
+Personal-project terms: provided as-is, best-effort, no warranty/SLA; acceptable-use (no
+abuse, no automated credential attacks — rate-limited and may be blocked); accounts may be
+suspended for abuse; you own your content; the operator may change or discontinue the service;
+governing framing kept minimal (individual operator, not a company); contact via `ContactLinks`.
+
+### Success additions
+- Header shows correct guest/authed nav; `/account` + `/developers` never infinite-load
+  (guest → redirect to login).
+- `/about`, `/privacy`, `/terms`, `/404` exist, styled, linked in the footer, factually
+  accurate to the code.
+- `GET /api/session` + `POST /api/account/delete` shipped with tests; deletion reachable from
+  the account page behind type-to-confirm.
