@@ -84,14 +84,24 @@ export interface Grant {
   updatedAt: string | null;
 }
 
-export async function getAccount(base: string): Promise<AccountInfo> {
-  return (await fetch(`${base}/api/account`, { credentials: "include" })).json() as Promise<AccountInfo>;
+async function getJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: "include" });
+  if (res.status === 401) return { error: "no_session" } as T;
+  if (!res.ok) return { error: "http" } as T;
+  return (await res.json()) as T;
+}
+
+export function getAccount(base: string): Promise<AccountInfo> {
+  return getJson<AccountInfo>(`${base}/api/account`);
 }
 export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/account/password`, { csrf, current_password: current, new_password: next });
 }
-export async function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {
-  return (await fetch(`${base}/api/account/grants`, { credentials: "include" })).json() as Promise<{ grants?: Grant[]; error?: string }>;
+export function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {
+  return getJson(`${base}/api/account/grants`);
+}
+export function deleteAccount(base: string, csrf: string, confirm: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/account/delete`, { csrf, confirm });
 }
 export function revokeGrant(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/account/grants/revoke`, { csrf, client_id: clientId });
@@ -119,9 +129,8 @@ export async function tgStatus(base: string, ticketId: string): Promise<{ ready:
   return (await res.json()) as { ready: boolean; next?: NextStep };
 }
 
-export async function listClients(base: string): Promise<{ clients?: ClientSummary[]; csrf?: string; error?: string }> {
-  const res = await fetch(`${base}/api/dev/clients`, { credentials: "include" });
-  return (await res.json()) as { clients?: ClientSummary[]; csrf?: string; error?: string };
+export function listClients(base: string): Promise<{ clients?: ClientSummary[]; csrf?: string; error?: string }> {
+  return getJson(`${base}/api/dev/clients`);
 }
 
 export async function createClient(
