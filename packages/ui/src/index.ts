@@ -1,4 +1,5 @@
 export { Spinner } from "./components/Spinner";
+export { Icon } from "./components/Icon";
 export { Button, type ButtonProps } from "./components/Button";
 export { Field, type FieldProps } from "./components/Field";
 export { Checkbox, type CheckboxProps } from "./components/Checkbox";

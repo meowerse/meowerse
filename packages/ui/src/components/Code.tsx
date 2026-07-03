@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export function Code({ value, copy = false, className }:
@@ -12,7 +13,7 @@ export function Code({ value, copy = false, className }:
       <code className="mono" data-case="preserve">{value}</code>
       {copy && (
         <button type="button" className="mw-code__copy" aria-label="copy" onClick={onCopy}>
-          <i className={done ? "ti ti-check" : "ti ti-copy"} aria-hidden="true" />
+          <Icon name={done ? "check" : "copy"} size={15} />
         </button>
       )}
     </span>

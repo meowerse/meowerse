@@ -7,7 +7,7 @@ describe("Badge", () => {
     render(<Badge variant="verified" icon="rosette-discount-check">verified</Badge>);
     const b = screen.getByText("verified").closest(".mw-badge")!;
     expect(b.className).toContain("mw-badge--verified");
-    expect(b.querySelector("i")).toHaveClass("ti-rosette-discount-check");
+    expect(b.querySelector("[data-icon='rosette-discount-check']")).toBeTruthy();
   });
   it("defaults to neutral", () => {
     render(<Badge>public</Badge>);

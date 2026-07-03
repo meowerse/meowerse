@@ -1,6 +1,9 @@
-# Cloudflare Pages security headers for the auth UI (spec §7, §10/#8).
+# Cloudflare security headers for the auth UI (spec §7, §10/#8).
+# script-src needs 'unsafe-inline': Astro inlines its island-hydration bootstrap +
+# our no-flash theme script, so a strict script-src 'self' blocks all JS and
+# nothing hydrates (every spinner freezes).
 /*
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://auth-api.alxnko.eu.org
+  Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://auth-api.alxnko.eu.org
