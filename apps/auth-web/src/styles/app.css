@@ -1,9 +1,15 @@
+html { overflow-x: hidden; }
 main { max-width: 34rem; margin: 2rem auto; padding: 0 1rem; width: 100%; }
 main.wide { max-width: 52rem; }
-.mw-stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+@media (max-width: 640px) { main { margin: 1.25rem auto; } }
+.mw-stack { display: flex; flex-direction: column; gap: var(--gap-md); min-width: 0; }
+.mw-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--gap-sm); min-width: 0; }
+.mw-row > * { min-width: 0; }
 .mw-section { display: flex; flex-direction: column; gap: var(--gap-sm); margin-top: var(--gap-xl); }
 .mw-narrow { max-width: 24rem; }
 .mw-muted { color: var(--text-muted); font-size: var(--text-sm); }
-h1 { font-size: var(--text-2xl); font-weight: 600; margin: 0 0 var(--gap-md); }
+h1 { font-size: var(--text-2xl); font-weight: 600; margin: 0 0 var(--gap-md); line-height: 1.2; }
 h2 { font-size: var(--text-lg); font-weight: 600; margin: 0; }
 a { color: var(--text-accent); }
+pre { overflow-x: auto; max-width: 100%; font-size: var(--text-xs); }
+code, .mono { overflow-wrap: anywhere; }

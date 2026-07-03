@@ -56,7 +56,7 @@ export default function AccountSettings({ base }: { base: string }) {
   return (
     <div className="mw-stack">
       <h1>account</h1>
-      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)" }}>
+      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
         <strong>{acct.username ?? acct.displayName ?? "telegram account"}</strong>
         {acct.verified ? <Badge variant="verified" icon="rosette-discount-check">verified</Badge> : <Badge>unverified</Badge>}
       </p>
@@ -83,7 +83,7 @@ export default function AccountSettings({ base }: { base: string }) {
         {grants.length === 0 ? <p className="mw-muted">no apps have access.</p> : (
           <div className="mw-stack">
             {grants.map((g) => (
-              <div key={g.clientId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--gap-md)" }}>
+              <div key={g.clientId} className="mw-row">
                 <span><code className="mono" data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}</span>
                 <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "revoke", clientId: g.clientId })}>revoke</Button>
               </div>
