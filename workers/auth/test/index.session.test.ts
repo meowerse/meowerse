@@ -238,3 +238,27 @@ test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/S
   const r5 = await handle(new Request("https://iss/userinfo", { headers: { Authorization: `Bearer ${b4.access_token}` } }), env as never, deps as never);
   expect(r5.status).toBe(200); // default RESOURCE_AUD path
 });
+
+async function login(username: string) {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: "accttest1234" }) }), env as never, deps as never);
+  const sess = cookieValue(su.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  return { store, env, deps, sess };
+}
+
+test("GET /api/session reports the logged-in user", async () => {
+  const { env, deps, sess } = await login("sess_user");
+  const r = await handle(new Request("https://iss/api/session", { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: true, username: "sess_user", verified: false });
+});
+
+test("GET /api/session reports a guest with no session (200, not 401)", async () => {
+  const { env, deps } = await login("sess_guest");
+  const r = await handle(new Request("https://iss/api/session"), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: false });
+});
