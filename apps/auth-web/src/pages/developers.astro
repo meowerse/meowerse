@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import DevelopersPage from "../components/DevelopersPage.tsx";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+---
+<Layout title="developers · meowerse" wide>
+  <DevelopersPage client:load base={base} />
+</Layout>
