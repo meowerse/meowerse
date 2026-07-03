@@ -70,3 +70,8 @@
 
 .mw-confirm__desc { font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--gap-md); line-height: 1.5; }
 .mw-confirm__actions { display: flex; gap: var(--gap-sm); justify-content: flex-end; margin-top: var(--gap-lg); }
+
+.mw-toasts { position: fixed; bottom: var(--gap-lg); left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: var(--gap-sm); align-items: center; pointer-events: none; }
+.mw-toast { pointer-events: auto; font-size: var(--text-sm); padding: 9px 14px; border-radius: var(--radius); border: 0.5px solid var(--border); background: var(--surface-2); color: var(--text-primary); box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+.mw-toast--success { border-color: var(--success); }
+.mw-toast--error { border-color: var(--danger); }
