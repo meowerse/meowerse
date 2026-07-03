@@ -1,140 +1,119 @@
-import { useEffect, useState } from "react";
-import {
-  getAccount,
-  postAccountPassword,
-  getGrants,
-  revokeGrant,
-  unlinkTelegram,
-  regenerateRecoveryCodes,
-  type AccountInfo,
-  type Grant,
-} from "../lib/authApi";
-
-type Submit = { preventDefault: () => void };
+import { useEffect, useState, type FormEvent } from "react";
+import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner } from "@meowerse/ui";
+import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, type AccountInfo, type Grant } from "../lib/authApi";
 
 export default function AccountSettings({ base }: { base: string }) {
+  const toast = useToast();
   const [acct, setAcct] = useState<AccountInfo | null>(null);
   const [grants, setGrants] = useState<Grant[]>([]);
   const [error, setError] = useState("");
-  const [msg, setMsg] = useState("");
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const [codes, setCodes] = useState<string[] | null>(null);
+  const [confirm, setConfirm] = useState<null | { kind: "revoke" | "unlink" | "regen" | "delete"; clientId?: string }>(null);
+  const [busy, setBusy] = useState(false);
 
   function reload() {
-    getAccount(base)
-      .then((a) => {
-        if (a.error === "no_session") setError("no_session");
-        else setAcct(a);
-      })
-      .catch(() => setError("network"));
+    getAccount(base).then((a) => { if (a.error === "no_session") setError("no_session"); else setAcct(a); }).catch(() => setError("network"));
     getGrants(base).then((g) => setGrants(g.grants ?? [])).catch(() => {});
   }
   useEffect(reload, [base]);
 
-  async function changePassword(e: Submit) {
+  async function changePassword(e: FormEvent) {
     e.preventDefault();
-    setError("");
-    setMsg("");
-    const r = await postAccountPassword(base, acct!.csrf, cur, next);
-    if (r.ok) {
-      setMsg("Password changed.");
-      setCur("");
-      setNext("");
-    } else {
-      setError(r.error === "wrong_password" ? "Current password is wrong." : r.error?.includes("password") ? "New password must be 12–128 chars." : "Could not change password.");
-    }
-  }
-
-  async function revoke(clientId: string) {
     if (!acct) return;
-    await revokeGrant(base, acct.csrf, clientId);
-    setGrants((g) => g.filter((x) => x.clientId !== clientId));
+    const r = await postAccountPassword(base, acct.csrf, cur, next);
+    if (r.ok) { toast({ message: "password changed", variant: "success" }); setCur(""); setNext(""); }
+    else toast({ message: r.error === "wrong_password" ? "current password is wrong" : "could not change password", variant: "error" });
   }
 
-  async function unlink() {
-    if (!acct) return;
-    const r = await unlinkTelegram(base, acct.csrf);
-    if (r.ok) reload();
-    else setError(r.error === "no_password_fallback" ? "Set a password first — unlinking Telegram would lock you out." : "Could not unlink.");
+  async function runConfirm(password?: string) {
+    if (!acct || !confirm) return;
+    setBusy(true);
+    try {
+      if (confirm.kind === "revoke" && confirm.clientId) {
+        await revokeGrant(base, acct.csrf, confirm.clientId);
+        setGrants((g) => g.filter((x) => x.clientId !== confirm.clientId));
+        toast({ message: "access revoked", variant: "success" });
+      } else if (confirm.kind === "unlink") {
+        const r = await unlinkTelegram(base, acct.csrf);
+        if (r.ok) { toast({ message: "telegram unlinked", variant: "success" }); reload(); }
+        else toast({ message: "set a password first — unlinking would lock you out", variant: "error" });
+      } else if (confirm.kind === "regen") {
+        const r = await regenerateRecoveryCodes(base, acct.csrf);
+        if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
+      } else if (confirm.kind === "delete") {
+        const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
+        if (r.ok) window.location.href = "/";
+        else toast({ message: "could not delete account", variant: "error" });
+      }
+    } finally { setBusy(false); setConfirm(null); }
   }
 
-  async function regen() {
-    if (!acct) return;
-    const r = await regenerateRecoveryCodes(base, acct.csrf);
-    if (r.recoveryCodes) setCodes(r.recoveryCodes);
-  }
-
-  if (error === "no_session") {
-    return (
-      <p role="alert" className="error">
-        Please <a href="/login">sign in</a> to manage your account.
-      </p>
-    );
-  }
-  if (!acct) return <p>Loading…</p>;
+  if (error === "no_session") return <Alert variant="error">please <a href="/login">sign in</a> to manage your account.</Alert>;
+  if (!acct) return <div className="mw-stack"><Spinner label="loading account" /></div>;
 
   return (
-    <div className="account">
-      <h1>Account</h1>
-      <p>
-        <strong>{acct.username ?? acct.displayName ?? "Telegram account"}</strong>{" "}
-        {acct.verified ? <span className="badge ok">✓ Verified</span> : <span className="badge">Unverified</span>}
+    <div className="mw-stack">
+      <h1>account</h1>
+      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)" }}>
+        <strong>{acct.username ?? acct.displayName ?? "telegram account"}</strong>
+        {acct.verified ? <Badge variant="verified" icon="rosette-discount-check">verified</Badge> : <Badge>unverified</Badge>}
       </p>
 
-      <section>
-        <h2>Telegram</h2>
+      <Card title="telegram">
         {acct.telegram.linked ? (
-          <p>
-            Linked{acct.telegram.username ? ` as @${acct.telegram.username}` : ""}.{" "}
-            <button className="secondary" onClick={unlink}>Unlink</button>
-          </p>
+          <p>linked{acct.telegram.username ? ` as @${acct.telegram.username}` : ""}. <Button size="sm" variant="secondary" onClick={() => setConfirm({ kind: "unlink" })}>unlink</Button></p>
         ) : (
-          <p>Not linked. <a href="/verify"><button className="secondary">Verify with Telegram</button></a></p>
+          <p>not linked. <a href="/verify"><Button size="sm" variant="secondary">verify with telegram</Button></a></p>
         )}
-      </section>
+      </Card>
 
       {acct.hasPassword && (
-        <section>
-          <h2>Change password</h2>
-          <form onSubmit={changePassword} className="auth-form">
-            <label>Current password<input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" required /></label>
-            <label>New password<input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" minLength={12} required /></label>
-            <button type="submit">Update password</button>
+        <Card title="change password">
+          <form onSubmit={changePassword} className="mw-stack">
+            <Field label="current password" type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" required />
+            <Field label="new password" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" minLength={12} required />
+            <Button variant="primary" type="submit">update password</Button>
           </form>
-        </section>
+        </Card>
       )}
 
-      <section>
-        <h2>Connected apps</h2>
-        {grants.length === 0 ? (
-          <p className="muted">No apps have access.</p>
-        ) : (
-          <ul>
+      <Card title="connected apps">
+        {grants.length === 0 ? <p className="mw-muted">no apps have access.</p> : (
+          <div className="mw-stack">
             {grants.map((g) => (
-              <li key={g.clientId}>
-                <code>{g.clientId}</code> — {g.approvedScopes.join(", ")} <button className="secondary" onClick={() => revoke(g.clientId)}>Revoke</button>
-              </li>
+              <div key={g.clientId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--gap-md)" }}>
+                <span><code className="mono" data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}</span>
+                <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "revoke", clientId: g.clientId })}>revoke</Button>
+              </div>
             ))}
-          </ul>
-        )}
-      </section>
-
-      <section>
-        <h2>Recovery codes</h2>
-        <p>{acct.recoveryRemaining} unused. <button className="secondary" onClick={regen}>Regenerate</button></p>
-        {codes && (
-          <div className="recovery">
-            <p>New codes (shown once — save them):</p>
-            <ul>{codes.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
           </div>
         )}
-      </section>
+      </Card>
 
-      {msg && <p className="ok-msg" role="status">{msg}</p>}
-      {error && error !== "no_session" && <p role="alert" className="error">{error === "network" ? "Network error." : error}</p>}
+      <Card title="recovery codes">
+        <p>{acct.recoveryRemaining} unused. <Button size="sm" variant="secondary" onClick={() => setConfirm({ kind: "regen" })}>regenerate</Button></p>
+        {codes && <div style={{ marginTop: "var(--gap-md)" }}><p className="mw-muted">new codes (shown once — save them):</p><RecoveryCodes codes={codes} /></div>}
+      </Card>
 
-      <p><a href="/logout"><button className="secondary">Sign out</button></a></p>
+      <Card title="danger zone">
+        <p className="mw-muted">deleting your account is permanent and removes all your data and apps.</p>
+        <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
+      </Card>
+
+      <p><a href="/logout"><Button variant="secondary">sign out</Button></a></p>
+
+      <ConfirmDialog open={confirm?.kind === "revoke"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+        title="revoke access?" description="the app will immediately lose access to your account. you can re-authorize any time."
+        confirmLabel="revoke access" variant="danger" loading={busy} />
+      <ConfirmDialog open={confirm?.kind === "unlink"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+        title="unlink telegram?" description="you'll lose your verified status and telegram sign-in." confirmLabel="unlink" variant="danger" loading={busy} />
+      <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+        title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
+      <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+        title="delete your account?" description="this is permanent. all your data, connected apps, and owned apps are erased."
+        confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
     </div>
   );
 }
