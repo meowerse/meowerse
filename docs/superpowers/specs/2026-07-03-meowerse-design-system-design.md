@@ -293,9 +293,12 @@ Neutral first paint (brand + theme toggle only) to avoid a flash of the wrong na
 - **authed** → brand · account · developers · theme · avatar menu (username → sign out)
 
 ### AuthGate (fixes the infinite-load bug)
-`/account` and `/developers` wrap their island in `AuthGate`: render a skeleton, call
-`/api/session`; if not authenticated → `location.replace("/login?next=<path>")`; else mount
-the real island. Guests never mount the heavy island, so they never hit the fallthrough.
+`/account` and `/developers` wrap their island in `AuthGate`: render a **neutral centered
+loader (not a content skeleton)**, call `/api/session`; if not authenticated →
+`location.replace("/login?next=<path>")`; else mount the real island. Guests never mount the
+heavy island, so they never hit the fallthrough. The neutral loader matters: a fake account
+skeleton implies content is coming, so the redirect reads as bait-and-switch; a plain
+loader → redirect reads as intentional (the unavoidable one round-trip on a static host).
 Root cause of the current infinite load: `AccountSettings` renders `Loading…` forever when
 `getAccount` errors with anything other than `no_session` (no generic error branch). Fixes:
 1. `authApi` helpers become status-aware — inspect `res.status`, return typed
@@ -326,11 +329,19 @@ Two small, tested endpoints — everything else already exists.
   verified?}` (no PII beyond username; `verified` derived live). 200 always (guests get
   `{authenticated:false}`), CORS + `no-store`. Cheap; powers header + `AuthGate`.
 - `POST /api/account/delete` — session + CSRF + **type-username confirmation** in body;
-  deletes the account (cascade removes credentials, recovery codes, telegram link, sessions,
-  consents, owned clients, tokens per existing `ON DELETE CASCADE`), clears the session
-  cookie, returns `{ok:true}`. This is the right-to-erasure path the privacy policy needs.
+  clears the session cookie, returns `{ok:true}`. Right-to-erasure path for the privacy policy.
+  - **Do NOT rely on `ON DELETE CASCADE`.** The schema declares it (`db.ts`), but the worker
+    never sets `PRAGMA foreign_keys = ON` and Turso's stateless HTTP won't persist it, so
+    SQLite FK enforcement stays off and cascades silently no-op. Instead delete explicitly
+    from every child table in a single `db.batch([...], "write")` (one atomic transaction),
+    FK-safe order: recovery_codes, password_credentials, telegram_links, sessions, consents,
+    access_tokens, refresh_tokens, management_tokens, login_requests/tickets, then
+    oauth_client_secrets + redirect_uris + consents for owned clients, owned oauth_clients,
+    finally the accounts row. Owned clients breaking their RP integrations is expected and
+    documented on the confirm modal.
 - Tests (vitest, repo 90% branch gate): `/api/session` authed vs guest; delete happy-path,
-  wrong-confirmation rejected, missing-CSRF rejected, cascade verified via `memStore`.
+  wrong-confirmation rejected, missing-CSRF rejected, and **every child table emptied**
+  verified via `memStore` (proves the explicit batch, not a cascade that never runs).
 
 ## 16. Legal & content pages
 
