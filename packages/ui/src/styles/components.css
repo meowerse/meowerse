@@ -80,3 +80,6 @@
 .mw-recovery__grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-sm); }
 .mw-recovery__grid li { font-family: var(--font-mono); font-size: var(--text-sm); }
 .mw-recovery__actions { margin-top: var(--gap-md); }
+
+.mw-themetoggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; background: transparent; border: 0.5px solid var(--border); border-radius: var(--radius); color: var(--text-secondary); cursor: pointer; }
+.mw-themetoggle:hover { background: var(--surface-muted); }
