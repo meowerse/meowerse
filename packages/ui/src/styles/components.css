@@ -62,3 +62,8 @@
 .mw-avatar--sm { width: 28px; height: 28px; font-size: var(--text-xs); }
 .mw-avatar--md { width: 36px; height: 36px; font-size: var(--text-sm); }
 .mw-avatar--lg { width: 48px; height: 48px; font-size: var(--text-md); }
+
+.mw-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: var(--gap-lg); }
+.mw-modal__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.5); }
+.mw-modal__panel { position: relative; z-index: 1; width: 100%; max-width: 380px; background: var(--surface-1); border: 0.5px solid var(--border); border-radius: var(--radius-lg); padding: var(--gap-xl); }
+.mw-modal__title { font-size: var(--text-lg); font-weight: 600; margin: 0 0 var(--gap-sm); }
