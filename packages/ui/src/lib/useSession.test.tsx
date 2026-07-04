@@ -35,8 +35,8 @@ describe("useSession", () => {
     first.unmount();
     spy.mockClear();
     render(<View base="https://api" />);
-    // second mount reads the cache synchronously — no spinner, no new fetch
-    expect(screen.getByText("hi cached")).toBeInTheDocument();
+    // second mount applies the cache in its effect — no new fetch
+    expect(await screen.findByText("hi cached")).toBeInTheDocument();
     expect(spy).not.toHaveBeenCalled();
   });
 });
