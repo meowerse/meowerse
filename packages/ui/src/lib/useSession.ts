@@ -62,10 +62,21 @@ async function loadSession(base: string): Promise<Resolved> {
  * network call across every island on the page (one fetch, not one per island).
  */
 export function useSession(base: string): Session {
-  const [s, setS] = useState<Session>(() => readCache() ?? { loading: true, authenticated: false });
+  // ALWAYS start in `loading` so the server render and the first client render
+  // are identical. Reading sessionStorage in the initializer would make the
+  // client's first render diverge from the server's (which has no sessionStorage)
+  // → a hydration mismatch. In an SSR'd island that mismatch made React reuse the
+  // AuthGate loader div (`.mw-gate`, display:flex) for the gated content, laying
+  // the account cards out in a ROW. Apply the cache in the effect instead (one
+  // extra render tick — negligible, and still no network when cached).
+  const [s, setS] = useState<Session>({ loading: true, authenticated: false });
 
   useEffect(() => {
-    if (!s.loading) return; // served from cache — nothing to fetch
+    const cached = readCache();
+    if (cached) {
+      setS(cached);
+      return;
+    }
     let live = true;
     inflight ??= loadSession(base);
     inflight
@@ -78,7 +89,7 @@ export function useSession(base: string): Session {
     return () => {
       live = false;
     };
-  }, [base, s.loading]);
+  }, [base]);
 
   return s;
 }
