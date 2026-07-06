@@ -118,17 +118,22 @@ export interface AccountInfo {
   hasPassword: boolean;
 }
 
-/** Profile + whether a password credential exists (telegram-only accounts have none). */
+/** Profile + whether a password credential exists (telegram-only accounts have
+ *  none) — folded into ONE round-trip via an EXISTS subquery. */
 export async function getAccountInfo(db: DbClient, accountId: string): Promise<AccountInfo | null> {
-  const a = await db.execute({ sql: "SELECT username, display_name, avatar_url FROM accounts WHERE id = ?", args: [accountId] });
+  const a = await db.execute({
+    sql: `SELECT username, display_name, avatar_url,
+                 EXISTS(SELECT 1 FROM password_credentials p WHERE p.account_id = ?) AS has_password
+          FROM accounts WHERE id = ?`,
+    args: [accountId, accountId],
+  });
   const row = a.rows[0];
   if (!row) return null;
-  const pw = await db.execute({ sql: "SELECT 1 FROM password_credentials WHERE account_id = ?", args: [accountId] });
   return {
     username: row.username == null ? null : String(row.username),
     displayName: row.display_name == null ? null : String(row.display_name),
     avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
-    hasPassword: pw.rows.length > 0,
+    hasPassword: Number(row.has_password) === 1,
   };
 }
 

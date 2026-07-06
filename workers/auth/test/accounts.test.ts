@@ -105,9 +105,9 @@ test("changePassword: no password row → no_password; wrong current → wrong_p
 });
 
 test("getAccountInfo + countRecoveryCodes", async () => {
+  // getAccountInfo now folds the password-existence check into one query (has_password).
   const db = routedDb([
-    [/SELECT username, display_name, avatar_url FROM accounts WHERE id/, () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: null }] })],
-    [/SELECT 1 FROM password_credentials/, () => ({ rows: [{ "1": 1 }] })],
+    [/SELECT username, display_name, avatar_url/, () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: null, has_password: 1 }] })],
   ]);
   expect(await getAccountInfo(db, "a")).toEqual({ username: "neko", displayName: "Neko", avatarUrl: null, hasPassword: true });
   expect(await getAccountInfo(routedDb([[/FROM accounts WHERE id/, () => ({ rows: [] })]]), "ghost")).toBeNull();
