@@ -49,34 +49,34 @@ export interface LoadedClient {
 /** Load a client by id (spec §8). Returns null for unknown ids. */
 export async function getClient(db: DbClient, clientId: string): Promise<LoadedClient | null> {
   if (!clientId) return null;
+  // One round-trip: the client row + its redirect URIs as a JSON array
+  // (json_group_array over zero rows yields '[]'). Was 2 sequential hops.
   const c = await db.execute({
-    sql: `SELECT client_id, status, client_type, display_name, logo_url, allowed_scopes, allow_offline_access, verified_only, first_party
+    sql: `SELECT client_id, status, client_type, display_name, logo_url, allowed_scopes, allow_offline_access, verified_only, first_party,
+                 (SELECT json_group_array(redirect_uri) FROM oauth_client_redirect_uris WHERE client_id = ?) AS redirect_uris
           FROM oauth_clients WHERE client_id = ?`,
-    args: [clientId],
+    args: [clientId, clientId],
   });
   const row = c.rows[0];
   if (!row) return null;
-  const r = await db.execute({
-    sql: "SELECT redirect_uri FROM oauth_client_redirect_uris WHERE client_id = ?",
-    args: [clientId],
-  });
-  let allowedScopes: string[] = [];
-  try {
-    const parsed = JSON.parse(String(row.allowed_scopes));
-    if (Array.isArray(parsed)) allowedScopes = parsed.map((s) => String(s));
-  } catch {
-    allowedScopes = [];
-  }
+  const parseArr = (v: unknown): string[] => {
+    try {
+      const p = JSON.parse(String(v ?? "[]"));
+      return Array.isArray(p) ? p.map(String) : [];
+    } catch {
+      return [];
+    }
+  };
   return {
     clientId: String(row.client_id),
     status: String(row.status),
     clientType: String(row.client_type),
     displayName: row.display_name == null ? null : String(row.display_name),
     logoUrl: row.logo_url == null ? null : String(row.logo_url),
-    allowedScopes,
+    allowedScopes: parseArr(row.allowed_scopes),
     allowOfflineAccess: Number(row.allow_offline_access) === 1,
     verifiedOnly: Number(row.verified_only) === 1,
     firstParty: Number(row.first_party) === 1,
-    redirectUris: r.rows.map((x) => String(x.redirect_uri)),
+    redirectUris: parseArr(row.redirect_uris),
   };
 }

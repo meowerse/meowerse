@@ -4,9 +4,10 @@ import { TYP, TOKEN_USE } from "@meowerse/auth-shared";
 import { routedDb, type Route } from "./helpers";
 
 const RES = "https://api.meow";
+// userinfoClaims now reads profile + telegram + verified in ONE query.
 const accRoute: Route = [
-  /SELECT username, display_name, avatar_url FROM accounts/,
-  () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: "http://img/x.png" }] }),
+  /FROM accounts a/,
+  () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: "http://img/x.png", telegram_id: null, telegram_username: null, verified: 0 }] }),
 ];
 
 test("rejects an id_token presented at userinfo (typ guard)", async () => {
@@ -41,9 +42,10 @@ test("valid access token returns scope-filtered claims with sub", async () => {
 
 test("telegram + verified claims are derived live when scoped", async () => {
   const routes: Route[] = [
-    accRoute,
-    [/telegram_id, telegram_username FROM telegram_links/, () => ({ rows: [{ telegram_id: 42, telegram_username: "nekotg" }] })],
-    [/SELECT 1 FROM telegram_links/, () => ({ rows: [{ "1": 1 }] })],
+    [
+      /FROM accounts a/,
+      () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: "http://img/x.png", telegram_id: 42, telegram_username: "nekotg", verified: 1 }] }),
+    ],
   ];
   const res = await userinfoClaims(routedDb(routes), {
     header: { typ: TYP.ACCESS },
@@ -57,7 +59,7 @@ test("telegram + verified claims are derived live when scoped", async () => {
 });
 
 test("telegram scope but no link omits the telegram claims", async () => {
-  const res = await userinfoClaims(routedDb([accRoute, [/telegram_id, telegram_username FROM telegram_links/, () => ({ rows: [] })]]), {
+  const res = await userinfoClaims(routedDb([accRoute]), {
     header: { typ: TYP.ACCESS },
     payload: { token_use: TOKEN_USE.ACCESS, sub: "acct_1", scope: "openid telegram", aud: RES },
     resourceAud: RES,

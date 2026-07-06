@@ -134,8 +134,19 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
 
       // --- clients ---
+      // getClient is collapsed: the client row carries redirect_uris as a JSON
+      // array (json_group_array). authenticateClient reads the same row + ignores it.
       if (/FROM oauth_clients WHERE client_id/.test(sql))
-        return { rows: t.oauth_clients.filter((r) => r.client_id === a[0]) };
+        return {
+          rows: t.oauth_clients
+            .filter((r) => r.client_id === a[0])
+            .map((r) => ({
+              ...r,
+              redirect_uris: JSON.stringify(
+                t.oauth_client_redirect_uris.filter((x) => x.client_id === r.client_id).map((x) => x.redirect_uri),
+              ),
+            })),
+        };
       if (/FROM oauth_client_redirect_uris WHERE client_id/.test(sql))
         return { rows: t.oauth_client_redirect_uris.filter((r) => r.client_id === a[0]).map((r) => ({ redirect_uri: r.redirect_uri })) };
       if (/FROM oauth_client_secrets WHERE client_id/.test(sql))
@@ -146,6 +157,13 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
 
       // --- accounts / credentials ---
+      // loginVerify — collapsed: account id + its password hash (null if missing).
+      if (/FROM accounts a WHERE a.username/.test(sql)) {
+        const acct = t.accounts.find((r) => r.username === a[0]);
+        if (!acct) return { rows: [] };
+        const pw = t.password_credentials.find((r) => r.account_id === acct.id);
+        return { rows: [{ id: acct.id, phc: pw ? pw.phc : null }] };
+      }
       if (/SELECT id FROM accounts WHERE username/.test(sql))
         return { rows: t.accounts.filter((r) => r.username === a[0]).map((r) => ({ id: r.id })) };
       // telegram-shaped insert: (id, username=NULL, display_name, avatar_url, verified=1)
@@ -170,7 +188,44 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         const has_password = t.password_credentials.some((r) => r.account_id === a[0]) ? 1 : 0;
         return { rows: [{ username: acct.username, display_name: acct.display_name, avatar_url: acct.avatar_url, has_password }] };
       }
-      // plain profile read (userinfoClaims) — still uses the non-collapsed shape.
+      // userinfoClaims — collapsed: profile + telegram (id+username) + live verified.
+      if (/AS telegram_id/.test(sql)) {
+        const acct = t.accounts.find((r) => r.id === a[0]);
+        if (!acct) return { rows: [] };
+        const tg = t.telegram_links.find((r) => r.account_id === acct.id);
+        return {
+          rows: [
+            {
+              username: acct.username,
+              display_name: acct.display_name,
+              avatar_url: acct.avatar_url,
+              telegram_id: tg ? tg.telegram_id : null,
+              telegram_username: tg ? tg.telegram_username : null,
+              verified: tg ? 1 : 0,
+            },
+          ],
+        };
+      }
+      // getAccountDetail — collapsed: profile + password + telegram + verified + recovery count.
+      if (/AS recovery_remaining/.test(sql)) {
+        const acct = t.accounts.find((r) => r.id === a[0]);
+        if (!acct) return { rows: [] };
+        const tg = t.telegram_links.find((r) => r.account_id === acct.id);
+        return {
+          rows: [
+            {
+              username: acct.username,
+              display_name: acct.display_name,
+              avatar_url: acct.avatar_url,
+              has_password: t.password_credentials.some((r) => r.account_id === acct.id) ? 1 : 0,
+              telegram_username: tg ? tg.telegram_username : null,
+              verified: tg ? 1 : 0,
+              recovery_remaining: t.recovery_codes.filter((r) => r.account_id === acct.id && r.used_at == null).length,
+            },
+          ],
+        };
+      }
+      // plain profile read — non-collapsed shape (kept for any remaining caller).
       if (/SELECT username, display_name, avatar_url FROM accounts WHERE id/.test(sql))
         return { rows: t.accounts.filter((r) => r.id === a[0]).map((r) => ({ username: r.username, display_name: r.display_name, avatar_url: r.avatar_url })) };
       if (/INSERT INTO password_credentials/.test(sql)) {

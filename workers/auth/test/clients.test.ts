@@ -27,6 +27,7 @@ test("authenticateClient: confidential requires a matching secret", async () => 
   expect((await authenticateClient(routedDb(noSecretRoutes), "mw_c", undefined)).ok).toBe(false);
 });
 
+// getClient is now one query: the client row carries redirect_uris as a JSON array.
 const clientRoutes: Route[] = [
   [
     /FROM oauth_clients WHERE client_id/,
@@ -41,11 +42,11 @@ const clientRoutes: Route[] = [
           allowed_scopes: '["openid","profile"]',
           verified_only: 0,
           first_party: 0,
+          redirect_uris: '["https://app/cb"]',
         },
       ],
     }),
   ],
-  [/FROM oauth_client_redirect_uris/, () => ({ rows: [{ redirect_uri: "https://app/cb" }] })],
 ];
 
 test("getClient parses scopes + redirect uris", async () => {
