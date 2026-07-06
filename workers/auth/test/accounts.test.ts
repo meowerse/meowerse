@@ -34,10 +34,8 @@ test("successful signup writes account+credential+8 codes and returns codes once
 
 test("loginVerify: correct password ok; wrong password not ok", async () => {
   const phc = await hashPassword("abcdefghijkl", FAST);
-  const routes: Route[] = [
-    [/SELECT id FROM accounts WHERE username/, () => ({ rows: [{ id: "acct_1" }] })],
-    [/FROM password_credentials WHERE account_id/, () => ({ rows: [{ phc }] })],
-  ];
+  // loginVerify is now one query returning id + phc together.
+  const routes: Route[] = [[/FROM accounts a WHERE a.username/, () => ({ rows: [{ id: "acct_1", phc }] })]];
   expect(await loginVerify(routedDb(routes), { username: "neko", password: "abcdefghijkl" }, { dummyPhc: phc })).toEqual({
     ok: true,
     accountId: "acct_1",
@@ -50,19 +48,17 @@ test("loginVerify: correct password ok; wrong password not ok", async () => {
 test("loginVerify on unknown user still runs a dummy verify (enumeration-safe) and returns not ok", async () => {
   const dummy = await hashPassword("zzz", FAST);
   const log: { sql: string; args: unknown[] }[] = [];
-  const db = routedDb([[/SELECT id FROM accounts WHERE username/, () => ({ rows: [] })]], log);
+  const db = routedDb([[/FROM accounts a WHERE a.username/, () => ({ rows: [] })]], log);
   const res = await loginVerify(db, { username: "ghost", password: "whatever12345" }, { dummyPhc: dummy });
   expect(res.ok).toBe(false);
-  // it queried accounts but never queried/derived a real credential
-  expect(log.some((c) => c.sql.includes("SELECT id FROM accounts"))).toBe(true);
+  // it queried accounts but never derived a real credential
+  expect(log.some((c) => c.sql.includes("FROM accounts a WHERE a.username"))).toBe(true);
 });
 
 test("loginVerify with missing credential row is enumeration-safe too", async () => {
   const dummy = await hashPassword("zzz", FAST);
-  const routes: Route[] = [
-    [/SELECT id FROM accounts WHERE username/, () => ({ rows: [{ id: "acct_1" }] })],
-    [/FROM password_credentials WHERE account_id/, () => ({ rows: [] })],
-  ];
+  // account exists but has no password credential → phc null → dummy verify.
+  const routes: Route[] = [[/FROM accounts a WHERE a.username/, () => ({ rows: [{ id: "acct_1", phc: null }] })]];
   expect((await loginVerify(routedDb(routes), { username: "neko", password: "x".repeat(12) }, { dummyPhc: dummy })).ok).toBe(
     false,
   );

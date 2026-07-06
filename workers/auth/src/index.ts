@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes, deleteAccount } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
@@ -27,7 +27,6 @@ import {
   findPendingTicketByNonce,
   consumeTicket,
   getTicket,
-  getTelegramLink,
   unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
@@ -709,19 +708,9 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   const accountId = session.accountId;
 
   if (sub === "" && req.method === "GET") {
-    const info = await getAccountInfo(db, accountId);
-    if (!info) return json({ error: "not_found" }, 404, cors);
-    return json(
-      {
-        ...info,
-        verified: await deriveVerified(db, accountId),
-        telegram: await getTelegramLink(db, accountId),
-        recoveryRemaining: await countRecoveryCodes(db, accountId),
-        csrf: session.csrf,
-      },
-      200,
-      { ...cors, ...securityHeaders() },
-    );
+    const detail = await getAccountDetail(db, accountId); // profile + verified + telegram + recovery in ONE query
+    if (!detail) return json({ error: "not_found" }, 404, cors);
+    return json({ ...detail, csrf: session.csrf }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "grants" && req.method === "GET") {
     return json({ grants: await listGrants(db, accountId) }, 200, { ...cors, ...securityHeaders() });

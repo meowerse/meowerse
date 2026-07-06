@@ -1,5 +1,4 @@
 import { assertAccessToken } from "@meowerse/auth-shared";
-import { deriveVerified } from "./accounts";
 import type { DbClient } from "./types";
 
 export type UserinfoResult = { ok: true; claims: Record<string, unknown> } | { ok: false };
@@ -19,8 +18,15 @@ export async function userinfoClaims(
   if (!accountId) return { ok: false };
   const scope = String(i.payload.scope ?? "").split(/\s+/).filter(Boolean);
 
+  // One round-trip: profile + telegram link + live verified (EXISTS). All read
+  // unconditionally — still a single hop — then filtered by granted scope. Was
+  // up to 3 sequential hops (account, telegram, deriveVerified).
   const acc = await db.execute({
-    sql: "SELECT username, display_name, avatar_url FROM accounts WHERE id = ?",
+    sql: `SELECT username, display_name, avatar_url,
+                 (SELECT telegram_id FROM telegram_links t WHERE t.account_id = a.id) AS telegram_id,
+                 (SELECT telegram_username FROM telegram_links t WHERE t.account_id = a.id) AS telegram_username,
+                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified
+          FROM accounts a WHERE a.id = ?`,
     args: [accountId],
   });
   const arow = acc.rows[0];
@@ -32,17 +38,10 @@ export async function userinfoClaims(
     claims.name = arow.display_name;
     claims.picture = arow.avatar_url;
   }
-  if (scope.includes("telegram")) {
-    const tg = await db.execute({
-      sql: "SELECT telegram_id, telegram_username FROM telegram_links WHERE account_id = ?",
-      args: [accountId],
-    });
-    const trow = tg.rows[0];
-    if (trow) {
-      claims.telegram_id = trow.telegram_id;
-      claims.telegram_username = trow.telegram_username;
-    }
+  if (scope.includes("telegram") && arow.telegram_id != null) {
+    claims.telegram_id = arow.telegram_id;
+    claims.telegram_username = arow.telegram_username;
   }
-  if (scope.includes("verified")) claims.verified = await deriveVerified(db, accountId);
+  if (scope.includes("verified")) claims.verified = Number(arow.verified) === 1;
   return { ok: true, claims };
 }

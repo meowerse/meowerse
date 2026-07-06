@@ -83,21 +83,22 @@ export async function loginVerify(
   const username = (input.username ?? "").trim();
   const dummy = opts.dummyPhc ?? DEFAULT_DUMMY_PHC;
 
-  const acc = await db.execute({ sql: "SELECT id FROM accounts WHERE username = ?", args: [username] });
-  const arow = acc.rows[0];
-  if (!arow) {
+  // One round-trip: account id + its password hash (null if account or credential
+  // is missing). Either miss still runs a dummy verify so wall-time is
+  // account-independent (enumeration-safety, spec §10/#7).
+  const res = await db.execute({
+    sql: `SELECT a.id AS id,
+                 (SELECT phc FROM password_credentials p WHERE p.account_id = a.id) AS phc
+          FROM accounts a WHERE a.username = ?`,
+    args: [username],
+  });
+  const row = res.rows[0];
+  if (!row || row.phc == null) {
     await verifyPassword(input.password, dummy);
     return { ok: false };
   }
-  const accountId = String(arow.id);
-  const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] });
-  const crow = cred.rows[0];
-  if (!crow) {
-    await verifyPassword(input.password, dummy);
-    return { ok: false };
-  }
-  const ok = await verifyPassword(input.password, String(crow.phc));
-  return ok ? { ok: true, accountId } : { ok: false };
+  const ok = await verifyPassword(input.password, String(row.phc));
+  return ok ? { ok: true, accountId: String(row.id) } : { ok: false };
 }
 
 /**
@@ -134,6 +135,43 @@ export async function getAccountInfo(db: DbClient, accountId: string): Promise<A
     displayName: row.display_name == null ? null : String(row.display_name),
     avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
     hasPassword: Number(row.has_password) === 1,
+  };
+}
+
+export interface AccountDetail extends AccountInfo {
+  verified: boolean;
+  telegram: { linked: boolean; username: string | null };
+  recoveryRemaining: number;
+}
+
+/**
+ * Everything the account page renders — profile + password/telegram/verified +
+ * remaining recovery codes — in ONE query. Replaces getAccountInfo +
+ * deriveVerified + getTelegramLink + countRecoveryCodes (4 hops). `verified` is
+ * the LIVE existence of a telegram link (never the accounts.verified mirror),
+ * which is also exactly "telegram linked".
+ */
+export async function getAccountDetail(db: DbClient, accountId: string): Promise<AccountDetail | null> {
+  const r = await db.execute({
+    sql: `SELECT a.username, a.display_name, a.avatar_url,
+                 EXISTS(SELECT 1 FROM password_credentials p WHERE p.account_id = a.id) AS has_password,
+                 (SELECT telegram_username FROM telegram_links t WHERE t.account_id = a.id) AS telegram_username,
+                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified,
+                 (SELECT COUNT(*) FROM recovery_codes rc WHERE rc.account_id = a.id AND rc.used_at IS NULL) AS recovery_remaining
+          FROM accounts a WHERE a.id = ?`,
+    args: [accountId],
+  });
+  const row = r.rows[0];
+  if (!row) return null;
+  const verified = Number(row.verified) === 1;
+  return {
+    username: row.username == null ? null : String(row.username),
+    displayName: row.display_name == null ? null : String(row.display_name),
+    avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
+    hasPassword: Number(row.has_password) === 1,
+    verified,
+    telegram: { linked: verified, username: row.telegram_username == null ? null : String(row.telegram_username) },
+    recoveryRemaining: Number(row.recovery_remaining),
   };
 }
 
