@@ -3,11 +3,12 @@ import Layout from "../layouts/Layout.astro";
 import LoginForm from "../components/LoginForm.tsx";
 import TelegramButton from "../components/TelegramButton.tsx";
 const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
 ---
 
 <Layout title="Sign in · Meowerse">
   <h1>Sign in with Meowerse</h1>
-  <LoginForm client:load base={base} />
+  <LoginForm client:load base={base} turnstileSiteKey={turnstileSiteKey} />
   <p class="muted">— or —</p>
   <TelegramButton client:load base={base} />
   <p class="muted">No account? <a href="/signup">Create one</a>.</p>

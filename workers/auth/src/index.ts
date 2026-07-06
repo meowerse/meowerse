@@ -43,6 +43,7 @@ import {
 } from "./dashboard";
 import { userinfoClaims } from "./userinfo";
 import { checkRateLimit } from "./ratelimit";
+import { turnstileGate } from "./turnstile";
 
 const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
 const SESS_COOKIE = "mw_sess";
@@ -242,6 +243,10 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
   const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|signup");
   const rl = await checkRateLimit(db, `signup:${ipHash}`, { limit: 20, windowSec: 3600, now: now(deps) });
   if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  // Bot gate (before the expensive PBKDF2). No-op unless TURNSTILE_SECRET_KEY is set.
+  if (!(await turnstileGate(env, p, req.headers.get("CF-Connecting-IP"), deps.fetch))) {
+    return json({ error: "turnstile_failed" }, 403, cors);
+  }
 
   const res = await signup(db, { username: p.username ?? "", password: p.password ?? "", displayName: p.displayName });
   if (!res.ok) return json({ error: res.error }, 400, cors);
@@ -262,6 +267,10 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   const userHash = await sha256Hex((p.username ?? "") + "|login");
   const rl = await checkRateLimit(db, `login:${userHash}`, { limit: 10, windowSec: 900, now: now(deps) });
   if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  // Bot gate (before the expensive PBKDF2). No-op unless TURNSTILE_SECRET_KEY is set.
+  if (!(await turnstileGate(env, p, req.headers.get("CF-Connecting-IP"), deps.fetch))) {
+    return json({ error: "turnstile_failed" }, 403, cors);
+  }
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
   if (!res.ok) return json({ error: "invalid_credentials" }, 401, cors);

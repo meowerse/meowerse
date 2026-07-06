@@ -34,12 +34,14 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function postSignup(base: string, username: string, password: string): Promise<AuthResponse> {
-  return postJson<AuthResponse>(`${base}/signup`, { username, password });
+// The optional Turnstile token rides along as `cf-turnstile-response`;
+// JSON.stringify drops it when undefined, so callers without Turnstile are unaffected.
+export function postSignup(base: string, username: string, password: string, turnstileToken?: string): Promise<AuthResponse> {
+  return postJson<AuthResponse>(`${base}/signup`, { username, password, "cf-turnstile-response": turnstileToken });
 }
 
-export function postLogin(base: string, username: string, password: string): Promise<AuthResponse> {
-  return postJson<AuthResponse>(`${base}/login`, { username, password });
+export function postLogin(base: string, username: string, password: string, turnstileToken?: string): Promise<AuthResponse> {
+  return postJson<AuthResponse>(`${base}/login`, { username, password, "cf-turnstile-response": turnstileToken });
 }
 
 export function postConsent(base: string, decision: "allow" | "deny", csrf: string, scopes?: string[]): Promise<{ redirect?: string; error?: string }> {

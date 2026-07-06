@@ -82,6 +82,30 @@ test("login with bad credentials → 401; rate-limited path returns 429", async 
   expect(bad.status).toBe(401);
 });
 
+// A fetch stub that fails every Turnstile siteverify (so we exercise the gate
+// rejecting, not the network). It must never be reached when a token is absent.
+const denyVerify = (async () => ({ json: async () => ({ success: false }) })) as unknown as typeof fetch;
+
+test("Turnstile gate: when configured, /signup + /login reject a missing token (403) BEFORE any PBKDF2", async () => {
+  const { env, deps } = await fixture();
+  const tsEnv = { ...env, TURNSTILE_SECRET_KEY: "s" };
+  const tsDeps = { ...deps, fetch: denyVerify };
+  const body = JSON.stringify({ username: "neko_bot", password: "abcdefghijkl" }); // no cf-turnstile-response
+
+  const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body }), tsEnv, tsDeps);
+  expect(su.status).toBe(403);
+  expect(((await su.json()) as { error: string }).error).toBe("turnstile_failed");
+
+  const li = await handle(new Request("https://iss/login", { method: "POST", headers: { "Content-Type": "application/json" }, body }), tsEnv, tsDeps);
+  expect(li.status).toBe(403);
+});
+
+test("Turnstile gate: disabled by default (no key) → /signup proceeds unchanged", async () => {
+  const { env, deps } = await fixture();
+  const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "neko_ok", password: "abcdefghijkl" }) }), env, deps);
+  expect(su.status).toBe(200); // gate is a no-op when TURNSTILE_SECRET_KEY is unset
+});
+
 test("consent without a session → 401; bad csrf → 403", async () => {
   const { env, deps } = await fixture();
   const noSess = await handle(new Request("https://iss/consent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "allow", csrf: "x" }) }), env, deps);
