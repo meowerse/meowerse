@@ -17,6 +17,8 @@ export interface Env {
   INTERNAL_HMAC_KEY?: string;
   WRITE_BUDGET_PER_MIN?: string;
   SKIP_MIGRATIONS?: string;
+  /** Cloudflare Turnstile secret (bot protection on /signup + /login). Unset ⇒ disabled. */
+  TURNSTILE_SECRET_KEY?: string;
 }
 
 /**
