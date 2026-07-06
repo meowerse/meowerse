@@ -14,7 +14,7 @@ import {
   type AuthorizeRequest,
 } from "./authorize";
 import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, changePassword, regenerateRecoveryCodes, countRecoveryCodes, deleteAccount } from "./accounts";
-import { issueSession, lookupSession, rotateSession, revokeSession } from "./session";
+import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
 import { createRefreshToken, rotateRefresh } from "./refresh";
@@ -677,16 +677,24 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   return json({ error: "not_found" }, 404, cors);
 }
 
-/** Cheap whoami for the web header + client route guards. Always 200. */
-async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+/** Run a side-effect off the response path when we have an ExecutionContext
+ *  (prod), else just fire it (tests) — never block the response on it. */
+function defer(ctx: ExecutionContext | undefined, p: Promise<unknown>): void {
+  if (ctx) ctx.waitUntil(p);
+  else void Promise.resolve(p).catch(() => {});
+}
+
+/** Cheap whoami for the web header + client route guards. Always 200. One
+ *  collapsed query validates the session + reads the display fields + live
+ *  `verified`; the idle-window roll is fired off the response path. */
+async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
-  const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
-  if (!session) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
-  const info = await getAccountInfo(db, session.accountId);
-  if (!info) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
+  const t = now(deps);
+  const who = await whoami(db, parseCookies(req.headers.get("Cookie"))[`__Host-${SESS_COOKIE}`], t);
+  if (!who) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
+  defer(ctx, rollIdle(db, who.idHash, t)); // keep-alive write, off the critical path
   return json(
-    { authenticated: true, username: info.username ?? info.displayName ?? "you", verified: await deriveVerified(db, session.accountId) },
+    { authenticated: true, username: who.username ?? who.displayName ?? "you", verified: who.verified },
     200,
     { ...cors, ...securityHeaders() },
   );
@@ -775,7 +783,7 @@ const CACHE_1H = { "Cache-Control": "public, max-age=3600" };
  * Thin DI router (mirrors workers/api). `deps` is injectable so tests pass a
  * fake db + fixed clock; production builds it from env once per request.
  */
-export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
+export async function handle(req: Request, env: Env, deps: Deps, ctx?: ExecutionContext): Promise<Response> {
   const cors = corsHeaders(req.headers.get("Origin"), env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
@@ -809,7 +817,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
   if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
-  if (pathname === "/api/session" && m === "GET") return handleSession(req, env, deps, cors);
+  if (pathname === "/api/session" && m === "GET") return handleSession(req, env, deps, cors, ctx);
   if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
     return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length));
   }
@@ -827,10 +835,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
 let cachedDeps: Deps | undefined;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       cachedDeps ??= prodDeps(env);
-      return await handle(request, env, cachedDeps);
+      return await handle(request, env, cachedDeps, ctx);
     } catch {
       return json({ error: "internal_error" }, 500, corsHeaders(request.headers.get("Origin"), env));
     }

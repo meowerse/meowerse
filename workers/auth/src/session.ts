@@ -54,15 +54,58 @@ export async function lookupSession(db: DbClient, rawId: string | undefined, now
   if (!row) return null;
   if (row.revoked_at != null) return null;
   if (now > Number(row.idle_expires_at) || now > Number(row.absolute_expires_at)) return null;
-  await db.execute({
-    sql: "UPDATE sessions SET last_seen = datetime('now'), idle_expires_at = ? WHERE id_hash = ?",
-    args: [now + IDLE_TTL, idHash],
-  });
+  await rollIdle(db, idHash, now);
   return {
     accountId: String(row.account_id),
     authTime: Number(row.auth_time),
     csrf: String(row.csrf_token),
     amr: row.amr == null ? null : String(row.amr),
+  };
+}
+
+/** Roll the idle (sliding) window forward. Split out so hot reads can fire it
+ *  off the response path (ctx.waitUntil) instead of blocking on it. */
+export async function rollIdle(db: DbClient, idHash: string, now: number): Promise<void> {
+  await db.execute({
+    sql: "UPDATE sessions SET last_seen = datetime('now'), idle_expires_at = ? WHERE id_hash = ?",
+    args: [now + IDLE_TTL, idHash],
+  });
+}
+
+export interface Whoami {
+  username: string | null;
+  displayName: string | null;
+  verified: boolean;
+  idHash: string;
+}
+
+/**
+ * One-round-trip whoami for /api/session (the header calls it on every page).
+ * Validates the session (unrevoked, within both expiries) AND fetches the
+ * display fields + LIVE `verified` (existence of a telegram link) in a SINGLE
+ * query — replacing lookupSession + getAccountInfo + deriveVerified (5 hops).
+ * Does NOT roll the idle window; the caller fires rollIdle() off the response
+ * path so the whoami read is the only blocking DB hop.
+ */
+export async function whoami(db: DbClient, rawId: string | undefined, now: number): Promise<Whoami | null> {
+  if (!rawId) return null;
+  const idHash = await sha256Hex(rawId);
+  const res = await db.execute({
+    sql: `SELECT a.username AS username, a.display_name AS display_name,
+                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = s.account_id) AS verified
+          FROM sessions s JOIN accounts a ON a.id = s.account_id
+          WHERE s.id_hash = ? AND s.revoked_at IS NULL
+            AND s.idle_expires_at > ? AND s.absolute_expires_at > ?
+          LIMIT 1`,
+    args: [idHash, now, now],
+  });
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    username: row.username == null ? null : String(row.username),
+    displayName: row.display_name == null ? null : String(row.display_name),
+    verified: Number(row.verified) === 1,
+    idHash,
   };
 }
 

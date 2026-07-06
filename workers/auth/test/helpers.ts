@@ -162,6 +162,15 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         if (row) row.verified = 1;
         return { rows: [] };
       }
+      // getAccountInfo — collapsed: profile + EXISTS(password) in one query.
+      // args: a[0] = EXISTS subquery account_id, a[1] = WHERE id (both accountId).
+      if (/SELECT username, display_name, avatar_url, EXISTS.*FROM accounts WHERE id/.test(sql)) {
+        const acct = t.accounts.find((r) => r.id === a[1]);
+        if (!acct) return { rows: [] };
+        const has_password = t.password_credentials.some((r) => r.account_id === a[0]) ? 1 : 0;
+        return { rows: [{ username: acct.username, display_name: acct.display_name, avatar_url: acct.avatar_url, has_password }] };
+      }
+      // plain profile read (userinfoClaims) — still uses the non-collapsed shape.
       if (/SELECT username, display_name, avatar_url FROM accounts WHERE id/.test(sql))
         return { rows: t.accounts.filter((r) => r.id === a[0]).map((r) => ({ username: r.username, display_name: r.display_name, avatar_url: r.avatar_url })) };
       if (/INSERT INTO password_credentials/.test(sql)) {
@@ -223,6 +232,22 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           revoked_at: null,
         });
         return { rows: [] };
+      }
+      // whoami — one-query session validation + profile + LIVE verified.
+      // args: a[0] = id_hash, a[1] = now (idle), a[2] = now (absolute).
+      if (/FROM sessions s JOIN accounts a/.test(sql)) {
+        const s = t.sessions.find(
+          (r) =>
+            r.id_hash === a[0] &&
+            r.revoked_at == null &&
+            Number(r.idle_expires_at) > Number(a[1]) &&
+            Number(r.absolute_expires_at) > Number(a[2]),
+        );
+        if (!s) return { rows: [] };
+        const acct = t.accounts.find((r) => r.id === s.account_id);
+        if (!acct) return { rows: [] };
+        const verified = t.telegram_links.some((r) => r.account_id === s.account_id) ? 1 : 0;
+        return { rows: [{ username: acct.username, display_name: acct.display_name, verified }] };
       }
       if (/FROM sessions WHERE id_hash/.test(sql))
         return { rows: t.sessions.filter((r) => r.id_hash === a[0]) };
