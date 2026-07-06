@@ -108,9 +108,18 @@ interface Signing {
   active: { kid: string; key: CryptoKey };
   jwks: { keys: JsonWebKey[] };
 }
+// Memoize per isolate, keyed by the raw key material: parsing the JWK set +
+// importing the CryptoKey + building the JWKS ran on EVERY /token, /userinfo and
+// /jwks call. Keys only change on a secret rotation (which restarts the isolate
+// with a new AUTH_SIGNING_KEYS), so the string key also self-invalidates.
+let signingCache: { keysStr: string; signing: Signing } | null = null;
 async function getSigning(env: Env): Promise<Signing> {
-  const keys = parseSigningKeys(env.AUTH_SIGNING_KEYS ?? "[]");
-  return { active: await getActiveKey(keys), jwks: buildJwks(keys) };
+  const keysStr = env.AUTH_SIGNING_KEYS ?? "[]";
+  if (signingCache && signingCache.keysStr === keysStr) return signingCache.signing;
+  const keys = parseSigningKeys(keysStr);
+  const signing = { active: await getActiveKey(keys), jwks: buildJwks(keys) };
+  signingCache = { keysStr, signing };
+  return signing;
 }
 
 /** Mint a code for an authenticated+consented request and return the redirect URL. */
