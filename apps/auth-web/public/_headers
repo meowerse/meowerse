@@ -1,32 +1,52 @@
 # Cloudflare headers for the auth UI (spec §7, §10/#8).
 # script-src needs 'unsafe-inline': Astro inlines its island-hydration bootstrap +
 # our no-flash theme script, so a strict script-src 'self' blocks all JS and
-# nothing hydrates (every spinner freezes).
+# nothing hydrates (every spinner freezes). challenges.cloudflare.com is Turnstile.
 #
-# Caching: default no-store (authed/session-bearing pages), then opt the purely
-# static content pages IN. Personalization on those pages happens client-side in
-# the header island, so the HTML itself is identical for everyone and edge-safe.
+# Cache-Control caveat (learned in prod): Cloudflare COMBINES same-name headers
+# across EVERY matching rule — it does NOT let a more-specific path override. So
+# there is deliberately NO Cache-Control under /*: a blanket `no-store` there
+# merged into every page AND asset ("no-store, …, immutable") and silently
+# defeated all caching. Instead each path sets exactly ONE Cache-Control —
+# static content + hashed assets cache; session-bearing pages are explicitly
+# no-store. Splats (/about*) cover the trailing-slash canonical URLs Astro emits
+# (/about/, /docs/, …). NOTE: a new authed page must be added to the no-store
+# list below — there is no blanket default anymore.
 /*
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; frame-src https://challenges.cloudflare.com; connect-src 'self' https://auth-api.alxnko.eu.org https://challenges.cloudflare.com
-  Cache-Control: no-store
 
 # Content-hashed build assets never change under a given URL — cache hard.
 /_astro/*
   Cache-Control: public, max-age=31536000, immutable
 
-# Static content pages: browser revalidates, but the edge serves instantly and
-# refreshes in the background. Overrides only Cache-Control; /* still supplies the
-# security headers.
+# Static content pages: browser revalidates, the edge serves instantly and
+# refreshes in the background.
 /
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
-/about
+/about*
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
-/docs
+/docs*
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
-/privacy
+/privacy*
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
-/terms
+/terms*
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
+
+# Session-bearing / dynamic pages: never cache (explicit — no blanket default now).
+/account*
+  Cache-Control: no-store
+/dashboard*
+  Cache-Control: no-store
+/consent*
+  Cache-Control: no-store
+/verify*
+  Cache-Control: no-store
+/login*
+  Cache-Control: no-store
+/signup*
+  Cache-Control: no-store
+/developers*
+  Cache-Control: no-store
