@@ -13,6 +13,10 @@
   // @libsql/client/web pulls in node builtins (events, util); nodejs_compat
   // lets them resolve in workerd.
   "compatibility_flags": ["nodejs_compat"],
+  // Smart Placement: DB-bound worker — run the isolate near the Turso primary
+  // (aws-eu-west-1) rather than at the user's edge, so DB round-trips are
+  // intra-region. CF only relocates when it measurably lowers latency.
+  "placement": { "mode": "smart" },
   "vars": {
     "CORS_ORIGINS": "https://meow.alxnko.eu.org,http://localhost:4321"
   },

@@ -7,8 +7,9 @@ import SiteHeader from "../components/SiteHeader.tsx";
 interface Props { title: string; wide?: boolean }
 const { title, wide } = Astro.props;
 const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
-Astro.response.headers.set("Referrer-Policy", "no-referrer");
-Astro.response.headers.set("Cache-Control", "no-store");
+// Response headers (Referrer-Policy, Cache-Control) live in public/_headers: this
+// site is `output: 'static'`, so setting Astro.response.headers here is a
+// build-time no-op. Caching is path-scoped there (static pages cache; authed no-store).
 ---
 <html lang="en">
   <head>
@@ -18,7 +19,7 @@ Astro.response.headers.set("Cache-Control", "no-store");
     <script is:inline set:html={THEME_INIT_SCRIPT}></script>
   </head>
   <body>
-    <SiteHeader client:load base={base} />
+    <SiteHeader client:idle base={base} />
     <main class={wide ? "wide" : undefined}>
       <slot />
     </main>
