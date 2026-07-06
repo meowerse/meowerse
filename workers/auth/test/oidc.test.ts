@@ -14,6 +14,19 @@ test("discovery advertises exactly the implemented surface", () => {
   expect(d.authorization_response_iss_parameter_supported).toBe(true);
 });
 
-test("falls back to the default issuer when env unset", () => {
-  expect(discoveryDoc({}).issuer).toBe("https://auth-api.alxnko.eu.org");
+test("discovery advertises logout, revoke/introspect auth, and the docs link", () => {
+  const d = discoveryDoc({ ISSUER: "https://auth-api.example", WEB_ORIGIN: "https://auth.example" });
+  expect(d.end_session_endpoint).toBe("https://auth-api.example/logout");
+  expect(d.revocation_endpoint).toBe("https://auth-api.example/token/revoke");
+  expect(d.introspection_endpoint).toBe("https://auth-api.example/token/introspect");
+  expect(d.revocation_endpoint_auth_methods_supported).toEqual(["client_secret_basic", "client_secret_post"]);
+  expect(d.introspection_endpoint_auth_methods_supported).toEqual(["client_secret_basic", "client_secret_post"]);
+  expect(d.response_modes_supported).toEqual(["query"]);
+  expect(d.service_documentation).toBe("https://auth.example/docs");
+});
+
+test("falls back to the default issuer + docs link when env unset", () => {
+  const d = discoveryDoc({});
+  expect(d.issuer).toBe("https://auth-api.alxnko.eu.org");
+  expect(d.service_documentation).toBe("https://auth.alxnko.eu.org/docs");
 });

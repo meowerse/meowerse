@@ -13,3 +13,49 @@ h2 { font-size: var(--text-lg); font-weight: 600; margin: 0; }
 a { color: var(--text-accent); }
 pre { overflow-x: auto; max-width: 100%; font-size: var(--text-xs); }
 code, .mono { overflow-wrap: anywhere; }
+
+/* docs page — readable code blocks, inline code chips, and a reference table */
+.mw-doc { display: flex; flex-direction: column; gap: var(--gap-lg); }
+.mw-doc h2 { margin-top: var(--gap-md); }
+.mw-doc p { margin: 0; }
+.mw-doc ol, .mw-doc ul { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: var(--gap-xs); }
+.mw-doc pre {
+  font-family: var(--font-mono);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--gap-md);
+  margin: 0;
+  line-height: 1.6;
+}
+.mw-doc :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.35em;
+}
+.mw-doc table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); display: block; overflow-x: auto; }
+.mw-doc th, .mw-doc td { text-align: left; padding: var(--gap-sm); border-bottom: 1px solid var(--border); vertical-align: top; }
+.mw-doc th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
+.mw-doc td code { white-space: nowrap; }
+
+/* Shiki dual-theme: swap to the dark palette wherever the site is dark. Mirrors
+   the data-theme / prefers-color-scheme logic in tokens.css. */
+:root[data-theme="dark"] .mw-doc .astro-code,
+:root[data-theme="dark"] .mw-doc .astro-code span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mw-doc .astro-code,
+  :root:not([data-theme="light"]) .mw-doc .astro-code span {
+    color: var(--shiki-dark) !important;
+    background-color: var(--shiki-dark-bg) !important;
+    font-style: var(--shiki-dark-font-style) !important;
+    text-decoration: var(--shiki-dark-text-decoration) !important;
+  }
+}

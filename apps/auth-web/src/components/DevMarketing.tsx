@@ -13,7 +13,10 @@ export default function DevMarketing() {
           <li>restrict to verified users, config-as-code provisioning</li>
         </ul>
       </Card>
-      <p><a href="/login?next=%2Fdevelopers"><Button variant="primary">sign in to manage your apps</Button></a></p>
+      <p className="mw-row">
+        <a href="/login?next=%2Fdevelopers"><Button variant="primary">sign in to manage your apps</Button></a>
+        <a href="/docs"><Button variant="ghost">read the integration docs</Button></a>
+      </p>
     </div>
   );
 }

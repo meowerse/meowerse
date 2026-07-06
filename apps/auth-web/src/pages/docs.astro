@@ -1,0 +1,193 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { Code } from "astro:components";
+import { Card } from "@meowerse/ui";
+
+// Shiki dual-theme so highlighting follows the site's light/dark mode (see the
+// `.astro-code` switch in app.css). Build-time only — no client JS, CSP-safe.
+const themes = { light: "github-light", dark: "github-dark" } as const;
+
+const api = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+const discovery = api + "/.well-known/openid-configuration";
+
+// Code samples live here (frontmatter is plain JS) so Astro doesn't parse the
+// `{ }` in them as expressions. Samples avoid backticks/${} to stay literal.
+const install = "bun add @meowerse/auth";
+
+const create = [
+  'import { createAuthClient } from "@meowerse/auth";',
+  "",
+  "const auth = createAuthClient({",
+  '  issuer: "' + api + '",',
+  '  clientId: "your_client_id",',
+  '  redirectUri: "https://yourapp.example/callback",',
+  "  // clientSecret: process.env.CLIENT_SECRET  // confidential clients only",
+  "});",
+].join("\n");
+
+const start = [
+  "// 1. start login — build the authorize URL (PKCE + state + nonce)",
+  'const tx = await auth.buildAuthorizationUrl({ scope: "openid profile verified offline_access" });',
+  "",
+  "// persist tx.state, tx.nonce and tx.codeVerifier for the callback",
+  "// (e.g. a short-lived signed cookie), then send the user to tx.url",
+  "redirect(tx.url);",
+].join("\n");
+
+const callback = [
+  "// 2. on your redirect_uri: verify state, then redeem the code",
+  "if (query.state !== saved.state) throw new Error(\"state mismatch\");",
+  "const tokens = await auth.exchangeCode({ code: query.code, codeVerifier: saved.codeVerifier });",
+  "",
+  "// verify the id_token against the JWKS (checks sig, iss, aud, nonce, exp)",
+  "const claims = await auth.verifyIdToken(tokens.id_token, { nonce: saved.nonce });",
+  "const userId = claims.sub;  // stable, per-user identifier",
+].join("\n");
+
+const profile = [
+  "// 3. read profile / telegram / verified claims from userinfo",
+  'const res = await fetch("' + api + '/userinfo", {',
+  '  headers: { Authorization: "Bearer " + tokens.access_token },',
+  "});",
+  "const profile = await res.json();",
+].join("\n");
+
+const refresh = [
+  "// 4. later, silently refresh (requires the offline_access scope)",
+  "const next = await auth.refresh(tokens.refresh_token);",
+  "// next.access_token / next.id_token / next.refresh_token (rotated)",
+].join("\n");
+
+const logout = [
+  "// end the meowerse session and return to your app",
+  "location.href = auth.buildLogoutUrl({",
+  "  idTokenHint: tokens.id_token,",
+  '  postLogoutRedirectUri: "https://yourapp.example/",  // must be a registered redirect_uri',
+  "});",
+].join("\n");
+
+const iac = [
+  'import { defineAuthClient } from "@meowerse/auth";',
+  "",
+  "export default defineAuthClient({",
+  '  name: "yourapp",',
+  '  displayName: "Your App",',
+  '  clientType: "confidential",',
+  '  redirectUris: ["https://yourapp.example/callback"],',
+  '  scopes: ["openid", "profile", "verified"],',
+  "  allowOfflineAccess: true,",
+  "});",
+].join("\n");
+
+const provisionCode = [
+  'import { provision } from "@meowerse/auth";',
+  'import manifest from "./auth.config";',
+  "",
+  "const result = await provision(manifest, {",
+  '  issuer: "' + api + '",',
+  "  managementToken: process.env.MEOWERSE_MGMT_TOKEN,",
+  "});",
+  "// result.clientId + result.clientSecret (shown once, for confidential clients)",
+].join("\n");
+
+const endpoints = [
+  ["GET", "/.well-known/openid-configuration", "discovery — every URL + capability below"],
+  ["GET", "/jwks", "public signing keys (JWKS) for verifying tokens"],
+  ["GET", "/authorize", "start login — code flow, mandatory S256 PKCE"],
+  ["POST", "/token", "exchange the code, or refresh (offline_access)"],
+  ["GET/POST", "/userinfo", "profile claims — send the access_token as Bearer"],
+  ["POST", "/token/introspect", "check a token is active (confidential clients)"],
+  ["POST", "/token/revoke", "revoke a token (confidential clients)"],
+  ["GET", "/logout", "end session + optional post_logout_redirect_uri"],
+  ["PUT", "/mgmt/v1/clients", "provision a client from code (management token)"],
+];
+
+const scopes = [
+  ["openid", "required", "sub — the stable user id"],
+  ["profile", "optional", "preferred_username, name, picture"],
+  ["telegram", "optional", "telegram_id, telegram_username"],
+  ["verified", "optional", "verified — whether the user linked Telegram"],
+  ["offline_access", "optional", "issues a refresh_token"],
+];
+---
+<Layout title="docs · meowerse" wide>
+  <div class="mw-doc">
+    <div>
+      <h1>connect your app to meowerse</h1>
+      <p class="mw-muted">"auth with meowerse" is a standard OpenID Connect provider. Point any OIDC client at the discovery URL, or drop in the <code>@meowerse/auth</code> SDK for a few-line integration. One login, optional Telegram verification, and granular per-scope consent.</p>
+    </div>
+
+    <Card title="the 30-second version">
+      <p>Everything an OIDC client needs is published at the discovery URL:</p>
+      <Code code={discovery} lang="bash" themes={themes} />
+      <p class="mw-muted">Standards: authorization-code flow, mandatory PKCE (S256), ES256-signed tokens, refresh-token rotation, and RFC 9207 <code>iss</code> in the authorization response. No client library required — but the SDK below wires it up for you.</p>
+    </Card>
+
+    <Card title="quickstart — @meowerse/auth">
+      <p>The relying-party SDK runs in Workers, Node and the browser (pure WebCrypto + injectable <code>fetch</code>). First, <a href="/developers">register a client</a> to get a <code>client_id</code>.</p>
+      <Code code={install} lang="bash" themes={themes} />
+      <Code code={create} lang="ts" themes={themes} />
+      <h2>1 · start login</h2>
+      <Code code={start} lang="ts" themes={themes} />
+      <h2>2 · handle the callback</h2>
+      <Code code={callback} lang="ts" themes={themes} />
+      <h2>3 · read the profile</h2>
+      <Code code={profile} lang="ts" themes={themes} />
+      <h2>4 · refresh</h2>
+      <Code code={refresh} lang="ts" themes={themes} />
+      <h2>5 · log out</h2>
+      <Code code={logout} lang="ts" themes={themes} />
+    </Card>
+
+    <Card title="endpoints">
+      <table>
+        <thead><tr><th>method</th><th>path</th><th>purpose</th></tr></thead>
+        <tbody>
+          {endpoints.map(([m, path, purpose]) => (
+            <tr><td><code>{m}</code></td><td><code>{path}</code></td><td>{purpose}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <p class="mw-muted">All paths are relative to <code>{api}</code>.</p>
+    </Card>
+
+    <Card title="scopes & claims">
+      <table>
+        <thead><tr><th>scope</th><th></th><th>grants</th></tr></thead>
+        <tbody>
+          {scopes.map(([s, req, grants]) => (
+            <tr><td><code>{s}</code></td><td class="mw-muted">{req}</td><td>{grants}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <p class="mw-muted">The user approves each scope individually and can revoke any app at any time from their account. Data-bearing claims are served by <code>/userinfo</code>, not stuffed into the id_token.</p>
+    </Card>
+
+    <Card title="public or confidential?">
+      <ul>
+        <li><strong>public</strong> — browser, mobile or SPA clients. No secret; PKCE (S256) is the proof. This is the default.</li>
+        <li><strong>confidential</strong> — server-side apps. Get an API key (client secret) sent via HTTP Basic or the request body. Only confidential clients may call <code>/token/introspect</code> and <code>/token/revoke</code>.</li>
+      </ul>
+    </Card>
+
+    <Card title="config-as-code">
+      <p>Skip the dashboard: declare a client in <code>auth.config.ts</code> and apply it idempotently with a management token (create one under <a href="/developers">developers</a>).</p>
+      <Code code={iac} lang="ts" themes={themes} />
+      <Code code={provisionCode} lang="ts" themes={themes} />
+    </Card>
+
+    <Card title="using a generic OIDC library">
+      <p>No JavaScript stack? Any RFC-compliant OIDC client works — <code>openid-client</code>, <code>oidc-client-ts</code>, Spring Security, Keycloak adapters, etc. Point it at the discovery URL above and require:</p>
+      <ul>
+        <li><code>response_type=code</code> with PKCE <code>S256</code> (mandatory)</li>
+        <li>id_token signature alg <code>ES256</code>, verified against the JWKS</li>
+        <li>the <code>offline_access</code> scope if you need refresh tokens</li>
+      </ul>
+    </Card>
+
+    <div class="mw-section">
+      <h2>questions</h2>
+      <p class="mw-muted">See <a href="/about">about</a> for how the project runs, and <a href="/privacy">privacy</a> · <a href="/terms">terms</a>. It's a best-effort personal project on free-tier infrastructure.</p>
+    </div>
+  </div>
+</Layout>

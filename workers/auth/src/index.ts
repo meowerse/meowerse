@@ -31,7 +31,7 @@ import {
   unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
-import { constantTimeEqual } from "@meowerse/auth-shared";
+import { constantTimeEqual, b64urlDecode } from "@meowerse/auth-shared";
 import {
   createClient,
   listClients,
@@ -540,11 +540,51 @@ async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<s
   }
 }
 
-async function handleLogout(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+/** Best-effort decode of a JWT payload — NO signature check (see resolvePostLogout). */
+function decodeJwtPayload(jwt: string | null): Record<string, unknown> | null {
+  if (!jwt) return null;
+  const parts = jwt.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!))) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * OIDC RP-Initiated Logout return target. We use the client's registered
+ * redirect_uris as the post-logout allowlist. `id_token_hint` is only a HINT to
+ * pick WHICH client's allowlist to consult — it is not trusted as a credential,
+ * so its signature isn't verified: the real guard is allowlist membership, and
+ * redirect_uris are owner-controlled URLs already trusted for that client. An
+ * attacker can only land the user on a URL some legitimate client registered.
+ * ponytail: reuses redirect_uris as the allowlist; add a dedicated
+ * post_logout_redirect_uris table only if apps need distinct logout URLs.
+ */
+async function resolvePostLogout(deps: Deps, hint: string | null, uri: string | null, state: string | null): Promise<string | null> {
+  if (!uri) return null;
+  const payload = decodeJwtPayload(hint);
+  const clientId = typeof payload?.aud === "string" ? payload.aud : typeof payload?.azp === "string" ? payload.azp : null;
+  if (!clientId) return null;
+  const client = await getClient(deps.getDb(), clientId);
+  if (!client || client.status !== "active" || !client.redirectUris.includes(uri)) return null;
+  return state ? appendParams(uri, { state }) : uri;
+}
+
+async function handleLogout(req: Request, env: Env, deps: Deps, _cors: Record<string, string>): Promise<Response> {
+  const url = new URL(req.url);
   const cookies = parseCookies(req.headers.get("Cookie"));
   const raw = cookies[`__Host-${SESS_COOKIE}`];
   if (raw) await revokeSession(deps.getDb(), raw);
-  return redirect(webOrigin(env), { ...securityHeaders(), "Set-Cookie": clearHostCookie(SESS_COOKIE) });
+  const dest =
+    (await resolvePostLogout(
+      deps,
+      url.searchParams.get("id_token_hint"),
+      url.searchParams.get("post_logout_redirect_uri"),
+      url.searchParams.get("state"),
+    )) ?? webOrigin(env);
+  return redirect(dest, { ...securityHeaders(), "Set-Cookie": clearHostCookie(SESS_COOKIE) });
 }
 
 // Revoke/introspect are confidential-client-only (RFC 7009/7662 require client
