@@ -19,6 +19,7 @@ export function AppHeader({ session, className }: { session: Session; className?
             <>
               <a href="/about">about</a>
               <a href="/developers">developers</a>
+              <a href="/docs">docs</a>
               <a href="/login">log in</a>
               <a href="/signup">sign up</a>
             </>
@@ -27,6 +28,7 @@ export function AppHeader({ session, className }: { session: Session; className?
             <>
               <a href="/account">account</a>
               <a href="/developers">developers</a>
+              <a href="/docs">docs</a>
               <span className="mw-header__user"><Avatar name={session.username} size="sm" /> {session.username}</span>
             </>
           )}

@@ -130,6 +130,35 @@ test("logout revokes + clears the session cookie and redirects to the UI", async
   expect(cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")).toBe("");
 });
 
+// RP-initiated logout: a `post_logout_redirect_uri` registered as a redirect_uri
+// on the client named by the (unverified) id_token_hint is honored; anything
+// else falls back to the meowerse UI. The hint is a hint, not a credential.
+const idHint = (payload: Record<string, unknown>) => `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.s`;
+
+test("logout returns to a registered post_logout_redirect_uri (+state)", async () => {
+  const { env, deps } = await fixture();
+  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: REDIRECT, state: "xyz" });
+  const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
+  expect(r.status).toBe(302);
+  const loc = new URL(r.headers.get("Location")!);
+  expect(`${loc.origin}${loc.pathname}`).toBe(REDIRECT);
+  expect(loc.searchParams.get("state")).toBe("xyz");
+});
+
+test("logout ignores an unregistered post_logout_redirect_uri → UI", async () => {
+  const { env, deps } = await fixture();
+  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: "https://evil.example/steal" });
+  const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
+  expect(r.headers.get("Location")).toBe("https://web");
+});
+
+test("logout ignores post_logout_redirect_uri with no id_token_hint → UI", async () => {
+  const { env, deps } = await fixture();
+  const q = new URLSearchParams({ post_logout_redirect_uri: REDIRECT });
+  const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
+  expect(r.headers.get("Location")).toBe("https://web");
+});
+
 test("revoke/introspect require a confidential client; unauthenticated → 401", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
