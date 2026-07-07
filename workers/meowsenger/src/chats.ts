@@ -50,6 +50,14 @@ export async function mirrorLastMessage(
   );
 }
 
+/** Mark a chat read up to a timestamp for one member: clear unread + set last_read_at. */
+export async function markRead(db: DbClient, chatId: string, userId: string, upTo: number): Promise<void> {
+  await db.run(
+    "UPDATE chat_members SET unread_count = 0, last_read_at = ? WHERE chat_id = ? AND user_id = ?",
+    [upTo, chatId, userId],
+  );
+}
+
 export async function listChats(db: DbClient, userId: string): Promise<ChatSummary[]> {
   // For DMs, LEFT JOIN the OTHER member (chat_members om where om.user_id <> me)
   // and their user row so the sidebar shows the peer's name + avatar. For groups

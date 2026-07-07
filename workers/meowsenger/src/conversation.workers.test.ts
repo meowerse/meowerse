@@ -34,6 +34,15 @@ async function seedChat(chatId: string): Promise<void> {
     .run();
 }
 
+/** Insert a chat_members row so the DO's read-receipt markRead has a target. */
+async function seedChatMember(chatId: string, userId: string, unread: number): Promise<void> {
+  await DB.prepare(
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', ?, NULL, 0)",
+  )
+    .bind(chatId, userId, unread)
+    .run();
+}
+
 /** One stub per chatId (idFromName addresses the room deterministically). */
 function stub(chatId: string): DurableObjectStub<Conversation> {
   return CONVERSATION.get(CONVERSATION.idFromName(chatId));
@@ -184,5 +193,101 @@ describe("Conversation DO", () => {
       await new Promise((r) => setTimeout(r, 25));
     }
     expect(lastMessage).toBe("sidebar-preview");
+  });
+
+  it("announces presence: 2nd socket → 1st gets {presence,online:true}, 2nd gets snapshot incl. user1", async () => {
+    const wa = await connect("c8", "u1");
+    // The 1st socket should be told user2 came online once the 2nd connects.
+    const aGotPresence = waitFor(wa, (t) => t.includes('"presence"') && t.includes('"u2"') && t.includes("true"));
+
+    const wb = await connect("c8", "u2");
+    // The 2nd socket's snapshot lists who was online before it (user1).
+    const snapText = await waitFor(wb, (t) => t.includes("presence_snapshot"));
+    const snap = JSON.parse(snapText) as { type: string; online: string[] };
+    expect(snap.type).toBe("presence_snapshot");
+    expect(snap.online).toContain("u1");
+    expect(snap.online).not.toContain("u2");
+
+    const aText = await aGotPresence;
+    expect(JSON.parse(aText)).toMatchObject({ type: "presence", userId: "u2", online: true });
+
+    wa.close();
+    wb.close();
+  });
+
+  it("multi-tab: closing ONE of a user's two sockets does NOT flap offline; closing BOTH does", async () => {
+    // A peer (u2) observes u1's presence transitions.
+    const peer = await connect("c9", "u2");
+    const tab1 = await connect("c9", "u1");
+    const tab2 = await connect("c9", "u1");
+
+    // Any offline frame for u1 seen while a tab remains is a bug (flap).
+    let sawEarlyOffline = false;
+    peer.addEventListener("message", (e: MessageEvent) => {
+      const t = String(e.data);
+      if (t.includes('"presence"') && t.includes('"u1"') && t.includes("false")) sawEarlyOffline = true;
+    });
+
+    // Close ONE tab — u1 still has tab2, so NO offline should be broadcast.
+    tab1.close();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(sawEarlyOffline).toBe(false);
+
+    // Close the LAST tab — now u1 is fully gone, expect a single offline frame.
+    const offline = waitFor(peer, (t) => t.includes('"presence"') && t.includes('"u1"') && t.includes("false"));
+    tab2.close();
+    expect(JSON.parse(await offline)).toMatchObject({ type: "presence", userId: "u1", online: false });
+
+    peer.close();
+  });
+
+  it("typing reaches the peer but not the sender", async () => {
+    const wa = await connect("c10", "u1");
+    const wb = await connect("c10", "u2");
+
+    const peerGot = waitFor(wb, (t) => t.includes('"typing"') && t.includes('"u1"'));
+    // The sender must NOT receive its own typing frame back.
+    let senderEcho = false;
+    wa.addEventListener("message", (e: MessageEvent) => {
+      if (String(e.data).includes('"typing"')) senderEcho = true;
+    });
+
+    wa.send(JSON.stringify({ type: "typing", on: true }));
+    const peerText = await peerGot;
+    expect(JSON.parse(peerText)).toMatchObject({ type: "typing", userId: "u1", on: true });
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(senderEcho).toBe(false);
+
+    wa.close();
+    wb.close();
+  });
+
+  it("read → peer gets read_receipt and D1 chat_members is cleared/advanced", async () => {
+    await seedChat("c11");
+    await seedChatMember("c11", "u1", 3); // u1 has 3 unread to clear
+    const wa = await connect("c11", "u1");
+    const wb = await connect("c11", "u2");
+
+    const peerGot = waitFor(wb, (t) => t.includes("read_receipt") && t.includes('"u1"'));
+    wa.send(JSON.stringify({ type: "read", upTo: 5000 }));
+
+    const peerText = await peerGot;
+    expect(JSON.parse(peerText)).toMatchObject({ type: "read_receipt", userId: "u1", upTo: 5000 });
+
+    // markRead runs in waitUntil, so poll D1 for the cleared/advanced state.
+    let row: { unread_count: number; last_read_at: number | null } | null = null;
+    for (let i = 0; i < 20; i++) {
+      row = await DB.prepare("SELECT unread_count, last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?")
+        .bind("c11", "u1")
+        .first<{ unread_count: number; last_read_at: number | null }>();
+      if (row && row.unread_count === 0 && row.last_read_at === 5000) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(row?.unread_count).toBe(0);
+    expect(row?.last_read_at).toBe(5000);
+
+    wa.close();
+    wb.close();
   });
 });

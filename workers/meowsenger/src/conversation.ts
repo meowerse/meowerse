@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { DbClient, Env, Row } from "./types";
-import { mirrorLastMessage } from "./chats";
+import { markRead, mirrorLastMessage } from "./chats";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -55,19 +55,66 @@ export class Conversation extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, chatId } satisfies Attach);
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
+
+    // Presence: derive who was online BEFORE this socket joined (exclude the
+    // just-accepted `server` so a reconnecting user's own new socket doesn't hide
+    // a genuine transition). Tell the new socket the current roster, and — only if
+    // this user wasn't already present — announce them coming online to the peers.
+    const before = this.onlineUsers(server);
+    server.send(JSON.stringify({ type: "presence_snapshot", online: before }));
+    if (!before.includes(userId)) {
+      this.broadcast({ type: "presence", userId, online: true }, server);
+    }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * Distinct userIds with ≥1 live socket, optionally excluding one socket (a
+   * closing one, or a just-accepted one). Derives ONLY from `getWebSockets()` +
+   * serialized attachments, so it survives DO hibernation/eviction — never an
+   * in-memory Map (which dies on wake).
+   */
+  private onlineUsers(except?: WebSocket): string[] {
+    const s = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const a = ws.deserializeAttachment() as { userId?: string } | null;
+      if (a?.userId) s.add(a.userId);
+    }
+    return [...s];
+  }
+
+  /** Send a JSON frame to every live socket, optionally excluding one. */
+  private broadcast(obj: unknown, except?: WebSocket): void {
+    const text = JSON.stringify(obj);
+    for (const ws of this.ctx.getWebSockets()) if (ws !== except) ws.send(text);
   }
 
   /** Hibernation handler: a frame arrived on a live socket. */
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attach | null;
     if (!att) return;
-    let msg: { type?: string; tempId?: string; body?: string };
+    let msg: { type?: string; tempId?: string; body?: string; on?: boolean; upTo?: number };
     try {
       msg = JSON.parse(typeof raw === "string" ? raw : "");
     } catch {
       return;
     }
+
+    // Typing: ephemeral, peers-only, never persisted.
+    if (msg.type === "typing") {
+      this.broadcast({ type: "typing", userId: att.userId, on: !!msg.on }, ws);
+      return;
+    }
+    // Read receipt: clear this member's unread + advance last_read_at in D1 (off
+    // the critical path — a failed write is non-fatal), then tell peers "seen".
+    if (msg.type === "read") {
+      const upTo = Number(msg.upTo) || 0;
+      this.ctx.waitUntil(markRead(this.d1(), att.chatId, att.userId, upTo).catch(() => {}));
+      this.broadcast({ type: "read_receipt", userId: att.userId, upTo }, ws);
+      return;
+    }
+
     if (msg.type !== "send") return;
     const body = (msg.body ?? "").trim();
     if (!body || body.length > MAX_BODY) {
@@ -105,10 +152,19 @@ export class Conversation extends DurableObject<Env> {
 
   /** Hibernation handler: a socket closed — mirror the close back and drop it. */
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    // Recover the closing socket's user before we close it, so we can decide
+    // whether that user is now fully offline.
+    const att = ws.deserializeAttachment() as Attach | null;
     try {
       ws.close(code, reason);
     } catch {
       /* already closing */
+    }
+    // Presence: only announce offline if this user has NO other live socket. The
+    // exclude-and-recheck (`onlineUsers(ws)` skips the closing socket) means a
+    // multi-tab user closing ONE tab doesn't flap offline while another remains.
+    if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
+      this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
     }
   }
 
