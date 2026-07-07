@@ -1,0 +1,67 @@
+import type { DbClient, Row } from "./types";
+
+export interface ChatSummary {
+  id: string; type: string; name: string | null;
+  lastMessage: string | null; lastSenderId: string | null; lastActivity: number;
+  unreadCount: number;
+}
+
+/** Order-independent key for a 1:1 DM, so A+B and B+A resolve to one chat. */
+export function directKey(a: string, b: string): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+export async function createOrGetDirect(
+  db: DbClient, me: string, other: string, now: number,
+): Promise<{ id: string; created: boolean }> {
+  const key = directKey(me, other);
+  const existing = await db.first("SELECT id FROM chats WHERE direct_key = ?", [key]);
+  if (existing) return { id: String(existing.id), created: false };
+  const id = crypto.randomUUID();
+  await db.run(
+    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
+    [id, me, now, now, key],
+  );
+  for (const uid of [me, other]) {
+    await db.run(
+      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+      [id, uid, now],
+    );
+  }
+  return { id, created: true };
+}
+
+/** Off-critical-path mirror from the DO after a send, so the sidebar shows a preview. */
+export async function mirrorLastMessage(
+  db: DbClient, chatId: string, body: string, senderId: string, now: number,
+): Promise<void> {
+  await db.run(
+    "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = ? WHERE id = ?",
+    [body.slice(0, 140), senderId, now, chatId],
+  );
+  await db.run(
+    "UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id <> ?",
+    [chatId, senderId],
+  );
+}
+
+export async function listChats(db: DbClient, userId: string): Promise<ChatSummary[]> {
+  const rows = await db.all(
+    `SELECT c.id, c.type, c.name, c.last_message, c.last_sender_id, c.last_activity, m.unread_count
+     FROM chat_members m JOIN chats c ON c.id = m.chat_id
+     WHERE m.user_id = ? ORDER BY c.last_activity DESC`,
+    [userId],
+  );
+  return rows.map((r: Row) => ({
+    id: String(r.id), type: String(r.type), name: r.name == null ? null : String(r.name),
+    lastMessage: r.last_message == null ? null : String(r.last_message),
+    lastSenderId: r.last_sender_id == null ? null : String(r.last_sender_id),
+    lastActivity: Number(r.last_activity), unreadCount: Number(r.unread_count ?? 0),
+  }));
+}
+
+/** Is `userId` a member of `chatId`? (gate for /ws + history) */
+export async function isMember(db: DbClient, chatId: string, userId: string): Promise<boolean> {
+  const r = await db.first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
+  return !!r;
+}
