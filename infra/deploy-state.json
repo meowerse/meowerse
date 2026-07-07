@@ -3,6 +3,14 @@
     "at": "local",
     "sha": "29dcdf7"
   },
+  "auth": {
+    "at": "prod",
+    "sha": "8e936b7"
+  },
+  "meowsenger": {
+    "at": "prod",
+    "sha": "8e936b7"
+  },
   "web": {
     "at": "local",
     "sha": "5493401"
