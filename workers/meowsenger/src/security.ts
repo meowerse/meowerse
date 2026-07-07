@@ -3,6 +3,17 @@ export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.eu.org,http://localhos
 function allowlist(env: Env): string[] {
   return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
 }
+
+/**
+ * CORS headers for the UI (a different subdomain than this API host). The origin
+ * is echoed back ONLY when it is on the allowlist; credentials are allowed, so a
+ * "*" origin is never emitted (echoing the exact allowlisted origin is the secure
+ * pattern for credentialed CORS). `Vary: Origin` keeps caches correct per-origin.
+ *
+ * Allow-Headers omits `Authorization` (unlike workers/api): meowsenger auths via
+ * the `__Host-mw_session` cookie (sent automatically with credentials), never a
+ * Bearer header — no client ever sends Authorization here.
+ */
 export function corsHeaders(origin: string | null, env: Env): Record<string, string> {
   const h: Record<string, string> = {
     "Access-Control-Allow-Credentials": "true",
