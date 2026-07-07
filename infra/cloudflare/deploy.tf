@@ -36,6 +36,14 @@ locals {
       paths  = "apps/auth-web"
       script = "infra/cloudflare/deploy-auth-web.sh"
     }
+    meowsenger = {
+      paths  = "workers/meowsenger packages/auth-shared packages/auth-sdk"
+      script = "infra/cloudflare/deploy-meowsenger.sh"
+    }
+    meowsenger-web = {
+      paths  = "apps/meowsenger-web"
+      script = "infra/cloudflare/deploy-meowsenger-web.sh"
+    }
   }
 }
 
