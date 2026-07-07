@@ -167,6 +167,148 @@ body:has(.mw-chat) main.mw-container {
 .mw-composer input:focus { border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
 .mw-composer .mw-btn { border-radius: var(--radius-pill); }
 
+/* ---- slice 4: reply / edit / delete / multi-select / context menu --------- */
+
+/* Layout: a bubble stacks the (optional) quoted preview above the body row. */
+.mw-bubble__stack { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.mw-bubble__row { display: flex; align-items: flex-end; gap: var(--space-3); min-width: 0; }
+.mw-bubble__edited { flex: none; font-size: 10px; color: var(--text-muted); font-style: italic; align-self: flex-end; }
+
+/* Quoted reply preview: a left green accent + muted, truncated original body. */
+.mw-quote {
+  display: flex; flex-direction: column; gap: 1px;
+  width: 100%; max-width: 100%; text-align: left;
+  padding: 4px 8px; border: 0; cursor: pointer;
+  border-left: 3px solid var(--mw-green);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--mw-green) 8%, transparent);
+  transition: background var(--dur-fast) var(--ease);
+}
+.mw-quote:hover { background: color-mix(in srgb, var(--mw-green) 16%, transparent); }
+.mw-quote__name { font-size: var(--text-xs); font-weight: 600; color: var(--text-accent); }
+.mw-quote__body {
+  font-size: var(--text-xs); color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40ch;
+}
+
+/* Soft-deleted placeholder: muted + italic, no actions. */
+.mw-bubble--deleted { background: transparent; border-style: dashed; opacity: 0.85; }
+.mw-bubble__deleted { font-style: italic; color: var(--text-muted); font-size: var(--text-sm); }
+
+/* Inline editor inside a bubble. */
+.mw-bubble--editing { width: min(46ch, 100%); }
+.mw-edit { display: flex; flex-direction: column; gap: var(--space-2); width: 100%; }
+.mw-edit__input {
+  width: 100%; min-height: 60px; resize: vertical;
+  font: inherit; font-size: var(--text-base); color: var(--text-primary);
+  padding: 8px 10px; border-radius: var(--radius);
+  background: var(--surface-0); border: 0.5px solid var(--border-strong);
+}
+.mw-edit__input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
+.mw-edit__actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+
+/* Per-message hover actions: a small floating row of icon buttons on the bubble. */
+.mw-msg__actions {
+  position: absolute; top: -14px;
+  display: flex; gap: 2px; padding: 2px;
+  background: var(--surface-1); border: 0.5px solid var(--border);
+  border-radius: var(--radius-pill); box-shadow: var(--shadow-sm);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.mw-msg--me .mw-msg__actions { left: 6px; }
+.mw-msg:not(.mw-msg--me) .mw-msg__actions { right: 6px; }
+.mw-bubble:hover .mw-msg__actions,
+.mw-msg__actions:focus-within { opacity: 1; pointer-events: auto; }
+.mw-msg__act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: 0; cursor: pointer;
+  background: transparent; border-radius: var(--radius-pill);
+  font-size: var(--text-sm); line-height: 1; color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease);
+}
+.mw-msg__act:hover { background: var(--surface-muted); color: var(--text-primary); }
+
+/* Selection: a checkbox at the row edge + a highlighted selected row. */
+.mw-msg__check { flex: none; width: 18px; height: 18px; accent-color: var(--mw-green); cursor: pointer; align-self: center; }
+.mw-msg.is-selected .mw-bubble { outline: 2px solid color-mix(in srgb, var(--mw-green) 60%, transparent); outline-offset: 1px; }
+
+/* Floating selection action bar (replaces the composer while in select mode). */
+.mw-selectbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3) clamp(var(--space-3), 4vw, var(--space-5));
+  border-top: 1px solid var(--border); background: var(--surface-1);
+}
+.mw-selectbar__count { font-size: var(--text-sm); color: var(--text-secondary); font-weight: 500; }
+.mw-selectbar__spacer { flex: 1; }
+.mw-selectbar__danger { color: var(--text-danger); }
+.mw-selectbar__danger:hover:not(:disabled) { background: var(--bg-danger); }
+
+/* Reply chip above the composer input. */
+.mw-composer { flex-direction: column; align-items: stretch; }
+.mw-composer__row { display: flex; gap: var(--space-2); align-items: center; }
+.mw-replybar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 6px 10px; margin-bottom: var(--space-2);
+  border-radius: var(--radius); background: var(--surface-muted);
+  border-left: 3px solid var(--mw-green);
+}
+.mw-replybar__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mw-replybar__name { font-size: var(--text-xs); font-weight: 600; color: var(--text-accent); }
+.mw-replybar__preview { font-size: var(--text-sm); color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mw-replybar__x {
+  flex: none; width: 24px; height: 24px; border: 0; cursor: pointer;
+  background: transparent; border-radius: var(--radius-pill);
+  color: var(--text-muted); font-size: var(--text-xs);
+}
+.mw-replybar__x:hover { background: var(--surface-1); color: var(--text-primary); }
+
+/* Context-menu popover (mw-card layered as a fixed, tighter menu). */
+.mw-menu {
+  position: fixed; z-index: 60;
+  min-width: 148px; padding: var(--space-1);
+  display: flex; flex-direction: column; gap: 1px;
+  box-shadow: var(--shadow-md);
+}
+.mw-menu__item {
+  display: block; width: 100%; text-align: left;
+  padding: 8px 12px; border: 0; cursor: pointer;
+  background: transparent; border-radius: var(--radius-sm);
+  font: inherit; font-size: var(--text-sm); color: var(--text-primary);
+  transition: background var(--dur-fast) var(--ease);
+}
+.mw-menu__item:hover, .mw-menu__item:focus-visible { background: var(--surface-muted); outline: none; }
+
+/* Transient toast (server rejections / copied). */
+.mw-toast {
+  position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%);
+  z-index: 70; max-width: min(90vw, 40ch);
+  padding: 10px 16px; border-radius: var(--radius-pill);
+  background: var(--surface-1); border: 0.5px solid var(--border);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-sm); color: var(--text-primary);
+  animation: mw-toast-in var(--dur) var(--ease);
+}
+@keyframes mw-toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Jump-to-original highlight flash. */
+.mw-msg.is-flash .mw-bubble { animation: mw-flash 1.2s var(--ease); }
+@keyframes mw-flash {
+  0% { background: color-mix(in srgb, var(--mw-green) 45%, var(--surface-2)); }
+  100% { background: var(--surface-2); }
+}
+.mw-msg--me.is-flash .mw-bubble { animation: mw-flash-me 1.2s var(--ease); }
+@keyframes mw-flash-me {
+  0% { background: color-mix(in srgb, var(--mw-green) 55%, var(--surface-2)); }
+  100% { background: color-mix(in srgb, var(--mw-green) 20%, var(--surface-2)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mw-msg.is-flash .mw-bubble,
+  .mw-msg--me.is-flash .mw-bubble,
+  .mw-toast { animation: none; }
+}
+
 /* ---- mobile: single column, swap between list + conversation -------------- */
 @media (max-width: 719px) {
   .mw-chat { grid-template-columns: 1fr; }
@@ -174,4 +316,6 @@ body:has(.mw-chat) main.mw-container {
   .mw-chat[data-open="0"] .mw-chat__main { display: none; }
   .mw-chat__back { display: inline-flex; }
   .mw-msg { max-width: 92%; }
+  /* On touch, the hover action row is unreliable — rely on long-press → menu. */
+  .mw-msg__actions { display: none; }
 }

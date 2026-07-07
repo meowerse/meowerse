@@ -20,6 +20,13 @@ export interface ChatSummary {
   peerAvatarUrl: string | null;
 }
 
+/** A short quoted snippet of the message a reply points at (mirrors the DO). */
+export interface ReplySnippet {
+  id: string;
+  senderId: string;
+  body: string;
+}
+
 /** A message on the wire / out of history (mirrors the DO's Wire shape). */
 export interface Message {
   id: string;
@@ -27,6 +34,13 @@ export interface Message {
   senderId: string;
   body: string;
   createdAt: number;
+  // Slice 4 — reply/edit/delete. `replyToId`+`replyTo` describe the quoted parent;
+  // `editedAt` is set once a message was edited; `isDeleted` marks a soft-deleted
+  // message (its `body` arrives as "" — the UI renders a "message deleted" placeholder).
+  replyToId?: string | null;
+  replyTo?: ReplySnippet | null;
+  editedAt?: number | null;
+  isDeleted?: boolean;
 }
 
 /** GET /api/chats — the caller's sidebar list. Empty array on any failure. */

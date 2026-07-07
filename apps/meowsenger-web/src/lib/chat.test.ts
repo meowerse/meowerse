@@ -57,6 +57,14 @@ describe("loadHistory", () => {
     await loadHistory(BASE, "c1", "m 9");
     expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?before=m%209`, { credentials: "include" });
   });
+  it("carries the Slice-4 reply/edit/delete fields through unchanged", async () => {
+    const messages = [
+      { id: "m2", chatId: "c1", senderId: "u1", body: "yo", createdAt: 2000, replyToId: "m1", replyTo: { id: "m1", senderId: "u2", body: "hi" }, editedAt: 2500, isDeleted: false },
+      { id: "m3", chatId: "c1", senderId: "u1", body: "", createdAt: 3000, replyToId: null, replyTo: null, editedAt: null, isDeleted: true },
+    ];
+    stubFetch({ messages });
+    expect(await loadHistory(BASE, "c1")).toEqual(messages);
+  });
   it("defaults to [] when the body has no messages", async () => {
     stubFetch({});
     expect(await loadHistory(BASE, "c1")).toEqual([]);
