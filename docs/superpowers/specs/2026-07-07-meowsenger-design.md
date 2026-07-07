@@ -508,12 +508,17 @@ Goal: match **every** NextMeowsenger feature and surpass it. Built slice-by-slic
 4. **Reply · edit · delete · multi-select** — reply (quoted + jump-to-original), edit (own, 1h),
    delete (soft; sender 24h / admin any; bulk), multi-select action bar (copy / bulk-delete),
    context menu per message, `alarm()` hard-purge of soft-deleted.
-5. **Groups + member management** — create named group, roles OWNER/ADMIN/MEMBER (+ enforcement),
+5. **Groups + member management + visibility** — create named group with **visibility
+   (public/private)** + an optional **public slug**, roles OWNER/ADMIN/MEMBER (+ enforcement),
    add/promote/demote/remove/leave, member drawer, new-chat modal (username search + member
    picker + contact picker), full sidebar (sort/preview/live/skeletons/empty states).
-6. **Channels + visibility** — CHANNEL type (broadcast, admin-only post), public slug discovery
-   `/c/<slug>` (+ live slug-availability check), subscribe/unsubscribe, PUBLIC/PRIVATE visibility
-   on groups+channels, gated preview (join/subscribe/request-access CTA + lock screen), toggle.
+6. **Channels + shared public discovery** — CHANNEL type (broadcast, admin-only post; groups let
+   everyone post — the ONLY group-vs-channel difference). **Uniform visibility model applied to
+   BOTH groups and channels:** `visibility` = public|private + a unique `slug`; public chats are
+   discoverable at a slug URL (`/g/<slug>` groups, `/c/<slug>` channels) with a live
+   slug-availability check; gated preview for non-members (join / subscribe / request-access CTA +
+   "private" lock screen); subscribe/unsubscribe (channels); visibility + slug toggle in settings.
+   Data: `chats` gains `visibility` + `slug` (UNIQUE), used identically by groups and channels.
 7. **Invites + join requests** — invite codes (generate/refresh 12-char, `/join/<code>` + preview
    page), join requests for private chats/channels (request → admin approve/reject, pending tab),
    auto-invite-on-group-add + `allow_auto_group_add` privacy opt-out.
