@@ -138,6 +138,15 @@ export function MemberDrawer({
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // Close the drawer on Escape (a11y — matches the Modal + context-menu behavior).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   // Create-on-demand the invite code once the caller is known to be owner/admin, so
   // the invite section can show the link immediately (get-or-create is idempotent).
   useEffect(() => {

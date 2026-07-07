@@ -6,6 +6,7 @@ import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
 import { MessageMenu, type MenuItem } from "./MessageMenu";
 import { NewChatModal } from "./NewChatModal";
+import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
 
@@ -41,6 +42,9 @@ const ERROR_COPY: Record<string, string> = {
   bad_body: "message couldn't be sent",
   // Slice 6 — a plain member tried to post in a broadcast channel (DO-enforced).
   read_only: "this is a broadcast channel — only admins can post",
+  // Slice 8 — the DO drops a flood of `send`s (>30/10s) with this code; the socket
+  // stays open + the Composer stays usable, we just nudge the user to slow down.
+  rate_limited: "you're sending too fast — slow down a moment",
 };
 
 // A peer's "typing…" auto-clears if no fresh on:true arrives within this window
@@ -59,6 +63,9 @@ export default function Chat({ base }: { base: string }) {
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [connected, setConnected] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  // True from a chat-switch until its first history page resolves — drives the
+  // shimmer bubbles in the log (distinct from the "empty conversation" state).
+  const [loadingHistory, setLoadingHistory] = useState(false);
   // Presence roster (userIds with a live socket in this chat) + the peer's state.
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [peerTyping, setPeerTyping] = useState(false);
@@ -74,6 +81,9 @@ export default function Chat({ base }: { base: string }) {
   // Slice 5 — group UI state.
   const [newChatOpen, setNewChatOpen] = useState(false); // the Direct|Group modal
   const [drawerOpen, setDrawerOpen] = useState(false); // the member-management drawer
+  // Slice 8 — the forward modal + the message bodies queued for forwarding (from a
+  // single message's context menu or the multi-select bar). Non-null bodies ⇒ open.
+  const [forwardBodies, setForwardBodies] = useState<string[] | null>(null);
   // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for
   // DMs (which use the peer shortcut). Fetched on opening a group + refreshed on
   // membership changes.
@@ -298,6 +308,7 @@ export default function Chat({ base }: { base: string }) {
     setMenu(null);
     // Reset group-scoped state so a prior group's roster/drawer never leaks.
     setDrawerOpen(false);
+    setForwardBodies(null);
     setMemberMap(new Map());
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
@@ -308,9 +319,11 @@ export default function Chat({ base }: { base: string }) {
     setMessages([]);
     setConnected(false);
     setHasMore(false);
+    setLoadingHistory(true);
     prependingRef.current = false;
     loadHistory(base, chatId).then((hist) => {
       if (cancelled) return;
+      setLoadingHistory(false);
       setMessages(hist.map((m) => ({ ...m })));
       setHasMore(hist.length >= 50); // a full page ⇒ there may be older messages
       // Opening a chat with messages = reading it → send a read receipt (once the
@@ -520,11 +533,38 @@ export default function Chat({ base }: { base: string }) {
     exitSelect();
   }
 
+  // ---- forwarding (Slice 8) ----
+  // Queue the selected (non-deleted, non-empty) message bodies for the forward
+  // modal, preserving their chronological order. Opens the modal; the select bar
+  // stays put behind it so a cancel returns to the selection intact.
+  function forwardSelected() {
+    const bodies = messages
+      .filter((m) => selected.has(m.id) && !m.isDeleted && m.body.trim())
+      .map((m) => m.body);
+    if (bodies.length === 0) return;
+    setForwardBodies(bodies);
+  }
+  // Forward a single message straight from its context menu (no select mode).
+  function forwardOne(m: Bubble) {
+    if (m.isDeleted || !m.body.trim()) return;
+    setForwardBodies([m.body]);
+  }
+  // After the modal reports its result: toast the outcome, close the modal, and
+  // (if we were selecting) exit select mode. Partial failures are surfaced honestly.
+  function onForwardDone({ sent, failed }: { sent: number; failed: number }) {
+    setForwardBodies(null);
+    if (sent > 0 && failed > 0) showToast(`forwarded to ${sent} chat${sent === 1 ? "" : "s"} — ${failed} failed`);
+    else if (sent > 0) showToast(`forwarded to ${sent} chat${sent === 1 ? "" : "s"}`);
+    else showToast("couldn't forward — try again");
+    if (selectMode) exitSelect();
+  }
+
   // Build the per-message context-menu items (gated by ownership + window).
   function menuItems(m: Bubble): MenuItem[] {
     const items: MenuItem[] = [{ label: "reply", onClick: () => setReplyingTo(m) }];
     if (canEdit(m)) items.push({ label: "edit", onClick: () => setEditingId(m.id) });
     if (canDelete(m)) items.push({ label: "delete", onClick: () => sendDelete(m) });
+    items.push({ label: "forward", onClick: () => forwardOne(m) });
     items.push({ label: "copy", onClick: () => copyText(m.body) });
     items.push({ label: "select", onClick: () => enterSelect(m) });
     return items;
@@ -671,8 +711,22 @@ export default function Chat({ base }: { base: string }) {
             </header>
 
             <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
-              {messages.length === 0 && (
-                <p className="mw-muted" style={{ margin: "auto" }}>no messages yet. say hi 👋</p>
+              {loadingHistory && messages.length === 0 && (
+                // Shimmer bubbles while the first history page loads. Alternating
+                // sides mimic a real conversation; aria-hidden (purely decorative).
+                <div className="mw-skel-log" aria-hidden="true">
+                  {[62, 40, 74, 52, 46].map((w, i) => (
+                    <div key={i} className={`mw-skelbubble${i % 2 ? " mw-skelbubble--me" : ""}`}>
+                      <span className="mw-skel mw-skel--bubble" style={{ width: `${w}%` }} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!loadingHistory && messages.length === 0 && (
+                <div className="mw-emptylog">
+                  <span className="mw-emptylog__glyph" aria-hidden="true">👋</span>
+                  <p className="mw-emptylog__text mw-muted">no messages yet. say hi</p>
+                </div>
               )}
               {messages.map((m) => {
                 const mine = me != null && m.senderId === me.id;
@@ -723,6 +777,11 @@ export default function Chat({ base }: { base: string }) {
                 <span className="mw-selectbar__spacer" />
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm"
+                  onClick={forwardSelected}
+                  disabled={selected.size === 0}
+                >forward</button>
+                <button
+                  className="mw-btn mw-btn--ghost mw-btn--sm"
                   onClick={copySelected}
                   disabled={selected.size === 0}
                 >copy</button>
@@ -769,6 +828,16 @@ export default function Chat({ base }: { base: string }) {
         onClose={() => setNewChatOpen(false)}
         onDirect={onDirect}
         onCreated={onCreatedGroup}
+      />
+
+      <ForwardModal
+        base={base}
+        open={forwardBodies !== null}
+        chats={chats}
+        bodies={forwardBodies ?? []}
+        excludeId={activeId}
+        onClose={() => setForwardBodies(null)}
+        onDone={onForwardDone}
       />
 
       {drawerOpen && activeChat && isMembered && (

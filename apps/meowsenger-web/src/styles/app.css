@@ -557,6 +557,107 @@ body:has(.mw-chat) main.mw-container {
   .mw-switch, .mw-switch__knob { transition: none; }
 }
 
+/* ---- slice 8: forwarded badge, forward modal, skeletons, empty states ------ */
+
+/* "forwarded" tag: a small muted label above a forwarded message's body. */
+.mw-bubble__forwarded {
+  display: inline-flex; align-items: center; gap: 3px;
+  align-self: flex-start;
+  font-size: var(--text-xs); font-style: italic;
+  color: var(--text-muted); letter-spacing: 0.01em;
+}
+.mw-bubble--me .mw-bubble__forwarded { color: color-mix(in srgb, var(--text-muted) 80%, var(--text-secondary)); }
+
+/* Forward modal: a searchable, multi-select list of forward targets. */
+.mw-forward { width: min(420px, 100%); display: flex; flex-direction: column; gap: var(--space-3); }
+.mw-forward__lead { margin: 0; font-size: var(--text-sm); }
+.mw-forward__list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: min(48vh, 360px); overflow-y: auto;
+  margin: 0 calc(-1 * var(--space-1)); padding: var(--space-1);
+  border: 0.5px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-0);
+}
+.mw-forward__empty { padding: var(--space-4); text-align: center; font-size: var(--text-sm); }
+.mw-forwardrow {
+  display: flex; align-items: center; gap: var(--space-3);
+  width: 100%; padding: var(--space-2) var(--space-3);
+  border: 0; cursor: pointer; text-align: left;
+  background: transparent; border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease);
+}
+.mw-forwardrow:hover { background: var(--surface-muted); }
+.mw-forwardrow.is-selected { background: color-mix(in srgb, var(--mw-green) 12%, var(--surface-1)); }
+.mw-forwardrow__avatar { flex: none; display: inline-flex; }
+.mw-forwardrow__name {
+  flex: 1; min-width: 0; font-size: var(--text-base); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mw-forwardrow__check {
+  flex: none; width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-pill); font-size: var(--text-sm); line-height: 1;
+  border: 1.5px solid var(--border-strong); color: var(--mw-on-green);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.mw-forwardrow__check.is-on { background: var(--mw-green); border-color: var(--mw-green); }
+
+/* Skeleton shimmer: a moving highlight sweep over placeholder blocks. */
+.mw-skel {
+  display: block; border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--surface-muted) 100%, transparent) 0%,
+    color-mix(in srgb, var(--border) 55%, var(--surface-muted)) 50%,
+    color-mix(in srgb, var(--surface-muted) 100%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: mw-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes mw-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.mw-skel--avatar { width: 40px; height: 40px; border-radius: var(--radius-pill); flex: none; }
+.mw-skel--line { height: 12px; }
+.mw-skel--w60 { width: 60%; }
+.mw-skel--w80 { width: 80%; }
+.mw-skel--bubble { height: 34px; border-radius: var(--radius-lg); }
+
+/* Sidebar skeleton rows mirror the real .mw-chatrow layout. */
+.mw-skel-list { display: flex; flex-direction: column; }
+.mw-skelrow {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3); border-bottom: 1px solid var(--border);
+}
+.mw-skelrow__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+
+/* Log skeleton bubbles alternate sides like a real conversation. */
+.mw-skel-log { display: flex; flex-direction: column; gap: var(--space-3); padding-block: var(--space-2); }
+.mw-skelbubble { display: flex; }
+.mw-skelbubble--me { justify-content: flex-end; }
+.mw-skelbubble .mw-skel--bubble { max-width: 82%; }
+
+/* Sidebar empty state: a friendly centered prompt + a "+ new chat" CTA. */
+.mw-emptychats {
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+  padding: var(--space-6) var(--space-4); text-align: center;
+}
+.mw-emptychats__glyph { font-size: 2rem; line-height: 1; margin-bottom: var(--space-1); }
+.mw-emptychats__title { margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
+.mw-emptychats__sub { margin: 0 0 var(--space-2); font-size: var(--text-sm); }
+
+/* Empty-conversation state: centered "say hi 👋". */
+.mw-emptylog {
+  margin: auto; display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+  color: var(--text-muted); text-align: center;
+}
+.mw-emptylog__glyph { font-size: 2rem; line-height: 1; }
+.mw-emptylog__text { margin: 0; font-size: var(--text-sm); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mw-skel { animation: none; }
+}
+
 /* ---- mobile: single column, swap between list + conversation -------------- */
 @media (max-width: 719px) {
   .mw-chat { grid-template-columns: 1fr; }

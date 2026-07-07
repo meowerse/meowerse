@@ -110,6 +110,9 @@ export interface Message {
   replyTo?: ReplySnippet | null;
   editedAt?: number | null;
   isDeleted?: boolean;
+  // Slice 8 — set when this message was created by a forward (POST .../forward).
+  // The UI renders a small "forwarded" tag; the body/quoted-reply are unaffected.
+  isForwarded?: boolean;
 }
 
 /** GET /api/chats — the caller's sidebar list. Empty array on any failure. */
@@ -599,6 +602,36 @@ export async function setPrivacy(
       body: JSON.stringify({ allowAutoGroupAdd: allow }),
     });
     return (await r.json()) as { ok?: boolean; allowAutoGroupAdd?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+// ---- Slice 8: forward messages ---------------------------------------------
+
+/**
+ * POST /api/chats/:id/forward { messages:[{body}] } — forward one or more message
+ * bodies into a target chat. The caller must be a member of the target (a channel
+ * additionally requires owner/admin — the server enforces both and answers 403).
+ * Each forwarded message is appended with `is_forwarded=1` so it carries the
+ * "forwarded" badge and broadcasts to live members. Returns `{forwarded:count}`
+ * (blank/over-long bodies are skipped server-side; the batch is capped at 20), or
+ * an error code (bad_json / bad_messages / forbidden / read_only). Network failure
+ * degrades to `{error:"network"}`.
+ */
+export async function forwardMessages(
+  base: string,
+  targetId: string,
+  bodies: string[],
+): Promise<{ forwarded?: number; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(targetId)}/forward`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: bodies.map((body) => ({ body })) }),
+    });
+    return (await r.json()) as { forwarded?: number; error?: string };
   } catch {
     return { error: "network" };
   }

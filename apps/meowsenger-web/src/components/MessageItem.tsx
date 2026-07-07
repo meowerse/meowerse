@@ -161,6 +161,11 @@ export function MessageItem({
         ) : (
           <div className={`mw-bubble${mine ? " mw-bubble--me" : ""}${m.pending ? " is-pending" : ""}`}>
             <div className="mw-bubble__stack">
+              {m.isForwarded && (
+                <span className="mw-bubble__forwarded" aria-label="forwarded message">
+                  <span aria-hidden="true">↪</span> forwarded
+                </span>
+              )}
               {m.replyTo && (
                 <button
                   type="button"

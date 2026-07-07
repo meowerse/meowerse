@@ -29,6 +29,7 @@ import {
   rejectRequest,
   getPrivacy,
   setPrivacy,
+  forwardMessages,
 } from "./chat";
 
 const BASE = "https://meowsenger.alxnko.eu.org";
@@ -553,5 +554,38 @@ describe("setPrivacy", () => {
   it("returns {error:'network'} on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await setPrivacy(BASE, true)).toEqual({ error: "network" });
+  });
+});
+
+// ---- Slice 8: forward messages ------------------------------------------------
+
+describe("forwardMessages", () => {
+  it("POSTs {messages:[{body}]} (encoded target id) and returns the count", async () => {
+    const mock = stubFetch({ forwarded: 2 });
+    expect(await forwardMessages(BASE, "t 1", ["one", "two"])).toEqual({ forwarded: 2 });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/t%201/forward`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ body: "one" }, { body: "two" }] }),
+    });
+  });
+  it("sends an empty messages array when given no bodies", async () => {
+    const mock = stubFetch({ forwarded: 0 });
+    expect(await forwardMessages(BASE, "t1", [])).toEqual({ forwarded: 0 });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/t1/forward`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+  });
+  it("surfaces a 403 error code (forbidden / read_only)", async () => {
+    stubFetch({ error: "read_only" });
+    expect(await forwardMessages(BASE, "t1", ["hi"])).toEqual({ error: "read_only" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await forwardMessages(BASE, "t1", ["hi"])).toEqual({ error: "network" });
   });
 });

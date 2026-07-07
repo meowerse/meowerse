@@ -53,9 +53,27 @@ export function ChatSidebar({
       </div>
 
       <nav className="mw-chat__list" aria-label="chats">
-        {loading && chats.length === 0 && <p className="mw-muted" style={{ padding: "var(--space-3) var(--space-4)" }}>loading chats…</p>}
+        {loading && chats.length === 0 && (
+          // Shimmer placeholder rows while the first list load is in flight.
+          <div className="mw-skel-list" aria-hidden="true">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="mw-skelrow">
+                <span className="mw-skel mw-skel--avatar" />
+                <span className="mw-skelrow__body">
+                  <span className="mw-skel mw-skel--line mw-skel--w60" />
+                  <span className="mw-skel mw-skel--line mw-skel--w80" />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {!loading && chats.length === 0 && (
-          <p className="mw-muted" style={{ padding: "var(--space-3) var(--space-4)" }}>no chats yet. start one above.</p>
+          <div className="mw-emptychats">
+            <span className="mw-emptychats__glyph" aria-hidden="true">💬</span>
+            <p className="mw-emptychats__title">no chats yet</p>
+            <p className="mw-emptychats__sub mw-muted">start one to get going.</p>
+            <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={onNewChatClick}>+ new chat</button>
+          </div>
         )}
         {chats.map((c) => {
           const title = chatTitle(c);
