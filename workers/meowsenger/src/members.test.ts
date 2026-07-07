@@ -8,7 +8,13 @@ import type { DbClient, Row } from "./types";
  * members/roles logic. Members are kept as an ordered array so `joined_at ASC`
  * ordering (owner-transfer successor pick) is faithful.
  */
-function memDb(seed: { members?: Array<{ chatId: string; userId: string; role: string; joinedAt: number }> } = {}) {
+function memDb(seed: {
+  members?: Array<{ chatId: string; userId: string; role: string; joinedAt: number }>;
+  // Slice 7: per-user auto-group-add preference (default 1 when absent), and the
+  // chat's invite_code/enabled (so the auto-invite path in addMember can mint one).
+  privacyById?: Record<string, number>;
+  chatMeta?: Record<string, { inviteCode?: string | null; inviteEnabled?: number }>;
+} = {}) {
   const members: Row[] = (seed.members ?? []).map((m) => ({
     chat_id: m.chatId,
     user_id: m.userId,
@@ -16,6 +22,10 @@ function memDb(seed: { members?: Array<{ chatId: string; userId: string; role: s
     joined_at: m.joinedAt,
   }));
   const chats = new Set<string>(members.map((m) => String(m.chat_id)));
+  const privacy = { ...(seed.privacyById ?? {}) };
+  const meta: Record<string, { invite_code: string | null; invite_enabled: number }> = {};
+  for (const [id, m] of Object.entries(seed.chatMeta ?? {})) meta[id] = { invite_code: m.inviteCode ?? null, invite_enabled: m.inviteEnabled ?? 1 };
+  const metaFor = (id: string) => (meta[id] ??= { invite_code: null, invite_enabled: 1 });
   const db: DbClient = {
     async all(sql, p = []) {
       // Owner-transfer: remaining members ordered oldest-first.
@@ -31,6 +41,14 @@ function memDb(seed: { members?: Array<{ chatId: string; userId: string; role: s
       if (sql.includes("SELECT role FROM chat_members")) {
         return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
       }
+      // Slice 7: privacy preference + invite lookups used by addMember's opt-out path.
+      if (sql.includes("SELECT allow_auto_group_add FROM users WHERE id")) {
+        const v = privacy[String(p[0])];
+        return { allow_auto_group_add: v === undefined ? 1 : v };
+      }
+      if (sql.includes("SELECT invite_code, invite_enabled FROM chats WHERE id")) {
+        return chats.has(String(p[0])) ? metaFor(String(p[0])) : undefined;
+      }
       return undefined;
     },
     async run(sql, p = []) {
@@ -43,12 +61,14 @@ function memDb(seed: { members?: Array<{ chatId: string; userId: string; role: s
         const role = sql.includes("'admin'") ? "admin" : sql.includes("'owner'") ? "owner" : "member";
         const m = members.find((x) => x.chat_id === p[0] && x.user_id === p[1]);
         if (m) m.role = role;
+      } else if (sql.startsWith("UPDATE chats SET invite_code")) {
+        const c = metaFor(String(p[1])); c.invite_code = String(p[0]); c.invite_enabled = 1;
       } else if (sql.startsWith("DELETE FROM chats")) {
         chats.delete(String(p[0]));
       }
     },
   };
-  return { db, members, chats };
+  return { db, members, chats, meta };
 }
 
 const G = "g1";
@@ -90,6 +110,54 @@ describe("addMember", () => {
       ],
     });
     expect(await addMember(db, G, "owner", "mem", 100)).toEqual({ ok: false, error: "already_member" });
+  });
+
+  // ---- Slice 7: auto-invite when the target opted out of auto-group-add ----
+  it("target opted OUT → NOT added; returns invited:true + a fresh invite code", async () => {
+    const { db, members } = memDb({
+      members: [{ chatId: G, userId: "owner", role: "owner", joinedAt: 1 }],
+      privacyById: { shy: 0 },
+    });
+    const r = await addMember(db, G, "owner", "shy", 100);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.invited).toBe(true);
+    expect(r.inviteCode).toHaveLength(12);
+    // The opted-out user is NOT a member.
+    expect(await getRole(db, G, "shy")).toBeNull();
+    expect(members.some((m) => m.chat_id === G && m.user_id === "shy")).toBe(false);
+  });
+  it("target opted out but a code already exists → reuses that code (invited:true)", async () => {
+    const { db } = memDb({
+      members: [{ chatId: G, userId: "owner", role: "owner", joinedAt: 1 }],
+      privacyById: { shy: 0 },
+      chatMeta: { [G]: { inviteCode: "existing0000", inviteEnabled: 1 } },
+    });
+    const r = await addMember(db, G, "owner", "shy", 100);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r).toMatchObject({ ok: true, invited: true, inviteCode: "existing0000" });
+  });
+  it("target opted IN (default) → added directly, no invite", async () => {
+    const { db } = memDb({ members: [{ chatId: G, userId: "owner", role: "owner", joinedAt: 1 }] });
+    const r = await addMember(db, G, "owner", "willing", 100);
+    expect(r).toEqual({ ok: true }); // no invited/inviteCode fields
+    expect(await getRole(db, G, "willing")).toBe("member");
+  });
+  it("target explicitly opted in (=1) → added directly", async () => {
+    const { db } = memDb({ members: [{ chatId: G, userId: "owner", role: "owner", joinedAt: 1 }], privacyById: { willing: 1 } });
+    expect((await addMember(db, G, "owner", "willing", 100)).ok).toBe(true);
+    expect(await getRole(db, G, "willing")).toBe("member");
+  });
+  it("the opt-out check happens AFTER authz — a non-admin still gets forbidden, no invite", async () => {
+    const { db } = memDb({
+      members: [
+        { chatId: G, userId: "owner", role: "owner", joinedAt: 1 },
+        { chatId: G, userId: "mem", role: "member", joinedAt: 2 },
+      ],
+      privacyById: { shy: 0 },
+    });
+    expect(await addMember(db, G, "mem", "shy", 100)).toEqual({ ok: false, error: "forbidden" });
   });
 });
 

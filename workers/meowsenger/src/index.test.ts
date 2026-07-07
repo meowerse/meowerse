@@ -105,6 +105,38 @@ describe("router", () => {
   it("POST /api/chats/:id/subscribe (channel alias) is routed → 401", async () => {
     expect((await handle(req("POST", "/api/chats/g1/subscribe"), env, noSession())).status).toBe(401);
   });
+  // Slice 7 route wiring: invites, join requests, and account privacy reach their
+  // handlers (asserted via the no-session 401 every handler returns first).
+  it("POST /api/chats/:id/invite is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/invite"), env, noSession())).status).toBe(401);
+  });
+  it("DELETE /api/chats/:id/invite is routed → 401", async () => {
+    expect((await handle(req("DELETE", "/api/chats/g1/invite"), env, noSession())).status).toBe(401);
+  });
+  it("GET /api/invite/:code is routed → 401", async () => {
+    expect((await handle(req("GET", "/api/invite/code00000000"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/invite/:code/accept is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/invite/code00000000/accept"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/request is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/request"), env, noSession())).status).toBe(401);
+  });
+  it("GET /api/chats/:id/requests is routed → 401", async () => {
+    expect((await handle(req("GET", "/api/chats/g1/requests"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/requests/:rid/approve is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/requests/r1/approve"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/requests/:rid/reject is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/requests/r1/reject"), env, noSession())).status).toBe(401);
+  });
+  it("GET /api/account/privacy is routed → 401", async () => {
+    expect((await handle(req("GET", "/api/account/privacy"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/account/privacy is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/account/privacy"), env, noSession())).status).toBe(401);
+  });
 });
 
 describe("GET /ws upgrade", () => {

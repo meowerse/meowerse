@@ -20,6 +20,16 @@ import {
   handleSlugAvailable,
   handleGetBySlug,
   handleJoin,
+  handleCreateInvite,
+  handleRevokeInvite,
+  handleResolveInvite,
+  handleAcceptInvite,
+  handleRequestJoin,
+  handleListRequests,
+  handleApproveRequest,
+  handleRejectRequest,
+  handleGetPrivacy,
+  handleSetPrivacy,
 } from "./chatapi";
 import { getRole, chatType } from "./chats";
 
@@ -35,6 +45,15 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (path === "/auth/callback" && m === "GET") return handleCallback(req, env, deps);
   if (path === "/api/session" && m === "GET") return handleSession(req, deps.getDb(), deps.now(), cors);
   if (path === "/auth/logout" && m === "POST") return handleLogout(req, deps.getDb(), deps.now(), cors);
+
+  // Slice 7: account privacy (auto-group-add opt-out) + invite resolve/accept by
+  // code. These are NOT chat-scoped, so they live outside the /api/chats/:id block.
+  if (path === "/api/account/privacy" && m === "GET") return handleGetPrivacy(req, deps.getDb(), deps.now(), cors);
+  if (path === "/api/account/privacy" && m === "POST") return handleSetPrivacy(req, deps.getDb(), deps.now(), cors);
+  const inviteAccept = path.match(/^\/api\/invite\/([^/]+)\/accept$/);
+  if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteAccept[1]), cors);
+  const inviteResolve = path.match(/^\/api\/invite\/([^/]+)$/);
+  if (inviteResolve && m === "GET") return handleResolveInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteResolve[1]), cors);
 
   // Slice 2 chat graph (REST over D1) + the /ws upgrade into the Conversation DO.
   if (path === "/api/chats" && m === "GET") return handleListChats(req, deps.getDb(), deps.now(), cors);
@@ -62,6 +81,24 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // one handler — both add the caller to a public chat as a plain member.
   const joinM = path.match(/^\/api\/chats\/([^/]+)\/(?:join|subscribe)$/);
   if (joinM && m === "POST") return handleJoin(req, deps.getDb(), deps.now(), joinM[1], cors);
+
+  // Slice 7 chat-scoped: invite create/refresh (POST) + revoke (DELETE); a join
+  // request (POST /request); the requests inbox (GET) + approve/reject decisions.
+  // The more specific /requests/:rid/(approve|reject) precede the bare /requests.
+  const invite = path.match(/^\/api\/chats\/([^/]+)\/invite$/);
+  if (invite && m === "POST") return handleCreateInvite(req, deps.getDb(), deps.now(), invite[1], cors);
+  if (invite && m === "DELETE") return handleRevokeInvite(req, deps.getDb(), deps.now(), invite[1], cors);
+  const request = path.match(/^\/api\/chats\/([^/]+)\/request$/);
+  if (request && m === "POST") return handleRequestJoin(req, deps.getDb(), deps.now(), request[1], cors);
+  const reqDecide = path.match(/^\/api\/chats\/([^/]+)\/requests\/([^/]+)\/(approve|reject)$/);
+  if (reqDecide && m === "POST") {
+    return reqDecide[3] === "approve"
+      ? handleApproveRequest(req, deps.getDb(), deps.now(), reqDecide[1], reqDecide[2], cors)
+      : handleRejectRequest(req, deps.getDb(), deps.now(), reqDecide[1], reqDecide[2], cors);
+  }
+  const requests = path.match(/^\/api\/chats\/([^/]+)\/requests$/);
+  if (requests && m === "GET") return handleListRequests(req, deps.getDb(), deps.now(), requests[1], cors);
+
   const chat = path.match(/^\/api\/chats\/([^/]+)$/);
   if (chat && m === "PATCH") return handleUpdateChat(req, deps.getDb(), deps.now(), chat[1], cors);
 

@@ -1,5 +1,7 @@
 import type { DbClient, Row } from "./types";
 import { getRole } from "./chats";
+import { getAllowAutoGroupAdd } from "./users";
+import { getOrCreateInvite } from "./invites";
 
 /**
  * Member management for group chats. EVERY function here re-derives the actor's
@@ -24,6 +26,12 @@ type Result<T = Record<string, never>> = Ok<T> | Err;
 /**
  * Add `targetUserId` to `chatId` as a plain member. Actor must be owner/admin.
  * 400 if the target is already a member.
+ *
+ * Slice 7 privacy: if the target has opted OUT of auto-group-add
+ * (`allow_auto_group_add = 0`), they are NOT added. Instead we ensure the chat has
+ * a live invite code and return `{ok:true, invited:true, inviteCode}` — the actor
+ * shares that link so the target joins on their own terms. Opted-in targets (the
+ * default) are added directly as before.
  */
 export async function addMember(
   db: DbClient,
@@ -31,12 +39,20 @@ export async function addMember(
   actorId: string,
   targetUserId: string,
   now: number,
-): Promise<Result> {
+): Promise<Result<{ invited?: boolean; inviteCode?: string }>> {
   const actorRole = await getRole(db, chatId, actorId);
   if (actorRole == null) return { ok: false, error: "not_member" };
   if (actorRole !== "owner" && actorRole !== "admin") return { ok: false, error: "forbidden" };
   const existing = await getRole(db, chatId, targetUserId);
   if (existing != null) return { ok: false, error: "already_member" };
+  // Respect the target's opt-out: don't force-add — hand the actor an invite link.
+  if (!(await getAllowAutoGroupAdd(db, targetUserId))) {
+    const inv = await getOrCreateInvite(db, chatId, actorId);
+    // The actor is owner/admin here, so getOrCreateInvite can't be forbidden; a
+    // missing chat is the only failure, surfaced as-is.
+    if (!inv.ok) return { ok: false, error: inv.error };
+    return { ok: true, invited: true, inviteCode: inv.code };
+  }
   await db.run(
     "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
     [chatId, targetUserId, now],

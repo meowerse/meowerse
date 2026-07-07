@@ -13,6 +13,16 @@ import {
   handleSlugAvailable,
   handleGetBySlug,
   handleJoin,
+  handleCreateInvite,
+  handleRevokeInvite,
+  handleResolveInvite,
+  handleAcceptInvite,
+  handleRequestJoin,
+  handleListRequests,
+  handleApproveRequest,
+  handleRejectRequest,
+  handleGetPrivacy,
+  handleSetPrivacy,
 } from "./chatapi";
 import type { DbClient, Env, Row } from "./types";
 import { SESSION_COOKIE } from "./session";
@@ -257,17 +267,32 @@ function groupApiDb(opts: {
   usersByName?: Record<string, string>;
   usersById?: Record<string, { username: string; displayName: string | null; avatarUrl: string | null }>;
   members?: Array<{ chatId: string; userId: string; role: string; joinedAt: number }>;
-  chats?: Array<{ id: string; slug?: string | null; type?: string; name?: string | null; visibility?: string }>;
+  chats?: Array<{ id: string; slug?: string | null; type?: string; name?: string | null; visibility?: string; inviteCode?: string | null; inviteEnabled?: number }>;
+  // Slice 7: per-user auto-group-add preference (default 1 when absent).
+  privacyById?: Record<string, number>;
+  // Slice 7: seed join_requests rows.
+  joinRequests?: Array<{ id: string; chatId: string; userId: string; status: string; createdAt: number }>;
 } = {}) {
   const members: Row[] = (opts.members ?? []).map((m) => ({ chat_id: m.chatId, user_id: m.userId, role: m.role, joined_at: m.joinedAt }));
   const chats = new Map<string, Row>(
     (opts.chats ?? []).map((c) => [
       c.id,
-      { id: c.id, slug: c.slug ?? null, type: c.type ?? "group", name: c.name ?? null, visibility: c.visibility ?? "private" },
+      { id: c.id, slug: c.slug ?? null, type: c.type ?? "group", name: c.name ?? null, visibility: c.visibility ?? "private", invite_code: c.inviteCode ?? null, invite_enabled: c.inviteEnabled ?? 1 },
     ]),
   );
+  const joinRequests = (opts.joinRequests ?? []).map((j) => ({ id: j.id, chat_id: j.chatId, user_id: j.userId, status: j.status, created_at: j.createdAt }));
   const db: DbClient = {
     async all(sql, p = []) {
+      // Slice 7: owner/admin request inbox (pending only), oldest-first, w/ user.
+      if (sql.includes("FROM join_requests j")) {
+        return joinRequests
+          .filter((j) => j.chat_id === p[0] && j.status === "pending")
+          .sort((a, b) => a.created_at - b.created_at)
+          .map((j) => {
+            const u = opts.usersById?.[j.user_id] ?? { username: j.user_id, displayName: null, avatarUrl: null };
+            return { id: j.id, user_id: j.user_id, status: j.status, created_at: j.created_at, username: u.username, display_name: u.displayName, avatar_url: u.avatarUrl };
+          });
+      }
       if (sql.includes("JOIN users u ON u.id = m.user_id")) {
         return members
           .filter((m) => m.chat_id === p[0])
@@ -292,15 +317,46 @@ function groupApiDb(opts: {
       if (sql.includes("SELECT 1 AS ok FROM chats WHERE slug")) return [...chats.values()].some((c) => c.slug === p[0]) ? { ok: 1 } : undefined;
       if (sql.includes("SELECT id FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
       // Slice 6: discovery preview (by slug) + join visibility check (by id) + count.
-      if (sql.includes("SELECT id, type, name, visibility FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
+      // Slice 7 added `slug` to the preview SELECT — match on the common prefix.
+      if (sql.includes("SELECT id, type, name, visibility")) return [...chats.values()].find((c) => c.slug === p[0]);
+      if (sql.includes("SELECT visibility, slug FROM chats WHERE id")) return chats.get(String(p[0]));
       if (sql.includes("SELECT visibility FROM chats WHERE id")) return chats.get(String(p[0]));
       if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) return { n: members.filter((m) => m.chat_id === p[0]).length };
+      // Slice 7: invite lookups (by id → code/enabled; by code → id/type/name/enabled).
+      if (sql.includes("SELECT invite_code, invite_enabled FROM chats WHERE id")) return chats.get(String(p[0]));
+      if (sql.includes("SELECT id, type, name, invite_enabled FROM chats WHERE invite_code")) return [...chats.values()].find((c) => c.invite_code === p[0]);
+      if (sql.includes("SELECT id, invite_enabled FROM chats WHERE invite_code")) return [...chats.values()].find((c) => c.invite_code === p[0]);
+      if (sql.includes("SELECT 1 AS ok FROM chats WHERE id")) return chats.get(String(p[0])) ? { ok: 1 } : undefined;
+      // Slice 7: privacy (allow_auto_group_add) by user id.
+      if (sql.includes("SELECT allow_auto_group_add FROM users WHERE id")) {
+        const v = opts.privacyById?.[String(p[0])];
+        return { allow_auto_group_add: v === undefined ? 1 : v };
+      }
+      // Slice 7: join_requests lookups.
+      if (sql.includes("SELECT status FROM join_requests WHERE chat_id")) {
+        const r = joinRequests.find((j) => j.chat_id === p[0] && j.user_id === p[1]);
+        return r ? { status: r.status } : undefined;
+      }
+      if (sql.includes("SELECT id, status FROM join_requests WHERE chat_id")) {
+        const r = joinRequests.find((j) => j.chat_id === p[0] && j.user_id === p[1]);
+        return r ? { id: r.id, status: r.status } : undefined;
+      }
+      if (sql.includes("SELECT user_id, status FROM join_requests WHERE id")) {
+        const r = joinRequests.find((j) => j.id === p[0] && j.chat_id === p[1]);
+        return r ? { user_id: r.user_id, status: r.status } : undefined;
+      }
+      if (sql.includes("SELECT status FROM join_requests WHERE id")) {
+        const r = joinRequests.find((j) => j.id === p[0] && j.chat_id === p[1]);
+        return r ? { status: r.status } : undefined;
+      }
       return undefined;
     },
     async run(sql, p = []) {
-      if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null });
+      if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null, invite_code: null, invite_enabled: 1 });
       else if (sql.startsWith("INSERT INTO chat_members")) {
+        // createGroup inlines the role literal; addMember/approve insert a 'member'.
         const role = sql.includes("'owner'") ? "owner" : "member";
+        // createGroup binds joined_at at p[2]; addMember/approve bind it at p[2] too.
         members.push({ chat_id: p[0], user_id: p[1], role, joined_at: p[2] });
       } else if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);
@@ -311,10 +367,26 @@ function groupApiDb(opts: {
         if (m) m.role = role;
       } else if (sql.startsWith("UPDATE chats SET slug")) {
         const c = chats.get(String(p[1])); if (c) c.slug = p[0];
+      } else if (sql.startsWith("UPDATE chats SET invite_code")) {
+        // getOrCreateInvite/refreshInvite: (code, chatId)
+        const c = chats.get(String(p[1])); if (c) { c.invite_code = p[0]; c.invite_enabled = 1; }
+      } else if (sql.startsWith("UPDATE chats SET invite_enabled = 0")) {
+        const c = chats.get(String(p[0])); if (c) c.invite_enabled = 0;
+      } else if (sql.startsWith("UPDATE users SET allow_auto_group_add")) {
+        // (value, userId) — reflect into the privacy map so a later GET sees it.
+        (opts.privacyById ??= {})[String(p[1])] = Number(p[0]);
+      } else if (sql.startsWith("INSERT INTO join_requests")) {
+        joinRequests.push({ id: String(p[0]), chat_id: String(p[1]), user_id: String(p[2]), status: "pending", created_at: Number(p[3]) });
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'pending', created_at")) {
+        const r = joinRequests.find((j) => j.id === p[1]); if (r) { r.status = "pending"; r.created_at = Number(p[0]); }
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'approved'")) {
+        const r = joinRequests.find((j) => j.id === p[0]); if (r) r.status = "approved";
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'rejected'")) {
+        const r = joinRequests.find((j) => j.id === p[0]); if (r) r.status = "rejected";
       }
     },
   };
-  return { db, members, chats };
+  return { db, members, chats, joinRequests };
 }
 
 const grp = (userId: string, role: string) => [{ chatId: "g1", userId, role, joinedAt: 1 }];
@@ -598,15 +670,17 @@ describe("GET /api/chats/by-slug/:slug", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ type: "channel", isMember: true });
   });
-  it("404 private for a private chat viewed by a non-member (no leak)", async () => {
+  it("200 request-access preview for a private+slug chat viewed by a non-member (Slice 7)", async () => {
     const { db } = groupApiDb({
       session: validSession("u9"),
-      chats: [{ id: "c1", slug: "secret", visibility: "private" }],
+      chats: [{ id: "c1", slug: "secret", type: "group", name: "Secret", visibility: "private" }],
       members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
     });
     const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/secret", "s1"), db, now, "secret", cors);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "private" });
+    // Slice 7: private+slug is discoverable-but-gated → a preview (no bodies) with
+    // canRequest so the UI can offer "request access". NOT a 404 anymore.
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "c1", type: "group", name: "Secret", memberCount: 1, visibility: "private", isMember: false, canRequest: true, requestStatus: "none" });
   });
   it("404 private for an unknown slug (indistinguishable from private)", async () => {
     const { db } = groupApiDb({ session: validSession("u1") });
@@ -644,5 +718,257 @@ describe("POST /api/chats/:id/join (open-join)", () => {
     const res = await handleJoin(cookieReq("https://x/api/chats/c1/join", "s1", { method: "POST" }), db, now, "c1", cors);
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "must_request" });
+  });
+});
+
+// ---- Slice 7: invite, request, and privacy routes ----
+
+describe("POST /api/chats/:id/invite (create/refresh)", () => {
+  it("401 with no session", async () => {
+    const { db } = groupApiDb({ chats: [{ id: "g1" }] });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", undefined, { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(401);
+  });
+  it("owner creates → 200 with a 12-char code", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), chats: [{ id: "g1" }], members: grp("own", "owner") });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; code: string };
+    expect(body.code).toHaveLength(12);
+  });
+  it("a plain member CANNOT create → 403 forbidden", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), chats: [{ id: "g1" }], members: grp("mem", "member") });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+  });
+  it("a non-member CANNOT create → 403 not_member", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), chats: [{ id: "g1" }], members: grp("own", "owner") });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(403);
+  });
+  it("{refresh:true} rotates the code → 200 with a NEW code", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), chats: [{ id: "g1", inviteCode: "old000000000" }], members: grp("own", "owner") });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "POST", body: JSON.stringify({ refresh: true }) }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { code: string }).code).not.toBe("old000000000");
+  });
+  it("400 bad_json on an unparseable body", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), chats: [{ id: "g1" }], members: grp("own", "owner") });
+    const res = await handleCreateInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "POST", body: "{oops" }), db, now, "g1", cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_json" });
+  });
+});
+
+describe("DELETE /api/chats/:id/invite (revoke)", () => {
+  it("owner revokes → 200; the code stops resolving", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), chats: [{ id: "g1", inviteCode: "live00000000" }], members: grp("own", "owner") });
+    const res = await handleRevokeInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "DELETE" }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    // Resolving the now-revoked code → 404 bad_invite.
+    const r2 = await handleResolveInvite(cookieReq("https://x/api/invite/live00000000", "s1"), db, now, "live00000000", cors);
+    expect(r2.status).toBe(404);
+  });
+  it("a plain member CANNOT revoke → 403", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), chats: [{ id: "g1", inviteCode: "live00000000" }], members: grp("mem", "member") });
+    const res = await handleRevokeInvite(cookieReq("https://x/api/chats/g1/invite", "s1", { method: "DELETE" }), db, now, "g1", cors);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("GET /api/invite/:code + POST /api/invite/:code/accept", () => {
+  it("resolve → 200 preview for a live code", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "g1", type: "group", name: "Room", inviteCode: "code00000000" }],
+      members: grp("own", "owner"),
+    });
+    const res = await handleResolveInvite(cookieReq("https://x/api/invite/code00000000", "s1"), db, now, "code00000000", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ chatId: "g1", type: "group", name: "Room", memberCount: 1 });
+  });
+  it("resolve unknown/revoked → 404 bad_invite", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), chats: [{ id: "g1", inviteCode: "gone00000000", inviteEnabled: 0 }] });
+    expect((await handleResolveInvite(cookieReq("https://x/api/invite/gone00000000", "s1"), db, now, "gone00000000", cors)).status).toBe(404);
+    expect((await handleResolveInvite(cookieReq("https://x/api/invite/nope00000000", "s1"), db, now, "nope00000000", cors)).status).toBe(404);
+  });
+  it("accept → 200 joins a PRIVATE chat (bypasses visibility), joined:true", async () => {
+    const { db, members } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "g1", visibility: "private", inviteCode: "code00000000" }],
+      members: grp("own", "owner"),
+    });
+    const res = await handleAcceptInvite(cookieReq("https://x/api/invite/code00000000/accept", "s1", { method: "POST" }), db, now, "code00000000", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, chatId: "g1", joined: true });
+    expect(members.find((m) => m.chat_id === "g1" && m.user_id === "u9")?.role).toBe("member");
+  });
+  it("accept is idempotent for an already-member → joined:false", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "g1", inviteCode: "code00000000" }],
+      members: [{ chatId: "g1", userId: "u9", role: "member", joinedAt: 1 }],
+    });
+    const res = await handleAcceptInvite(cookieReq("https://x/api/invite/code00000000/accept", "s1", { method: "POST" }), db, now, "code00000000", cors);
+    expect(await res.json()).toEqual({ ok: true, chatId: "g1", joined: false });
+  });
+  it("accept a revoked code → 404 bad_invite (no join)", async () => {
+    const { db, members } = groupApiDb({ session: validSession("u9"), chats: [{ id: "g1", inviteCode: "gone00000000", inviteEnabled: 0 }] });
+    const res = await handleAcceptInvite(cookieReq("https://x/api/invite/gone00000000/accept", "s1", { method: "POST" }), db, now, "gone00000000", cors);
+    expect(res.status).toBe(404);
+    expect(members.some((m) => m.user_id === "u9")).toBe(false);
+  });
+  it("401 with no session on accept", async () => {
+    const { db } = groupApiDb({ chats: [{ id: "g1", inviteCode: "code00000000" }] });
+    const res = await handleAcceptInvite(cookieReq("https://x/api/invite/code00000000/accept", undefined, { method: "POST" }), db, now, "code00000000", cors);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /api/chats/:id/request (join request)", () => {
+  it("non-member requests a private+slug chat → 200 pending", async () => {
+    const { db, joinRequests } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "g1", slug: "gated", visibility: "private" }],
+      members: grp("own", "owner"),
+    });
+    const res = await handleRequestJoin(cookieReq("https://x/api/chats/g1/request", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, status: "pending" });
+    expect(joinRequests).toHaveLength(1);
+  });
+  it("400 not_requestable for a private chat with NO slug (hidden)", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), chats: [{ id: "g1", slug: null, visibility: "private" }], members: grp("own", "owner") });
+    const res = await handleRequestJoin(cookieReq("https://x/api/chats/g1/request", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "not_requestable" });
+  });
+  it("400 open_join for a public chat (join directly)", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), chats: [{ id: "g1", slug: "open", visibility: "public" }], members: grp("own", "owner") });
+    const res = await handleRequestJoin(cookieReq("https://x/api/chats/g1/request", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "open_join" });
+  });
+  it("400 already_member when the caller is in", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), chats: [{ id: "g1", slug: "gated", visibility: "private" }], members: [{ chatId: "g1", userId: "mem", role: "member", joinedAt: 1 }] });
+    const res = await handleRequestJoin(cookieReq("https://x/api/chats/g1/request", "s1", { method: "POST" }), db, now, "g1", cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "already_member" });
+  });
+});
+
+describe("GET /api/chats/:id/requests + approve/reject", () => {
+  const seedGated = () => ({
+    chats: [{ id: "g1", slug: "gated", visibility: "private" }],
+    joinRequests: [{ id: "r1", chatId: "g1", userId: "req", status: "pending", createdAt: 100 }],
+    usersById: { req: { username: "reqy", displayName: "Reqy", avatarUrl: null } },
+  });
+  it("owner/admin lists pending → 200 with requester identity", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), members: grp("own", "owner"), ...seedGated() });
+    const res = await handleListRequests(cookieReq("https://x/api/chats/g1/requests", "s1"), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { requests: Array<{ userId: string; username: string }> };
+    expect(body.requests).toHaveLength(1);
+    expect(body.requests[0]).toMatchObject({ userId: "req", username: "reqy" });
+  });
+  it("a plain member CANNOT list → 403 forbidden", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), members: grp("mem", "member"), ...seedGated() });
+    const res = await handleListRequests(cookieReq("https://x/api/chats/g1/requests", "s1"), db, now, "g1", cors);
+    expect(res.status).toBe(403);
+  });
+  it("a non-member CANNOT list → 403 not_member", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner"), ...seedGated() });
+    const res = await handleListRequests(cookieReq("https://x/api/chats/g1/requests", "s1"), db, now, "g1", cors);
+    expect(res.status).toBe(403);
+  });
+  it("owner approves → 200; the requester becomes a member exactly once", async () => {
+    const { db, members } = groupApiDb({ session: validSession("own"), members: grp("own", "owner"), ...seedGated() });
+    const res = await handleApproveRequest(cookieReq("https://x/api/chats/g1/requests/r1/approve", "s1", { method: "POST" }), db, now, "g1", "r1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, userId: "req" });
+    expect(members.filter((m) => m.chat_id === "g1" && m.user_id === "req")).toHaveLength(1);
+  });
+  it("a plain member CANNOT approve → 403", async () => {
+    const { db, members } = groupApiDb({ session: validSession("mem"), members: grp("mem", "member"), ...seedGated() });
+    const res = await handleApproveRequest(cookieReq("https://x/api/chats/g1/requests/r1/approve", "s1", { method: "POST" }), db, now, "g1", "r1", cors);
+    expect(res.status).toBe(403);
+    expect(members.some((m) => m.user_id === "req")).toBe(false);
+  });
+  it("owner rejects → 200; NO member added", async () => {
+    const { db, members, joinRequests } = groupApiDb({ session: validSession("own"), members: grp("own", "owner"), ...seedGated() });
+    const res = await handleRejectRequest(cookieReq("https://x/api/chats/g1/requests/r1/reject", "s1", { method: "POST" }), db, now, "g1", "r1", cors);
+    expect(res.status).toBe(200);
+    expect(members.some((m) => m.user_id === "req")).toBe(false);
+    expect(joinRequests[0].status).toBe("rejected");
+  });
+  it("404 request_not_found for an unknown request id", async () => {
+    const { db } = groupApiDb({ session: validSession("own"), members: grp("own", "owner"), ...seedGated() });
+    const res = await handleApproveRequest(cookieReq("https://x/api/chats/g1/requests/ghost/approve", "s1", { method: "POST" }), db, now, "g1", "ghost", cors);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/chats/:id/members with an opted-out target (auto-invite)", () => {
+  it("owner adds an opted-out user → 200 invited:true + inviteCode, NOT added", async () => {
+    const { db, members } = groupApiDb({
+      session: validSession("own"),
+      usersByName: { shy: "shyId" },
+      chats: [{ id: "g1" }],
+      members: grp("own", "owner"),
+      privacyById: { shyId: 0 },
+    });
+    const res = await handleAddMember(cookieReq("https://x/api/chats/g1/members", "s1", { method: "POST", body: JSON.stringify({ username: "shy" }) }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; invited?: boolean; inviteCode?: string };
+    expect(body.invited).toBe(true);
+    expect(body.inviteCode).toHaveLength(12);
+    expect(members.some((m) => m.chat_id === "g1" && m.user_id === "shyId")).toBe(false);
+  });
+  it("owner adds an opted-IN user → 200 added (no invited flag)", async () => {
+    const { db, members } = groupApiDb({
+      session: validSession("own"),
+      usersByName: { willing: "wId" },
+      chats: [{ id: "g1" }],
+      members: grp("own", "owner"),
+    });
+    const res = await handleAddMember(cookieReq("https://x/api/chats/g1/members", "s1", { method: "POST", body: JSON.stringify({ username: "willing" }) }), db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, userId: "wId" });
+    expect(members.some((m) => m.chat_id === "g1" && m.user_id === "wId")).toBe(true);
+  });
+});
+
+describe("GET/POST /api/account/privacy", () => {
+  it("GET → 200 default allowAutoGroupAdd:true", async () => {
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleGetPrivacy(cookieReq("https://x/api/account/privacy", "s1"), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ allowAutoGroupAdd: true });
+  });
+  it("401 with no session", async () => {
+    const { db } = groupApiDb();
+    expect((await handleGetPrivacy(cookieReq("https://x/api/account/privacy"), db, now, cors)).status).toBe(401);
+    expect((await handleSetPrivacy(cookieReq("https://x/api/account/privacy", undefined, { method: "POST", body: "{}" }), db, now, cors)).status).toBe(401);
+  });
+  it("POST sets false → 200; a subsequent GET reflects it", async () => {
+    const { db } = groupApiDb({ session: validSession("u1"), privacyById: { u1: 1 } });
+    const res = await handleSetPrivacy(cookieReq("https://x/api/account/privacy", "s1", { method: "POST", body: JSON.stringify({ allowAutoGroupAdd: false }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, allowAutoGroupAdd: false });
+    const get = await handleGetPrivacy(cookieReq("https://x/api/account/privacy", "s1"), db, now, cors);
+    expect(await get.json()).toEqual({ allowAutoGroupAdd: false });
+  });
+  it("400 bad_value when allowAutoGroupAdd isn't a boolean", async () => {
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleSetPrivacy(cookieReq("https://x/api/account/privacy", "s1", { method: "POST", body: JSON.stringify({ allowAutoGroupAdd: "yes" }) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_value" });
+  });
+  it("400 bad_json on an unparseable body", async () => {
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleSetPrivacy(cookieReq("https://x/api/account/privacy", "s1", { method: "POST", body: "{oops" }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_json" });
   });
 });

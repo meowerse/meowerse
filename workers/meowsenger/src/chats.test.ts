@@ -17,6 +17,11 @@ import {
   chatType,
   getPreviewBySlug,
   joinPublic,
+  requestJoin,
+  listRequests,
+  approveRequest,
+  rejectRequest,
+  requestStatusFor,
 } from "./chats";
 import type { DbClient, Row } from "./types";
 
@@ -146,8 +151,24 @@ describe("listChats", () => {
 function groupDb(users: Record<string, { username: string; displayName: string | null; avatarUrl: string | null }> = {}) {
   const chats = new Map<string, Row>();
   const members: Row[] = [];
+  // Slice 7: join_requests rows keyed loosely; UNIQUE(chat_id,user_id) modeled by
+  // the find-then-reuse logic in requestJoin (mirrored in the run handler below).
+  const joinRequests: Array<{ id: string; chat_id: string; user_id: string; status: string; created_at: number }> = [];
   const db: DbClient = {
     async all(sql, p = []) {
+      // Slice 7: owner/admin request inbox (pending only), oldest-first, w/ user.
+      if (sql.includes("FROM join_requests j")) {
+        return joinRequests
+          .filter((j) => j.chat_id === p[0] && j.status === "pending")
+          .sort((a, b) => a.created_at - b.created_at)
+          .map((j) => {
+            const u = users[j.user_id] ?? { username: j.user_id, displayName: null, avatarUrl: null };
+            return {
+              id: j.id, user_id: j.user_id, status: j.status, created_at: j.created_at,
+              username: u.username, display_name: u.displayName, avatar_url: u.avatarUrl,
+            };
+          });
+      }
       if (sql.includes("JOIN users u ON u.id = m.user_id")) {
         return members
           .filter((m) => m.chat_id === p[0])
@@ -177,7 +198,8 @@ function groupDb(users: Record<string, { username: string; displayName: string |
         return [...chats.values()].find((c) => c.slug === p[0]);
       }
       // Slice 6: discovery preview (by slug) + chatType/join lookups (by id).
-      if (sql.includes("SELECT id, type, name, visibility FROM chats WHERE slug")) {
+      // Slice 7 added `slug` to the preview SELECT — match on the common prefix.
+      if (sql.includes("SELECT id, type, name, visibility")) {
         return [...chats.values()].find((c) => c.slug === p[0]);
       }
       if (sql.includes("SELECT type FROM chats WHERE id")) {
@@ -186,8 +208,32 @@ function groupDb(users: Record<string, { username: string; displayName: string |
       if (sql.includes("SELECT visibility FROM chats WHERE id")) {
         return chats.get(String(p[0]));
       }
+      // Slice 7: requestJoin reads visibility+slug by id.
+      if (sql.includes("SELECT visibility, slug FROM chats WHERE id")) {
+        return chats.get(String(p[0]));
+      }
       if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) {
         return { n: members.filter((m) => m.chat_id === p[0]).length };
+      }
+      // Slice 7: the caller's own request status (preview → none/pending/…).
+      if (sql.includes("SELECT status FROM join_requests WHERE chat_id")) {
+        const r = joinRequests.find((j) => j.chat_id === p[0] && j.user_id === p[1]);
+        return r ? { status: r.status } : undefined;
+      }
+      // Slice 7: requestJoin's existing-row lookup by (chat_id,user_id).
+      if (sql.includes("SELECT id, status FROM join_requests WHERE chat_id")) {
+        const r = joinRequests.find((j) => j.chat_id === p[0] && j.user_id === p[1]);
+        return r ? { id: r.id, status: r.status } : undefined;
+      }
+      // Slice 7: approve reads (user_id,status) by request id + chat id.
+      if (sql.includes("SELECT user_id, status FROM join_requests WHERE id")) {
+        const r = joinRequests.find((j) => j.id === p[0] && j.chat_id === p[1]);
+        return r ? { user_id: r.user_id, status: r.status } : undefined;
+      }
+      // Slice 7: reject reads status by request id + chat id.
+      if (sql.includes("SELECT status FROM join_requests WHERE id")) {
+        const r = joinRequests.find((j) => j.id === p[0] && j.chat_id === p[1]);
+        return r ? { status: r.status } : undefined;
       }
       return undefined;
     },
@@ -212,10 +258,19 @@ function groupDb(users: Record<string, { username: string; displayName: string |
         const c = chats.get(String(p[0])); if (c) c.slug = null;
       } else if (sql.startsWith("UPDATE chats SET slug")) {
         const c = chats.get(String(p[1])); if (c) c.slug = p[0];
+      } else if (sql.startsWith("INSERT INTO join_requests")) {
+        // (id, chat_id, user_id, status='pending', created_at)
+        joinRequests.push({ id: String(p[0]), chat_id: String(p[1]), user_id: String(p[2]), status: "pending", created_at: Number(p[3]) });
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'pending', created_at")) {
+        const r = joinRequests.find((j) => j.id === p[1]); if (r) { r.status = "pending"; r.created_at = Number(p[0]); }
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'approved'")) {
+        const r = joinRequests.find((j) => j.id === p[0]); if (r) r.status = "approved";
+      } else if (sql.startsWith("UPDATE join_requests SET status = 'rejected'")) {
+        const r = joinRequests.find((j) => j.id === p[0]); if (r) r.status = "rejected";
       }
     },
   };
-  return { db, chats, members };
+  return { db, chats, members, joinRequests };
 }
 
 describe("createGroup", () => {
@@ -397,13 +452,25 @@ describe("getPreviewBySlug", () => {
     await createGroup(db, { name: "Open", creatorId: "o", memberIds: ["m1"], visibility: "public", slug: "open" }, 1);
     expect(await getPreviewBySlug(db, "open", "m1")).toMatchObject({ isMember: true });
   });
-  it("private chat → non-member gets {error:'private'} (no leak)", async () => {
+  it("private+slug chat → non-member gets a request-access preview (Slice 7)", async () => {
     const { db } = groupDb();
-    await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1); // private default
-    expect(await getPreviewBySlug(db, "secret", "stranger")).toEqual({ error: "private" });
-    expect(await getPreviewBySlug(db, "secret", null)).toEqual({ error: "private" });
+    const r = await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1) as { id: string }; // private default
+    // Slice 7: a private chat WITH a slug is "discoverable but gated" — a
+    // non-member gets a preview (no bodies) plus canRequest + their request status.
+    expect(await getPreviewBySlug(db, "secret", "stranger")).toEqual({
+      id: r.id, type: "group", name: "Secret", memberCount: 1,
+      visibility: "private", isMember: false, canRequest: true, requestStatus: "none",
+    });
+    // Anonymous caller (null) also gets the gated preview, status "none".
+    expect(await getPreviewBySlug(db, "secret", null)).toMatchObject({ canRequest: true, requestStatus: "none" });
   });
-  it("private chat → its member still gets a preview (isMember:true)", async () => {
+  it("private+slug preview reflects the caller's own pending request status", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await getPreviewBySlug(db, "secret", "stranger")).toMatchObject({ canRequest: true, requestStatus: "pending" });
+  });
+  it("private chat → its member still gets a preview (isMember:true, no canRequest)", async () => {
     const { db } = groupDb();
     await createGroup(db, { name: "Secret", creatorId: "o", memberIds: ["m1"], slug: "secret" }, 1);
     expect(await getPreviewBySlug(db, "secret", "m1")).toMatchObject({ visibility: "private", isMember: true });
@@ -439,5 +506,159 @@ describe("joinPublic", () => {
   it("refuses an unknown chat → must_request (no existence leak)", async () => {
     const { db } = groupDb();
     expect(await joinPublic(db, "ghost", "joiner", 5000)).toEqual({ ok: false, error: "must_request" });
+  });
+});
+
+// ---- Slice 7: join requests ----
+
+describe("requestJoin", () => {
+  it("a non-member requests to join a private+slug chat → pending", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    expect(await requestJoin(db, r.id, "stranger", 100)).toEqual({ ok: true, status: "pending" });
+    expect(joinRequests).toHaveLength(1);
+    expect(joinRequests[0]).toMatchObject({ chat_id: r.id, user_id: "stranger", status: "pending" });
+  });
+  it("is idempotent — a second request keeps a single pending row", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await requestJoin(db, r.id, "stranger", 200)).toEqual({ ok: true, status: "pending" });
+    expect(joinRequests).toHaveLength(1);
+  });
+  it("re-requesting after a rejection re-opens the row as pending", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    await rejectRequest(db, r.id, joinRequests[0].id, "o");
+    expect(joinRequests[0].status).toBe("rejected");
+    expect(await requestJoin(db, r.id, "stranger", 300)).toEqual({ ok: true, status: "pending" });
+    expect(joinRequests).toHaveLength(1);
+    expect(joinRequests[0].status).toBe("pending");
+  });
+  it("an already-member cannot request → already_member", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
+    expect(await requestJoin(db, r.id, "mem", 100)).toEqual({ ok: false, error: "already_member" });
+  });
+  it("a PUBLIC chat is open-join, not requestable → open_join", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Open", creatorId: "o", memberIds: [], visibility: "public", slug: "open" }, 1) as { id: string };
+    expect(await requestJoin(db, r.id, "stranger", 100)).toEqual({ ok: false, error: "open_join" });
+  });
+  it("a private chat with NO slug stays hidden → not_requestable", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Hidden", creatorId: "o", memberIds: [] }, 1) as { id: string }; // private, no slug
+    expect(await requestJoin(db, r.id, "stranger", 100)).toEqual({ ok: false, error: "not_requestable" });
+  });
+  it("an unknown chat → not_found", async () => {
+    const { db } = groupDb();
+    expect(await requestJoin(db, "ghost", "stranger", 100)).toEqual({ ok: false, error: "not_found" });
+  });
+});
+
+describe("requestStatusFor", () => {
+  it("none before requesting, pending after", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    expect(await requestStatusFor(db, r.id, "stranger")).toBe("none");
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await requestStatusFor(db, r.id, "stranger")).toBe("pending");
+  });
+});
+
+describe("listRequests", () => {
+  it("owner/admin sees pending requests with requester identity, oldest-first", async () => {
+    const { db } = groupDb({
+      s1: { username: "sam", displayName: "Sam", avatarUrl: "https://a/s" },
+      s2: { username: "sue", displayName: null, avatarUrl: null },
+    });
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "s1", 100);
+    await requestJoin(db, r.id, "s2", 200);
+    const res = await listRequests(db, r.id, "o");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.requests).toHaveLength(2);
+    expect(res.requests[0]).toMatchObject({ userId: "s1", username: "sam", displayName: "Sam", status: "pending" });
+    expect(res.requests[1]).toMatchObject({ userId: "s2", username: "sue" });
+  });
+  it("only PENDING requests are listed (approved/rejected excluded)", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "s1", 100);
+    await requestJoin(db, r.id, "s2", 200);
+    await rejectRequest(db, r.id, joinRequests.find((j) => j.user_id === "s1")!.id, "o");
+    const res = await listRequests(db, r.id, "o");
+    if (!res.ok) return;
+    expect(res.requests.map((q) => q.userId)).toEqual(["s2"]);
+  });
+  it("a plain member CANNOT list → forbidden", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
+    expect(await listRequests(db, r.id, "mem")).toEqual({ ok: false, error: "forbidden" });
+  });
+  it("a non-member CANNOT list → not_member", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    expect(await listRequests(db, r.id, "stranger")).toEqual({ ok: false, error: "not_member" });
+  });
+});
+
+describe("approveRequest", () => {
+  it("owner approves → adds the requester as member (exactly once) + marks approved", async () => {
+    const { db, joinRequests, members } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    const reqId = joinRequests[0].id;
+    const res = await approveRequest(db, r.id, reqId, "o", 500);
+    expect(res).toEqual({ ok: true, userId: "stranger" });
+    expect(await getRole(db, r.id, "stranger")).toBe("member");
+    expect(members.filter((m) => m.chat_id === r.id && m.user_id === "stranger")).toHaveLength(1); // exactly once
+    expect(joinRequests[0].status).toBe("approved");
+  });
+  it("approving an already-decided request → request_not_found (can't double-approve)", async () => {
+    const { db, joinRequests, members } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    const reqId = joinRequests[0].id;
+    await approveRequest(db, r.id, reqId, "o", 500);
+    // A second approve is a no-op (status no longer pending) → still exactly one member.
+    expect(await approveRequest(db, r.id, reqId, "o", 600)).toEqual({ ok: false, error: "request_not_found" });
+    expect(members.filter((m) => m.chat_id === r.id && m.user_id === "stranger")).toHaveLength(1);
+  });
+  it("a plain member CANNOT approve → forbidden", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await approveRequest(db, r.id, joinRequests[0].id, "mem", 500)).toEqual({ ok: false, error: "forbidden" });
+    expect(await getRole(db, r.id, "stranger")).toBeNull();
+  });
+  it("an unknown request id → request_not_found", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    expect(await approveRequest(db, r.id, "no-such", "o", 500)).toEqual({ ok: false, error: "request_not_found" });
+  });
+});
+
+describe("rejectRequest", () => {
+  it("owner rejects → marks rejected, adds NO member", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await rejectRequest(db, r.id, joinRequests[0].id, "o")).toEqual({ ok: true });
+    expect(joinRequests[0].status).toBe("rejected");
+    expect(await getRole(db, r.id, "stranger")).toBeNull();
+  });
+  it("a plain member CANNOT reject → forbidden", async () => {
+    const { db, joinRequests } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
+    await requestJoin(db, r.id, "stranger", 100);
+    expect(await rejectRequest(db, r.id, joinRequests[0].id, "mem")).toEqual({ ok: false, error: "forbidden" });
+  });
+  it("an unknown request id → request_not_found", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
+    expect(await rejectRequest(db, r.id, "no-such", "o")).toEqual({ ok: false, error: "request_not_found" });
   });
 });

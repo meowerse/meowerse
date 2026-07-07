@@ -8,7 +8,10 @@ CREATE TABLE IF NOT EXISTS users (
   display_name  TEXT,
   avatar_url    TEXT,
   verified      INTEGER NOT NULL DEFAULT 0,
-  updated_at    INTEGER NOT NULL
+  updated_at    INTEGER NOT NULL,
+  -- Slice 7 privacy: 1 = this user may be added to groups directly (default);
+  -- 0 = adding them instead yields an invite the actor must share (opt-out).
+  allow_auto_group_add INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
@@ -31,6 +34,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 -- them from this CREATE TABLE; an already-provisioned meowsenger D1 gets them
 -- from the one-shot `schema-slice5.sql` (D1 has no ADD COLUMN IF NOT EXISTS, so
 -- the ALTERs live in that separate file, applied once at deploy).
+--
+-- NOTE (Slice 7): `invite_code` + `invite_enabled` are additive too — a fresh DB
+-- gets them here; an already-provisioned D1 gets them from `schema-slice7.sql`.
 CREATE TABLE IF NOT EXISTS chats (
   id             TEXT PRIMARY KEY,
   type           TEXT NOT NULL,             -- 'direct' | 'group' | 'channel' (channel = broadcast, Slice 6)
@@ -42,7 +48,9 @@ CREATE TABLE IF NOT EXISTS chats (
   last_sender_id TEXT,
   direct_key     TEXT UNIQUE,               -- 'min:max' of the two user ids, for DM dedup
   visibility     TEXT NOT NULL DEFAULT 'private', -- 'public' | 'private' (Slice 5; discovery = Slice 6)
-  slug           TEXT UNIQUE                -- optional handle, ^[a-z0-9-]{3,32}$ (Slice 5)
+  slug           TEXT UNIQUE,               -- optional handle, ^[a-z0-9-]{3,32}$ (Slice 5)
+  invite_code    TEXT UNIQUE,               -- optional 12-char invite code, direct-join bypasses visibility (Slice 7)
+  invite_enabled INTEGER NOT NULL DEFAULT 1 -- 1 = the current invite_code is live; 0 = revoked (Slice 7)
 );
 CREATE INDEX IF NOT EXISTS idx_chats_last_activity ON chats(last_activity);
 CREATE TABLE IF NOT EXISTS chat_members (
@@ -55,3 +63,17 @@ CREATE TABLE IF NOT EXISTS chat_members (
   PRIMARY KEY (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_members_user ON chat_members(user_id, chat_id);
+
+-- Slice 7: join requests for private-but-discoverable chats (a private chat WITH
+-- a slug). A non-member requests access; owner/admin approve (→ member) or reject.
+-- One row per (chat, user) — re-requesting is idempotent (UNIQUE keeps a single
+-- row whose `status` reflects the latest decision).
+CREATE TABLE IF NOT EXISTS join_requests (
+  id          TEXT PRIMARY KEY,
+  chat_id     TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+  created_at  INTEGER NOT NULL,
+  UNIQUE (chat_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_join_requests_chat ON join_requests(chat_id, status);

@@ -1,6 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { readCookies, corsHeaders } from "./security";
+import { readCookies, corsHeaders, randomId } from "./security";
 import type { Env } from "./types";
+
+describe("randomId", () => {
+  it("defaults to 12 chars from the unambiguous alphabet", () => {
+    const id = randomId();
+    expect(id).toHaveLength(12);
+    expect(id).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]+$/);
+  });
+  it("honors an explicit length", () => {
+    expect(randomId(6)).toHaveLength(6);
+  });
+  it("is (practically) unique across calls", () => {
+    const seen = new Set(Array.from({ length: 200 }, () => randomId()));
+    expect(seen.size).toBe(200);
+  });
+});
 
 describe("readCookies", () => {
   it("parses a Cookie header into a map", () => {

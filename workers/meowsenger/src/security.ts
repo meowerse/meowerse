@@ -28,6 +28,22 @@ export function json(body: unknown, status: number, cors: Record<string, string>
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors, ...extra } });
 }
 
+// Unambiguous alphabet for human-shareable codes: no 0/O/1/I/l to avoid misreads.
+const CODE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
+
+/**
+ * A URL-safe random id of `len` chars (default 12) drawn from an unambiguous
+ * alphabet, using `crypto.getRandomValues` (CSPRNG). Used for invite codes — a
+ * 12-char code over a 31-char alphabet is ~59 bits, ample against guessing.
+ */
+export function randomId(len = 12): string {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  let out = "";
+  for (let i = 0; i < len; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return out;
+}
+
 /** Parse a Cookie header into a name→value map (never throws). */
 export function readCookies(header: string | null): Record<string, string> {
   const out: Record<string, string> = {};

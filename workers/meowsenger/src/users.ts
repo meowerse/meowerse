@@ -49,3 +49,22 @@ export async function getUser(db: DbClient, id: string): Promise<User | null> {
     verified: Number(row.verified) === 1,
   };
 }
+
+// ---- Slice 7: privacy — the auto-group-add opt-out ----
+
+/**
+ * Whether `userId` may be added to a group directly. Defaults to true — a missing
+ * row (shouldn't happen for a signed-in user) is treated as opted-in so member-add
+ * never silently breaks. When false, `addMember` returns an invite instead of
+ * adding the user.
+ */
+export async function getAllowAutoGroupAdd(db: DbClient, userId: string): Promise<boolean> {
+  const row = await db.first("SELECT allow_auto_group_add FROM users WHERE id = ?", [userId]);
+  if (!row) return true;
+  return Number(row.allow_auto_group_add ?? 1) === 1;
+}
+
+/** Set the caller's auto-group-add preference (1 = allow, 0 = opt out). */
+export async function setAllowAutoGroupAdd(db: DbClient, userId: string, allow: boolean): Promise<void> {
+  await db.run("UPDATE users SET allow_auto_group_add = ? WHERE id = ?", [allow ? 1 : 0, userId]);
+}

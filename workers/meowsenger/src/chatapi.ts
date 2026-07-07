@@ -17,8 +17,14 @@ import {
   normalizeSlug,
   getPreviewBySlug,
   joinPublic,
+  requestJoin,
+  listRequests,
+  approveRequest,
+  rejectRequest,
 } from "./chats";
 import { addMember, removeMember, promote, demote, leave } from "./members";
+import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
+import { getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
 
 /** Look up a user id by username, or null. */
 async function userIdByName(db: DbClient, username: string): Promise<string | null> {
@@ -191,6 +197,9 @@ export async function handleAddMember(
   if (!targetId) return json({ error: "user_not_found" }, 404, cors, NS);
   const r = await addMember(db, chatId, me, targetId, now);
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Slice 7: a target who opted out of auto-add isn't added — the actor gets an
+  // invite code to share instead (invited:true). An added target omits both.
+  if (r.invited) return json({ ok: true, userId: targetId, invited: true, inviteCode: r.inviteCode }, 200, cors, NS);
   return json({ ok: true, userId: targetId }, 200, cors, NS);
 }
 
@@ -343,4 +352,188 @@ export async function handleJoin(
   const r = await joinPublic(db, chatId, me, now);
   if (!r.ok) return json({ error: r.error }, 403, cors, NS);
   return json({ ok: true, joined: r.joined }, 200, cors, NS);
+}
+
+// ---- Slice 7: invite codes, join requests, privacy ----
+
+/**
+ * Map an invite/request error to a status. Authz denials (not a member / not an
+ * admin) → 403; a missing chat/request → 404; everything else (bad input,
+ * already-member, not-requestable, …) → 400.
+ */
+function statusForInviteError(error: string): number {
+  if (error === "not_member" || error === "forbidden") return 403;
+  if (error === "not_found" || error === "request_not_found") return 404;
+  return 400;
+}
+
+/**
+ * POST /api/chats/:id/invite — owner/admin get-or-create the chat's invite code.
+ * Body `{refresh:true}` rotates it (invalidating the old link). Returns `{code}`.
+ */
+export async function handleCreateInvite(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  let body: { refresh?: boolean } = {};
+  try {
+    const text = await req.text();
+    if (text) body = JSON.parse(text) as { refresh?: boolean };
+  } catch {
+    return json({ error: "bad_json" }, 400, cors, NS);
+  }
+  const r = body.refresh ? await refreshInvite(db, chatId, me) : await getOrCreateInvite(db, chatId, me);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ ok: true, code: r.code }, 200, cors, NS);
+}
+
+/** DELETE /api/chats/:id/invite — owner/admin revoke the chat's invite code. */
+export async function handleRevokeInvite(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await revokeInvite(db, chatId, me);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ ok: true }, 200, cors, NS);
+}
+
+/**
+ * GET /api/invite/:code — resolve an invite code to a preview (id/type/name/
+ * memberCount), no bodies. Unknown or revoked → 404 `{error:"bad_invite"}`,
+ * indistinguishable so a revoked link leaks nothing.
+ */
+export async function handleResolveInvite(
+  req: Request,
+  db: DbClient,
+  now: number,
+  code: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const preview = await resolveInvite(db, code);
+  if (!preview) return json({ error: "bad_invite" }, 404, cors, NS);
+  return json(preview, 200, cors, NS);
+}
+
+/**
+ * POST /api/invite/:code/accept — join by invite (bypasses visibility). Idempotent;
+ * an unknown/revoked code → 404 `{error:"bad_invite"}`.
+ */
+export async function handleAcceptInvite(
+  req: Request,
+  db: DbClient,
+  now: number,
+  code: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await joinByInvite(db, code, me, now);
+  if (!r.ok) return json({ error: r.error }, 404, cors, NS);
+  return json({ ok: true, chatId: r.chatId, joined: r.joined }, 200, cors, NS);
+}
+
+/** POST /api/chats/:id/request — a non-member requests to join a private+slug chat. */
+export async function handleRequestJoin(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await requestJoin(db, chatId, me, now);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ ok: true, status: r.status }, 200, cors, NS);
+}
+
+/** GET /api/chats/:id/requests — owner/admin list pending join requests. */
+export async function handleListRequests(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await listRequests(db, chatId, me);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ requests: r.requests }, 200, cors, NS);
+}
+
+/** POST /api/chats/:id/requests/:rid/approve — owner/admin approve (adds member). */
+export async function handleApproveRequest(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  requestId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await approveRequest(db, chatId, requestId, me, now);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ ok: true, userId: r.userId }, 200, cors, NS);
+}
+
+/** POST /api/chats/:id/requests/:rid/reject — owner/admin reject a request. */
+export async function handleRejectRequest(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  requestId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await rejectRequest(db, chatId, requestId, me);
+  if (!r.ok) return json({ error: r.error }, statusForInviteError(r.error), cors, NS);
+  return json({ ok: true }, 200, cors, NS);
+}
+
+/** GET /api/account/privacy — the caller's auto-group-add preference. */
+export async function handleGetPrivacy(
+  req: Request,
+  db: DbClient,
+  now: number,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  return json({ allowAutoGroupAdd: await getAllowAutoGroupAdd(db, me) }, 200, cors, NS);
+}
+
+/** POST /api/account/privacy { allowAutoGroupAdd } — set the caller's preference. */
+export async function handleSetPrivacy(
+  req: Request,
+  db: DbClient,
+  now: number,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  let body: { allowAutoGroupAdd?: unknown };
+  try {
+    body = (await req.json()) as { allowAutoGroupAdd?: unknown };
+  } catch {
+    return json({ error: "bad_json" }, 400, cors, NS);
+  }
+  if (typeof body.allowAutoGroupAdd !== "boolean") return json({ error: "bad_value" }, 400, cors, NS);
+  await setAllowAutoGroupAdd(db, me, body.allowAutoGroupAdd);
+  return json({ ok: true, allowAutoGroupAdd: body.allowAutoGroupAdd }, 200, cors, NS);
 }

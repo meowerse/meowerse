@@ -267,7 +267,10 @@ export async function setSlug(
 // ---- Slice 6: public discovery + open-join ----
 
 /** The public preview of a discoverable chat — deliberately NO message content
- *  (discovery must never leak the log). `isMember` reflects the *caller*. */
+ *  (discovery must never leak the log). `isMember` reflects the *caller*.
+ *  Slice 7: for a private-but-discoverable chat (private + slug) shown to a
+ *  non-member, `canRequest:true` + the caller's `requestStatus` drive the
+ *  "request access"/"requested" UI. Public chats and members omit these. */
 export interface ChatPreview {
   id: string;
   type: string;
@@ -275,19 +278,28 @@ export interface ChatPreview {
   memberCount: number;
   visibility: string;
   isMember: boolean;
+  canRequest?: boolean;
+  requestStatus?: RequestStatus;
 }
 
 /**
- * Resolve a chat by slug for discovery (Slice 6). Returns:
- *  - `{ error: "private" }` when the slug resolves to nothing OR to a non-public
- *    chat the caller isn't a member of. The two cases are deliberately
- *    indistinguishable — a non-member must not learn a private chat exists, nor
- *    anything beyond its existence. NEVER leaks messages or membership.
- *  - a `ChatPreview` otherwise: public chats (to anyone) and any chat the caller
- *    is already a member of (so members can deep-link into a since-privated chat).
+ * Resolve a chat by slug for discovery (Slice 6/7). Returns:
+ *  - a `ChatPreview` for: public chats (to anyone); any chat the caller is already
+ *    a member of; AND (Slice 7) a private chat that HAS a slug viewed by a
+ *    non-member — that chat is "discoverable but gated", so the preview carries
+ *    `canRequest:true` + the caller's `requestStatus` for the request-access UI.
+ *  - `{ error: "private" }` for everything else: an unknown slug, OR a private
+ *    chat WITHOUT a slug (fully hidden). These are deliberately indistinguishable
+ *    so a non-member can't tell a hidden chat apart from a non-existent one.
+ *    NEVER leaks messages.
+ *
+ * Note: a private chat only reaches this function when it HAS a slug (the lookup
+ * is by slug), so the discoverable-but-gated branch always applies to a private
+ * non-member here — private-no-slug chats are unreachable by slug and stay hidden.
  *
  * `callerId` is the viewer (null = anonymous). The preview carries only
- * public-safe fields — id/type/name/memberCount/visibility/isMember, no bodies.
+ * public-safe fields — id/type/name/memberCount/visibility/isMember (+ optional
+ * canRequest/requestStatus), no bodies.
  */
 export async function getPreviewBySlug(
   db: DbClient,
@@ -297,21 +309,18 @@ export async function getPreviewBySlug(
   const normalized = normalizeSlug(slug);
   if (!normalized) return { error: "private" };
   const row = await db.first(
-    "SELECT id, type, name, visibility FROM chats WHERE slug = ?",
+    "SELECT id, type, name, visibility, slug FROM chats WHERE slug = ?",
     [normalized],
   );
   if (!row) return { error: "private" };
   const id = String(row.id);
   const visibility = String(row.visibility);
   const isMember = callerId != null && (await getRole(db, id, callerId)) != null;
-  // Private chats only reveal a preview to their own members — everyone else gets
-  // the same opaque "private" as a non-existent slug (no existence/membership leak).
-  if (visibility !== "public" && !isMember) return { error: "private" };
   const countRow = await db.first(
     "SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?",
     [id],
   );
-  return {
+  const base: ChatPreview = {
     id,
     type: String(row.type),
     name: row.name == null ? null : String(row.name),
@@ -319,6 +328,11 @@ export async function getPreviewBySlug(
     visibility,
     isMember,
   };
+  if (visibility === "public" || isMember) return base;
+  // Private + slug, non-member: discoverable but gated → allow a join request.
+  // (A private-no-slug chat can't be resolved by slug, so it never reaches here.)
+  const requestStatus = callerId == null ? "none" : await requestStatusFor(db, id, callerId);
+  return { ...base, canRequest: true, requestStatus };
 }
 
 /**
@@ -344,4 +358,150 @@ export async function joinPublic(
     [chatId, userId, now],
   );
   return { ok: true, joined: true };
+}
+
+// ---- Slice 7: join requests (private + slug = "discoverable but gated") ----
+
+/** A pending/decided join request as surfaced to owner/admin (JOIN with users). */
+export interface JoinRequestView {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  status: string;
+  createdAt: number;
+}
+
+/** The caller's own request status for a chat: never requested → "none". */
+export type RequestStatus = "none" | "pending" | "approved" | "rejected";
+
+/** The caller's request status for a chat (for the preview "request access" UI). */
+export async function requestStatusFor(db: DbClient, chatId: string, userId: string): Promise<RequestStatus> {
+  const r = await db.first("SELECT status FROM join_requests WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
+  if (!r) return "none";
+  const s = String(r.status);
+  return s === "pending" || s === "approved" || s === "rejected" ? s : "none";
+}
+
+/**
+ * A non-member asks to join a PRIVATE-but-discoverable chat (private + slug). A
+ * public chat is open-join (use `joinPublic`); a private chat with NO slug stays
+ * fully hidden and cannot be requested. Creates/reuses one pending row per (chat,
+ * user) — idempotent. Errors:
+ *   - `not_found`     — unknown chat.
+ *   - `already_member`— the caller is already in.
+ *   - `open_join`     — the chat is public (join directly, don't request).
+ *   - `not_requestable` — private but has no slug (not discoverable).
+ * Re-requesting after a rejection re-opens the row as pending.
+ */
+export async function requestJoin(
+  db: DbClient,
+  chatId: string,
+  userId: string,
+  now: number,
+): Promise<{ ok: true; status: "pending" } | { ok: false; error: string }> {
+  const chat = await db.first("SELECT visibility, slug FROM chats WHERE id = ?", [chatId]);
+  if (!chat) return { ok: false, error: "not_found" };
+  if ((await getRole(db, chatId, userId)) != null) return { ok: false, error: "already_member" };
+  if (String(chat.visibility) === "public") return { ok: false, error: "open_join" };
+  // Private + slug = discoverable and gated; private + no slug = fully hidden.
+  if (chat.slug == null || String(chat.slug) === "") return { ok: false, error: "not_requestable" };
+  const existing = await db.first("SELECT id, status FROM join_requests WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
+  if (existing) {
+    // Reuse the row; if it was decided (approved/rejected) re-open it as pending.
+    if (String(existing.status) !== "pending") {
+      await db.run("UPDATE join_requests SET status = 'pending', created_at = ? WHERE id = ?", [now, String(existing.id)]);
+    }
+    return { ok: true, status: "pending" };
+  }
+  await db.run(
+    "INSERT INTO join_requests (id, chat_id, user_id, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+    [crypto.randomUUID(), chatId, userId, now],
+  );
+  return { ok: true, status: "pending" };
+}
+
+/** Owner/admin: list the chat's PENDING join requests with requester identity. */
+export async function listRequests(
+  db: DbClient,
+  chatId: string,
+  actorId: string,
+): Promise<{ ok: true; requests: JoinRequestView[] } | { ok: false; error: string }> {
+  const role = await getRole(db, chatId, actorId);
+  if (role == null) return { ok: false, error: "not_member" };
+  if (role !== "owner" && role !== "admin") return { ok: false, error: "forbidden" };
+  const rows = await db.all(
+    `SELECT j.id, j.user_id, j.status, j.created_at,
+            u.username, u.display_name, u.avatar_url
+     FROM join_requests j
+     JOIN users u ON u.id = j.user_id
+     WHERE j.chat_id = ? AND j.status = 'pending'
+     ORDER BY j.created_at ASC`,
+    [chatId],
+  );
+  return {
+    ok: true,
+    requests: rows.map((r: Row) => ({
+      id: String(r.id),
+      userId: String(r.user_id),
+      username: String(r.username),
+      displayName: r.display_name == null ? null : String(r.display_name),
+      avatarUrl: r.avatar_url == null ? null : String(r.avatar_url),
+      status: String(r.status),
+      createdAt: Number(r.created_at),
+    })),
+  };
+}
+
+/**
+ * Owner/admin approve a pending request: add the requester as a plain member
+ * (exactly once — idempotent if they somehow already joined) and mark the request
+ * 'approved'. Errors: `not_member`/`forbidden` (authz), `request_not_found` (bad
+ * id or already decided).
+ */
+export async function approveRequest(
+  db: DbClient,
+  chatId: string,
+  requestId: string,
+  actorId: string,
+  now: number,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const role = await getRole(db, chatId, actorId);
+  if (role == null) return { ok: false, error: "not_member" };
+  if (role !== "owner" && role !== "admin") return { ok: false, error: "forbidden" };
+  const req = await db.first(
+    "SELECT user_id, status FROM join_requests WHERE id = ? AND chat_id = ?",
+    [requestId, chatId],
+  );
+  if (!req || String(req.status) !== "pending") return { ok: false, error: "request_not_found" };
+  const targetId = String(req.user_id);
+  // Add exactly once — skip the INSERT if they're already a member (idempotent).
+  if ((await getRole(db, chatId, targetId)) == null) {
+    await db.run(
+      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+      [chatId, targetId, now],
+    );
+  }
+  await db.run("UPDATE join_requests SET status = 'approved' WHERE id = ?", [requestId]);
+  return { ok: true, userId: targetId };
+}
+
+/** Owner/admin reject a pending request: mark it 'rejected' (no member added). */
+export async function rejectRequest(
+  db: DbClient,
+  chatId: string,
+  requestId: string,
+  actorId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const role = await getRole(db, chatId, actorId);
+  if (role == null) return { ok: false, error: "not_member" };
+  if (role !== "owner" && role !== "admin") return { ok: false, error: "forbidden" };
+  const req = await db.first(
+    "SELECT status FROM join_requests WHERE id = ? AND chat_id = ?",
+    [requestId, chatId],
+  );
+  if (!req || String(req.status) !== "pending") return { ok: false, error: "request_not_found" };
+  await db.run("UPDATE join_requests SET status = 'rejected' WHERE id = ?", [requestId]);
+  return { ok: true };
 }
