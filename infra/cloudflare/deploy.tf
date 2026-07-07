@@ -37,12 +37,9 @@ locals {
       script = "infra/cloudflare/deploy-auth-web.sh"
     }
     meowsenger = {
-      paths  = "workers/meowsenger packages/auth-shared packages/auth-sdk"
+      # one Worker: builds the Astro UI + serves it (static assets) alongside the BFF
+      paths  = "workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk"
       script = "infra/cloudflare/deploy-meowsenger.sh"
-    }
-    meowsenger-web = {
-      paths  = "apps/meowsenger-web"
-      script = "infra/cloudflare/deploy-meowsenger-web.sh"
     }
   }
 }

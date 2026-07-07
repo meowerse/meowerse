@@ -1,9 +1,0 @@
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  // Serve the built Astro site (./dist) as a Worker with static assets on the
-  // meowsenger.alxnko.eu.org custom domain (Worker path, not Pages).
-  "name": "meowsenger-web",
-  "compatibility_date": "2025-06-01",
-  "assets": { "directory": "./dist" },
-  "routes": [{ "pattern": "meowsenger.alxnko.eu.org", "custom_domain": true }]
-}

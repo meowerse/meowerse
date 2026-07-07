@@ -127,13 +127,9 @@ deploy-auth:
 deploy-auth-web:
     bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-auth-web.sh'
 
-# Deploy the meowsenger worker via wrangler + record version.
+# Deploy meowsenger (one Worker: builds the UI + serves assets + BFF) + record version.
 deploy-meowsenger:
     bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-meowsenger.sh'
-
-# Deploy the meowsenger UI (Worker static assets) + record version.
-deploy-meowsenger-web:
-    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-meowsenger-web.sh'
 
 # Deploy everything changed via Terraform (infra + apps). `tf apply` UX.
 deploy-all:

@@ -39,29 +39,38 @@ export async function handleCallback(req: Request, env: Env, deps: Deps): Promis
   try { txn = JSON.parse(decodeURIComponent(txnRaw)); } catch { return bad("bad_txn"); }
   if (txn.state !== state) return bad("state_mismatch");
 
-  const auth = deps.auth();
-  const tok = await auth.exchangeCode({ code, codeVerifier: txn.codeVerifier });
-  if (tok.error || !tok.access_token || !tok.id_token) return bad("exchange_failed");
+  let step = "exchange";
+  try {
+    const auth = deps.auth();
+    const tok = await auth.exchangeCode({ code, codeVerifier: txn.codeVerifier });
+    if (tok.error || !tok.access_token || !tok.id_token) return bad("exchange_failed:" + (tok.error ?? "no_token"));
 
-  let claims: Record<string, unknown>;
-  try { claims = await auth.verifyIdToken(tok.id_token, { nonce: txn.nonce }); } catch { return bad("bad_id_token"); }
-  const sub = String(claims.sub);
+    step = "verify";
+    const claims = await auth.verifyIdToken(tok.id_token, { nonce: txn.nonce });
+    const sub = String(claims.sub);
 
-  // Profile claims live in /userinfo (not the id_token). Fetch with the access token.
-  const uiRes = await deps.fetchFn(`${env.OIDC_ISSUER}/userinfo`, {
-    headers: { Authorization: `Bearer ${tok.access_token}` },
-  });
-  if (!uiRes.ok) return bad("userinfo_failed");
-  const info = (await uiRes.json()) as UserInfo;
+    // Profile claims live in /userinfo (not the id_token). Fetch with the access token.
+    step = "userinfo";
+    const uiRes = await deps.fetchFn(`${env.OIDC_ISSUER}/userinfo`, {
+      headers: { Authorization: `Bearer ${tok.access_token}` },
+    });
+    if (!uiRes.ok) return bad("userinfo_failed:" + uiRes.status);
+    const info = (await uiRes.json()) as UserInfo;
 
-  const now = deps.now();
-  const db = deps.getDb();
-  await upsertUser(db, { ...info, sub, verified: info.verified ?? claims.verified === true }, now);
-  const id = deps.newId();
-  await createSession(db, {
-    id, userId: sub, accessToken: tok.access_token, refreshToken: tok.refresh_token ?? null,
-    accessExp: now + (tok.expires_in ?? 0) * 1000, now,
-  });
+    step = "db";
+    const now = deps.now();
+    const db = deps.getDb();
+    await upsertUser(db, { ...info, sub, verified: info.verified ?? claims.verified === true }, now);
+    const id = deps.newId();
+    await createSession(db, {
+      id, userId: sub, accessToken: tok.access_token, refreshToken: tok.refresh_token ?? null,
+      accessExp: now + (tok.expires_in ?? 0) * 1000, now,
+    });
 
-  return redirectClearingTxn(`${env.WEB_ORIGIN}/app`, [sessionCookie(id)]);
+    return redirectClearingTxn(`${env.WEB_ORIGIN}/app`, [sessionCookie(id)]);
+  } catch (e) {
+    // Never a silent 500: log server-side (wrangler tail), return a generic step code.
+    console.error("callback_error@" + step + ":", (e as Error)?.stack ?? String(e));
+    return bad("callback_error@" + step);
+  }
 }
