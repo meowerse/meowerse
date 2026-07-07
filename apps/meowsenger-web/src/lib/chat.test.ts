@@ -17,6 +17,18 @@ import {
   createChannel,
   getBySlug,
   joinChat,
+  createInvite,
+  getInvite,
+  refreshInvite,
+  revokeInvite,
+  getInviteByCode,
+  acceptInvite,
+  requestJoin,
+  getRequests,
+  approveRequest,
+  rejectRequest,
+  getPrivacy,
+  setPrivacy,
 } from "./chat";
 
 const BASE = "https://meowsenger.alxnko.eu.org";
@@ -343,5 +355,203 @@ describe("joinChat", () => {
   it("returns {error:'network'} on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await joinChat(BASE, "ch1")).toEqual({ error: "network" });
+  });
+});
+
+// ---- Slice 7: invite links, join requests, privacy ----------------------------
+
+describe("createInvite", () => {
+  it("POSTs an empty body (get-or-create) and returns the code", async () => {
+    const mock = stubFetch({ ok: true, code: "abc123def456" });
+    expect(await createInvite(BASE, "g1")).toEqual({ ok: true, code: "abc123def456" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/invite`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  });
+  it("surfaces a 403 forbidden (non-admin)", async () => {
+    stubFetch({ error: "forbidden" });
+    expect(await createInvite(BASE, "g1")).toEqual({ error: "forbidden" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await createInvite(BASE, "g1")).toEqual({ error: "network" });
+  });
+});
+
+describe("getInvite", () => {
+  it("delegates to createInvite (idempotent get-or-create)", async () => {
+    const mock = stubFetch({ ok: true, code: "code000code0" });
+    expect(await getInvite(BASE, "g1")).toEqual({ ok: true, code: "code000code0" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/invite`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  });
+});
+
+describe("refreshInvite", () => {
+  it("POSTs {refresh:true} and returns the rotated code", async () => {
+    const mock = stubFetch({ ok: true, code: "newnewnewnew" });
+    expect(await refreshInvite(BASE, "g1")).toEqual({ ok: true, code: "newnewnewnew" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/invite`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh: true }),
+    });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await refreshInvite(BASE, "g1")).toEqual({ error: "network" });
+  });
+});
+
+describe("revokeInvite", () => {
+  it("DELETEs the invite and returns ok", async () => {
+    const mock = stubFetch({ ok: true });
+    expect(await revokeInvite(BASE, "g1")).toEqual({ ok: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/invite`, { method: "DELETE", credentials: "include" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await revokeInvite(BASE, "g1")).toEqual({ error: "network" });
+  });
+});
+
+describe("getInviteByCode", () => {
+  it("returns the InvitePreview (encoded code in the GET path)", async () => {
+    const preview = { chatId: "g1", type: "group", name: "Team", memberCount: 4 };
+    const mock = stubFetch(preview);
+    expect(await getInviteByCode(BASE, "co de/1")).toEqual(preview);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/invite/co%20de%2F1`, { credentials: "include" });
+  });
+  it("passes through a {error:'bad_invite'} for a dead/unknown code", async () => {
+    stubFetch({ error: "bad_invite" });
+    expect(await getInviteByCode(BASE, "dead")).toEqual({ error: "bad_invite" });
+  });
+  it("degrades to {error:'bad_invite'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getInviteByCode(BASE, "x")).toEqual({ error: "bad_invite" });
+  });
+});
+
+describe("acceptInvite", () => {
+  it("POSTs /accept (credentialed, no body) and returns the chatId", async () => {
+    const mock = stubFetch({ ok: true, chatId: "g1", joined: true });
+    expect(await acceptInvite(BASE, "abc")).toEqual({ ok: true, chatId: "g1", joined: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/invite/abc/accept`, { method: "POST", credentials: "include" });
+  });
+  it("surfaces a bad_invite (dead code)", async () => {
+    stubFetch({ error: "bad_invite" });
+    expect(await acceptInvite(BASE, "dead")).toEqual({ error: "bad_invite" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await acceptInvite(BASE, "abc")).toEqual({ error: "network" });
+  });
+});
+
+describe("requestJoin", () => {
+  it("POSTs /request (no body) and returns the pending status", async () => {
+    const mock = stubFetch({ ok: true, status: "pending" });
+    expect(await requestJoin(BASE, "g1")).toEqual({ ok: true, status: "pending" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/request`, { method: "POST", credentials: "include" });
+  });
+  it("surfaces already_member / not_requestable error codes", async () => {
+    stubFetch({ error: "already_member" });
+    expect(await requestJoin(BASE, "g1")).toEqual({ error: "already_member" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await requestJoin(BASE, "g1")).toEqual({ error: "network" });
+  });
+});
+
+describe("getRequests", () => {
+  it("returns the pending requests array", async () => {
+    const requests = [
+      { id: "r1", userId: "u2", username: "bob", displayName: "Bob", avatarUrl: null, status: "pending", createdAt: 5 },
+    ];
+    const mock = stubFetch({ requests });
+    expect(await getRequests(BASE, "g1")).toEqual(requests);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/requests`, { credentials: "include" });
+  });
+  it("defaults to [] when the body has no requests (e.g. a 403 for a non-admin)", async () => {
+    stubFetch({ error: "forbidden" });
+    expect(await getRequests(BASE, "g1")).toEqual([]);
+  });
+  it("returns [] on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getRequests(BASE, "g1")).toEqual([]);
+  });
+});
+
+describe("approveRequest", () => {
+  it("POSTs /approve and returns the added userId", async () => {
+    const mock = stubFetch({ ok: true, userId: "u2" });
+    expect(await approveRequest(BASE, "g1", "r1")).toEqual({ ok: true, userId: "u2" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/requests/r1/approve`, { method: "POST", credentials: "include" });
+  });
+  it("surfaces a request_not_found (already decided)", async () => {
+    stubFetch({ error: "request_not_found" });
+    expect(await approveRequest(BASE, "g1", "r1")).toEqual({ error: "request_not_found" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await approveRequest(BASE, "g1", "r1")).toEqual({ error: "network" });
+  });
+});
+
+describe("rejectRequest", () => {
+  it("POSTs /reject and returns ok", async () => {
+    const mock = stubFetch({ ok: true });
+    expect(await rejectRequest(BASE, "g1", "r1")).toEqual({ ok: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/requests/r1/reject`, { method: "POST", credentials: "include" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await rejectRequest(BASE, "g1", "r1")).toEqual({ error: "network" });
+  });
+});
+
+describe("getPrivacy", () => {
+  it("returns the allowAutoGroupAdd flag as sent", async () => {
+    const mock = stubFetch({ allowAutoGroupAdd: false });
+    expect(await getPrivacy(BASE)).toEqual({ allowAutoGroupAdd: false });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/account/privacy`, { credentials: "include" });
+  });
+  it("defaults to true when the flag is present-and-true", async () => {
+    stubFetch({ allowAutoGroupAdd: true });
+    expect(await getPrivacy(BASE)).toEqual({ allowAutoGroupAdd: true });
+  });
+  it("defaults to true when the flag is absent", async () => {
+    stubFetch({});
+    expect(await getPrivacy(BASE)).toEqual({ allowAutoGroupAdd: true });
+  });
+  it("defaults to true on a network error (safe default)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getPrivacy(BASE)).toEqual({ allowAutoGroupAdd: true });
+  });
+});
+
+describe("setPrivacy", () => {
+  it("POSTs the boolean and returns the echoed result", async () => {
+    const mock = stubFetch({ ok: true, allowAutoGroupAdd: false });
+    expect(await setPrivacy(BASE, false)).toEqual({ ok: true, allowAutoGroupAdd: false });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/account/privacy`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowAutoGroupAdd: false }),
+    });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await setPrivacy(BASE, true)).toEqual({ error: "network" });
   });
 });

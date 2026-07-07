@@ -499,6 +499,64 @@ body:has(.mw-chat) main.mw-container {
   margin-top: var(--space-2); flex-wrap: wrap;
 }
 
+/* ---- slice 7: invite links, join requests, privacy toggle ------------------ */
+
+/* Drawer tabs (Members | Requests) — reuse the modal tab look, tightened for the
+   drawer header. The requests tab carries a small pending-count badge. */
+.mw-drawer__tabs { margin: var(--space-3) var(--space-4) 0; }
+.mw-tab { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.mw-tab__badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  color: var(--mw-on-green); background: var(--mw-green);
+  border-radius: var(--radius-pill);
+}
+
+/* Request row sub-label ("wants to join") — mirrors the member role badge slot. */
+.mw-mrow__req { font-size: var(--text-xs); color: var(--text-muted); }
+
+/* Invite-link section: a read-only link field + copy, then refresh / revoke. */
+.mw-invite { display: flex; flex-direction: column; gap: var(--space-2); }
+.mw-invite__link { display: flex; gap: var(--space-2); align-items: center; }
+.mw-invite__field {
+  flex: 1; min-width: 0; font-size: var(--text-sm);
+  color: var(--text-secondary); font-family: var(--font-mono, monospace);
+}
+.mw-invite__actions { display: flex; gap: var(--space-2); }
+.mw-invite__hint { font-size: var(--text-xs); margin: 0; }
+
+/* Invite note shown after adding an opted-out member (share this link instead). */
+.mw-invitenote { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* Settings modal: a label+hint row with a trailing on/off switch. */
+.mw-settings { width: min(440px, 100%); }
+.mw-setting { display: flex; align-items: flex-start; gap: var(--space-3); }
+.mw-setting__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mw-setting__label { font-size: var(--text-base); font-weight: 500; color: var(--text-primary); }
+.mw-setting__hint { font-size: var(--text-xs); line-height: var(--leading-snug); }
+
+/* On/off switch (a11y: role=switch). Green track when on; the knob slides right. */
+.mw-switch {
+  flex: none; position: relative; width: 44px; height: 26px; padding: 0;
+  border: 0; cursor: pointer; border-radius: var(--radius-pill);
+  background: var(--surface-muted); border: 0.5px solid var(--border-strong);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.mw-switch.is-on { background: var(--mw-green); border-color: var(--mw-green); }
+.mw-switch:disabled { opacity: 0.6; cursor: default; }
+.mw-switch__knob {
+  position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+  border-radius: var(--radius-pill); background: var(--surface-0);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.mw-switch.is-on .mw-switch__knob { transform: translateX(18px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mw-switch, .mw-switch__knob { transition: none; }
+}
+
 /* ---- mobile: single column, swap between list + conversation -------------- */
 @media (max-width: 719px) {
   .mw-chat { grid-template-columns: 1fr; }
@@ -510,4 +568,6 @@ body:has(.mw-chat) main.mw-container {
   .mw-msg__actions { display: none; }
   /* The member drawer goes full-width on a phone. */
   .mw-drawer__panel { width: 100%; border-left: 0; }
+  /* Invite link + copy stack on a narrow drawer so the field keeps its width. */
+  .mw-invite__link { flex-wrap: wrap; }
 }

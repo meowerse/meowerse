@@ -9,8 +9,15 @@ import {
   updateChat,
   slugAvailable,
   slugify,
+  getInvite,
+  refreshInvite,
+  revokeInvite,
+  getRequests,
+  approveRequest,
+  rejectRequest,
   type Member,
   type ChatSummary,
+  type JoinRequest,
 } from "../lib/chat";
 
 /** Map a server error code to a short inline message shown in the drawer. */
@@ -26,8 +33,15 @@ const ERROR_COPY: Record<string, string> = {
   bad_slug: "slug must be 3–32 chars: a–z, 0–9, -",
   slug_taken: "that slug is taken",
   bad_visibility: "bad visibility",
+  request_not_found: "that request is no longer pending",
   network: "couldn't reach the server",
 };
+
+/** Build the shareable /join link for an invite code (origin-relative in SSR). */
+function inviteLink(code: string): string {
+  const origin = typeof location !== "undefined" ? location.origin : "";
+  return `${origin}/join?invite=${encodeURIComponent(code)}`;
+}
 
 const ROLE_RANK: Record<string, number> = { owner: 2, admin: 1, member: 0 };
 function atLeast(role: string | undefined, min: "owner" | "admin"): boolean {
@@ -71,9 +85,26 @@ export function MemberDrawer({
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null); // per-row action lock
 
+  // Which panel of the drawer is shown: the member roster or the join-requests inbox.
+  const [tab, setTab] = useState<"members" | "requests">("members");
+
   // Add-member state.
   const [addInput, setAddInput] = useState("");
   const [adding, setAdding] = useState(false);
+  // When an add targets someone who opted out of direct adds, the server returns an
+  // invite code instead of adding them — we surface that link for the actor to share.
+  const [inviteNote, setInviteNote] = useState<{ username: string; code: string } | null>(null);
+
+  // Invite-link section state (owner/admin). The code is created on demand when the
+  // drawer opens; `inviteBusy` locks the refresh/revoke buttons.
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Pending join requests (owner/admin). Fetched alongside the roster; the count
+  // drives the tab badge, and each row has approve/reject actions.
+  const [requests, setRequests] = useState<JoinRequest[]>([]);
+  const [reqBusyId, setReqBusyId] = useState<string | null>(null); // per-request action lock
 
   // Metadata edit state (owner/admin). Seeded from the chat + first roster load.
   // `visibility` is null until the owner picks one — the summary doesn't carry the
@@ -96,9 +127,28 @@ export function MemberDrawer({
     const list = await getMembers(base, chat.id);
     setMembers(list);
     setLoading(false);
-  }, [base, chat.id]);
+    // Derive the caller's role from the fresh roster; only owner/admin pull the
+    // request inbox (a plain member gets a 403 → []). Keyed off the list we just
+    // fetched so the very first load already gets the pending count for the badge.
+    const role = list.find((m) => m.userId === meId)?.role;
+    if (role === "owner" || role === "admin") {
+      setRequests(await getRequests(base, chat.id));
+    }
+  }, [base, chat.id, meId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // Create-on-demand the invite code once the caller is known to be owner/admin, so
+  // the invite section can show the link immediately (get-or-create is idempotent).
+  useEffect(() => {
+    if (!canManage || inviteCode) return;
+    let cancelled = false;
+    (async () => {
+      const r = await getInvite(base, chat.id);
+      if (!cancelled && r.code) setInviteCode(r.code);
+    })();
+    return () => { cancelled = true; };
+  }, [canManage, inviteCode, base, chat.id]);
 
   // Live slug availability while editing metadata (same last-write-wins guard as
   // the new-chat modal). Empty slug clears it (allowed).
@@ -123,13 +173,63 @@ export function MemberDrawer({
   async function doAdd() {
     const u = addInput.trim().replace(/^@/, "");
     if (!u || adding) return;
-    setAdding(true); setErr(null);
+    setAdding(true); setErr(null); setInviteNote(null);
     const r = await addMember(base, chat.id, u);
     setAdding(false);
     if (r.error) { report(r.error); return; }
     setAddInput("");
+    // Opted-out target: the server didn't add them but handed back an invite code.
+    // Surface it so the actor can share the link instead of silently failing.
+    if (r.invited && r.inviteCode) { setInviteNote({ username: u, code: r.inviteCode }); return; }
     await refresh();
     onChanged();
+  }
+
+  // ---- invite-link actions (owner/admin) ----
+  async function doRefreshInvite() {
+    if (inviteBusy) return;
+    setInviteBusy(true); setErr(null);
+    const r = await refreshInvite(base, chat.id);
+    setInviteBusy(false);
+    if (r.error) { report(r.error); return; }
+    if (r.code) { setInviteCode(r.code); setCopied(false); }
+  }
+
+  async function doRevokeInvite() {
+    if (inviteBusy) return;
+    setInviteBusy(true); setErr(null);
+    const r = await revokeInvite(base, chat.id);
+    setInviteBusy(false);
+    if (r.error) { report(r.error); return; }
+    setInviteCode(null); setCopied(false);
+  }
+
+  function doCopyInvite() {
+    if (!inviteCode) return;
+    void navigator.clipboard?.writeText(inviteLink(inviteCode)).then(
+      () => { setCopied(true); window.setTimeout(() => setCopied(false), 1600); },
+      () => report("network"),
+    );
+  }
+
+  // ---- join-request actions (owner/admin) ----
+  async function doApprove(rq: JoinRequest) {
+    if (reqBusyId) return;
+    setReqBusyId(rq.id); setErr(null);
+    const r = await approveRequest(base, chat.id, rq.id);
+    setReqBusyId(null);
+    if (r.error) { report(r.error); return; }
+    await refresh(); // reloads roster (new member) + requests (dropped from pending)
+    onChanged();
+  }
+
+  async function doReject(rq: JoinRequest) {
+    if (reqBusyId) return;
+    setReqBusyId(rq.id); setErr(null);
+    const r = await rejectRequest(base, chat.id, rq.id);
+    setReqBusyId(null);
+    if (r.error) { report(r.error); return; }
+    await refresh();
   }
 
   async function doRemove(m: Member) {
@@ -208,6 +308,66 @@ export function MemberDrawer({
           <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="close" onClick={onClose}>✕</button>
         </header>
 
+        {/* Owner/admin get a Members | Requests switcher; the requests tab carries a
+            pending-count badge. A plain member only ever sees the roster (no tabs). */}
+        {canManage && (
+          <div className="mw-tabs mw-drawer__tabs" role="tablist" aria-label={`${noun} panels`}>
+            <button
+              role="tab"
+              aria-selected={tab === "members"}
+              className={`mw-tab${tab === "members" ? " is-active" : ""}`}
+              onClick={() => setTab("members")}
+            >members</button>
+            <button
+              role="tab"
+              aria-selected={tab === "requests"}
+              className={`mw-tab${tab === "requests" ? " is-active" : ""}`}
+              onClick={() => setTab("requests")}
+            >
+              requests
+              {requests.length > 0 && <span className="mw-tab__badge">{requests.length}</span>}
+            </button>
+          </div>
+        )}
+
+        {err && <p className="mw-drawer__err" role="alert">{err}</p>}
+
+        {tab === "requests" ? (
+          <div className="mw-drawer__list">
+            {requests.length === 0 ? (
+              <p className="mw-muted" style={{ padding: "var(--space-3) var(--space-4)" }}>no pending requests.</p>
+            ) : (
+              requests.map((rq) => {
+                const label = rq.displayName || rq.username;
+                const rowBusy = reqBusyId === rq.id;
+                return (
+                  <div key={rq.id} className="mw-mrow">
+                    <span className="mw-mrow__avatar">
+                      <Avatar url={rq.avatarUrl} name={label} size="sm" />
+                    </span>
+                    <span className="mw-mrow__body">
+                      <span className="mw-mrow__name" data-case="preserve">{label}</span>
+                      <span className="mw-mrow__req">wants to join</span>
+                    </span>
+                    <span className="mw-mrow__actions">
+                      <button
+                        className="mw-btn mw-btn--primary mw-btn--sm"
+                        onClick={() => doApprove(rq)}
+                        disabled={rowBusy}
+                      >{rowBusy ? "…" : "approve"}</button>
+                      <button
+                        className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger"
+                        onClick={() => doReject(rq)}
+                        disabled={rowBusy}
+                      >reject</button>
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        ) : (
+          <>
         {canManage && !editing && (
           <div className="mw-drawer__section">
             <div className="mw-row" style={{ flexWrap: "nowrap", gap: "var(--space-2)" }}>
@@ -225,10 +385,56 @@ export function MemberDrawer({
                 {adding ? "…" : "add"}
               </button>
             </div>
+            {inviteNote && (
+              // The target opted out of direct adds — share this invite link instead.
+              <div className="mw-note mw-note--info mw-invitenote" role="status">
+                <p style={{ margin: 0 }}>
+                  <strong data-case="preserve">{inviteNote.username}</strong> has opted out of direct adds — send them this invite link:
+                </p>
+                <div className="mw-invite__link">
+                  <input className="mw-input mw-invite__field" readOnly value={inviteLink(inviteNote.code)} aria-label="invite link" onFocus={(e) => e.currentTarget.select()} />
+                  <button
+                    className="mw-btn mw-btn--secondary mw-btn--sm"
+                    onClick={() => void navigator.clipboard?.writeText(inviteLink(inviteNote.code))}
+                  >copy</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {err && <p className="mw-drawer__err" role="alert">{err}</p>}
+        {/* Invite-link section (owner/admin): the shareable /join?invite=<code> link
+            + copy / refresh (rotate) / revoke. Created on demand when the drawer opens. */}
+        {canManage && !editing && (
+          <div className="mw-drawer__section mw-invite">
+            <span className="mw-field__label">invite link</span>
+            {inviteCode ? (
+              <>
+                <div className="mw-invite__link">
+                  <input
+                    className="mw-input mw-invite__field"
+                    readOnly
+                    value={inviteLink(inviteCode)}
+                    aria-label="invite link"
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={doCopyInvite}>
+                    {copied ? "copied" : "copy"}
+                  </button>
+                </div>
+                <div className="mw-invite__actions">
+                  <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={doRefreshInvite} disabled={inviteBusy}>refresh</button>
+                  <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" onClick={doRevokeInvite} disabled={inviteBusy}>revoke</button>
+                </div>
+                <p className="mw-invite__hint mw-muted">anyone with this link can join directly.</p>
+              </>
+            ) : (
+              <button className="mw-btn mw-btn--secondary mw-btn--sm" onClick={doRefreshInvite} disabled={inviteBusy}>
+                {inviteBusy ? "…" : "create invite link"}
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="mw-drawer__list">
           {loading && <p className="mw-muted" style={{ padding: "var(--space-3)" }}>loading members…</p>}
@@ -335,6 +541,8 @@ export function MemberDrawer({
               </div>
             )}
           </div>
+        )}
+          </>
         )}
 
         <footer className="mw-drawer__foot">

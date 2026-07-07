@@ -39,6 +39,43 @@ export interface ChatPreview {
   memberCount: number;
   visibility: string;
   isMember: boolean;
+  // Slice 7 — for a private+slug chat viewed by a non-member: the server marks it
+  // "discoverable but gated" so the UI can offer "request access". `requestStatus`
+  // is the caller's own standing (none|pending|approved|rejected). Public chats and
+  // members omit both.
+  canRequest?: boolean;
+  requestStatus?: RequestStatus;
+}
+
+/** The caller's own join-request status for a chat (mirrors the worker). */
+export type RequestStatus = "none" | "pending" | "approved" | "rejected";
+
+/**
+ * The public-safe preview of an invite code (mirrors the worker's `InviteView`).
+ * Carries NO bodies/membership — a code only reveals what it already grants. A
+ * 12-char code lets its holder JOIN directly, bypassing the visibility gate.
+ */
+export interface InvitePreview {
+  chatId: string;
+  // 'direct' | 'group' | 'channel'.
+  type: string;
+  name: string | null;
+  memberCount: number;
+}
+
+/**
+ * A pending join request as surfaced to owner/admin (mirrors the worker's
+ * `JoinRequestView`) — the requester's identity + when they asked. `id` is the
+ * request id (used in the approve/reject routes), distinct from `userId`.
+ */
+export interface JoinRequest {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  status: string;
+  createdAt: number;
 }
 
 /** A group member with identity + role (mirrors the worker's MemberView). */
@@ -195,12 +232,17 @@ export async function getMembers(base: string, chatId: string): Promise<Member[]
   }
 }
 
-/** POST /api/chats/:id/members { username } — add a member (owner/admin). */
+/**
+ * POST /api/chats/:id/members { username } — add a member (owner/admin). Slice 7:
+ * if the target opted out of direct adds (`allow_auto_group_add=0`) they are NOT
+ * added — the server returns `{ok:true, invited:true, inviteCode}` so the actor can
+ * share the invite link instead. A normal add omits both fields.
+ */
 export async function addMember(
   base: string,
   chatId: string,
   username: string,
-): Promise<{ ok?: boolean; userId?: string; error?: string }> {
+): Promise<{ ok?: boolean; userId?: string; invited?: boolean; inviteCode?: string; error?: string }> {
   try {
     const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/members`, {
       method: "POST",
@@ -208,7 +250,7 @@ export async function addMember(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: username.trim() }),
     });
-    return (await r.json()) as { ok?: boolean; userId?: string; error?: string };
+    return (await r.json()) as { ok?: boolean; userId?: string; invited?: boolean; inviteCode?: string; error?: string };
   } catch {
     return { error: "network" };
   }
@@ -347,6 +389,216 @@ export async function joinChat(
       credentials: "include",
     });
     return (await r.json()) as { ok?: boolean; joined?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+// ---- Slice 7: invite links, join requests, privacy -------------------------
+
+/**
+ * POST /api/chats/:id/invite — owner/admin get-or-create the chat's invite code
+ * (idempotent: an already-live code is returned unchanged). Returns `{code}` or an
+ * error code (forbidden / not_member). Creating on demand seeds the invite section.
+ */
+export async function createInvite(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; code?: string; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/invite`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    return (await r.json()) as { ok?: boolean; code?: string; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/**
+ * `getInvite` is `createInvite` — the server's get-or-create is idempotent, so
+ * there's no separate read endpoint; the drawer calls this to surface the current
+ * link (creating one on first open). A thin alias keeps call sites intention-revealing.
+ */
+export async function getInvite(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; code?: string; error?: string }> {
+  return createInvite(base, chatId);
+}
+
+/**
+ * POST /api/chats/:id/invite {refresh:true} — rotate the invite code (owner/admin).
+ * The old link stops resolving; a fresh `{code}` is returned.
+ */
+export async function refreshInvite(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; code?: string; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/invite`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh: true }),
+    });
+    return (await r.json()) as { ok?: boolean; code?: string; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/** DELETE /api/chats/:id/invite — revoke the invite code (owner/admin). */
+export async function revokeInvite(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/invite`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    return (await r.json()) as { ok?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/**
+ * GET /api/invite/:code — resolve a code to an `InvitePreview` (no bodies). An
+ * unknown or revoked code → `{error:"bad_invite"}` (indistinguishable, so a dead
+ * link leaks nothing). Any network failure degrades to `{error:"bad_invite"}`.
+ */
+export async function getInviteByCode(
+  base: string,
+  code: string,
+): Promise<InvitePreview | { error: string }> {
+  try {
+    const r = await fetch(`${base}/api/invite/${encodeURIComponent(code)}`, { credentials: "include" });
+    const d = (await r.json()) as InvitePreview | { error?: string };
+    if ("error" in d && d.error) return { error: d.error };
+    return d as InvitePreview;
+  } catch {
+    return { error: "bad_invite" };
+  }
+}
+
+/**
+ * POST /api/invite/:code/accept — join by invite (bypasses the visibility gate).
+ * Idempotent (an already-member returns ok). Returns `{chatId}` to open, or an
+ * error code (bad_invite) for a dead/unknown code.
+ */
+export async function acceptInvite(
+  base: string,
+  code: string,
+): Promise<{ ok?: boolean; chatId?: string; joined?: boolean; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/invite/${encodeURIComponent(code)}/accept`, {
+      method: "POST",
+      credentials: "include",
+    });
+    return (await r.json()) as { ok?: boolean; chatId?: string; joined?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/**
+ * POST /api/chats/:id/request — request to join a private+slug ("discoverable but
+ * gated") chat. Idempotent — an existing pending row is reused. Returns
+ * `{status:"pending"}` or an error code (already_member / open_join / not_requestable).
+ */
+export async function requestJoin(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; status?: string; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/request`, {
+      method: "POST",
+      credentials: "include",
+    });
+    return (await r.json()) as { ok?: boolean; status?: string; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/** GET /api/chats/:id/requests — owner/admin list pending join requests. Empty on error. */
+export async function getRequests(base: string, chatId: string): Promise<JoinRequest[]> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/requests`, { credentials: "include" });
+    const d = (await r.json()) as { requests?: JoinRequest[] };
+    return d.requests ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** POST /api/chats/:id/requests/:rid/approve — owner/admin approve (adds the requester). */
+export async function approveRequest(
+  base: string,
+  chatId: string,
+  requestId: string,
+): Promise<{ ok?: boolean; userId?: string; error?: string }> {
+  try {
+    const r = await fetch(
+      `${base}/api/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/approve`,
+      { method: "POST", credentials: "include" },
+    );
+    return (await r.json()) as { ok?: boolean; userId?: string; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/** POST /api/chats/:id/requests/:rid/reject — owner/admin reject a pending request. */
+export async function rejectRequest(
+  base: string,
+  chatId: string,
+  requestId: string,
+): Promise<{ ok?: boolean; error?: string }> {
+  try {
+    const r = await fetch(
+      `${base}/api/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/reject`,
+      { method: "POST", credentials: "include" },
+    );
+    return (await r.json()) as { ok?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/**
+ * GET /api/account/privacy — the caller's `allowAutoGroupAdd` preference (whether
+ * others can add them to groups directly). Defaults to `true` on any failure — the
+ * safe, non-surprising default (matches the server column default).
+ */
+export async function getPrivacy(base: string): Promise<{ allowAutoGroupAdd: boolean }> {
+  try {
+    const r = await fetch(`${base}/api/account/privacy`, { credentials: "include" });
+    const d = (await r.json()) as { allowAutoGroupAdd?: boolean };
+    return { allowAutoGroupAdd: d.allowAutoGroupAdd !== false };
+  } catch {
+    return { allowAutoGroupAdd: true };
+  }
+}
+
+/** POST /api/account/privacy { allowAutoGroupAdd } — set the caller's preference. */
+export async function setPrivacy(
+  base: string,
+  allow: boolean,
+): Promise<{ ok?: boolean; allowAutoGroupAdd?: boolean; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/account/privacy`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowAutoGroupAdd: allow }),
+    });
+    return (await r.json()) as { ok?: boolean; allowAutoGroupAdd?: boolean; error?: string };
   } catch {
     return { error: "network" };
   }
