@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import type { Conversation } from "./conversation";
 
@@ -289,5 +289,201 @@ describe("Conversation DO", () => {
 
     wa.close();
     wb.close();
+  });
+
+  // ---- Slice 4: reply / edit / delete / alarm purge ----
+
+  it("reply: ack + peer broadcast carry the replyTo snippet {id,senderId,body}", async () => {
+    await seedChat("c12");
+    // Seed the message being replied to directly into the DO's SQLite.
+    await runInDurableObject(stub("c12"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('orig','u2','original text',1000)",
+      );
+    });
+    const wa = await connect("c12", "u1");
+    const wb = await connect("c12", "u2");
+
+    const peerGot = waitFor(wb, (t) => t.includes('"message"') && t.includes("the reply"));
+    const senderAck = waitFor(wa, (t) => t.includes('"sent"'));
+    wa.send(JSON.stringify({ type: "send", tempId: "t1", body: "the reply", replyToId: "orig" }));
+
+    const [peerText, ackText] = await Promise.all([peerGot, senderAck]);
+    const ack = JSON.parse(ackText) as { message: { replyToId: string; replyTo: { id: string; senderId: string; body: string } } };
+    expect(ack.message.replyToId).toBe("orig");
+    expect(ack.message.replyTo).toMatchObject({ id: "orig", senderId: "u2", body: "original text" });
+    const peer = JSON.parse(peerText) as { message: { replyTo: { id: string; senderId: string; body: string } } };
+    expect(peer.message.replyTo).toMatchObject({ id: "orig", senderId: "u2", body: "original text" });
+
+    wa.close();
+    wb.close();
+  });
+
+  it("reply: a bogus replyToId is ignored → stored null, no replyTo", async () => {
+    await seedChat("c13");
+    const wa = await connect("c13", "u1");
+    const acked = waitFor(wa, (t) => t.includes('"sent"'));
+    wa.send(JSON.stringify({ type: "send", tempId: "t1", body: "no such target", replyToId: "does-not-exist" }));
+    const ack = JSON.parse(await acked) as { message: { replyToId: string | null; replyTo: unknown } };
+    expect(ack.message.replyToId).toBeNull();
+    expect(ack.message.replyTo).toBeNull();
+
+    // historyFor confirms the persisted row has no reply link.
+    const history = await stub("c13").historyFor("c13", null);
+    const stored = history.find((m) => m.body === "no such target");
+    expect(stored?.replyToId).toBeNull();
+    expect(stored?.replyTo).toBeNull();
+
+    wa.close();
+  });
+
+  it("edit: own message within 1h → {edited} broadcast to all, editedAt set, historyFor shows new body", async () => {
+    await seedChat("c14");
+    // Seed a fresh own message (created_at = now, well within the 1h window).
+    await runInDurableObject(stub("c14"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('e1','u1','before edit',?)",
+        Date.now(),
+      );
+    });
+    const wa = await connect("c14", "u1");
+    const wb = await connect("c14", "u2");
+
+    // The editor's own socket also receives the broadcast (multi-tab convergence).
+    const senderGot = waitFor(wa, (t) => t.includes('"edited"'));
+    const peerGot = waitFor(wb, (t) => t.includes('"edited"'));
+    wa.send(JSON.stringify({ type: "edit", id: "e1", body: "after edit" }));
+
+    const [senderText, peerText] = await Promise.all([senderGot, peerGot]);
+    const ed = JSON.parse(senderText) as { type: string; id: string; body: string; editedAt: number };
+    expect(ed).toMatchObject({ type: "edited", id: "e1", body: "after edit" });
+    expect(ed.editedAt).toBeGreaterThan(0);
+    expect(JSON.parse(peerText)).toMatchObject({ type: "edited", id: "e1", body: "after edit" });
+
+    const history = await stub("c14").historyFor("c14", null);
+    const row = history.find((m) => m.id === "e1");
+    expect(row?.body).toBe("after edit");
+    expect(row?.editedAt).toBeGreaterThan(0);
+
+    wa.close();
+    wb.close();
+  });
+
+  it("edit: not-own message → {error, cannot_edit}, body unchanged", async () => {
+    await seedChat("c15");
+    await runInDurableObject(stub("c15"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('e2','u2','peer msg',?)",
+        Date.now(),
+      );
+    });
+    // u1 tries to edit u2's message.
+    const wa = await connect("c15", "u1");
+    const err = waitFor(wa, (t) => t.includes('"error"'));
+    wa.send(JSON.stringify({ type: "edit", id: "e2", body: "hijacked" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "cannot_edit" });
+
+    const history = await stub("c15").historyFor("c15", null);
+    expect(history.find((m) => m.id === "e2")?.body).toBe("peer msg");
+
+    wa.close();
+  });
+
+  it("edit: a message older than 1h → {error, cannot_edit}", async () => {
+    await seedChat("c16");
+    await runInDurableObject(stub("c16"), async (_i: Conversation, ctx: DurableObjectState) => {
+      // 2h old → outside the 1h edit window.
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('e3','u1','old own msg',?)",
+        Date.now() - 2 * 3600_000,
+      );
+    });
+    const wa = await connect("c16", "u1");
+    const err = waitFor(wa, (t) => t.includes('"error"'));
+    wa.send(JSON.stringify({ type: "edit", id: "e3", body: "too late" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "cannot_edit" });
+
+    const history = await stub("c16").historyFor("c16", null);
+    expect(history.find((m) => m.id === "e3")?.body).toBe("old own msg");
+
+    wa.close();
+  });
+
+  it("delete: own recent → {deleted} broadcast, historyFor shows isDeleted:true + body:''", async () => {
+    await seedChat("c17");
+    await runInDurableObject(stub("c17"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('d1','u1','delete me',?)",
+        Date.now(),
+      );
+    });
+    const wa = await connect("c17", "u1");
+    const wb = await connect("c17", "u2");
+
+    const senderGot = waitFor(wa, (t) => t.includes('"deleted"'));
+    const peerGot = waitFor(wb, (t) => t.includes('"deleted"'));
+    wa.send(JSON.stringify({ type: "delete", id: "d1" }));
+
+    const [senderText, peerText] = await Promise.all([senderGot, peerGot]);
+    expect(JSON.parse(senderText)).toMatchObject({ type: "deleted", id: "d1" });
+    expect(JSON.parse(peerText)).toMatchObject({ type: "deleted", id: "d1" });
+
+    const history = await stub("c17").historyFor("c17", null);
+    const row = history.find((m) => m.id === "d1");
+    expect(row?.isDeleted).toBe(true);
+    expect(row?.body).toBe("");
+
+    wa.close();
+    wb.close();
+  });
+
+  it("delete: a message older than 24h → {error, cannot_delete}, still not deleted", async () => {
+    await seedChat("c18");
+    await runInDurableObject(stub("c18"), async (_i: Conversation, ctx: DurableObjectState) => {
+      // 25h old → outside the 24h delete window.
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('d2','u1','old own msg',?)",
+        Date.now() - 25 * 3600_000,
+      );
+    });
+    const wa = await connect("c18", "u1");
+    const err = waitFor(wa, (t) => t.includes('"error"'));
+    wa.send(JSON.stringify({ type: "delete", id: "d2" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "cannot_delete" });
+
+    const history = await stub("c18").historyFor("c18", null);
+    const row = history.find((m) => m.id === "d2");
+    expect(row?.isDeleted).toBe(false);
+    expect(row?.body).toBe("old own msg");
+
+    wa.close();
+  });
+
+  it("alarm: hard-purges soft-deleted rows aged past the 24h window", async () => {
+    const s = stub("c19");
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      // An old soft-deleted row (deleted 25h ago → past the purge horizon) plus a
+      // live row that must survive.
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at, is_deleted, deleted_at) VALUES ('gone','u1','',1000,1,?)",
+        Date.now() - 25 * 3600_000,
+      );
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('keep','u1','alive',2000)",
+      );
+      // Arm an alarm so runDurableObjectAlarm has a scheduled handler to fire.
+      await ctx.storage.setAlarm(Date.now() + 1000);
+    });
+
+    // runDurableObjectAlarm fires the DO's alarm() handler and reports whether an
+    // alarm was scheduled (it was, above).
+    const ran = await runDurableObjectAlarm(s);
+    expect(ran).toBe(true);
+
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      const ids = ctx.storage.sql.exec("SELECT id FROM messages").toArray().map((r) => String(r.id));
+      expect(ids).not.toContain("gone");
+      expect(ids).toContain("keep");
+    });
   });
 });
