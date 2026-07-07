@@ -119,13 +119,9 @@ deploy-web:
 deploy-worker:
     bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-worker.sh'
 
-# Deploy the auth OIDC worker via wrangler + record version.
+# Deploy auth (one Worker: builds the UI + serves assets + OIDC IdP) + record version.
 deploy-auth:
     bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-auth.sh'
-
-# Deploy the auth UI to Cloudflare Pages + record version.
-deploy-auth-web:
-    bash -c 'set -a; source .env; set +a; bash infra/cloudflare/deploy-auth-web.sh'
 
 # Deploy meowsenger (one Worker: builds the UI + serves assets + BFF) + record version.
 deploy-meowsenger:

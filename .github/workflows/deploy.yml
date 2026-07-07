@@ -38,8 +38,7 @@ jobs:
           grep -qE '^(workers/api/|packages/ts-shared/)' <<<"$diff" && echo "api=1" >> "$GITHUB_OUTPUT" || echo "api=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(apps/web/|packages/ts-shared/)' <<<"$diff" && echo "web=1" >> "$GITHUB_OUTPUT" || echo "web=0" >> "$GITHUB_OUTPUT"
           grep -qE '^workers/edge/' <<<"$diff" && echo "worker=1" >> "$GITHUB_OUTPUT" || echo "worker=0" >> "$GITHUB_OUTPUT"
-          grep -qE '^(workers/auth/|packages/auth-shared/)' <<<"$diff" && echo "auth=1" >> "$GITHUB_OUTPUT" || echo "auth=0" >> "$GITHUB_OUTPUT"
-          grep -qE '^apps/auth-web/' <<<"$diff" && echo "authweb=1" >> "$GITHUB_OUTPUT" || echo "authweb=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^(workers/auth/|apps/auth-web/|packages/auth-shared/)' <<<"$diff" && echo "auth=1" >> "$GITHUB_OUTPUT" || echo "auth=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(workers/meowsenger/|apps/meowsenger-web/|packages/auth-shared/|packages/auth-sdk/)' <<<"$diff" && echo "meowsenger=1" >> "$GITHUB_OUTPUT" || echo "meowsenger=0" >> "$GITHUB_OUTPUT"
 
       - run: bun install --frozen-lockfile
@@ -78,7 +77,7 @@ jobs:
           (cd workers/edge && bunx wrangler deploy --message "$(git rev-parse --short HEAD)")
           bash infra/record-deploy.sh worker "run-${{ github.run_id }}"
 
-      - name: Deploy auth (Cloudflare Worker)
+      - name: Deploy auth (one Worker — UI assets + OIDC IdP)
         if: steps.changed.outputs.auth == '1' && env.CF != ''
         env:
           CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -86,20 +85,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          bun run --filter @meowerse/auth-web build
           (cd workers/auth && bunx wrangler deploy)
           bash infra/record-deploy.sh auth "run-${{ github.run_id }}"
-
-      - name: Deploy auth-web (Cloudflare Worker static assets)
-        if: steps.changed.outputs.authweb == '1' && env.CF != ''
-        env:
-          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          bun run --filter @meowerse/auth-web build
-          (cd apps/auth-web && bunx wrangler deploy)
-          bash infra/record-deploy.sh auth-web "run-${{ github.run_id }}"
 
       - name: Deploy meowsenger (one Worker — UI assets + BFF)
         if: steps.changed.outputs.meowsenger == '1' && env.CF != ''

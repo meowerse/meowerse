@@ -15,7 +15,7 @@
   "compatibility_date": "2025-06-01",
   "assets": { "directory": "../../apps/meowsenger-web/dist", "binding": "ASSETS" },
   "vars": {
-    "OIDC_ISSUER": "https://auth-api.alxnko.eu.org",
+    "OIDC_ISSUER": "https://auth.alxnko.eu.org",
     "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
     "OIDC_REDIRECT_URI": "https://meowsenger.alxnko.eu.org/auth/callback",
     "WEB_ORIGIN": "https://meowsenger.alxnko.eu.org",

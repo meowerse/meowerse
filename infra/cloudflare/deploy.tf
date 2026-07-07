@@ -29,12 +29,9 @@ locals {
       script = "infra/cloudflare/deploy-worker.sh"
     }
     auth = {
-      paths  = "workers/auth packages/auth-shared"
+      # one Worker: builds the Astro UI + serves it (static assets) alongside the OIDC IdP
+      paths  = "workers/auth apps/auth-web packages/auth-shared"
       script = "infra/cloudflare/deploy-auth.sh"
-    }
-    auth-web = {
-      paths  = "apps/auth-web"
-      script = "infra/cloudflare/deploy-auth-web.sh"
     }
     meowsenger = {
       # one Worker: builds the Astro UI + serves it (static assets) alongside the BFF

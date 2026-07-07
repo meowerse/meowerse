@@ -8,8 +8,7 @@ service_paths() {
     api)      echo "workers/api packages/ts-shared" ;;   # deployed api = Cloudflare Worker
     web)      echo "apps/web packages/ts-shared" ;;
     worker)   echo "workers/edge" ;;
-    auth)     echo "workers/auth packages/auth-shared" ;; # OIDC identity provider Worker
-    auth-web) echo "apps/auth-web" ;;                      # auth UI (Cloudflare Pages)
+    auth)     echo "workers/auth apps/auth-web packages/auth-shared" ;; # one Worker: UI assets + OIDC IdP
     meowsenger)     echo "workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk" ;; # one Worker: UI assets + BFF
     *)        return 1 ;;
   esac
