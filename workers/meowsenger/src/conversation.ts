@@ -75,7 +75,12 @@ export class Conversation extends DurableObject<Env> {
       return;
     }
 
-    const now = Date.now();
+    // Server-monotonic timestamp: DO event handling is serialized, but two sends
+    // in the same millisecond would collide on created_at and break the
+    // `created_at < cursor` history paging (a message could be skipped at a page
+    // boundary). Clamp to strictly-increasing so the timestamp is a stable cursor.
+    const last = this.ctx.storage.sql.exec("SELECT MAX(created_at) AS m FROM messages").toArray()[0]?.m;
+    const now = Math.max(Date.now(), (last == null ? 0 : Number(last)) + 1);
     const id = crypto.randomUUID();
     this.ctx.storage.sql.exec(
       "INSERT INTO messages (id, sender_id, body, created_at) VALUES (?, ?, ?, ?)",
@@ -93,7 +98,9 @@ export class Conversation extends DurableObject<Env> {
       if (peer !== ws) peer.send(JSON.stringify({ type: "message", message }));
     }
     // Off the critical path: mirror the preview + unread bump to D1 for the sidebar.
-    this.ctx.waitUntil(mirrorLastMessage(this.d1(), att.chatId, body, att.userId, now));
+    // The message is already persisted + broadcast; a failed sidebar mirror is
+    // non-critical, so swallow its error rather than surface an unhandled rejection.
+    this.ctx.waitUntil(mirrorLastMessage(this.d1(), att.chatId, body, att.userId, now).catch(() => {}));
   }
 
   /** Hibernation handler: a socket closed — mirror the close back and drop it. */

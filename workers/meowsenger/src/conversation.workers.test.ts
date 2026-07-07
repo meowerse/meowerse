@@ -140,6 +140,24 @@ describe("Conversation DO", () => {
     expect(ackText).toContain('"sent"');
   });
 
+  it("gives back-to-back sends strictly-increasing createdAt (stable history cursor)", async () => {
+    await seedChat("c7");
+    const wa = await connect("c7", "u1");
+    // Two sends in quick succession likely share a Date.now() millisecond; the
+    // monotonic clamp must still give them distinct, increasing created_at so the
+    // `created_at < cursor` paging never skips a same-ms message.
+    const ackA = waitFor(wa, (t) => t.includes('"sent"') && t.includes("m-a"));
+    wa.send(JSON.stringify({ type: "send", tempId: "ta", body: "m-a" }));
+    await ackA;
+    const ackB = waitFor(wa, (t) => t.includes('"sent"') && t.includes("m-b"));
+    wa.send(JSON.stringify({ type: "send", tempId: "tb", body: "m-b" }));
+    await ackB;
+
+    const mine = (await stub("c7").historyFor("c7", null)).filter((m) => m.body === "m-a" || m.body === "m-b");
+    expect(mine.map((m) => m.body)).toEqual(["m-a", "m-b"]);
+    expect(mine[1]!.createdAt).toBeGreaterThan(mine[0]!.createdAt);
+  });
+
   it("rejects an empty body with an error frame", async () => {
     const wa = await connect("c5", "u1");
     const err = waitFor(wa, (t) => t.includes('"error"'));
