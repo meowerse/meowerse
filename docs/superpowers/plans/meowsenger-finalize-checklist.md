@@ -11,6 +11,9 @@ forgot something").
       persists; reconnect after network blip.
 - [ ] **Telegram avatar** — after the final deploy (avatar proxy live + issuer), confirm the
       real Telegram photo renders (and initials fallback when hidden/none).
+- [ ] **Slice-4 message actions (eyeball)** — hover-action emoji glyphs (↩✎🗑⋯) vs house style;
+      context-menu positioning near screen edges; reply flash-highlight settling back to the
+      normal green tint on my-bubbles. All functional (build-verified), just need a look.
 
 ## Slice 2 follow-ups (addressed in a later slice — verify they land)
 - [ ] **Live sidebar** — sidebar `last_message`/`unread` don't refresh after send/receive yet;
