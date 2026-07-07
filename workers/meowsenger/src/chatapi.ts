@@ -1,7 +1,7 @@
 import type { DbClient, Env } from "./types";
 import type { Conversation } from "./conversation";
 import { json, readCookies } from "./security";
-import { getSession, SESSION_COOKIE } from "./session";
+import { getSession, SESSION_COOKIE, clearCookie } from "./session";
 import {
   createOrGetDirect,
   createGroup,
@@ -144,7 +144,35 @@ export async function handleHistory(
   if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
   const before = new URL(req.url).searchParams.get("before");
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
-  const messages = await stub.historyFor(chatId, before);
+  // Slice 9: pass the caller as viewerId so each message's reactions carry `mine`.
+  const messages = await stub.historyFor(chatId, before, me);
+  return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
+}
+
+/**
+ * GET /api/chats/:id/search?q= — within-chat message search (Slice 9). Gated:
+ * unauthenticated → 401, non-member → 403 (search never leaks a chat the caller
+ * isn't in). An empty/blank `q` short-circuits to `[]` without touching the DO.
+ * Otherwise the DO's `search` RPC runs a LIKE-escaped scan of THIS chat's log and
+ * returns matching Wires (newest-first, with reactions). Global cross-chat search
+ * is a deliberate follow-up (needs a D1 mirror/FTS index — bodies live only in the
+ * DO).
+ */
+export async function handleSearch(
+  req: Request,
+  env: Env,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
+  if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
+  const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+  if (!q) return json({ messages: [] }, 200, cors, { "Cache-Control": "no-store" });
+  const stub = conversation(env).get(conversation(env).idFromName(chatId));
+  const messages = await stub.search(q, me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
 }
 
@@ -589,4 +617,59 @@ export async function handleSetPrivacy(
   if (typeof body.allowAutoGroupAdd !== "boolean") return json({ error: "bad_value" }, 400, cors, NS);
   await setAllowAutoGroupAdd(db, me, body.allowAutoGroupAdd);
   return json({ ok: true, allowAutoGroupAdd: body.allowAutoGroupAdd }, 200, cors, NS);
+}
+
+/**
+ * POST /api/account/delete — erase the caller's meowsenger-side data (Slice 9).
+ * Session-gated (401 without a valid session) and confirm-required: the body must
+ * carry `{confirm:true}` (or `{confirm:"delete"}`), else 400 `confirm_required` —
+ * so a stray POST can't nuke an account.
+ *
+ * Erasure is child-first, per the caller only:
+ *   1. For every chat they're a member of, run the shared `leave` logic — which
+ *      handles owner transfer / last-member chat delete correctly (so a chat they
+ *      solely own is deleted, and one they co-own transfers ownership). We snapshot
+ *      the membership list first, then leave each (leaving mutates chat_members).
+ *   2. Delete any of their `join_requests` (pending/decided).
+ *   3. Delete their `sessions` (logs them out everywhere).
+ *   4. Delete their `users` row.
+ * Then clear the session cookie in the response.
+ *
+ * NOTE: message bodies persist in each chat's DO SQLite under the raw senderId —
+ * the id no longer resolves to a user row, so the UI shows the bare id. That's
+ * acceptable for this slice; full per-DO message erasure is a documented follow-up.
+ * The auth-side account is separate (auth owns that).
+ */
+export async function handleDeleteAccount(
+  req: Request,
+  db: DbClient,
+  now: number,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  let body: { confirm?: unknown } = {};
+  try {
+    const text = await req.text();
+    if (text) body = JSON.parse(text) as { confirm?: unknown };
+  } catch {
+    return json({ error: "bad_json" }, 400, cors, NS);
+  }
+  // Require an explicit confirmation — true, or the string "delete".
+  if (body.confirm !== true && body.confirm !== "delete") {
+    return json({ error: "confirm_required" }, 400, cors, NS);
+  }
+
+  // 1. Snapshot the caller's chats, then leave each (leave() reconciles owner
+  //    transfer / last-member delete). Snapshot first — leaving mutates the list.
+  const chatRows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ?", [me]);
+  for (const row of chatRows) {
+    await leave(db, String(row.chat_id), me);
+  }
+  // 2–4. Remove the caller's remaining D1 footprint, child-first.
+  await db.run("DELETE FROM join_requests WHERE user_id = ?", [me]);
+  await db.run("DELETE FROM sessions WHERE user_id = ?", [me]);
+  await db.run("DELETE FROM users WHERE id = ?", [me]);
+
+  return json({ ok: true }, 200, cors, { ...NS, "Set-Cookie": clearCookie(SESSION_COOKIE) });
 }

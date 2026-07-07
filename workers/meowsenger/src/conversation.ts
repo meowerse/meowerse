@@ -21,6 +21,13 @@ interface ReplySnippet {
   senderId: string;
   body: string;
 }
+/** An aggregated reaction on a message: the emoji, how many users reacted with
+ *  it, and whether the requesting viewer is one of them (Slice 9). */
+interface ReactionAgg {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
 /** A message as it goes over the wire / out of history (see Shared contracts §6). */
 interface Wire {
   id: string;
@@ -34,6 +41,9 @@ interface Wire {
   isDeleted?: boolean;
   /** Slice 8: true when this message was forwarded from another chat. */
   isForwarded?: boolean;
+  /** Slice 9: aggregated emoji reactions on this message (present on history
+   *  rows; omitted on the live send/forward Wire, which carries no reactions yet). */
+  reactions?: ReactionAgg[];
 }
 
 const MAX_BODY = 4000;
@@ -48,6 +58,23 @@ const PURGE_AFTER_MS = 24 * 3600_000;
 /** Per-connection flood window + cap: at most RATE_MAX `send`s per RATE_WINDOW_MS. */
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX = 30;
+/** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
+ *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
+const MAX_EMOJI_LEN = 8;
+/** Cap on distinct emojis one user may hold on a single message — a toggle that
+ *  would exceed this is refused so a user can't spam a message with reactions. */
+const MAX_REACTIONS_PER_USER = 12;
+
+/**
+ * Escape SQLite LIKE metacharacters in a user-supplied search term (Slice 9). With
+ * `ESCAPE '\'`, a literal `\`, `%`, or `_` in the term is prefixed with `\` so it
+ * matches itself instead of acting as a wildcard — preventing wildcard injection
+ * that would broaden (or slow) the scan. The backslash is escaped FIRST so the
+ * escapes added for `%`/`_` aren't themselves re-escaped.
+ */
+function escapeLike(term: string): string {
+  return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
 
 /**
  * One instance per chat (addressed by chatId via `idFromName`). Holds the room's
@@ -73,7 +100,9 @@ export class Conversation extends DurableObject<Env> {
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, reply_to_id TEXT, edited_at INTEGER, is_deleted INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, is_forwarded INTEGER NOT NULL DEFAULT 0);
-         CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);`,
+         CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+         CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, user_id TEXT NOT NULL, emoji TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (message_id, user_id, emoji));
+         CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);`,
       );
     });
     // Answer keepalive ping/pong in the runtime without waking the DO.
@@ -148,6 +177,7 @@ export class Conversation extends DurableObject<Env> {
       on?: boolean;
       upTo?: number;
       id?: string;
+      emoji?: string;
       replyToId?: string | null;
     };
     try {
@@ -179,6 +209,11 @@ export class Conversation extends DurableObject<Env> {
     // Delete: own message, within the 24h window, soft (keep the row + placeholder).
     if (msg.type === "delete") {
       this.handleDelete(ws, att, msg.id);
+      return;
+    }
+    // React: toggle this user's emoji on a live message, broadcast to ALL (Slice 9).
+    if (msg.type === "react") {
+      this.handleReact(ws, att, msg.id, msg.emoji);
       return;
     }
 
@@ -432,6 +467,64 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
+   * Toggle the caller's `emoji` reaction on message `id` (Slice 9). Validation is
+   * server-side: the emoji must be non-empty and ≤ 8 chars, and `id` must refer to
+   * a LIVE (not soft-deleted) message in THIS room — a stale/forged/foreign id is
+   * silently ignored (no error frame, matching the "degrade quietly" reply rule).
+   * Toggle semantics: present → DELETE (on:false); absent → INSERT (on:true), but
+   * an INSERT that would push the user past MAX_REACTIONS_PER_USER distinct emojis
+   * on this message is refused. On a successful toggle, broadcast
+   * {reaction, id, emoji, userId, on} to ALL sockets (incl. the actor, so their
+   * own tabs and optimistic UI converge on the authoritative state).
+   */
+  private handleReact(ws: WebSocket, att: Attach, id: string | undefined, rawEmoji: string | undefined): void {
+    const emoji = (rawEmoji ?? "").trim();
+    if (!id || !emoji || emoji.length > MAX_EMOJI_LEN) {
+      ws.send(JSON.stringify({ type: "error", code: "cannot_react" }));
+      return;
+    }
+    // Only react to a live message in this room — never a soft-deleted or unknown one.
+    const target = this.ctx.storage.sql
+      .exec("SELECT is_deleted FROM messages WHERE id = ?", id)
+      .toArray()[0];
+    if (!target || Number(target.is_deleted) === 1) {
+      ws.send(JSON.stringify({ type: "error", code: "cannot_react" }));
+      return;
+    }
+    const existing = this.ctx.storage.sql
+      .exec("SELECT 1 AS ok FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?", id, att.userId, emoji)
+      .toArray()[0];
+    let on: boolean;
+    if (existing) {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+        id,
+        att.userId,
+        emoji,
+      );
+      on = false;
+    } else {
+      // Cap distinct emojis this user holds on this message.
+      const mine = this.ctx.storage.sql
+        .exec("SELECT COUNT(*) AS n FROM reactions WHERE message_id = ? AND user_id = ?", id, att.userId)
+        .toArray()[0]?.n;
+      if (Number(mine ?? 0) >= MAX_REACTIONS_PER_USER) {
+        ws.send(JSON.stringify({ type: "error", code: "too_many_reactions" }));
+        return;
+      }
+      this.ctx.storage.sql.exec(
+        "INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)",
+        id,
+        att.userId,
+        emoji,
+        Date.now(),
+      );
+      on = true;
+    }
+    this.broadcast({ type: "reaction", id, emoji, userId: att.userId, on });
+  }
+
+  /**
    * Hard-purge soft-deleted rows that have aged past the 24h window (reclaims DO
    * SQLite space; no VACUUM per spec §9). If any soft-deleted rows remain (deleted
    * more recently), re-arm the alarm to purge them once they too age out.
@@ -456,7 +549,7 @@ export class Conversation extends DurableObject<Env> {
    * connections open. Returns up to 50 messages ascending; pass `beforeId` to
    * page backwards from an earlier message.
    */
-  async historyFor(chatId: string, beforeId: string | null): Promise<Wire[]> {
+  async historyFor(chatId: string, beforeId: string | null, viewerId?: string): Promise<Wire[]> {
     let cursor: number | undefined;
     if (beforeId) {
       const at = this.ctx.storage.sql
@@ -488,7 +581,71 @@ export class Conversation extends DurableObject<Env> {
             )
             .toArray();
     // Rows come newest-first (for the LIMIT); flip to chronological for the UI.
-    return rows.map((r: Row) => this.rowToWire(r, chatId)).reverse();
+    const wires = rows.map((r: Row) => this.rowToWire(r, chatId)).reverse();
+    this.attachReactions(wires, viewerId);
+    return wires;
+  }
+
+  /**
+   * Aggregate reactions for a page of Wires in one pass and attach a `reactions`
+   * array to each. Queries the reactions table for exactly the page's message ids
+   * (a single `IN (...)` scan), tallies each emoji's count, and marks `mine` when
+   * the `viewerId` is among that emoji's reactors. A message with no reactions gets
+   * an empty array. Mutates the Wires in place. No-op for an empty page.
+   */
+  private attachReactions(wires: Wire[], viewerId?: string): void {
+    if (wires.length === 0) return;
+    const ids = wires.map((w) => w.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT message_id, emoji, COUNT(*) AS n,` +
+          ` SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) AS mine` +
+          ` FROM reactions WHERE message_id IN (${placeholders})` +
+          ` GROUP BY message_id, emoji ORDER BY MIN(created_at) ASC`,
+        viewerId ?? "",
+        ...ids,
+      )
+      .toArray();
+    const byMessage = new Map<string, ReactionAgg[]>();
+    for (const r of rows) {
+      const mid = String(r.message_id);
+      const list = byMessage.get(mid) ?? [];
+      list.push({ emoji: String(r.emoji), count: Number(r.n), mine: Number(r.mine ?? 0) > 0 });
+      byMessage.set(mid, list);
+    }
+    for (const w of wires) w.reactions = byMessage.get(w.id) ?? [];
+  }
+
+  /**
+   * DO RPC (Slice 9): within-chat message search. Returns up to `limit` non-deleted
+   * messages whose body contains `query` (case-insensitive via SQLite LIKE, which
+   * is ASCII-case-insensitive), newest-first, as Wires (with reactions aggregated
+   * for `viewerId`). The query is LIKE-escaped — `%`, `_`, and the escape char `\`
+   * are neutralized (ESCAPE '\') so a user's literal wildcards match literally and
+   * can't broaden the scan. An empty/blank query returns []. Membership is gated at
+   * the route (only a member's request reaches this RPC).
+   */
+  async search(query: string, viewerId?: string, limit = 30): Promise<Wire[]> {
+    const q = (query ?? "").trim();
+    if (!q) return [];
+    const capped = Math.max(1, Math.min(Number(limit) || 30, 100));
+    const pattern = `%${escapeLike(q)}%`;
+    const cols =
+      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
+      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
+          " WHERE m.is_deleted = 0 AND m.body LIKE ? ESCAPE '\\' ORDER BY m.created_at DESC LIMIT ?",
+        pattern,
+        capped,
+      )
+      .toArray();
+    const chatId = this.chatIdOf();
+    const wires = rows.map((r: Row) => this.rowToWire(r, chatId));
+    this.attachReactions(wires, viewerId);
+    return wires;
   }
 
   /** Map a joined history row to the wire shape (deleted → placeholder, reply snippet). */

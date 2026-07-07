@@ -696,4 +696,146 @@ describe("Conversation DO", () => {
 
     wa.close();
   });
+
+  // ---- Slice 9: reactions (toggle · broadcast · historyFor aggregation) ----
+
+  it("react: toggle add → {reaction, on:true} broadcast to ALL (incl. the actor)", async () => {
+    await seedChat("c30");
+    await runInDurableObject(stub("c30"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('r1','u2','react to me',1000)");
+    });
+    const actor = await connect("c30", "u1");
+    const peer = await connect("c30", "u2");
+
+    // The actor's own socket ALSO receives the reaction broadcast (multi-tab convergence).
+    const actorGot = waitFor(actor, (t) => t.includes('"reaction"'));
+    const peerGot = waitFor(peer, (t) => t.includes('"reaction"'));
+    actor.send(JSON.stringify({ type: "react", id: "r1", emoji: "👍" }));
+
+    const [actorText, peerText] = await Promise.all([actorGot, peerGot]);
+    expect(JSON.parse(actorText)).toMatchObject({ type: "reaction", id: "r1", emoji: "👍", userId: "u1", on: true });
+    expect(JSON.parse(peerText)).toMatchObject({ type: "reaction", id: "r1", emoji: "👍", userId: "u1", on: true });
+
+    actor.close();
+    peer.close();
+  });
+
+  it("react: toggling the SAME emoji again removes it → {reaction, on:false}", async () => {
+    await seedChat("c31");
+    await runInDurableObject(stub("c31"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('r2','u2','toggle me',1000)");
+    });
+    const actor = await connect("c31", "u1");
+
+    const onFrame = waitFor(actor, (t) => t.includes('"reaction"') && t.includes("true"));
+    actor.send(JSON.stringify({ type: "react", id: "r2", emoji: "❤️" }));
+    expect(JSON.parse(await onFrame)).toMatchObject({ type: "reaction", emoji: "❤️", on: true });
+
+    const offFrame = waitFor(actor, (t) => t.includes('"reaction"') && t.includes("false"));
+    actor.send(JSON.stringify({ type: "react", id: "r2", emoji: "❤️" }));
+    expect(JSON.parse(await offFrame)).toMatchObject({ type: "reaction", emoji: "❤️", on: false });
+
+    // After a full toggle cycle the message has no reactions in history.
+    const history = await stub("c31").historyFor("c31", null, "u1");
+    expect(history.find((m) => m.id === "r2")?.reactions).toEqual([]);
+
+    actor.close();
+  });
+
+  it("react: historyFor aggregates counts + sets `mine` relative to viewerId", async () => {
+    await seedChat("c32");
+    await runInDurableObject(stub("c32"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('r3','u3','popular',1000)");
+      // u1 + u2 react 👍; only u1 reacts 🎉.
+      const t = Date.now();
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('r3','u1','👍',?)", t);
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('r3','u2','👍',?)", t + 1);
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('r3','u1','🎉',?)", t + 2);
+    });
+
+    // Viewer = u1: 👍 count 2 (mine), 🎉 count 1 (mine).
+    const asU1 = await stub("c32").historyFor("c32", null, "u1");
+    const rowU1 = asU1.find((m) => m.id === "r3");
+    expect(rowU1?.reactions).toEqual([
+      { emoji: "👍", count: 2, mine: true },
+      { emoji: "🎉", count: 1, mine: true },
+    ]);
+
+    // Viewer = u2: 👍 count 2 (mine:true — u2 reacted), 🎉 count 1 (mine:false).
+    const asU2 = await stub("c32").historyFor("c32", null, "u2");
+    const rowU2 = asU2.find((m) => m.id === "r3");
+    expect(rowU2?.reactions).toEqual([
+      { emoji: "👍", count: 2, mine: true },
+      { emoji: "🎉", count: 1, mine: false },
+    ]);
+
+    // No viewerId → all `mine:false`.
+    const asAnon = await stub("c32").historyFor("c32", null);
+    expect(asAnon.find((m) => m.id === "r3")?.reactions?.every((x) => x.mine === false)).toBe(true);
+  });
+
+  it("react: a bogus/deleted message id or empty emoji → {error, cannot_react}, nothing persisted", async () => {
+    await seedChat("c33");
+    await runInDurableObject(stub("c33"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at, is_deleted) VALUES ('gone','u2','',1000,1)");
+    });
+    const actor = await connect("c33", "u1");
+
+    // Unknown id.
+    const err1 = waitFor(actor, (t) => t.includes('"error"'));
+    actor.send(JSON.stringify({ type: "react", id: "nope", emoji: "👍" }));
+    expect(JSON.parse(await err1)).toMatchObject({ type: "error", code: "cannot_react" });
+
+    // Soft-deleted target.
+    const err2 = waitFor(actor, (t) => t.includes('"error"'));
+    actor.send(JSON.stringify({ type: "react", id: "gone", emoji: "👍" }));
+    expect(JSON.parse(await err2)).toMatchObject({ type: "error", code: "cannot_react" });
+
+    // Empty emoji.
+    const err3 = waitFor(actor, (t) => t.includes('"error"'));
+    actor.send(JSON.stringify({ type: "react", id: "gone", emoji: "   " }));
+    expect(JSON.parse(await err3)).toMatchObject({ type: "error", code: "cannot_react" });
+
+    actor.close();
+  });
+
+  // ---- Slice 9: within-chat search RPC ----
+
+  it("search: matches message bodies (newest-first), excludes soft-deleted", async () => {
+    await seedChat("c34");
+    await runInDurableObject(stub("c34"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s1','u1','hello world',1000)");
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s2','u2','say HELLO again',2000)");
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s3','u1','unrelated',3000)");
+      // A soft-deleted message that also contains the term — must be excluded.
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at, is_deleted, deleted_at) VALUES ('s4','u2','',4000,1,4000)");
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('s2','u1','👍',5000)");
+    });
+    const results = await stub("c34").search("hello", "u1");
+    // Case-insensitive (LIKE), newest-first → s2 before s1; unrelated + deleted excluded.
+    expect(results.map((m) => m.id)).toEqual(["s2", "s1"]);
+    // Reactions ride along, with `mine` for the viewer.
+    expect(results.find((m) => m.id === "s2")?.reactions).toEqual([{ emoji: "👍", count: 1, mine: true }]);
+  });
+
+  it("search: an empty/blank query returns []", async () => {
+    await seedChat("c35");
+    await runInDurableObject(stub("c35"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s5','u1','anything',1000)");
+    });
+    expect(await stub("c35").search("", "u1")).toEqual([]);
+    expect(await stub("c35").search("   ", "u1")).toEqual([]);
+  });
+
+  it("search: LIKE wildcards in the query are escaped (match literally, not as wildcards)", async () => {
+    await seedChat("c36");
+    await runInDurableObject(stub("c36"), async (_i: Conversation, ctx: DurableObjectState) => {
+      // One body literally contains "50%"; another would only match if % were a wildcard.
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s6','u1','deal is 50% off',1000)");
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s7','u2','5 apples and 0 pears',2000)");
+    });
+    // "50%" must match ONLY the literal "50%" body — not "5...0..." via a wildcard.
+    const results = await stub("c36").search("50%", "u1");
+    expect(results.map((m) => m.id)).toEqual(["s6"]);
+  });
 });

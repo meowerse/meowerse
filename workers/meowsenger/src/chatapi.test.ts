@@ -3,6 +3,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleSearch,
   handleForward,
   callerId,
   handleListMembers,
@@ -24,6 +25,7 @@ import {
   handleRejectRequest,
   handleGetPrivacy,
   handleSetPrivacy,
+  handleDeleteAccount,
 } from "./chatapi";
 import type { DbClient, Env, Row } from "./types";
 import { SESSION_COOKIE } from "./session";
@@ -254,6 +256,77 @@ describe("handleHistory", () => {
     } as unknown as Env;
     await handleHistory(cookieReq("https://x/api/chats/c1/messages?before=m9", "s1"), env, db, now, "c1", cors);
     expect(seenBefore).toBe("m9");
+  });
+  it("passes the caller as viewerId so reactions carry `mine`", async () => {
+    let seenViewer: string | undefined = "UNSET";
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const env = {
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          historyFor: async (_chatId: string, _before: string | null, viewerId?: string) => {
+            seenViewer = viewerId;
+            return [];
+          },
+        }),
+      },
+    } as unknown as Env;
+    await handleHistory(cookieReq("https://x/api/chats/c1/messages", "s1"), env, db, now, "c1", cors);
+    expect(seenViewer).toBe("u1");
+  });
+});
+
+// ---- Slice 9: within-chat search ----
+
+/** Fake CONVERSATION namespace whose `search` records its (query, viewerId) and
+ *  returns a canned page — lets a test assert both the gate and the passthrough. */
+function searchEnv(results: unknown[] = []) {
+  const calls: Array<{ query: string; viewerId?: string }> = [];
+  const CONVERSATION = {
+    idFromName: (name: string) => name,
+    get: () => ({
+      search: async (query: string, viewerId?: string) => {
+        calls.push({ query, viewerId });
+        return results;
+      },
+    }),
+  };
+  return { env: { CONVERSATION } as unknown as Env, calls };
+}
+
+describe("handleSearch", () => {
+  it("401 unauthorized with no session", async () => {
+    const { db } = memDb();
+    const { env } = searchEnv();
+    const res = await handleSearch(cookieReq("https://x/api/chats/c1/search?q=hi"), env, db, now, "c1", cors);
+    expect(res.status).toBe(401);
+  });
+  it("403 forbidden for a non-member (search never leaks a foreign chat)", async () => {
+    const { db } = memDb({ session: validSession("u1") /* no membership seeded */ });
+    const { env, calls } = searchEnv();
+    const res = await handleSearch(cookieReq("https://x/api/chats/c1/search?q=hi", "s1"), env, db, now, "c1", cors);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+    // The DO was never touched.
+    expect(calls).toHaveLength(0);
+  });
+  it("empty/blank q → 200 [] without touching the DO", async () => {
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const { env, calls } = searchEnv([{ id: "m1" }]);
+    const res = await handleSearch(cookieReq("https://x/api/chats/c1/search?q=%20%20", "s1"), env, db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(calls).toHaveLength(0);
+  });
+  it("member search → 200 with the DO's results; passes q + caller as viewerId", async () => {
+    const canned = [{ id: "m1", chatId: "c1", senderId: "u2", body: "found hello", createdAt: 1000, reactions: [] }];
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const { env, calls } = searchEnv(canned);
+    const res = await handleSearch(cookieReq("https://x/api/chats/c1/search?q=hello", "s1"), env, db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: canned });
+    expect(calls).toEqual([{ query: "hello", viewerId: "u1" }]);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });
 
@@ -971,6 +1044,146 @@ describe("GET/POST /api/account/privacy", () => {
     const res = await handleSetPrivacy(cookieReq("https://x/api/account/privacy", "s1", { method: "POST", body: "{oops" }), db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_json" });
+  });
+});
+
+// ---- Slice 9: account data deletion ----
+
+/**
+ * In-memory DB for account deletion: sessions (auth), chat_members (the caller's
+ * chats + the `leave` owner-transfer logic), chats (last-member delete), plus
+ * join_requests/sessions/users delete counters. Records what got deleted so a test
+ * can assert the child-first erasure order + owned-chat handling.
+ */
+function accountDb(opts: {
+  session?: Row;
+  members?: Array<{ chatId: string; userId: string; role: string; joinedAt: number }>;
+  chats?: string[];
+} = {}) {
+  const members: Row[] = (opts.members ?? []).map((m) => ({ chat_id: m.chatId, user_id: m.userId, role: m.role, joined_at: m.joinedAt }));
+  const chats = new Set<string>([...(opts.chats ?? []), ...members.map((m) => String(m.chat_id))]);
+  const deleted = { joinRequests: 0, sessions: 0, users: [] as string[], chats: [] as string[] };
+  const db: DbClient = {
+    async all(sql, p = []) {
+      // handleDeleteAccount: the caller's chat memberships.
+      if (sql.includes("SELECT chat_id FROM chat_members WHERE user_id")) {
+        return members.filter((m) => m.user_id === p[0]).map((m) => ({ chat_id: m.chat_id }));
+      }
+      // leave(): remaining members of a chat, oldest-first.
+      if (sql.includes("SELECT user_id, role, joined_at FROM chat_members WHERE chat_id")) {
+        return members
+          .filter((m) => m.chat_id === p[0])
+          .sort((a, b) => Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+      }
+      return [];
+    },
+    async first(sql, p = []) {
+      if (sql.includes("FROM sessions")) return opts.session;
+      if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
+      return undefined;
+    },
+    async run(sql, p = []) {
+      if (sql.startsWith("DELETE FROM chat_members")) {
+        const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);
+        if (i >= 0) members.splice(i, 1);
+      } else if (sql.startsWith("UPDATE chat_members SET role")) {
+        const m = members.find((x) => x.chat_id === p[0] && x.user_id === p[1]);
+        if (m) m.role = sql.includes("'owner'") ? "owner" : sql.includes("'admin'") ? "admin" : "member";
+      } else if (sql.startsWith("DELETE FROM chats")) {
+        chats.delete(String(p[0]));
+        deleted.chats.push(String(p[0]));
+      } else if (sql.startsWith("DELETE FROM join_requests")) {
+        deleted.joinRequests++;
+      } else if (sql.startsWith("DELETE FROM sessions")) {
+        deleted.sessions++;
+      } else if (sql.startsWith("DELETE FROM users")) {
+        deleted.users.push(String(p[0]));
+      }
+    },
+  };
+  return { db, members, chats, deleted };
+}
+
+describe("POST /api/account/delete", () => {
+  it("401 unauthorized with no session", async () => {
+    const { db } = accountDb();
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", undefined, { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    expect(res.status).toBe(401);
+  });
+  it("400 confirm_required without a confirm field", async () => {
+    const { db, deleted } = accountDb({ session: validSession("u1") });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({}) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "confirm_required" });
+    // Nothing erased when confirmation is missing.
+    expect(deleted.users).toHaveLength(0);
+    expect(deleted.sessions).toBe(0);
+  });
+  it("400 confirm_required when confirm is falsy/wrong", async () => {
+    const { db } = accountDb({ session: validSession("u1") });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: false }) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "confirm_required" });
+  });
+  it("400 bad_json on an unparseable body", async () => {
+    const { db } = accountDb({ session: validSession("u1") });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: "{oops" }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_json" });
+  });
+  it("confirm:true → removes memberships/sessions/user, clears the cookie", async () => {
+    const { db, members, deleted } = accountDb({
+      session: validSession("u1"),
+      members: [
+        // A group where u1 is a plain member (someone else owns it) — u1 just leaves.
+        { chatId: "g1", userId: "owner", role: "owner", joinedAt: 1 },
+        { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 },
+      ],
+    });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    // u1's membership is gone; the owner remains.
+    expect(members.some((m) => m.user_id === "u1")).toBe(false);
+    expect(members.some((m) => m.chat_id === "g1" && m.user_id === "owner")).toBe(true);
+    // sessions + users erased; cookie cleared.
+    expect(deleted.sessions).toBe(1);
+    expect(deleted.users).toEqual(["u1"]);
+    expect(deleted.joinRequests).toBe(1);
+    expect(res.headers.get("Set-Cookie")).toContain(`${SESSION_COOKIE}=`);
+    expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
+  });
+  it("confirm:'delete' string is also accepted", async () => {
+    const { db, deleted } = accountDb({ session: validSession("u1") });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: "delete" }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(deleted.users).toEqual(["u1"]);
+  });
+  it("a chat the caller SOLELY owns is deleted (leave's last-member path)", async () => {
+    const { db, chats, deleted } = accountDb({
+      session: validSession("u1"),
+      members: [{ chatId: "solo", userId: "u1", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    // The sole-owned chat is removed entirely.
+    expect(chats.has("solo")).toBe(false);
+    expect(deleted.chats).toContain("solo");
+  });
+  it("owning a chat with other members transfers ownership, not delete", async () => {
+    const { db, members, chats } = accountDb({
+      session: validSession("u1"),
+      members: [
+        { chatId: "shared", userId: "u1", role: "owner", joinedAt: 1 },
+        { chatId: "shared", userId: "u2", role: "member", joinedAt: 2 },
+      ],
+    });
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    // The chat survives; u2 is promoted to owner.
+    expect(chats.has("shared")).toBe(true);
+    expect(members.find((m) => m.chat_id === "shared" && m.user_id === "u2")?.role).toBe("owner");
+    expect(members.some((m) => m.user_id === "u1")).toBe(false);
   });
 });
 

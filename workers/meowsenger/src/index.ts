@@ -11,6 +11,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleSearch,
   handleForward,
   handleListMembers,
   handleAddMember,
@@ -31,6 +32,7 @@ import {
   handleRejectRequest,
   handleGetPrivacy,
   handleSetPrivacy,
+  handleDeleteAccount,
 } from "./chatapi";
 import { getRole, chatType } from "./chats";
 
@@ -51,6 +53,8 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // code. These are NOT chat-scoped, so they live outside the /api/chats/:id block.
   if (path === "/api/account/privacy" && m === "GET") return handleGetPrivacy(req, deps.getDb(), deps.now(), cors);
   if (path === "/api/account/privacy" && m === "POST") return handleSetPrivacy(req, deps.getDb(), deps.now(), cors);
+  // Slice 9: erase the caller's meowsenger data (session-gated + confirm-required).
+  if (path === "/api/account/delete" && m === "POST") return handleDeleteAccount(req, deps.getDb(), deps.now(), cors);
   const inviteAccept = path.match(/^\/api\/invite\/([^/]+)\/accept$/);
   if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteAccept[1]), cors);
   const inviteResolve = path.match(/^\/api\/invite\/([^/]+)$/);
@@ -66,6 +70,9 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(bySlug[1]), cors);
   const hist = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), hist[1], cors);
+  // Slice 9: within-chat search (member-gated). :id is the chat being searched.
+  const search = path.match(/^\/api\/chats\/([^/]+)\/search$/);
+  if (search && m === "GET") return handleSearch(req, env, deps.getDb(), deps.now(), search[1], cors);
   // Slice 8: forward messages into a target chat (gated on target membership +
   // the channel-post rule). :id is the TARGET chat.
   const forward = path.match(/^\/api\/chats\/([^/]+)\/forward$/);

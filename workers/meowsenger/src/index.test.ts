@@ -142,6 +142,13 @@ describe("router", () => {
   it("POST /api/account/privacy is routed → 401", async () => {
     expect((await handle(req("POST", "/api/account/privacy"), env, noSession())).status).toBe(401);
   });
+  // Slice 9 route wiring: within-chat search + account deletion (401 no-session).
+  it("GET /api/chats/:id/search is routed (regex) → 401", async () => {
+    expect((await handle(req("GET", "/api/chats/c1/search?q=hi"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/account/delete is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/account/delete"), env, noSession())).status).toBe(401);
+  });
 });
 
 describe("GET /ws upgrade", () => {
