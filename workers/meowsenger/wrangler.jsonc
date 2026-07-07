@@ -12,12 +12,13 @@
   "compatibility_date": "2025-06-01",
   "vars": {
     "OIDC_ISSUER": "https://auth-api.alxnko.eu.org",
+    "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
     "OIDC_REDIRECT_URI": "https://meowsenger-api.alxnko.eu.org/auth/callback",
     "WEB_ORIGIN": "https://meowsenger.alxnko.eu.org",
     "CORS_ORIGINS": "https://meowsenger.alxnko.eu.org,http://localhost:4321"
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "meowsenger", "database_id": "PLACEHOLDER_SET_IN_TASK_13" }
+    { "binding": "DB", "database_name": "meowsenger", "database_id": "d287edf4-c3c8-4328-9c47-14094f08ca42" }
   ],
   "routes": [{ "pattern": "meowsenger-api.alxnko.eu.org", "custom_domain": true }]
 }
