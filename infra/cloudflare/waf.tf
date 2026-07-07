@@ -26,7 +26,7 @@ variable "enable_waf" {
 
 variable "waf_api_hosts" {
   type        = list(string)
-  default     = ["auth-api.alxnko.eu.org", "api.meow.alxnko.eu.org"]
+  default     = ["auth-api.alxnko.eu.org", "api.meow.alxnko.eu.org", "meowsenger-api.alxnko.eu.org"]
   description = "Worker-backed API hostnames to flood-protect. NOT the static UI (auth.alxnko.eu.org) — static assets don't consume the Worker quota."
 }
 

@@ -40,6 +40,8 @@ jobs:
           grep -qE '^workers/edge/' <<<"$diff" && echo "worker=1" >> "$GITHUB_OUTPUT" || echo "worker=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(workers/auth/|packages/auth-shared/)' <<<"$diff" && echo "auth=1" >> "$GITHUB_OUTPUT" || echo "auth=0" >> "$GITHUB_OUTPUT"
           grep -qE '^apps/auth-web/' <<<"$diff" && echo "authweb=1" >> "$GITHUB_OUTPUT" || echo "authweb=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^(workers/meowsenger/|packages/auth-shared/|packages/auth-sdk/)' <<<"$diff" && echo "meowsenger=1" >> "$GITHUB_OUTPUT" || echo "meowsenger=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^apps/meowsenger-web/' <<<"$diff" && echo "meowsengerweb=1" >> "$GITHUB_OUTPUT" || echo "meowsengerweb=0" >> "$GITHUB_OUTPUT"
 
       - run: bun install --frozen-lockfile
 
@@ -99,5 +101,28 @@ jobs:
           bun run --filter @meowerse/auth-web build
           (cd apps/auth-web && bunx wrangler deploy)
           bash infra/record-deploy.sh auth-web "run-${{ github.run_id }}"
+
+      - name: Deploy meowsenger (Cloudflare Worker)
+        if: steps.changed.outputs.meowsenger == '1' && env.CF != ''
+        env:
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd workers/meowsenger && bunx wrangler deploy)
+          bash infra/record-deploy.sh meowsenger "run-${{ github.run_id }}"
+
+      - name: Deploy meowsenger-web (Cloudflare Worker static assets)
+        if: steps.changed.outputs.meowsengerweb == '1' && env.CF != ''
+        env:
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          bun run --filter @meowerse/meowsenger-web build
+          (cd apps/meowsenger-web && bunx wrangler deploy)
+          bash infra/record-deploy.sh meowsenger-web "run-${{ github.run_id }}"
       # No commit-back: we never push to the deploy branch from CI. deploy-state
       # is maintained by local `just deploy-*` runs.

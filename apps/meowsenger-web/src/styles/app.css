@@ -1,0 +1,3 @@
+/* App-local styles only; tokens + primitives come from @meowerse/ui/tokens.css. */
+html { overflow-x: hidden; }
+main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
