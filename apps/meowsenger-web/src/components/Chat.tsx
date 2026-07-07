@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
-import { listChats, openDirect, loadHistory, wsUrl, getMembers, type ChatSummary, type Message, type Member } from "../lib/chat";
+import { listChats, openDirect, loadHistory, wsUrl, getMembers, applyReaction, type ChatSummary, type Message, type Member } from "../lib/chat";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
 import { MessageMenu, type MenuItem } from "./MessageMenu";
+import { EmojiPicker } from "./EmojiPicker";
+import { SearchPanel } from "./SearchPanel";
 import { NewChatModal } from "./NewChatModal";
 import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
@@ -25,6 +27,9 @@ type Frame =
   | { type: "read_receipt"; userId: string; upTo: number }
   | { type: "edited"; id: string; body: string; editedAt: number }
   | { type: "deleted"; id: string }
+  // Slice 9 — a reaction was toggled on message `id`: `userId` added (on:true) or
+  // removed (on:false) `emoji`. Broadcast to ALL sockets (incl. the actor's tabs).
+  | { type: "reaction"; id: string; emoji: string; userId: string; on: boolean }
   | { type: "error"; code: string };
 
 // Own-message action windows (UX gating only — the server enforces both, §7).
@@ -46,6 +51,23 @@ const ERROR_COPY: Record<string, string> = {
   // stays open + the Composer stays usable, we just nudge the user to slow down.
   rate_limited: "you're sending too fast — slow down a moment",
 };
+
+/**
+ * Fire a browser notification for an incoming message while the tab is backgrounded
+ * (Slice 9). Deliberately conservative — it fires ONLY when: the Notification API
+ * exists, the document is hidden, and the user has already GRANTED permission (we
+ * never auto-request; that's an explicit Settings toggle). Any misconfiguration is
+ * a silent no-op. No service worker / Web Push — the tab must be open.
+ */
+function maybeNotify(title: string, body: string) {
+  if (typeof Notification === "undefined") return;
+  if (typeof document !== "undefined" && !document.hidden) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    // A blank body (e.g. a deleted echo) still yields a useful title-only ping.
+    new Notification(title, { body: body || "sent a message" });
+  } catch { /* some browsers throw off a non-SW context — ignore */ }
+}
 
 // A peer's "typing…" auto-clears if no fresh on:true arrives within this window
 // (covers a dropped on:false — e.g. the peer's tab closed mid-type).
@@ -84,6 +106,12 @@ export default function Chat({ base }: { base: string }) {
   // Slice 8 — the forward modal + the message bodies queued for forwarding (from a
   // single message's context menu or the multi-select bar). Non-null bodies ⇒ open.
   const [forwardBodies, setForwardBodies] = useState<string[] | null>(null);
+  // Slice 9 — the emoji picker anchored over a message (non-null ⇒ open). `m` is the
+  // target message; `x`/`y` the viewport anchor point.
+  const [emojiFor, setEmojiFor] = useState<{ m: Bubble; x: number; y: number } | null>(null);
+  // Slice 9 — the in-chat search panel: whether it's open + the current query. The
+  // panel itself owns its results/loading (it re-runs searchChat as the query changes).
+  const [searchOpen, setSearchOpen] = useState(false);
   // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for
   // DMs (which use the peer shortcut). Fetched on opening a group + refreshed on
   // membership changes.
@@ -117,6 +145,16 @@ export default function Chat({ base }: { base: string }) {
   const hasMoreRef = useRef(false);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
+
+  // Ref mirror of the current user id (Slice 9 — read inside the stable applyFrame
+  // to tell an incoming reaction/message apart from our own, without re-deriving it).
+  const meIdRef = useRef<string | null>(null);
+  useEffect(() => { meIdRef.current = me?.id ?? null; }, [me]);
+
+  // Slice 9 — resolve a sender id → a human name for the backgrounded notification
+  // title. A ref-backed function so the stable applyFrame reads the CURRENT roster
+  // /peer without depending on them. Set below once those derivations exist.
+  const resolveSenderNameRef = useRef<(senderId: string) => string>(() => "new message");
 
   const activeChat = chats.find((c) => c.id === activeId) ?? null;
   const peerId = activeChat?.peerId ?? null;
@@ -252,6 +290,11 @@ export default function Chat({ base }: { base: string }) {
         if (atBottomRef.current) sendRead(next);
         return next;
       });
+      // Slice 9 — a backgrounded notification for a message from someone else. The
+      // helper self-gates on document.hidden + granted permission (never prompts).
+      if (frame.message.senderId !== meIdRef.current) {
+        maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
+      }
     } else if (frame.type === "presence_snapshot") {
       setOnline(new Set(frame.online));
     } else if (frame.type === "presence") {
@@ -275,6 +318,14 @@ export default function Chat({ base }: { base: string }) {
       setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b)));
       // Drop it from any active selection so a bulk action can't touch a tombstone.
       setSelected((prev) => { if (!prev.has(frame.id)) return prev; const n = new Set(prev); n.delete(frame.id); return n; });
+    } else if (frame.type === "reaction") {
+      // Slice 9 — reconcile a reaction toggle (broadcast to ALL, incl. our own tabs).
+      // applyReaction dedupes by userId+emoji, so a broadcast that merely confirms our
+      // optimistic own-toggle is a no-op; a foreign user's toggle updates count/mine.
+      const isMine = frame.userId === meIdRef.current;
+      setMessages((prev) => prev.map((b) =>
+        b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b,
+      ));
     } else if (frame.type === "error") {
       showToast(ERROR_COPY[frame.code] ?? "something went wrong");
     }
@@ -309,6 +360,9 @@ export default function Chat({ base }: { base: string }) {
     // Reset group-scoped state so a prior group's roster/drawer never leaks.
     setDrawerOpen(false);
     setForwardBodies(null);
+    // Reset Slice-9 per-chat UI: close the emoji picker + search panel on a switch.
+    setEmojiFor(null);
+    setSearchOpen(false);
     setMemberMap(new Map());
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
@@ -456,6 +510,26 @@ export default function Chat({ base }: { base: string }) {
     ws.send(JSON.stringify({ type: "delete", id: m.id }));
   }
 
+  // Slice 9 — toggle MY reaction `emoji` on message `m`. Optimistic: flip the pill
+  // locally (add if I don't have it, remove if I do) keyed on the current `mine`
+  // state, then send `{type:"react", id, emoji}`. The server broadcasts a
+  // `reaction` frame back; applyReaction dedupes by userId+emoji so that confirming
+  // echo is a no-op (and a foreign toggle still reconciles). Optimistic pending
+  // bubbles (no real server id yet) can't be reacted to — skip them.
+  function sendReact(m: Bubble, emoji: string) {
+    if (m.pending || m.isDeleted) return;
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Derive the toggle direction from the FRESH state inside the updater (a
+    // broadcast may have landed since render), so we never double-add/-remove.
+    setMessages((prev) => prev.map((b) => {
+      if (b.id !== m.id) return b;
+      const mineNow = (b.reactions ?? []).find((r) => r.emoji === emoji)?.mine ?? false;
+      return { ...b, reactions: applyReaction(b.reactions, emoji, !mineNow, true) };
+    }));
+    ws.send(JSON.stringify({ type: "react", id: m.id, emoji }));
+  }
+
   // Can I still edit / delete this message? (own + within window, ignoring optimistic
   // bubbles and tombstones). Mirrors the server's checks — purely for showing the action.
   function canEdit(m: Bubble): boolean {
@@ -559,9 +633,19 @@ export default function Chat({ base }: { base: string }) {
     if (selectMode) exitSelect();
   }
 
-  // Build the per-message context-menu items (gated by ownership + window).
-  function menuItems(m: Bubble): MenuItem[] {
-    const items: MenuItem[] = [{ label: "reply", onClick: () => setReplyingTo(m) }];
+  // Open the emoji picker over a message (Slice 9). Closes the context menu first
+  // so the two popovers never overlap.
+  function openEmoji(m: Bubble, x: number, y: number) {
+    setMenu(null);
+    if (m.pending || m.isDeleted) return;
+    setEmojiFor({ m, x, y });
+  }
+
+  // Build the per-message context-menu items (gated by ownership + window). The
+  // "react" item opens the emoji picker at the menu's own anchor (Slice 9).
+  function menuItems(m: Bubble, at: { x: number; y: number }): MenuItem[] {
+    const items: MenuItem[] = [{ label: "react", onClick: () => openEmoji(m, at.x, at.y) }];
+    items.push({ label: "reply", onClick: () => setReplyingTo(m) });
     if (canEdit(m)) items.push({ label: "edit", onClick: () => setEditingId(m.id) });
     if (canDelete(m)) items.push({ label: "delete", onClick: () => sendDelete(m) });
     items.push({ label: "forward", onClick: () => forwardOne(m) });
@@ -634,6 +718,13 @@ export default function Chat({ base }: { base: string }) {
       }
     : null;
 
+  // Keep the notification name-resolver current: a group/channel uses the roster
+  // (falling back to the raw id), a DM uses the peer name (Slice 9).
+  useEffect(() => {
+    resolveSenderNameRef.current = (senderId: string) =>
+      isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
+  }, [isMembered, memberMap, peerName]);
+
   return (
     <div className="mw-chat" data-open={open ? "1" : "0"}>
       <ChatSidebar
@@ -687,6 +778,13 @@ export default function Chat({ base }: { base: string }) {
                       </span>
                     </span>
                   </button>
+                  <button
+                    className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
+                    onClick={() => setSearchOpen((v) => !v)}
+                    aria-label="search this chat"
+                    aria-pressed={searchOpen}
+                    title="search"
+                  >🔍</button>
                   <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
                     {connected ? "connected" : "connecting…"}
                   </span>
@@ -703,12 +801,31 @@ export default function Chat({ base }: { base: string }) {
                       ? <span className="mw-chat__typing">typing…</span>
                       : <span className="mw-chat__presence">{peerOnline ? "online" : "offline"}</span>}
                   </span>
+                  <button
+                    className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
+                    onClick={() => setSearchOpen((v) => !v)}
+                    aria-label="search this chat"
+                    aria-pressed={searchOpen}
+                    title="search"
+                  >🔍</button>
                   <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
                     {connected ? "connected" : "connecting…"}
                   </span>
                 </>
               )}
             </header>
+
+            {searchOpen && activeId && (
+              <SearchPanel
+                key={activeId}
+                base={base}
+                chatId={activeId}
+                resolveName={(id) => resolveSenderNameRef.current(id)}
+                meId={me?.id ?? null}
+                onJump={jumpToReply}
+                onClose={() => setSearchOpen(false)}
+              />
+            )}
 
             <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
               {loadingHistory && messages.length === 0 && (
@@ -764,6 +881,8 @@ export default function Chat({ base }: { base: string }) {
                     onDelete={sendDelete}
                     onToggleSelect={toggleSelect}
                     onContextMenu={(mm, x, y) => setMenu({ m: mm, x, y })}
+                    onReact={openEmoji}
+                    onToggleReaction={sendReact}
                     onJumpToReply={jumpToReply}
                     registerRef={registerRow}
                   />
@@ -818,7 +937,15 @@ export default function Chat({ base }: { base: string }) {
       </section>
 
       {menu && (
-        <MessageMenu x={menu.x} y={menu.y} items={menuItems(menu.m)} onClose={() => setMenu(null)} />
+        <MessageMenu x={menu.x} y={menu.y} items={menuItems(menu.m, { x: menu.x, y: menu.y })} onClose={() => setMenu(null)} />
+      )}
+      {emojiFor && (
+        <EmojiPicker
+          x={emojiFor.x}
+          y={emojiFor.y}
+          onPick={(emoji) => sendReact(emojiFor.m, emoji)}
+          onClose={() => setEmojiFor(null)}
+        />
       )}
       {toast && <div className="mw-toast" role="status">{toast}</div>}
 

@@ -30,7 +30,11 @@ import {
   getPrivacy,
   setPrivacy,
   forwardMessages,
+  searchChat,
+  deleteAccount,
+  applyReaction,
 } from "./chat";
+import type { Reaction } from "./chat";
 
 const BASE = "https://meowsenger.alxnko.eu.org";
 
@@ -92,6 +96,13 @@ describe("loadHistory", () => {
     const messages = [
       { id: "m2", chatId: "c1", senderId: "u1", body: "yo", createdAt: 2000, replyToId: "m1", replyTo: { id: "m1", senderId: "u2", body: "hi" }, editedAt: 2500, isDeleted: false },
       { id: "m3", chatId: "c1", senderId: "u1", body: "", createdAt: 3000, replyToId: null, replyTo: null, editedAt: null, isDeleted: true },
+    ];
+    stubFetch({ messages });
+    expect(await loadHistory(BASE, "c1")).toEqual(messages);
+  });
+  it("carries the Slice-9 reactions array through unchanged", async () => {
+    const messages = [
+      { id: "m4", chatId: "c1", senderId: "u1", body: "yo", createdAt: 4000, reactions: [{ emoji: "👍", count: 2, mine: true }] },
     ];
     stubFetch({ messages });
     expect(await loadHistory(BASE, "c1")).toEqual(messages);
@@ -587,5 +598,106 @@ describe("forwardMessages", () => {
   it("returns {error:'network'} on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await forwardMessages(BASE, "t1", ["hi"])).toEqual({ error: "network" });
+  });
+});
+
+// ---- Slice 9: within-chat search + account deletion ---------------------------
+
+describe("searchChat", () => {
+  it("GETs the trimmed+encoded query (member-gated) and returns the messages", async () => {
+    const messages = [
+      { id: "m1", chatId: "c1", senderId: "u2", body: "found hello", createdAt: 1000, reactions: [{ emoji: "👍", count: 1, mine: false }] },
+    ];
+    const mock = stubFetch({ messages });
+    expect(await searchChat(BASE, "c 1", "  hello ")).toEqual(messages);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c%201/search?q=hello`, { credentials: "include" });
+  });
+  it("short-circuits a blank query to [] WITHOUT a request", async () => {
+    const mock = stubFetch({ messages: [{ id: "x" }] });
+    expect(await searchChat(BASE, "c1", "   ")).toEqual([]);
+    expect(mock).not.toHaveBeenCalled();
+  });
+  it("defaults to [] when the body has no messages", async () => {
+    stubFetch({});
+    expect(await searchChat(BASE, "c1", "hi")).toEqual([]);
+  });
+  it("returns [] on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await searchChat(BASE, "c1", "hi")).toEqual([]);
+  });
+});
+
+describe("deleteAccount", () => {
+  it("POSTs {confirm:true} and returns ok", async () => {
+    const mock = stubFetch({ ok: true });
+    expect(await deleteAccount(BASE)).toEqual({ ok: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/account/delete`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+  });
+  it("surfaces a server error code (confirm_required / bad_json)", async () => {
+    stubFetch({ error: "confirm_required" });
+    expect(await deleteAccount(BASE)).toEqual({ error: "confirm_required" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await deleteAccount(BASE)).toEqual({ error: "network" });
+  });
+});
+
+describe("applyReaction", () => {
+  it("adds a brand-new pill from an empty/undefined list (mine on my own add)", () => {
+    expect(applyReaction(undefined, "👍", true, true)).toEqual([{ emoji: "👍", count: 1, mine: true }]);
+    expect(applyReaction([], "🎉", true, false)).toEqual([{ emoji: "🎉", count: 1, mine: false }]);
+  });
+  it("bumps an existing pill's count when a DIFFERENT user adds the same emoji", () => {
+    const start: Reaction[] = [{ emoji: "👍", count: 1, mine: true }];
+    expect(applyReaction(start, "👍", true, false)).toEqual([{ emoji: "👍", count: 2, mine: true }]);
+  });
+  it("sets mine=true when I add to a pill others already have", () => {
+    const start: Reaction[] = [{ emoji: "❤️", count: 2, mine: false }];
+    expect(applyReaction(start, "❤️", true, true)).toEqual([{ emoji: "❤️", count: 3, mine: true }]);
+  });
+  it("dedupes a redundant add of MY reaction the pill already reflects (broadcast echo)", () => {
+    const start: Reaction[] = [{ emoji: "👍", count: 1, mine: true }];
+    // Optimistic already set mine:true+count:1; the confirming broadcast is a no-op.
+    expect(applyReaction(start, "👍", true, true)).toBe(start);
+  });
+  it("removes one from a shared pill and clears mine when it was mine", () => {
+    const start: Reaction[] = [{ emoji: "😂", count: 3, mine: true }];
+    expect(applyReaction(start, "😂", false, true)).toEqual([{ emoji: "😂", count: 2, mine: false }]);
+  });
+  it("drops the pill entirely when the last reactor removes it", () => {
+    const start: Reaction[] = [{ emoji: "😮", count: 1, mine: true }];
+    expect(applyReaction(start, "😮", false, true)).toEqual([]);
+  });
+  it("a foreign remove decrements the count but leaves my mine flag intact", () => {
+    const start: Reaction[] = [{ emoji: "🎉", count: 2, mine: true }];
+    expect(applyReaction(start, "🎉", false, false)).toEqual([{ emoji: "🎉", count: 1, mine: true }]);
+  });
+  it("dedupes a redundant remove I already reflected, and no-ops a remove of a missing pill", () => {
+    const notMine: Reaction[] = [{ emoji: "👍", count: 1, mine: false }];
+    expect(applyReaction(notMine, "👍", false, true)).toBe(notMine); // my remove already reflected
+    const other: Reaction[] = [{ emoji: "❤️", count: 1, mine: false }];
+    expect(applyReaction(other, "👍", false, false)).toBe(other); // nothing to remove
+  });
+  it("leaves OTHER pills untouched when toggling one among several", () => {
+    const many: Reaction[] = [
+      { emoji: "👍", count: 2, mine: false },
+      { emoji: "❤️", count: 1, mine: true },
+    ];
+    // Add to 👍 — ❤️ passes through the map's else-arm unchanged.
+    expect(applyReaction(many, "👍", true, true)).toEqual([
+      { emoji: "👍", count: 3, mine: true },
+      { emoji: "❤️", count: 1, mine: true },
+    ]);
+    // Remove from 👍 (count>1) — ❤️ again untouched.
+    expect(applyReaction(many, "👍", false, false)).toEqual([
+      { emoji: "👍", count: 1, mine: false },
+      { emoji: "❤️", count: 1, mine: true },
+    ]);
   });
 });

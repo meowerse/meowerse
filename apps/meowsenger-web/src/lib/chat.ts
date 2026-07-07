@@ -96,6 +96,56 @@ export interface ReplySnippet {
   body: string;
 }
 
+/**
+ * An aggregated emoji reaction on a message (mirrors the DO's `ReactionAgg`):
+ * the emoji, how many users reacted with it, and whether the *viewer* is one of
+ * them (`mine`). History/search/message rows carry a `reactions` array; the UI
+ * renders one pill per entry and highlights `mine` ones. (Slice 9.)
+ */
+export interface Reaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+
+/**
+ * Apply a single reaction toggle to a message's aggregated `reactions` array
+ * (Slice 9). `on:true` adds the (viewer/other, emoji) pair, `on:false` removes it;
+ * the count moves by one and a pill that falls to zero is dropped. `isMine` flips
+ * the pill's `mine` flag only when the toggling user is the viewer.
+ *
+ * This is the ONE reducer used by BOTH the optimistic own-toggle AND the incoming
+ * `reaction` broadcast — so the server echo that merely confirms our own optimistic
+ * toggle is a no-op. Dedupe is by userId+emoji: for the viewer we key on the pill's
+ * current `mine` (already on → skip the add; already off → skip the remove). Pure —
+ * returns a fresh array and never mutates the input.
+ */
+export function applyReaction(
+  reactions: Reaction[] | undefined,
+  emoji: string,
+  on: boolean,
+  isMine: boolean,
+): Reaction[] {
+  const list = reactions ?? [];
+  const existing = list.find((r) => r.emoji === emoji);
+  if (on) {
+    if (existing) {
+      if (isMine && existing.mine) return list; // our add already reflected — dedupe
+      return list.map((r) =>
+        r.emoji === emoji ? { ...r, count: r.count + 1, mine: r.mine || isMine } : r,
+      );
+    }
+    return [...list, { emoji, count: 1, mine: isMine }];
+  }
+  if (!existing) return list;
+  if (isMine && !existing.mine) return list; // our remove already reflected — dedupe
+  const nextCount = existing.count - 1;
+  if (nextCount <= 0) return list.filter((r) => r.emoji !== emoji);
+  return list.map((r) =>
+    r.emoji === emoji ? { ...r, count: nextCount, mine: isMine ? false : r.mine } : r,
+  );
+}
+
 /** A message on the wire / out of history (mirrors the DO's Wire shape). */
 export interface Message {
   id: string;
@@ -113,6 +163,10 @@ export interface Message {
   // Slice 8 — set when this message was created by a forward (POST .../forward).
   // The UI renders a small "forwarded" tag; the body/quoted-reply are unaffected.
   isForwarded?: boolean;
+  // Slice 9 — aggregated emoji reactions on this message (present on history/
+  // search rows; omitted on the live send/forward wire, which carries none yet).
+  // The UI renders reaction pills below the bubble; `reaction` frames mutate it.
+  reactions?: Reaction[];
 }
 
 /** GET /api/chats — the caller's sidebar list. Empty array on any failure. */
@@ -632,6 +686,51 @@ export async function forwardMessages(
       body: JSON.stringify({ messages: bodies.map((body) => ({ body })) }),
     });
     return (await r.json()) as { forwarded?: number; error?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+// ---- Slice 9: within-chat search + account deletion ------------------------
+
+/**
+ * GET /api/chats/:id/search?q= — within-chat message search (member-gated,
+ * server-side — plaintext bodies make it possible). Returns the matching
+ * messages newest-first (each a full `Message` with `reactions`), or [] for a
+ * blank query, a non-member (403), or any failure. `q` is trimmed here so a
+ * whitespace-only search short-circuits to [] without a request.
+ */
+export async function searchChat(base: string, chatId: string, q: string): Promise<Message[]> {
+  const query = q.trim();
+  if (!query) return [];
+  try {
+    const r = await fetch(
+      `${base}/api/chats/${encodeURIComponent(chatId)}/search?q=${encodeURIComponent(query)}`,
+      { credentials: "include" },
+    );
+    const d = (await r.json()) as { messages?: Message[] };
+    return d.messages ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * POST /api/account/delete { confirm:true } — erase the caller's meowsenger data
+ * (memberships/join-requests/sessions/user + owned-chat handling) and clear the
+ * session cookie. This is meowsenger-side deletion only — the auth account is
+ * separate. Returns `{ok:true}` on success or an error code (confirm_required /
+ * bad_json). Network failure degrades to `{error:"network"}`.
+ */
+export async function deleteAccount(base: string): Promise<{ ok?: boolean; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/account/delete`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+    return (await r.json()) as { ok?: boolean; error?: string };
   } catch {
     return { error: "network" };
   }

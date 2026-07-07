@@ -38,6 +38,8 @@ export function MessageItem({
   onDelete,
   onToggleSelect,
   onContextMenu,
+  onReact,
+  onToggleReaction,
   onJumpToReply,
   registerRef,
 }: {
@@ -65,6 +67,10 @@ export function MessageItem({
   onDelete: (m: Bubble) => void;
   onToggleSelect: (m: Bubble) => void;
   onContextMenu: (m: Bubble, x: number, y: number) => void;
+  // Slice 9 — open the emoji picker anchored at (x,y) to react to THIS message.
+  onReact: (m: Bubble, x: number, y: number) => void;
+  // Slice 9 — toggle a specific emoji on THIS message (clicking a reaction pill).
+  onToggleReaction: (m: Bubble, emoji: string) => void;
   onJumpToReply: (id: string) => void;
   registerRef: (id: string, el: HTMLDivElement | null) => void;
 }) {
@@ -188,6 +194,16 @@ export function MessageItem({
 
             {!selectMode && (
               <div className="mw-msg__actions" role="group" aria-label="message actions">
+                <button
+                  className="mw-msg__act"
+                  title="react"
+                  aria-label="react"
+                  aria-haspopup="menu"
+                  onClick={(e) => {
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    onReact(m, r.left + r.width / 2, r.bottom + 4);
+                  }}
+                >😀</button>
                 <button className="mw-msg__act" title="reply" aria-label="reply" onClick={() => onReply(m)}>↩</button>
                 {canEdit && <button className="mw-msg__act" title="edit" aria-label="edit" onClick={() => onStartEdit(m)}>✎</button>}
                 {canDelete && <button className="mw-msg__act" title="delete" aria-label="delete" onClick={() => onDelete(m)}>🗑</button>}
@@ -203,6 +219,27 @@ export function MessageItem({
                 >⋯</button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Reaction pills below the bubble (Slice 9): emoji + count, highlighted
+            when the viewer reacted; clicking one toggles it. Hidden while editing
+            or on a tombstone. */}
+        {!deleted && !editing && m.reactions && m.reactions.length > 0 && (
+          <div className={`mw-reactions${mine ? " mw-reactions--me" : ""}`} role="group" aria-label="reactions">
+            {m.reactions.map((r) => (
+              <button
+                key={r.emoji}
+                type="button"
+                className={`mw-reaction${r.mine ? " is-mine" : ""}`}
+                aria-pressed={r.mine}
+                aria-label={`${r.emoji} ${r.count}${r.mine ? " — you reacted" : ""}`}
+                onClick={() => onToggleReaction(m, r.emoji)}
+              >
+                <span className="mw-reaction__emoji" aria-hidden="true">{r.emoji}</span>
+                <span className="mw-reaction__count">{r.count}</span>
+              </button>
+            ))}
           </div>
         )}
 
