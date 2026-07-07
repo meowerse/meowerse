@@ -1,58 +1,21 @@
+/* auth-web-only styles. Tokens, element typography, and the layout primitives
+   (.mw-container / .mw-stack / .mw-prose / …) all live in @meowerse/ui now, so
+   any meowerse frontend gets the same system by importing @meowerse/ui/tokens.css. */
 html { overflow-x: hidden; }
-main { max-width: 34rem; margin: 2rem auto; padding: 0 1rem; width: 100%; }
-main.wide { max-width: 52rem; }
-@media (max-width: 640px) { main { margin: 1.25rem auto; } }
-.mw-stack { display: flex; flex-direction: column; gap: var(--gap-md); min-width: 0; }
-.mw-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--gap-sm); min-width: 0; }
-.mw-row > * { min-width: 0; }
-.mw-section { display: flex; flex-direction: column; gap: var(--gap-sm); margin-top: var(--gap-xl); }
-.mw-narrow { max-width: 24rem; }
-.mw-muted { color: var(--text-muted); font-size: var(--text-sm); }
-h1 { font-size: var(--text-2xl); font-weight: 600; margin: 0 0 var(--gap-md); line-height: 1.2; }
-h2 { font-size: var(--text-lg); font-weight: 600; margin: 0; }
-a { color: var(--text-accent); }
-pre { overflow-x: auto; max-width: 100%; font-size: var(--text-xs); }
-code, .mono { overflow-wrap: anywhere; }
+main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
 
-/* docs page — readable code blocks, inline code chips, and a reference table */
-.mw-doc { display: flex; flex-direction: column; gap: var(--gap-lg); }
-.mw-doc h2 { margin-top: var(--gap-md); }
-.mw-doc p { margin: 0; }
-.mw-doc ol, .mw-doc ul { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: var(--gap-xs); }
-.mw-doc pre {
-  font-family: var(--font-mono);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap-md);
-  margin: 0;
-  line-height: 1.6;
-}
-.mw-doc :not(pre) > code {
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 0.05em 0.35em;
-}
-.mw-doc table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); display: block; overflow-x: auto; }
-.mw-doc th, .mw-doc td { text-align: left; padding: var(--gap-sm); border-bottom: 1px solid var(--border); vertical-align: top; }
-.mw-doc th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
-.mw-doc td code { white-space: nowrap; }
-
-/* Shiki dual-theme: swap to the dark palette wherever the site is dark. Mirrors
-   the data-theme / prefers-color-scheme logic in tokens.css. */
-:root[data-theme="dark"] .mw-doc .astro-code,
-:root[data-theme="dark"] .mw-doc .astro-code span {
+/* Shiki dual-theme: swap to the dark palette wherever the site is dark.
+   Mirrors the data-theme / prefers-color-scheme logic in tokens.css. */
+:root[data-theme="dark"] .mw-prose .astro-code,
+:root[data-theme="dark"] .mw-prose .astro-code span {
   color: var(--shiki-dark) !important;
   background-color: var(--shiki-dark-bg) !important;
   font-style: var(--shiki-dark-font-style) !important;
   text-decoration: var(--shiki-dark-text-decoration) !important;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .mw-doc .astro-code,
-  :root:not([data-theme="light"]) .mw-doc .astro-code span {
+  :root:not([data-theme="light"]) .mw-prose .astro-code,
+  :root:not([data-theme="light"]) .mw-prose .astro-code span {
     color: var(--shiki-dark) !important;
     background-color: var(--shiki-dark-bg) !important;
     font-style: var(--shiki-dark-font-style) !important;

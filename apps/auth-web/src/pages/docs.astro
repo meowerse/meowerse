@@ -111,56 +111,64 @@ const scopes = [
 ];
 ---
 <Layout title="docs · meowerse" wide>
-  <div class="mw-doc">
-    <div>
+  <div class="mw-stack mw-stack--loose">
+    <header class="mw-prose">
       <h1>connect your app to meowerse</h1>
       <p class="mw-muted">"auth with meowerse" is a standard OpenID Connect provider. Point any OIDC client at the discovery URL, or drop in the <code>@meowerse/auth</code> SDK for a few-line integration. One login, optional Telegram verification, and granular per-scope consent.</p>
-    </div>
+    </header>
 
     <Card title="the 30-second version">
-      <p>Everything an OIDC client needs is published at the discovery URL:</p>
-      <Code code={discovery} lang="bash" themes={themes} />
-      <p class="mw-muted">Standards: authorization-code flow, mandatory PKCE (S256), ES256-signed tokens, refresh-token rotation, and RFC 9207 <code>iss</code> in the authorization response. No client library required — but the SDK below wires it up for you.</p>
+      <div class="mw-prose">
+        <p>Everything an OIDC client needs is published at the discovery URL:</p>
+        <Code code={discovery} lang="bash" themes={themes} />
+        <p class="mw-muted">Standards: authorization-code flow, mandatory PKCE (S256), ES256-signed tokens, refresh-token rotation, and RFC 9207 <code>iss</code> in the authorization response. No client library required — but the SDK below wires it up for you.</p>
+      </div>
     </Card>
 
     <Card title="quickstart — @meowerse/auth">
-      <p>The relying-party SDK runs in Workers, Node and the browser (pure WebCrypto + injectable <code>fetch</code>). First, <a href="/developers">register a client</a> to get a <code>client_id</code>.</p>
-      <Code code={install} lang="bash" themes={themes} />
-      <Code code={create} lang="ts" themes={themes} />
-      <h2>1 · start login</h2>
-      <Code code={start} lang="ts" themes={themes} />
-      <h2>2 · handle the callback</h2>
-      <Code code={callback} lang="ts" themes={themes} />
-      <h2>3 · read the profile</h2>
-      <Code code={profile} lang="ts" themes={themes} />
-      <h2>4 · refresh</h2>
-      <Code code={refresh} lang="ts" themes={themes} />
-      <h2>5 · log out</h2>
-      <Code code={logout} lang="ts" themes={themes} />
+      <div class="mw-prose">
+        <p>The relying-party SDK runs in Workers, Node and the browser (pure WebCrypto + injectable <code>fetch</code>). First, <a href="/developers">register a client</a> to get a <code>client_id</code>.</p>
+        <Code code={install} lang="bash" themes={themes} />
+        <Code code={create} lang="ts" themes={themes} />
+        <h2>1 · start login</h2>
+        <Code code={start} lang="ts" themes={themes} />
+        <h2>2 · handle the callback</h2>
+        <Code code={callback} lang="ts" themes={themes} />
+        <h2>3 · read the profile</h2>
+        <Code code={profile} lang="ts" themes={themes} />
+        <h2>4 · refresh</h2>
+        <Code code={refresh} lang="ts" themes={themes} />
+        <h2>5 · log out</h2>
+        <Code code={logout} lang="ts" themes={themes} />
+      </div>
     </Card>
 
     <Card title="endpoints">
-      <table>
-        <thead><tr><th>method</th><th>path</th><th>purpose</th></tr></thead>
-        <tbody>
-          {endpoints.map(([m, path, purpose]) => (
-            <tr><td><code>{m}</code></td><td><code>{path}</code></td><td>{purpose}</td></tr>
-          ))}
-        </tbody>
-      </table>
-      <p class="mw-muted">All paths are relative to <code>{api}</code>.</p>
+      <div class="mw-prose">
+        <table>
+          <thead><tr><th>method</th><th>path</th><th>purpose</th></tr></thead>
+          <tbody>
+            {endpoints.map(([m, path, purpose]) => (
+              <tr><td><code>{m}</code></td><td><code>{path}</code></td><td>{purpose}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <p class="mw-muted">All paths are relative to <code>{api}</code>.</p>
+      </div>
     </Card>
 
     <Card title="scopes & claims">
-      <table>
-        <thead><tr><th>scope</th><th></th><th>grants</th></tr></thead>
-        <tbody>
-          {scopes.map(([s, req, grants]) => (
-            <tr><td><code>{s}</code></td><td class="mw-muted">{req}</td><td>{grants}</td></tr>
-          ))}
-        </tbody>
-      </table>
-      <p class="mw-muted">The user approves each scope individually and can revoke any app at any time from their account. Data-bearing claims are served by <code>/userinfo</code>, not stuffed into the id_token.</p>
+      <div class="mw-prose">
+        <table>
+          <thead><tr><th>scope</th><th></th><th>grants</th></tr></thead>
+          <tbody>
+            {scopes.map(([s, req, grants]) => (
+              <tr><td><code>{s}</code></td><td class="mw-muted">{req}</td><td>{grants}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <p class="mw-muted">The user approves each scope individually and can revoke any app at any time from their account. Data-bearing claims are served by <code>/userinfo</code>, not stuffed into the id_token.</p>
+      </div>
     </Card>
 
     <Card title="public or confidential?">
@@ -171,9 +179,11 @@ const scopes = [
     </Card>
 
     <Card title="config-as-code">
-      <p>Skip the dashboard: declare a client in <code>auth.config.ts</code> and apply it idempotently with a management token (create one under <a href="/developers">developers</a>).</p>
-      <Code code={iac} lang="ts" themes={themes} />
-      <Code code={provisionCode} lang="ts" themes={themes} />
+      <div class="mw-prose">
+        <p>Skip the dashboard: declare a client in <code>auth.config.ts</code> and apply it idempotently with a management token (create one under <a href="/developers">developers</a>).</p>
+        <Code code={iac} lang="ts" themes={themes} />
+        <Code code={provisionCode} lang="ts" themes={themes} />
+      </div>
     </Card>
 
     <Card title="using a generic OIDC library">
@@ -184,10 +194,5 @@ const scopes = [
         <li>the <code>offline_access</code> scope if you need refresh tokens</li>
       </ul>
     </Card>
-
-    <div class="mw-section">
-      <h2>questions</h2>
-      <p class="mw-muted">See <a href="/about">about</a> for how the project runs, and <a href="/privacy">privacy</a> · <a href="/terms">terms</a>. It's a best-effort personal project on free-tier infrastructure.</p>
-    </div>
   </div>
 </Layout>

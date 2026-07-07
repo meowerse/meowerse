@@ -20,7 +20,7 @@ const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.
   </head>
   <body>
     <SiteHeader client:idle base={base} />
-    <main class={wide ? "wide" : undefined}>
+    <main class:list={["mw-container", wide && "mw-container--wide"]}>
       <slot />
     </main>
     <Footer />

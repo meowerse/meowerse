@@ -1,0 +1,60 @@
+/* ===========================================================================
+   Element base styles — the shared typography + code foundation.
+   Headings/paragraphs carry NO default margins; vertical rhythm is owned by the
+   layout primitives (.mw-stack / .mw-prose) so spacing is intentional, never
+   accidental. Import once via tokens.css; reusable by every meowerse frontend.
+   =========================================================================== */
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: -0.012em;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+h1 { font-size: var(--text-2xl); letter-spacing: -0.022em; }
+h2 { font-size: var(--text-xl); }
+h3 { font-size: var(--text-lg); }
+h4 { font-size: var(--text-md); }
+
+p { margin: 0; line-height: var(--leading-normal); }
+strong, b { font-weight: 600; }
+small { font-size: var(--text-sm); }
+
+a { color: var(--text-accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+ul, ol { margin: 0; padding-left: 1.3rem; }
+li { margin: 0; }
+li::marker { color: var(--text-muted); }
+
+hr { border: none; border-top: 1px solid var(--border); margin: 0; }
+img, svg, video { max-width: 100%; height: auto; }
+
+/* inline code — a subtle chip that never blends into prose */
+:not(pre) > code, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.08em 0.36em;
+  overflow-wrap: anywhere;
+}
+
+/* every code block gets the same framed chrome, so two adjacent blocks read as
+   two blocks (a Shiki .astro-code keeps its own inline background on top). */
+pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  overflow-x: auto;
+  max-width: 100%;
+}
+pre code { background: none; border: none; padding: 0; font-size: inherit; overflow-wrap: normal; }
