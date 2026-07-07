@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 -- the ALTERs live in that separate file, applied once at deploy).
 CREATE TABLE IF NOT EXISTS chats (
   id             TEXT PRIMARY KEY,
-  type           TEXT NOT NULL,             -- 'direct' | 'group'
+  type           TEXT NOT NULL,             -- 'direct' | 'group' | 'channel' (channel = broadcast, Slice 6)
   name           TEXT,
   created_by     TEXT NOT NULL,
   created_at     INTEGER NOT NULL,

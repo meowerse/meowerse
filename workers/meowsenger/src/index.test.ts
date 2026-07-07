@@ -95,6 +95,16 @@ describe("router", () => {
   it("PATCH /api/chats/:id is routed → 401", async () => {
     expect((await handle(req("PATCH", "/api/chats/g1"), env, noSession())).status).toBe(401);
   });
+  // Slice 6 route wiring: discovery + open-join reach their handlers (401 no-session).
+  it("GET /api/chats/by-slug/:slug is routed → 401", async () => {
+    expect((await handle(req("GET", "/api/chats/by-slug/open"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/join is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/join"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/subscribe (channel alias) is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/subscribe"), env, noSession())).status).toBe(401);
+  });
 });
 
 describe("GET /ws upgrade", () => {
@@ -108,13 +118,15 @@ describe("GET /ws upgrade", () => {
       },
     });
   const session = { id: "s1", user_id: "u1", access_token: "a", refresh_token: null, access_exp: 1, created_at: 1, expires_at: 1e12 };
-  const depsWith = (over: Partial<{ session: unknown; member: boolean; role: string }> = {}) =>
+  const depsWith = (over: Partial<{ session: unknown; member: boolean; role: string; type: string }> = {}) =>
     ({
       getDb: () => ({
         async first(sql: string) {
           if (sql.includes("FROM sessions")) return over.session;
           // getRole (membership gate + role forwarding) reads `role`.
           if (sql.includes("FROM chat_members")) return over.member ? { role: over.role ?? "member" } : undefined;
+          // chatType (Slice 6): the chat's type is forwarded to the DO.
+          if (sql.includes("SELECT type FROM chats")) return { type: over.type ?? "group" };
           return undefined;
         },
         async all() { return []; },
@@ -152,13 +164,16 @@ describe("GET /ws upgrade", () => {
         get: () => ({ fetch: (r: Request) => { forwardedUrl = r.url; return stubbed; } }),
       },
     } as unknown as Env;
-    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin" }));
+    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin", type: "channel" }));
     expect(res).toBe(stubbed);
     expect(forwardedUrl).toContain("user=u1");
     expect(forwardedUrl).toContain("chat=c1");
     // Slice 5: the caller's D1-derived role is forwarded so the DO can authorize
     // admin/owner message-delete without a second membership read.
     expect(forwardedUrl).toContain("role=admin");
+    // Slice 6: the chat's type is forwarded so the DO can enforce the channel
+    // read-only posting rule (member sockets on a channel can't post).
+    expect(forwardedUrl).toContain("type=channel");
   });
 });
 

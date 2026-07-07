@@ -18,8 +18,10 @@ import {
   handleLeave,
   handleUpdateChat,
   handleSlugAvailable,
+  handleGetBySlug,
+  handleJoin,
 } from "./chatapi";
-import { getRole } from "./chats";
+import { getRole, chatType } from "./chats";
 
 /** Thin hand-rolled router (no framework) to stay under the 10ms CPU budget. */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
@@ -38,6 +40,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (path === "/api/chats" && m === "GET") return handleListChats(req, deps.getDb(), deps.now(), cors);
   if (path === "/api/chats" && m === "POST") return handleCreateChat(req, deps.getDb(), deps.now(), cors);
   if (path === "/api/slug-available" && m === "GET") return handleSlugAvailable(req, deps.getDb(), deps.now(), cors);
+  // Slice 6 discovery: resolve a public chat by slug. Placed before the bare
+  // `/api/chats/:id` so `by-slug` isn't mistaken for a chat id.
+  const bySlug = path.match(/^\/api\/chats\/by-slug\/([^/]+)$/);
+  if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(bySlug[1]), cors);
   const hist = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), hist[1], cors);
 
@@ -52,6 +58,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (members && m === "POST") return handleAddMember(req, deps.getDb(), deps.now(), members[1], cors);
   const leaveM = path.match(/^\/api\/chats\/([^/]+)\/leave$/);
   if (leaveM && m === "POST") return handleLeave(req, deps.getDb(), deps.now(), leaveM[1], cors);
+  // Slice 6 open-join: `/join` (groups) + its `/subscribe` alias (channels) share
+  // one handler — both add the caller to a public chat as a plain member.
+  const joinM = path.match(/^\/api\/chats\/([^/]+)\/(?:join|subscribe)$/);
+  if (joinM && m === "POST") return handleJoin(req, deps.getDb(), deps.now(), joinM[1], cors);
   const chat = path.match(/^\/api\/chats\/([^/]+)$/);
   if (chat && m === "PATCH") return handleUpdateChat(req, deps.getDb(), deps.now(), chat[1], cors);
 
@@ -83,12 +93,15 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   // authorize admin/owner message-delete (Slice 5) without a second D1 read.
   const role = await getRole(deps.getDb(), chatId, me);
   if (role == null) return new Response("forbidden", { status: 403 });
+  // Slice 6: forward the chat's `type` too, so the DO can enforce the channel
+  // read-only rule (member sockets on a channel can't post) without a D1 read.
+  const type = (await chatType(deps.getDb(), chatId)) ?? "group";
   const ns = env.CONVERSATION!;
   const stub = ns.get(ns.idFromName(chatId));
   // Preserve the original request (carries the Upgrade header) while overriding
-  // the URL so the DO receives the gated identity + role via query params.
+  // the URL so the DO receives the gated identity + role + type via query params.
   const fwd = new Request(
-    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}`,
+    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}`,
     req,
   );
   return stub.fetch(fwd);

@@ -15,6 +15,8 @@ import {
   setSlug,
   slugAvailable,
   normalizeSlug,
+  getPreviewBySlug,
+  joinPublic,
 } from "./chats";
 import { addMember, removeMember, promote, demote, leave } from "./members";
 
@@ -57,10 +59,13 @@ export async function handleListChats(
 }
 
 /**
- * POST /api/chats — create a chat. Two shapes:
- *   - DM:    { username }               → open-or-create a 1:1 with that user.
- *   - group: { type:"group", name, members:[usernames], visibility?, slug? }
- *            → create a named group with the caller as owner.
+ * POST /api/chats — create a chat. Three shapes:
+ *   - DM:      { username }                → open-or-create a 1:1 with that user.
+ *   - group:   { type:"group", name, members:[usernames], visibility?, slug? }
+ *              → create a named group with the caller as owner.
+ *   - channel: { type:"channel", name, members?, visibility?, slug? }
+ *              → create a broadcast channel (owner/admin post; the DO enforces the
+ *                read-only rule for members). Same shape as a group otherwise.
  */
 export async function handleCreateChat(
   req: Request,
@@ -77,7 +82,7 @@ export async function handleCreateChat(
     return json({ error: "bad_json" }, 400, cors, { "Cache-Control": "no-store" });
   }
 
-  if (body.type === "group") return handleCreateGroup(me, db, body, now, cors);
+  if (body.type === "group" || body.type === "channel") return handleCreateGroup(me, db, body, now, cors);
 
   const uname = (body.username ?? "").trim();
   if (!uname) return json({ error: "username_required" }, 400, cors, { "Cache-Control": "no-store" });
@@ -88,16 +93,21 @@ export async function handleCreateChat(
   return json({ chatId: r.id, created: r.created }, 200, cors, { "Cache-Control": "no-store" });
 }
 
-/** Group branch of POST /api/chats — resolves member usernames → ids, then createGroup. */
+/**
+ * Group/channel branch of POST /api/chats — resolves member usernames → ids, then
+ * createGroup. `body.type` picks 'group' (default) or 'channel'; a channel is a
+ * broadcast group (only owner/admin post — DO-enforced), otherwise identical.
+ */
 async function handleCreateGroup(
   me: string,
   db: DbClient,
-  body: { name?: string; members?: unknown; visibility?: string; slug?: string },
+  body: { type?: string; name?: string; members?: unknown; visibility?: string; slug?: string },
   now: number,
   cors: Record<string, string>,
 ): Promise<Response> {
   const name = (body.name ?? "").trim();
   if (!name) return json({ error: "name_required" }, 400, cors, { "Cache-Control": "no-store" });
+  const type = body.type === "channel" ? "channel" : "group";
   const usernames = Array.isArray(body.members) ? body.members.map((u) => String(u).trim()).filter(Boolean) : [];
   const memberIds: string[] = [];
   for (const uname of usernames) {
@@ -105,7 +115,7 @@ async function handleCreateGroup(
     if (!uid) return json({ error: "user_not_found", username: uname }, 404, cors, { "Cache-Control": "no-store" });
     memberIds.push(uid);
   }
-  const r = await createGroup(db, { name, creatorId: me, memberIds, visibility: body.visibility, slug: body.slug ?? null }, now);
+  const r = await createGroup(db, { name, creatorId: me, memberIds, visibility: body.visibility, slug: body.slug ?? null, type }, now);
   if ("error" in r) return json({ error: r.error }, 400, cors, { "Cache-Control": "no-store" });
   return json({ chatId: r.id, created: true }, 200, cors, { "Cache-Control": "no-store" });
 }
@@ -290,4 +300,47 @@ export async function handleSlugAvailable(
   const normalized = normalizeSlug(raw);
   if (!normalized) return json({ error: "bad_slug", available: false }, 400, cors, NS);
   return json({ available: await slugAvailable(db, normalized), slug: normalized }, 200, cors, NS);
+}
+
+// ---- Slice 6: public discovery + open-join ----
+
+/**
+ * GET /api/chats/by-slug/:slug — resolve a public chat (or one the caller is a
+ * member of) to a preview. Auth is required (the discovery pages are behind the
+ * BFF), but membership is NOT — a public chat previews to any signed-in user.
+ * A private chat (or unknown slug) the caller isn't in → 404 `{error:"private"}`,
+ * deliberately indistinguishable from not-found so nothing leaks beyond existence.
+ * The preview carries no message content.
+ */
+export async function handleGetBySlug(
+  req: Request,
+  db: DbClient,
+  now: number,
+  slug: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await getPreviewBySlug(db, slug, me);
+  if ("error" in r) return json({ error: r.error }, 404, cors, NS);
+  return json(r, 200, cors, NS);
+}
+
+/**
+ * POST /api/chats/:id/join (and its `/subscribe` alias for channels) — open-join
+ * a PUBLIC chat as a plain member. Idempotent: an already-member returns 200. A
+ * private/unknown chat → 403 `{error:"must_request"}` (invites/requests = Slice 7).
+ */
+export async function handleJoin(
+  req: Request,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  const r = await joinPublic(db, chatId, me, now);
+  if (!r.ok) return json({ error: r.error }, 403, cors, NS);
+  return json({ ok: true, joined: r.joined }, 200, cors, NS);
 }

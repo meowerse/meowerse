@@ -11,6 +11,8 @@ import {
   handleLeave,
   handleUpdateChat,
   handleSlugAvailable,
+  handleGetBySlug,
+  handleJoin,
 } from "./chatapi";
 import type { DbClient, Env, Row } from "./types";
 import { SESSION_COOKIE } from "./session";
@@ -255,10 +257,15 @@ function groupApiDb(opts: {
   usersByName?: Record<string, string>;
   usersById?: Record<string, { username: string; displayName: string | null; avatarUrl: string | null }>;
   members?: Array<{ chatId: string; userId: string; role: string; joinedAt: number }>;
-  chats?: Array<{ id: string; slug?: string | null }>;
+  chats?: Array<{ id: string; slug?: string | null; type?: string; name?: string | null; visibility?: string }>;
 } = {}) {
   const members: Row[] = (opts.members ?? []).map((m) => ({ chat_id: m.chatId, user_id: m.userId, role: m.role, joined_at: m.joinedAt }));
-  const chats = new Map<string, Row>((opts.chats ?? []).map((c) => [c.id, { id: c.id, slug: c.slug ?? null }]));
+  const chats = new Map<string, Row>(
+    (opts.chats ?? []).map((c) => [
+      c.id,
+      { id: c.id, slug: c.slug ?? null, type: c.type ?? "group", name: c.name ?? null, visibility: c.visibility ?? "private" },
+    ]),
+  );
   const db: DbClient = {
     async all(sql, p = []) {
       if (sql.includes("JOIN users u ON u.id = m.user_id")) {
@@ -284,10 +291,14 @@ function groupApiDb(opts: {
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
       if (sql.includes("SELECT 1 AS ok FROM chats WHERE slug")) return [...chats.values()].some((c) => c.slug === p[0]) ? { ok: 1 } : undefined;
       if (sql.includes("SELECT id FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
+      // Slice 6: discovery preview (by slug) + join visibility check (by id) + count.
+      if (sql.includes("SELECT id, type, name, visibility FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
+      if (sql.includes("SELECT visibility FROM chats WHERE id")) return chats.get(String(p[0]));
+      if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) return { n: members.filter((m) => m.chat_id === p[0]).length };
       return undefined;
     },
     async run(sql, p = []) {
-      if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], slug: p[6] ?? null });
+      if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null });
       else if (sql.startsWith("INSERT INTO chat_members")) {
         const role = sql.includes("'owner'") ? "owner" : "member";
         members.push({ chat_id: p[0], user_id: p[1], role, joined_at: p[2] });
@@ -347,6 +358,18 @@ describe("POST /api/chats (group branch)", () => {
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "slug_taken" });
+  });
+  it("creates a CHANNEL (type:'channel') with the caller as owner", async () => {
+    const { db, members, chats } = groupApiDb({ session: validSession("u1") });
+    const res = await handleCreateChat(
+      cookieReq("https://x/api/chats", "s1", { method: "POST", body: JSON.stringify({ type: "channel", name: "Announcements", visibility: "public", slug: "news" }) }),
+      db, now, cors,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { chatId: string; created: boolean };
+    expect(body.created).toBe(true);
+    expect(chats.get(body.chatId)?.type).toBe("channel");
+    expect(members.find((m) => m.chat_id === body.chatId && m.user_id === "u1")?.role).toBe("owner");
   });
 });
 
@@ -544,5 +567,82 @@ describe("GET /api/slug-available", () => {
     const res = await handleSlugAvailable(cookieReq("https://x/api/slug-available?slug=taken-one", "s1"), db, now, cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ available: false });
+  });
+});
+
+// ---- Slice 6: discovery (by-slug) + open-join routes ----
+
+describe("GET /api/chats/by-slug/:slug", () => {
+  it("401 with no session", async () => {
+    const { db } = groupApiDb({ chats: [{ id: "c1", slug: "open", visibility: "public" }] });
+    const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/open"), db, now, "open", cors);
+    expect(res.status).toBe(401);
+  });
+  it("200 preview for a public chat to a non-member (isMember:false)", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "c1", slug: "open", type: "group", name: "Open Room", visibility: "public" }],
+      members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/open", "s1"), db, now, "open", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "c1", type: "group", name: "Open Room", memberCount: 1, visibility: "public", isMember: false });
+  });
+  it("200 preview with isMember:true for a member", async () => {
+    const { db } = groupApiDb({
+      session: validSession("owner"),
+      chats: [{ id: "c1", slug: "open", type: "channel", name: "Ch", visibility: "public" }],
+      members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/open", "s1"), db, now, "open", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ type: "channel", isMember: true });
+  });
+  it("404 private for a private chat viewed by a non-member (no leak)", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "c1", slug: "secret", visibility: "private" }],
+      members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/secret", "s1"), db, now, "secret", cors);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "private" });
+  });
+  it("404 private for an unknown slug (indistinguishable from private)", async () => {
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleGetBySlug(cookieReq("https://x/api/chats/by-slug/ghost", "s1"), db, now, "ghost", cors);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "private" });
+  });
+});
+
+describe("POST /api/chats/:id/join (open-join)", () => {
+  it("401 with no session", async () => {
+    const { db } = groupApiDb({ chats: [{ id: "c1", visibility: "public" }] });
+    const res = await handleJoin(cookieReq("https://x/api/chats/c1/join", undefined, { method: "POST" }), db, now, "c1", cors);
+    expect(res.status).toBe(401);
+  });
+  it("200 joins a public chat (joined:true) + adds the caller as member", async () => {
+    const { db, members } = groupApiDb({ session: validSession("u9"), chats: [{ id: "c1", visibility: "public" }] });
+    const res = await handleJoin(cookieReq("https://x/api/chats/c1/join", "s1", { method: "POST" }), db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, joined: true });
+    expect(members.find((m) => m.chat_id === "c1" && m.user_id === "u9")?.role).toBe("member");
+  });
+  it("200 idempotent for an already-member (joined:false)", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "c1", visibility: "public" }],
+      members: [{ chatId: "c1", userId: "u9", role: "member", joinedAt: 1 }],
+    });
+    const res = await handleJoin(cookieReq("https://x/api/chats/c1/join", "s1", { method: "POST" }), db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, joined: false });
+  });
+  it("403 must_request for a private chat (invites are Slice 7)", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), chats: [{ id: "c1", visibility: "private" }] });
+    const res = await handleJoin(cookieReq("https://x/api/chats/c1/join", "s1", { method: "POST" }), db, now, "c1", cors);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "must_request" });
   });
 });

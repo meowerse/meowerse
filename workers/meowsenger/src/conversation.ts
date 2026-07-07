@@ -10,6 +10,10 @@ interface Attach {
    *  for admin/owner message-delete. DM sockets carry 'member' → no behavior
    *  change for DMs. Absent on legacy sockets → treated as 'member'. */
   role?: string;
+  /** The chat's type ('direct'|'group'|'channel'), forwarded by the router from
+   *  D1. Only 'channel' changes behavior: a member socket on a channel is
+   *  read-only (broadcast — only owner/admin post). Absent → non-channel. */
+  type?: string;
 }
 /** A short quoted snippet of the message a reply points at. */
 interface ReplySnippet {
@@ -70,6 +74,9 @@ export class Conversation extends DurableObject<Env> {
     // and it derives the role from D1 (never from the client). Default 'member'
     // for legacy/DM sockets so behavior is unchanged when it's absent.
     const role = url.searchParams.get("role") || "member";
+    // Type is likewise router-derived from D1. Only 'channel' matters (read-only
+    // for members); a missing/other value leaves posting unchanged (DMs/groups).
+    const type = url.searchParams.get("type") || "group";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400 });
 
     const pair = new WebSocketPair();
@@ -78,7 +85,7 @@ export class Conversation extends DurableObject<Env> {
     const server = pair[1];
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, chatId, role } satisfies Attach);
+    server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
     // Presence: derive who was online BEFORE this socket joined (exclude the
@@ -161,6 +168,14 @@ export class Conversation extends DurableObject<Env> {
     }
 
     if (msg.type !== "send") return;
+    // Channel posting rule (Slice 6): a channel is broadcast — only owner/admin
+    // post; a plain member is read-only. Server-enforced here (the socket's type +
+    // role come from the gated router's D1 read, never the client), so no persist
+    // and no broadcast. DMs/groups aren't 'channel', so they're unaffected.
+    if (att.type === "channel" && att.role !== "owner" && att.role !== "admin") {
+      ws.send(JSON.stringify({ type: "error", code: "read_only" }));
+      return;
+    }
     const body = (msg.body ?? "").trim();
     if (!body || body.length > MAX_BODY) {
       ws.send(JSON.stringify({ type: "error", code: "bad_body" }));

@@ -14,6 +14,9 @@ import {
   slugAvailable,
   normalizeSlug,
   roleAtLeast,
+  chatType,
+  getPreviewBySlug,
+  joinPublic,
 } from "./chats";
 import type { DbClient, Row } from "./types";
 
@@ -173,15 +176,28 @@ function groupDb(users: Record<string, { username: string; displayName: string |
       if (sql.includes("SELECT id FROM chats WHERE slug")) {
         return [...chats.values()].find((c) => c.slug === p[0]);
       }
+      // Slice 6: discovery preview (by slug) + chatType/join lookups (by id).
+      if (sql.includes("SELECT id, type, name, visibility FROM chats WHERE slug")) {
+        return [...chats.values()].find((c) => c.slug === p[0]);
+      }
+      if (sql.includes("SELECT type FROM chats WHERE id")) {
+        return chats.get(String(p[0]));
+      }
+      if (sql.includes("SELECT visibility FROM chats WHERE id")) {
+        return chats.get(String(p[0]));
+      }
+      if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) {
+        return { n: members.filter((m) => m.chat_id === p[0]).length };
+      }
       return undefined;
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) {
-        // createGroup inlines type='group' + direct_key=NULL, so the bound params are
-        // (id, name, created_by, created_at, last_activity, visibility, slug).
+        // createGroup binds `type` + inlines direct_key=NULL, so the bound params are
+        // (id, type, name, created_by, created_at, last_activity, visibility, slug).
         chats.set(String(p[0]), {
-          id: p[0], type: "group", name: p[1], created_by: p[2], created_at: p[3],
-          last_activity: p[4], direct_key: null, visibility: p[5], slug: p[6] ?? null,
+          id: p[0], type: p[1], name: p[2], created_by: p[3], created_at: p[4],
+          last_activity: p[5], direct_key: null, visibility: p[6], slug: p[7] ?? null,
         });
       } else if (sql.startsWith("INSERT INTO chat_members")) {
         // createGroup inlines the role literal ('owner' | 'member'); params are
@@ -330,5 +346,98 @@ describe("renameChat / setVisibility", () => {
     expect(chats.get(r.id)!.visibility).toBe("public");
     await setVisibility(db, r.id, "garbage");
     expect(chats.get(r.id)!.visibility).toBe("private");
+  });
+});
+
+// ---- Slice 6: channels, discovery, open-join ----
+
+describe("createGroup (channel type)", () => {
+  it("creates a channel: type='channel', creator=owner", async () => {
+    const { db, chats } = groupDb();
+    const r = await createGroup(db, { name: "News", creatorId: "o", memberIds: ["m1"], type: "channel" }, 1000) as { id: string };
+    expect(chats.get(r.id)!.type).toBe("channel");
+    expect(await getRole(db, r.id, "o")).toBe("owner");
+    expect(await getRole(db, r.id, "m1")).toBe("member");
+  });
+  it("defaults to a group when type is omitted or unknown", async () => {
+    const { db, chats } = groupDb();
+    const a = await createGroup(db, { name: "A", creatorId: "o", memberIds: [] }, 1) as { id: string };
+    const b = await createGroup(db, { name: "B", creatorId: "o", memberIds: [], type: "bogus" as never }, 2) as { id: string };
+    expect(chats.get(a.id)!.type).toBe("group");
+    expect(chats.get(b.id)!.type).toBe("group");
+  });
+});
+
+describe("chatType", () => {
+  it("returns the chat's type, or null for an unknown chat", async () => {
+    const { db } = groupDb();
+    const ch = await createGroup(db, { name: "C", creatorId: "o", memberIds: [], type: "channel" }, 1) as { id: string };
+    const gp = await createGroup(db, { name: "G", creatorId: "o", memberIds: [] }, 2) as { id: string };
+    expect(await chatType(db, ch.id)).toBe("channel");
+    expect(await chatType(db, gp.id)).toBe("group");
+    expect(await chatType(db, "nope")).toBeNull();
+  });
+});
+
+describe("getPreviewBySlug", () => {
+  it("public chat → preview to a non-member (isMember:false, no messages)", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Open Room", creatorId: "o", memberIds: ["m1"], visibility: "public", slug: "open-room" }, 1) as { id: string };
+    const preview = await getPreviewBySlug(db, "open-room", "stranger");
+    expect(preview).toEqual({ id: r.id, type: "group", name: "Open Room", memberCount: 2, visibility: "public", isMember: false });
+  });
+  it("public channel → preview carries type:'channel'", async () => {
+    const { db } = groupDb();
+    await createGroup(db, { name: "Broadcast", creatorId: "o", memberIds: [], visibility: "public", slug: "broadcast", type: "channel" }, 1);
+    const preview = await getPreviewBySlug(db, "broadcast", "stranger");
+    expect(preview).toMatchObject({ type: "channel", visibility: "public", isMember: false });
+  });
+  it("public chat → member gets isMember:true", async () => {
+    const { db } = groupDb();
+    await createGroup(db, { name: "Open", creatorId: "o", memberIds: ["m1"], visibility: "public", slug: "open" }, 1);
+    expect(await getPreviewBySlug(db, "open", "m1")).toMatchObject({ isMember: true });
+  });
+  it("private chat → non-member gets {error:'private'} (no leak)", async () => {
+    const { db } = groupDb();
+    await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1); // private default
+    expect(await getPreviewBySlug(db, "secret", "stranger")).toEqual({ error: "private" });
+    expect(await getPreviewBySlug(db, "secret", null)).toEqual({ error: "private" });
+  });
+  it("private chat → its member still gets a preview (isMember:true)", async () => {
+    const { db } = groupDb();
+    await createGroup(db, { name: "Secret", creatorId: "o", memberIds: ["m1"], slug: "secret" }, 1);
+    expect(await getPreviewBySlug(db, "secret", "m1")).toMatchObject({ visibility: "private", isMember: true });
+  });
+  it("unknown slug → {error:'private'} (same as private, no existence leak)", async () => {
+    const { db } = groupDb();
+    expect(await getPreviewBySlug(db, "no-such-slug", "someone")).toEqual({ error: "private" });
+  });
+  it("malformed slug → {error:'private'}", async () => {
+    const { db } = groupDb();
+    expect(await getPreviewBySlug(db, "!!", "someone")).toEqual({ error: "private" });
+  });
+});
+
+describe("joinPublic", () => {
+  it("adds the caller as a member to a public chat", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Open", creatorId: "o", memberIds: [], visibility: "public", slug: "open" }, 1) as { id: string };
+    expect(await joinPublic(db, r.id, "joiner", 5000)).toEqual({ ok: true, joined: true });
+    expect(await getRole(db, r.id, "joiner")).toBe("member");
+  });
+  it("is idempotent — an already-member returns joined:false", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Open", creatorId: "o", memberIds: ["m1"], visibility: "public", slug: "open" }, 1) as { id: string };
+    expect(await joinPublic(db, r.id, "m1", 5000)).toEqual({ ok: true, joined: false });
+  });
+  it("refuses a private chat → must_request (Slice 7 invites)", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1) as { id: string };
+    expect(await joinPublic(db, r.id, "joiner", 5000)).toEqual({ ok: false, error: "must_request" });
+    expect(await getRole(db, r.id, "joiner")).toBeNull();
+  });
+  it("refuses an unknown chat → must_request (no existence leak)", async () => {
+    const { db } = groupDb();
+    expect(await joinPublic(db, "ghost", "joiner", 5000)).toEqual({ ok: false, error: "must_request" });
   });
 });

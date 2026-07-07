@@ -130,6 +130,14 @@ export async function getRole(db: DbClient, chatId: string, userId: string): Pro
   return role === "owner" || role === "admin" || role === "member" ? role : "member";
 }
 
+/** A chat's `type` ('direct'|'group'|'channel'), or null if the chat is unknown.
+ *  The router reads this to forward `?type=` to the DO so the channel posting rule
+ *  can be enforced there (Slice 6). */
+export async function chatType(db: DbClient, chatId: string): Promise<string | null> {
+  const r = await db.first("SELECT type FROM chats WHERE id = ?", [chatId]);
+  return r ? String(r.type) : null;
+}
+
 /** Is a slug free? (nothing else already claims it). Empty/undefined → false. */
 export async function slugAvailable(db: DbClient, slug: string): Promise<boolean> {
   if (!slug) return false;
@@ -150,12 +158,19 @@ export interface CreateGroupInput {
   memberIds: string[];
   visibility?: string;
   slug?: string | null;
+  /** 'group' (default) or 'channel'. A channel is a broadcast group where only
+   *  owner/admin may post (enforced in the DO); everything else — roles, members,
+   *  visibility, slug, discovery, join — is shared with groups. */
+  type?: "group" | "channel";
 }
 
 /**
- * Create a named group chat: the creator becomes `owner`, every other member is
- * added as `member`. Slug (if given) is normalized + uniqueness-checked. Returns
- * the new chat id, or `{error}` on bad input (invalid/taken slug).
+ * Create a named group OR channel chat: the creator becomes `owner`, every other
+ * member is added as `member`. `input.type` selects 'group' (default) or
+ * 'channel' — the only difference at the data layer is the stored `type`; the
+ * broadcast/read-only posting rule for channels is enforced in the DO. Slug (if
+ * given) is normalized + uniqueness-checked. Returns the new chat id, or
+ * `{error}` on bad input (invalid/taken slug).
  */
 export async function createGroup(
   db: DbClient,
@@ -165,6 +180,7 @@ export async function createGroup(
   const name = input.name.trim();
   if (!name) return { error: "name_required" };
   const visibility = input.visibility === "public" ? "public" : "private";
+  const type = input.type === "channel" ? "channel" : "group";
 
   let slug: string | null = null;
   if (input.slug != null && String(input.slug).trim() !== "") {
@@ -176,8 +192,8 @@ export async function createGroup(
 
   const id = crypto.randomUUID();
   await db.run(
-    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, 'group', ?, ?, ?, ?, NULL, ?, ?)",
-    [id, name, input.creatorId, now, now, visibility, slug],
+    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+    [id, type, name, input.creatorId, now, now, visibility, slug],
   );
   await db.run(
     "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'owner', 0, NULL, ?)",
@@ -246,4 +262,86 @@ export async function setSlug(
   if (holder && String(holder.id) !== chatId) return { ok: false, error: "slug_taken" };
   await db.run("UPDATE chats SET slug = ? WHERE id = ?", [normalized, chatId]);
   return { ok: true, slug: normalized };
+}
+
+// ---- Slice 6: public discovery + open-join ----
+
+/** The public preview of a discoverable chat — deliberately NO message content
+ *  (discovery must never leak the log). `isMember` reflects the *caller*. */
+export interface ChatPreview {
+  id: string;
+  type: string;
+  name: string | null;
+  memberCount: number;
+  visibility: string;
+  isMember: boolean;
+}
+
+/**
+ * Resolve a chat by slug for discovery (Slice 6). Returns:
+ *  - `{ error: "private" }` when the slug resolves to nothing OR to a non-public
+ *    chat the caller isn't a member of. The two cases are deliberately
+ *    indistinguishable — a non-member must not learn a private chat exists, nor
+ *    anything beyond its existence. NEVER leaks messages or membership.
+ *  - a `ChatPreview` otherwise: public chats (to anyone) and any chat the caller
+ *    is already a member of (so members can deep-link into a since-privated chat).
+ *
+ * `callerId` is the viewer (null = anonymous). The preview carries only
+ * public-safe fields — id/type/name/memberCount/visibility/isMember, no bodies.
+ */
+export async function getPreviewBySlug(
+  db: DbClient,
+  slug: string,
+  callerId: string | null,
+): Promise<ChatPreview | { error: "private" }> {
+  const normalized = normalizeSlug(slug);
+  if (!normalized) return { error: "private" };
+  const row = await db.first(
+    "SELECT id, type, name, visibility FROM chats WHERE slug = ?",
+    [normalized],
+  );
+  if (!row) return { error: "private" };
+  const id = String(row.id);
+  const visibility = String(row.visibility);
+  const isMember = callerId != null && (await getRole(db, id, callerId)) != null;
+  // Private chats only reveal a preview to their own members — everyone else gets
+  // the same opaque "private" as a non-existent slug (no existence/membership leak).
+  if (visibility !== "public" && !isMember) return { error: "private" };
+  const countRow = await db.first(
+    "SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?",
+    [id],
+  );
+  return {
+    id,
+    type: String(row.type),
+    name: row.name == null ? null : String(row.name),
+    memberCount: Number(countRow?.n ?? 0),
+    visibility,
+    isMember,
+  };
+}
+
+/**
+ * Open-join (Slice 6): add the caller to a PUBLIC chat as a plain `member`.
+ * Idempotent — an already-member returns `{ ok: true, joined: false }`. A private
+ * or unknown chat is refused with `{ ok: false, error: "must_request" }` (403 at
+ * the route) — invites/join-requests are Slice 7. `subscribe` (channels) is the
+ * same operation. Returns `{ ok: true, joined }` on success.
+ */
+export async function joinPublic(
+  db: DbClient,
+  chatId: string,
+  userId: string,
+  now: number,
+): Promise<{ ok: true; joined: boolean } | { ok: false; error: "must_request" }> {
+  const chat = await db.first("SELECT visibility FROM chats WHERE id = ?", [chatId]);
+  // Unknown or non-public → refuse identically (don't leak which). Slice 7 turns
+  // this into a join-request; for now a private chat can only be joined by invite.
+  if (!chat || String(chat.visibility) !== "public") return { ok: false, error: "must_request" };
+  if ((await getRole(db, chatId, userId)) != null) return { ok: true, joined: false };
+  await db.run(
+    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+    [chatId, userId, now],
+  );
+  return { ok: true, joined: true };
 }

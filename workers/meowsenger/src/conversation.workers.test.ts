@@ -48,11 +48,12 @@ function stub(chatId: string): DurableObjectStub<Conversation> {
   return CONVERSATION.get(CONVERSATION.idFromName(chatId));
 }
 
-/** Open a WebSocket to the DO's fetch() and accept the client end. An optional
- *  role mirrors what the gated router forwards (?role=); defaults to 'member'. */
-async function connect(chatId: string, userId: string, role?: string): Promise<WebSocket> {
+/** Open a WebSocket to the DO's fetch() and accept the client end. Optional
+ *  role + type mirror what the gated router forwards (?role=&type=); they default
+ *  to 'member'/'group' when omitted. */
+async function connect(chatId: string, userId: string, role?: string, type?: string): Promise<WebSocket> {
   const res = await stub(chatId).fetch(
-    `https://do/ws?user=${userId}&chat=${chatId}${role ? `&role=${role}` : ""}`,
+    `https://do/ws?user=${userId}&chat=${chatId}${role ? `&role=${role}` : ""}${type ? `&type=${type}` : ""}`,
     { headers: { Upgrade: "websocket" } },
   );
   expect(res.status).toBe(101);
@@ -511,6 +512,80 @@ describe("Conversation DO", () => {
     const row = history.find((m) => m.id === "am2");
     expect(row?.isDeleted).toBe(false);
     expect(row?.body).toBe("peer message");
+
+    member.close();
+  });
+
+  // ---- Slice 6: channel posting rule (broadcast — only owner/admin post) ----
+
+  it("channel + role=member send → {error, read_only}, nothing persisted, no broadcast", async () => {
+    await seedChat("c22");
+    // A member on a channel is read-only. A peer proves no broadcast escapes.
+    const member = await connect("c22", "u1", "member", "channel");
+    const peer = await connect("c22", "u2", "member", "channel");
+    let peerSawMessage = false;
+    peer.addEventListener("message", (e: MessageEvent) => {
+      if (String(e.data).includes('"message"')) peerSawMessage = true;
+    });
+
+    const err = waitFor(member, (t) => t.includes('"error"'));
+    member.send(JSON.stringify({ type: "send", tempId: "t1", body: "should be blocked" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "read_only" });
+
+    // Nothing was persisted to the DO log...
+    const history = await stub("c22").historyFor("c22", null);
+    expect(history.some((m) => m.body === "should be blocked")).toBe(false);
+    // ...and no message frame reached the peer.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(peerSawMessage).toBe(false);
+
+    member.close();
+    peer.close();
+  });
+
+  it("channel + role=owner send → posts + broadcasts to peers normally", async () => {
+    await seedChat("c23");
+    const owner = await connect("c23", "u1", "owner", "channel");
+    const sub = await connect("c23", "u2", "member", "channel");
+
+    const peerGot = waitFor(sub, (t) => t.includes('"message"') && t.includes("broadcast body"));
+    const ownerAck = waitFor(owner, (t) => t.includes('"sent"'));
+    owner.send(JSON.stringify({ type: "send", tempId: "t1", body: "broadcast body" }));
+
+    const [peerText, ackText] = await Promise.all([peerGot, ownerAck]);
+    expect(JSON.parse(peerText)).toMatchObject({ type: "message", message: { senderId: "u1", body: "broadcast body" } });
+    expect(ackText).toContain('"sent"');
+
+    const history = await stub("c23").historyFor("c23", null);
+    expect(history.some((m) => m.body === "broadcast body" && m.senderId === "u1")).toBe(true);
+
+    owner.close();
+    sub.close();
+  });
+
+  it("channel + role=admin send → posts normally (admins may broadcast)", async () => {
+    await seedChat("c24");
+    const admin = await connect("c24", "u1", "admin", "channel");
+    const acked = waitFor(admin, (t) => t.includes('"sent"'));
+    admin.send(JSON.stringify({ type: "send", tempId: "t1", body: "admin post" }));
+    await acked;
+    const history = await stub("c24").historyFor("c24", null);
+    expect(history.some((m) => m.body === "admin post")).toBe(true);
+    admin.close();
+  });
+
+  it("regression: group + role=member send → posts normally (rule is channel-only)", async () => {
+    await seedChat("c25");
+    // type='group' (or absent) — a plain member posts normally; only channels are read-only.
+    const member = await connect("c25", "u1", "member", "group");
+    const acked = waitFor(member, (t) => t.includes('"sent"'));
+    member.send(JSON.stringify({ type: "send", tempId: "t1", body: "group member post" }));
+    const ack = JSON.parse(await acked) as { type: string; message: { body: string } };
+    expect(ack.type).toBe("sent");
+    expect(ack.message.body).toBe("group member post");
+
+    const history = await stub("c25").historyFor("c25", null);
+    expect(history.some((m) => m.body === "group member post")).toBe(true);
 
     member.close();
   });
