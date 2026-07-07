@@ -20,10 +20,10 @@ export default function MeowsengerHeader({ base }: { base: string }) {
       {session.authenticated ? (
         <span className="mw-row" style={{ gap: "var(--space-2)", alignItems: "center" }}>
           <span className="mw-muted">{session.user?.username}</span>
-          <button className="mw-btn mw-btn--sm" onClick={onLogout}>log out</button>
+          <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={onLogout}>log out</button>
         </span>
       ) : (
-        <a className="mw-btn mw-btn--sm" href={loginUrl(base)}>log in</a>
+        <a className="mw-btn mw-btn--primary mw-btn--sm" href={loginUrl(base)}>log in</a>
       )}
     </header>
   );
