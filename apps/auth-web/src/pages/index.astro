@@ -1,7 +1,7 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import LandingCta from "../components/LandingCta.tsx";
-const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? ""; // same-origin: relative fetches
 ---
 <Layout title="meowerse accounts">
   <div class="mw-stack">

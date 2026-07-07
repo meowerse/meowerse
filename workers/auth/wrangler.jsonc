@@ -13,6 +13,12 @@
   "compatibility_date": "2025-06-01",
   // @libsql/client/web pulls node builtins; nodejs_compat resolves them in workerd.
   "compatibility_flags": ["nodejs_compat"],
+  // ONE Worker on auth.alxnko.eu.org serves the Astro UI (static assets) AND all
+  // OIDC/API routes. Cloudflare serves a matching static asset BEFORE invoking the
+  // worker (GET page paths /login /consent /account … render as HTML without the
+  // worker); non-asset paths (POST /login, /authorize, /token, /api/*, …) hit the
+  // fetch handler, which falls back to env.ASSETS.fetch(req) for the Astro 404.
+  "assets": { "directory": "../../apps/auth-web/dist", "binding": "ASSETS" },
   // Smart Placement: this worker is DB-bound (every request round-trips to the
   // Turso primary in aws-eu-west-1). Let Cloudflare run the isolate NEAR Turso
   // instead of at the user's edge, so N sequential db hops pay one long RTT to
@@ -20,15 +26,16 @@
   "placement": { "mode": "smart" },
   "vars": {
     "CORS_ORIGINS": "https://auth.alxnko.eu.org,http://localhost:4321",
-    // Issuer = the API origin so {issuer}/.well-known/openid-configuration and
-    // /jwks are same-origin on this worker (no Pages proxy). WEB_ORIGIN is the
-    // user-facing UI (Astro on Pages) the authorize flow redirects into.
-    "ISSUER": "https://auth-api.alxnko.eu.org",
+    // Issuer = this same host: discovery, /jwks, /authorize, /token, /userinfo AND
+    // the UI (login/consent/account …) are all same-origin on ONE worker. WEB_ORIGIN
+    // is the user-facing UI the authorize flow redirects into — now the same host.
+    "ISSUER": "https://auth.alxnko.eu.org",
     "WEB_ORIGIN": "https://auth.alxnko.eu.org",
     "RESOURCE_AUD": "https://api.meow.alxnko.eu.org",
     "BOT_USERNAME": "meowersebot",
     "SKIP_MIGRATIONS": "1"
   },
-  // Custom domain — Cloudflare provisions cert + DNS for the API hostname.
-  "routes": [{ "pattern": "auth-api.alxnko.eu.org", "custom_domain": true }]
+  // Custom domain — Cloudflare provisions cert + DNS. This is now the combined
+  // UI + OIDC host (auth-api.alxnko.eu.org is retired at the coordinated cutover).
+  "routes": [{ "pattern": "auth.alxnko.eu.org", "custom_domain": true }]
 }

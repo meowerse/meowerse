@@ -4,8 +4,9 @@ A standards OAuth 2.0 / OpenID Connect authorization server on Cloudflare
 Workers + Turso. Mirrors `workers/api` (thin DI router, `ensureSchema`
 memoization, `constantTimeEqual`, exact-origin credentialed CORS). Free-tier.
 
-Issuer: `https://auth-api.alxnko.eu.org` · UI: `https://auth.alxnko.eu.org`
-([apps/auth-web](../../apps/auth-web)). Design spec:
+Issuer + UI: `https://auth.alxnko.eu.org` — ONE Worker serves the Astro UI (static
+assets) AND all OIDC/API routes ([apps/auth-web](../../apps/auth-web) is folded in via
+the `ASSETS` binding). Design spec:
 [docs/superpowers/specs/2026-06-25-meowerse-auth-design.md](../../docs/superpowers/specs/2026-06-25-meowerse-auth-design.md).
 
 ## Endpoints (slice 1)

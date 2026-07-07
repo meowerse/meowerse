@@ -4,7 +4,7 @@ import { TYP, TOKEN_USE } from "@meowerse/auth-shared";
 import { routedDb, type Route } from "./helpers";
 
 const RES = "https://api.meow";
-const ISS = "https://auth-api.alxnko.eu.org";
+const ISS = "https://auth.alxnko.eu.org";
 // userinfoClaims now reads profile + telegram + verified in ONE query.
 const accRoute: Route = [
   /FROM accounts a/,

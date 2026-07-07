@@ -96,7 +96,7 @@ function appendParams(uri: string, params: Record<string, string | undefined>): 
 }
 
 function issuer(env: Env): string {
-  return env.ISSUER ?? "https://auth-api.alxnko.eu.org";
+  return env.ISSUER ?? "https://auth.alxnko.eu.org";
 }
 function webOrigin(env: Env): string {
   return env.WEB_ORIGIN ?? "https://auth.alxnko.eu.org";
@@ -828,6 +828,14 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   if (av && m === "GET") return handleAvatar(req, env, ctx ? { ...deps, ctx } : deps, av[1]!, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
+  // Matching static assets (the Astro UI: /login, /consent, /account, …) are
+  // served by Cloudflare BEFORE the worker runs; a request only reaches here if
+  // it's an API route (matched above) or a non-asset path. Hand unmatched paths
+  // to the assets binding so Astro's 404 page renders (falls back to JSON 404 in
+  // tests, where ASSETS is unbound). GET page paths never collide with a GET API
+  // route (the UI has no /authorize|/userinfo|/jwks|/api/* page; /login|/consent|
+  // /signup are POST-only in the API), so the API always matches first.
+  if (env.ASSETS) return env.ASSETS.fetch(req);
   return json({ error: "not_found" }, 404, cors);
 }
 

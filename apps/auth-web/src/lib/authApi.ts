@@ -1,6 +1,6 @@
-// Typed client for the Meowerse auth worker. All calls are credentialed
-// (cookies travel to auth-api over the shared registrable domain). Pure logic —
-// the only unit-tested part of the frontend.
+// Typed client for the Meowerse auth worker. All calls are credentialed and
+// same-origin (the UI + OIDC/API are one Worker; `base` is "" → relative paths).
+// Pure logic — the only unit-tested part of the frontend.
 
 export interface NextStep {
   action: "done" | "redirect" | "consent" | "verify_required";

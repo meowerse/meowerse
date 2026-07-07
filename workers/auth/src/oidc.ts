@@ -1,6 +1,6 @@
 import type { Env } from "./types";
 
-const DEFAULT_ISSUER = "https://auth-api.alxnko.eu.org";
+const DEFAULT_ISSUER = "https://auth.alxnko.eu.org";
 const DEFAULT_WEB_ORIGIN = "https://auth.alxnko.eu.org";
 
 /**

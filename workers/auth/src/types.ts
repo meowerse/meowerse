@@ -19,6 +19,10 @@ export interface Env {
   SKIP_MIGRATIONS?: string;
   /** Cloudflare Turnstile secret (bot protection on /signup + /login). Unset ⇒ disabled. */
   TURNSTILE_SECRET_KEY?: string;
+  /** Static-assets binding (the Astro auth UI). Cloudflare serves matching assets
+   *  before the worker; the router hands unmatched paths here so page routes + the
+   *  Astro 404 render. Unbound in tests ⇒ the handler falls back to the JSON 404. */
+  ASSETS?: Fetcher;
 }
 
 /**

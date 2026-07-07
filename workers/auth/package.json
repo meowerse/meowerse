@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "lint": "wrangler deploy --dry-run --outdir tmp/wr-auth",
+    "lint": "bun run --filter @meowerse/auth-web build && wrangler deploy --dry-run --outdir tmp/wr-auth",
     "test": "vitest run --coverage",
     "secret:db-url": "wrangler secret put DATABASE_URL",
     "secret:db-token": "wrangler secret put DATABASE_AUTH_TOKEN",

@@ -27,6 +27,6 @@ test("discovery advertises logout, revoke/introspect auth, and the docs link", (
 
 test("falls back to the default issuer + docs link when env unset", () => {
   const d = discoveryDoc({});
-  expect(d.issuer).toBe("https://auth-api.alxnko.eu.org");
+  expect(d.issuer).toBe("https://auth.alxnko.eu.org");
   expect(d.service_documentation).toBe("https://auth.alxnko.eu.org/docs");
 });

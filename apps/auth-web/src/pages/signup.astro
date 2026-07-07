@@ -2,7 +2,7 @@
 import Layout from "../layouts/Layout.astro";
 import SignupForm from "../components/SignupForm.tsx";
 import TelegramButton from "../components/TelegramButton.tsx";
-const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? ""; // same-origin: relative fetches
 const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
 ---
 

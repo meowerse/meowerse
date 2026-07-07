@@ -6,7 +6,9 @@ import { Footer } from "@meowerse/ui";
 import SiteHeader from "../components/SiteHeader.tsx";
 interface Props { title: string; wide?: boolean }
 const { title, wide } = Astro.props;
-const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.org";
+// UI + OIDC/API are one Worker on the same origin now, so the base is "" — all
+// calls use relative paths (base = "" → "/login", "/api/session", "/tg/status").
+const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "";
 // Response headers (Referrer-Policy, Cache-Control) live in public/_headers: this
 // site is `output: 'static'`, so setting Astro.response.headers here is a
 // build-time no-op. Caching is path-scoped there (static pages cache; authed no-store).
