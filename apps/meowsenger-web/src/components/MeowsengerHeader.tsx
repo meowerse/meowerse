@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getSession, loginUrl, logoutUrl, type SessionInfo } from "../lib/meowsengerApi";
+import { Avatar } from "./Avatar";
 
 /** Forked header for meowsenger (the @meowerse/ui Footer/AppHeader are auth-app
  *  specific). Uses design-system mw- classes + tokens. */
@@ -18,8 +19,9 @@ export default function MeowsengerHeader({ base }: { base: string }) {
         meowsenger
       </a>
       {session.authenticated ? (
-        <span className="mw-row" style={{ gap: "var(--space-2)", alignItems: "center" }}>
-          <span className="mw-muted">{session.user?.username}</span>
+        <span className="mw-row" style={{ gap: "var(--space-2)", alignItems: "center", flexWrap: "nowrap" }}>
+          <Avatar url={session.user?.avatarUrl} name={session.user?.displayName || session.user?.username} size="sm" />
+          <span className="mw-muted" data-case="preserve">{session.user?.username}</span>
           <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={onLogout}>log out</button>
         </span>
       ) : (
