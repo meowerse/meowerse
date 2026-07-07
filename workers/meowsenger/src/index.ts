@@ -11,6 +11,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleForward,
   handleListMembers,
   handleAddMember,
   handleRemoveMember,
@@ -65,6 +66,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(bySlug[1]), cors);
   const hist = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), hist[1], cors);
+  // Slice 8: forward messages into a target chat (gated on target membership +
+  // the channel-post rule). :id is the TARGET chat.
+  const forward = path.match(/^\/api\/chats\/([^/]+)\/forward$/);
+  if (forward && m === "POST") return handleForward(req, env, deps.getDb(), deps.now(), forward[1], cors);
 
   // Slice 5: member management + chat metadata. Order matters — the more
   // specific member/role sub-routes must precede the bare `/api/chats/:id`.

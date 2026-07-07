@@ -617,4 +617,83 @@ describe("Conversation DO", () => {
       expect(ids).toContain("keep");
     });
   });
+
+  // ---- Slice 8: appendMessage RPC (forwarding) · rate bucket · is_forwarded ----
+
+  it("appendMessage RPC: inserts the message and returns its id → shows in historyFor with isForwarded:true", async () => {
+    await seedChat("c26");
+    const s = stub("c26");
+    const id = await s.appendMessage("u1", "forwarded body", true);
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+
+    const history = await s.historyFor("c26", null);
+    const row = history.find((m) => m.id === id);
+    expect(row?.body).toBe("forwarded body");
+    expect(row?.senderId).toBe("u1");
+    expect(row?.isForwarded).toBe(true);
+  });
+
+  it("appendMessage RPC: broadcasts {message} to a connected peer (no ack, forwarder not connected)", async () => {
+    await seedChat("c27");
+    const peer = await connect("c27", "u2");
+    const peerGot = waitFor(peer, (t) => t.includes('"message"') && t.includes("fwd to peer"));
+    // The forwarder (u1) is NOT connected — the RPC fans out to all live sockets.
+    await stub("c27").appendMessage("u1", "fwd to peer", true);
+    const peerText = await peerGot;
+    const frame = JSON.parse(peerText) as { type: string; message: { senderId: string; body: string; isForwarded: boolean } };
+    expect(frame.type).toBe("message");
+    expect(frame.message.senderId).toBe("u1");
+    expect(frame.message.body).toBe("fwd to peer");
+    expect(frame.message.isForwarded).toBe(true);
+
+    peer.close();
+  });
+
+  it("is_forwarded round-trips: a NON-forwarded send shows isForwarded:false in historyFor", async () => {
+    await seedChat("c28");
+    const wa = await connect("c28", "u1");
+    const acked = waitFor(wa, (t) => t.includes('"sent"'));
+    wa.send(JSON.stringify({ type: "send", tempId: "t1", body: "plain send" }));
+    const ack = JSON.parse(await acked) as { message: { isForwarded: boolean } };
+    // The ack Wire carries the (false) flag too.
+    expect(ack.message.isForwarded).toBe(false);
+
+    const history = await stub("c28").historyFor("c28", null);
+    const row = history.find((m) => m.body === "plain send");
+    expect(row?.isForwarded).toBe(false);
+
+    wa.close();
+  });
+
+  it("rate bucket: >30 sends in the window → a {rate_limited} error frame and the over-limit message is NOT persisted", async () => {
+    await seedChat("c29");
+    const wa = await connect("c29", "u1");
+
+    // Watch for the first rate_limited error frame.
+    let rateLimited = false;
+    wa.addEventListener("message", (e: MessageEvent) => {
+      const t = String(e.data);
+      if (t.includes('"error"') && t.includes("rate_limited")) rateLimited = true;
+    });
+
+    // Fire 35 sends in a tight loop (same 10s window). The first 30 persist; the
+    // rest are refused. Each body is unique so we can count persisted rows.
+    for (let i = 0; i < 35; i++) {
+      wa.send(JSON.stringify({ type: "send", tempId: `t${i}`, body: `flood-${i}` }));
+    }
+
+    // Let the DO drain the queued frames.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(rateLimited).toBe(true);
+
+    // At most RATE_MAX (30) of the flood bodies were persisted; the over-limit ones
+    // (flood-30..flood-34) must NOT be in history.
+    const history = await stub("c29").historyFor("c29", null);
+    const persisted = history.filter((m) => m.body.startsWith("flood-"));
+    expect(persisted.length).toBe(30);
+    expect(persisted.some((m) => m.body === "flood-34")).toBe(false);
+
+    wa.close();
+  });
 });

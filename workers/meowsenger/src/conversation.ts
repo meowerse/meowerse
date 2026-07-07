@@ -32,6 +32,8 @@ interface Wire {
   replyTo?: ReplySnippet | null;
   editedAt?: number | null;
   isDeleted?: boolean;
+  /** Slice 8: true when this message was forwarded from another chat. */
+  isForwarded?: boolean;
 }
 
 const MAX_BODY = 4000;
@@ -43,6 +45,9 @@ const EDIT_WINDOW_MS = 3600_000;
 const DELETE_WINDOW_MS = 24 * 3600_000;
 /** How long a soft-deleted row lingers before the alarm hard-purges it. */
 const PURGE_AFTER_MS = 24 * 3600_000;
+/** Per-connection flood window + cap: at most RATE_MAX `send`s per RATE_WINDOW_MS. */
+const RATE_WINDOW_MS = 10_000;
+const RATE_MAX = 30;
 
 /**
  * One instance per chat (addressed by chatId via `idFromName`). Holds the room's
@@ -52,12 +57,22 @@ const PURGE_AFTER_MS = 24 * 3600_000;
  * upgrade reaches here, so the DO trusts the `?user=&chat=` params it receives.
  */
 export class Conversation extends DurableObject<Env> {
+  /**
+   * Per-connection flood protection: recent `send` timestamps keyed by socket.
+   * In-memory (dies on hibernation) is fine — a flood keeps the DO awake, and an
+   * idle room hibernates with an empty bucket. Only `send` is metered; typing/
+   * read/edit/delete are cheap and unmetered. Not reconstructed from
+   * getWebSockets() on wake because a hibernated room has, by definition, no
+   * in-flight flood to remember.
+   */
+  private sendTimes = new Map<WebSocket, number[]>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Create the message table once, before any request is served.
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, reply_to_id TEXT, edited_at INTEGER, is_deleted INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER);
+        `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, reply_to_id TEXT, edited_at INTEGER, is_deleted INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, is_forwarded INTEGER NOT NULL DEFAULT 0);
          CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);`,
       );
     });
@@ -176,6 +191,15 @@ export class Conversation extends DurableObject<Env> {
       ws.send(JSON.stringify({ type: "error", code: "read_only" }));
       return;
     }
+    // Per-connection flood protection (Slice 8): drop this socket's `send`
+    // timestamps older than the window, then refuse if it's already at the cap —
+    // no insert, no broadcast, just a {rate_limited} error frame (the socket
+    // stays open; a flood is throttled, not disconnected). Metered here so
+    // typing/read/edit/delete stay unaffected.
+    if (this.isRateLimited(ws)) {
+      ws.send(JSON.stringify({ type: "error", code: "rate_limited" }));
+      return;
+    }
     const body = (msg.body ?? "").trim();
     if (!body || body.length > MAX_BODY) {
       ws.send(JSON.stringify({ type: "error", code: "bad_body" }));
@@ -185,15 +209,60 @@ export class Conversation extends DurableObject<Env> {
     // Reply: only honor replyToId if it points at a live (non-deleted) message in
     // THIS room's log. Anything else (missing id, deleted, other room) → null, so a
     // stale/forged reference silently degrades to a plain message.
+    let replyToId: string | undefined;
+    if (typeof msg.replyToId === "string" && msg.replyToId) replyToId = msg.replyToId;
+
+    this.insertAndBroadcast(att.userId, att.chatId, body, { replyToId, tempId: msg.tempId, ackTo: ws });
+  }
+
+  /**
+   * Meter a `send` on this socket: prune timestamps older than RATE_WINDOW_MS,
+   * then decide. At/over RATE_MAX in the window → true (caller refuses the send,
+   * nothing is recorded). Otherwise record `now` and return false. In-memory only
+   * (see `sendTimes`).
+   */
+  private isRateLimited(ws: WebSocket): boolean {
+    const now = Date.now();
+    const times = (this.sendTimes.get(ws) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (times.length >= RATE_MAX) {
+      this.sendTimes.set(ws, times);
+      return true;
+    }
+    times.push(now);
+    this.sendTimes.set(ws, times);
+    return false;
+  }
+
+  /**
+   * The shared insert→broadcast path used by both the WS `send` branch and the
+   * `appendMessage` RPC (forwarding). Assigns a monotonic created_at, persists the
+   * row (with reply link + is_forwarded), builds the Wire, optionally acks the
+   * sender's own socket ({sent, tempId, message} — reconciles their optimistic
+   * bubble), fans {message} out to every OTHER socket, and mirrors the sidebar
+   * preview to D1 off the critical path. Returns the new message id.
+   *
+   * `opts.ackTo` is the sender's live socket (WS path); when absent (forward RPC —
+   * the forwarder may not be connected to the target) nobody is acked and the
+   * message goes to ALL sockets. `replyToId` is validated here against THIS room's
+   * log; a stale/forged/foreign id degrades to a plain message.
+   */
+  private insertAndBroadcast(
+    senderId: string,
+    chatId: string,
+    body: string,
+    opts: { replyToId?: string; forwarded?: boolean; tempId?: string; ackTo?: WebSocket } = {},
+  ): string {
+    // Validate the reply target against this room's live log (see above).
     let replyToId: string | null = null;
     let replyTo: ReplySnippet | null = null;
-    if (typeof msg.replyToId === "string" && msg.replyToId) {
-      const snippet = this.replySnippet(msg.replyToId);
+    if (opts.replyToId) {
+      const snippet = this.replySnippet(opts.replyToId);
       if (snippet) {
         replyToId = snippet.id;
         replyTo = snippet;
       }
     }
+    const forwarded = opts.forwarded === true;
 
     // Server-monotonic timestamp: DO event handling is serialized, but two sends
     // in the same millisecond would collide on created_at and break the
@@ -203,33 +272,63 @@ export class Conversation extends DurableObject<Env> {
     const now = Math.max(Date.now(), (last == null ? 0 : Number(last)) + 1);
     const id = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      "INSERT INTO messages (id, sender_id, body, created_at, reply_to_id) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO messages (id, sender_id, body, created_at, reply_to_id, is_forwarded) VALUES (?, ?, ?, ?, ?, ?)",
       id,
-      att.userId,
+      senderId,
       body,
       now,
       replyToId,
+      forwarded ? 1 : 0,
     );
     const message: Wire = {
       id,
-      chatId: att.chatId,
-      senderId: att.userId,
+      chatId,
+      senderId,
       body,
       createdAt: now,
       replyToId,
       replyTo,
+      isForwarded: forwarded,
     };
 
-    // Ack the sender (reconciles their optimistic bubble via tempId), then fan
-    // out to every other socket in the room.
-    ws.send(JSON.stringify({ type: "sent", tempId: msg.tempId, message }));
+    // Ack the sender's own socket if given (reconciles their optimistic bubble via
+    // tempId), then fan out to every OTHER socket. With no ackTo (forward RPC),
+    // the loop below reaches every socket in the room.
+    if (opts.ackTo) opts.ackTo.send(JSON.stringify({ type: "sent", tempId: opts.tempId, message }));
     for (const peer of this.ctx.getWebSockets()) {
-      if (peer !== ws) peer.send(JSON.stringify({ type: "message", message }));
+      if (peer !== opts.ackTo) peer.send(JSON.stringify({ type: "message", message }));
     }
     // Off the critical path: mirror the preview + unread bump to D1 for the sidebar.
     // The message is already persisted + broadcast; a failed sidebar mirror is
     // non-critical, so swallow its error rather than surface an unhandled rejection.
-    this.ctx.waitUntil(mirrorLastMessage(this.d1(), att.chatId, body, att.userId, now).catch(() => {}));
+    this.ctx.waitUntil(mirrorLastMessage(this.d1(), chatId, body, senderId, now).catch(() => {}));
+    return id;
+  }
+
+  /**
+   * DO RPC (Slice 8): append a message to THIS chat's log on behalf of `senderId`
+   * — used by the forward REST handler, which has already gated the caller against
+   * the target chat's membership + channel-post rule. No ack socket (the forwarder
+   * isn't necessarily connected to the target), so the message fans out to ALL
+   * live sockets and mirrors to the sidebar exactly like a normal send. `forwarded`
+   * sets is_forwarded so the target renders the "forwarded" badge. Returns the id.
+   */
+  async appendMessage(senderId: string, body: string, forwarded: boolean): Promise<string> {
+    return this.insertAndBroadcast(senderId, this.chatIdOf(), body, { forwarded });
+  }
+
+  /**
+   * The chatId this DO serves — recovered from any live socket's attachment (all
+   * sockets in a room share it). The forward RPC has no request URL to read it
+   * from, and the Wire only needs it for the client's own bookkeeping; if the room
+   * has no live socket, "" is harmless (the persisted row + mirror don't use it).
+   */
+  private chatIdOf(): string {
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as { chatId?: string } | null;
+      if (a?.chatId) return a.chatId;
+    }
+    return "";
   }
 
   /** Hibernation handler: a socket closed — mirror the close back and drop it. */
@@ -237,6 +336,9 @@ export class Conversation extends DurableObject<Env> {
     // Recover the closing socket's user before we close it, so we can decide
     // whether that user is now fully offline.
     const att = ws.deserializeAttachment() as Attach | null;
+    // Drop this socket's rate bucket so the in-memory Map doesn't leak entries
+    // for closed connections.
+    this.sendTimes.delete(ws);
     try {
       ws.close(code, reason);
     } catch {
@@ -366,7 +468,7 @@ export class Conversation extends DurableObject<Env> {
     // A soft-deleted target yields no snippet (the join keeps the row but we drop
     // the preview below). Deleted rows themselves stay in the page as placeholders.
     const cols =
-      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted," +
+      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
       " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
     const rows =
       cursor != null
@@ -411,6 +513,7 @@ export class Conversation extends DurableObject<Env> {
       replyTo,
       editedAt: r.edited_at == null ? null : Number(r.edited_at),
       isDeleted: deleted,
+      isForwarded: Number(r.is_forwarded) === 1,
     };
   }
 

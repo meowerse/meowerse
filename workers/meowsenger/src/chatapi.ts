@@ -9,6 +9,7 @@ import {
   listMembers,
   isMember,
   getRole,
+  chatType,
   roleAtLeast,
   renameChat,
   setVisibility,
@@ -25,6 +26,9 @@ import {
 import { addMember, removeMember, promote, demote, leave } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
 import { getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
+
+/** Max message body length, mirrored from the DO (kept in sync with conversation.ts). */
+const MAX_BODY = 4000;
 
 /** Look up a user id by username, or null. */
 async function userIdByName(db: DbClient, username: string): Promise<string | null> {
@@ -142,6 +146,55 @@ export async function handleHistory(
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
   const messages = await stub.historyFor(chatId, before);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
+}
+
+/**
+ * POST /api/chats/:id/forward { messages:[{body}] } — forward up to 20 messages
+ * into a TARGET chat. Gated server-side against the TARGET (never the source):
+ * the caller must be a member, and if the target is a channel only owner/admin may
+ * post (same broadcast rule the DO enforces for live sends). Each body is trimmed
+ * + length-checked (1..4000); a bad/empty body is skipped, not fatal. Each kept
+ * message is appended via the target DO's `appendMessage` RPC with is_forwarded=1
+ * (so it broadcasts to live members + shows the "forwarded" badge). Returns the
+ * count actually forwarded.
+ */
+export async function handleForward(
+  req: Request,
+  env: Env,
+  db: DbClient,
+  now: number,
+  chatId: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
+  // Gate on the TARGET chat: membership first (403 if not a member), then the
+  // channel-post rule (a plain member can't post into a channel → 403).
+  if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
+  if ((await chatType(db, chatId)) === "channel") {
+    const role = await getRole(db, chatId, me);
+    if (role !== "owner" && role !== "admin") return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
+  }
+  let body: { messages?: unknown };
+  try {
+    body = (await req.json()) as { messages?: unknown };
+  } catch {
+    return json({ error: "bad_json" }, 400, cors, { "Cache-Control": "no-store" });
+  }
+  if (!Array.isArray(body.messages)) return json({ error: "bad_messages" }, 400, cors, { "Cache-Control": "no-store" });
+  // Cap the batch at 20; validate each body (trim, 1..4000) — skip anything empty
+  // or over-long rather than fail the whole request.
+  const bodies = body.messages
+    .slice(0, 20)
+    .map((m) => (m && typeof (m as { body?: unknown }).body === "string" ? String((m as { body: string }).body).trim() : ""))
+    .filter((b) => b.length > 0 && b.length <= MAX_BODY);
+  const ns = conversation(env);
+  let forwarded = 0;
+  for (const b of bodies) {
+    await ns.get(ns.idFromName(chatId)).appendMessage(me, b, true);
+    forwarded++;
+  }
+  return json({ forwarded }, 200, cors, { "Cache-Control": "no-store" });
 }
 
 // ---- Slice 5: member management + chat metadata routes ----

@@ -3,6 +3,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleForward,
   callerId,
   handleListMembers,
   handleAddMember,
@@ -970,5 +971,173 @@ describe("GET/POST /api/account/privacy", () => {
     const res = await handleSetPrivacy(cookieReq("https://x/api/account/privacy", "s1", { method: "POST", body: "{oops" }), db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_json" });
+  });
+});
+
+// ---- Slice 8: forward messages into a target chat ----
+
+/**
+ * Minimal DB for the forward gate: sessions (auth), chat membership/role
+ * (isMember + getRole), and chat type (chatType). `members` is a map of
+ * `${chatId}::${userId}` → role; `types` is chatId → 'group'|'channel'|'direct'.
+ */
+function forwardDb(opts: {
+  session?: Row;
+  members?: Record<string, string>; // "chat::user" -> role
+  types?: Record<string, string>; // chatId -> type
+} = {}) {
+  const members = opts.members ?? {};
+  const types = opts.types ?? {};
+  const db: DbClient = {
+    async all() {
+      return [];
+    },
+    async first(sql, p = []) {
+      if (sql.includes("FROM sessions")) return opts.session;
+      // isMember: SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?
+      if (sql.includes("SELECT 1 AS ok FROM chat_members")) {
+        return members[`${String(p[0])}::${String(p[1])}`] != null ? { ok: 1 } : undefined;
+      }
+      // getRole: SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?
+      if (sql.includes("SELECT role FROM chat_members")) {
+        const role = members[`${String(p[0])}::${String(p[1])}`];
+        return role ? { role } : undefined;
+      }
+      // chatType: SELECT type FROM chats WHERE id = ?
+      if (sql.includes("SELECT type FROM chats WHERE id")) {
+        const t = types[String(p[0])];
+        return t ? { type: t } : undefined;
+      }
+      return undefined;
+    },
+    async run() {},
+  };
+  return db;
+}
+
+/**
+ * Fake CONVERSATION namespace that records every appendMessage(senderId, body,
+ * forwarded) call so a test can assert what was forwarded to which chat.
+ */
+function forwardEnv() {
+  const calls: Array<{ chatId: string; senderId: string; body: string; forwarded: boolean }> = [];
+  const CONVERSATION = {
+    idFromName: (name: string) => name,
+    get: (chatId: string) => ({
+      appendMessage: async (senderId: string, body: string, forwarded: boolean) => {
+        calls.push({ chatId, senderId, body, forwarded });
+        return `msg-${calls.length}`;
+      },
+    }),
+  };
+  return { env: { CONVERSATION } as unknown as Env, calls };
+}
+
+describe("handleForward", () => {
+  it("401 unauthorized with no session", async () => {
+    const db = forwardDb();
+    const { env } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", undefined, { method: "POST", body: JSON.stringify({ messages: [{ body: "hi" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("member forwards 2 messages into the target → appendMessage called twice with forwarded:true", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "group" } });
+    const { env, calls } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: [{ body: "one" }, { body: "two" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ forwarded: 2 });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.chatId === "t1" && c.senderId === "u1" && c.forwarded === true)).toBe(true);
+    expect(calls.map((c) => c.body)).toEqual(["one", "two"]);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("non-member forward → 403, nothing appended", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: {}, types: { t1: "group" } });
+    const { env, calls } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: [{ body: "hi" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("channel non-admin member forward → 403, nothing appended", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "channel" } });
+    const { env, calls } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: [{ body: "hi" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("channel owner/admin forward → 200 (owner/admin may post into a channel)", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "admin" }, types: { t1: "channel" } });
+    const { env, calls } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: [{ body: "announce" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ forwarded: 1 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ chatId: "t1", senderId: "u1", body: "announce", forwarded: true });
+  });
+
+  it("400 bad_json on an unparseable body", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "group" } });
+    const { env } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: "{oops" }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_json" });
+  });
+
+  it("400 bad_messages when messages isn't an array", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "group" } });
+    const { env } = forwardEnv();
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: "nope" }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_messages" });
+  });
+
+  it("skips empty/over-long bodies and caps the batch at 20", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "group" } });
+    const { env, calls } = forwardEnv();
+    // 25 items: 1 blank (skipped), 1 whitespace (skipped), 1 over-long (skipped),
+    // then 22 valid — but the whole array is capped at 20 BEFORE validation, so
+    // the first 20 entries are considered and the 3 invalid ones among them drop.
+    const messages = [
+      { body: "" },
+      { body: "   " },
+      { body: "x".repeat(4001) },
+      ...Array.from({ length: 22 }, (_, i) => ({ body: `m${i}` })),
+    ];
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(200);
+    // First 20 of the 25 → drop 3 invalid → 17 forwarded.
+    expect(await res.json()).toEqual({ forwarded: 17 });
+    expect(calls).toHaveLength(17);
+    expect(calls.every((c) => c.forwarded === true && c.body.length > 0)).toBe(true);
   });
 });

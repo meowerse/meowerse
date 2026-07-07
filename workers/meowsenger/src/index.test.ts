@@ -70,6 +70,11 @@ describe("router", () => {
     const res = await handle(req("GET", "/api/chats/c1/messages"), env, d);
     expect(res.status).toBe(401);
   });
+  it("POST /api/chats/:id/forward is routed (regex) → 401 with no session", async () => {
+    const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+    const res = await handle(req("POST", "/api/chats/c1/forward"), env, d);
+    expect(res.status).toBe(401);
+  });
 
   // Slice 5 route wiring: each new endpoint reaches its handler (asserted via the
   // no-session 401, which every mutation returns before touching the DB).
