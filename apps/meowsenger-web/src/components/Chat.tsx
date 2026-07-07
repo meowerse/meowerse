@@ -29,10 +29,14 @@ export default function Chat({ base }: { base: string }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [connected, setConnected] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const activeRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  // True while prepending older history — pauses the autoscroll-to-bottom effect
+  // so loading older messages doesn't yank the view down.
+  const prependingRef = useRef(false);
   const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
   const closingRef = useRef(false);
 
@@ -44,11 +48,40 @@ export default function Chat({ base }: { base: string }) {
     listChats(base).then((cs) => { setChats(cs); setLoadingChats(false); });
   }, [base]);
 
-  // Keep an autoscroll pinned to the newest message.
+  // Keep an autoscroll pinned to the newest message — unless we're prepending
+  // older history (then Composer/onScroll preserves the position instead).
   useEffect(() => {
+    if (prependingRef.current) return;
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Infinite scroll: when the log is scrolled near the top and more history may
+  // exist, load an older page via the `before=<oldestId>` cursor and prepend it,
+  // preserving the visual scroll position.
+  const loadOlder = useCallback(async () => {
+    const el = logRef.current;
+    const chatId = activeRef.current;
+    if (!el || !chatId || prependingRef.current || !hasMore) return;
+    const oldest = messages[0];
+    if (!oldest) return;
+    prependingRef.current = true;
+    const prevHeight = el.scrollHeight;
+    const older = await loadHistory(base, chatId, oldest.id);
+    if (activeRef.current !== chatId) { prependingRef.current = false; return; }
+    setHasMore(older.length >= 50);
+    setMessages((prev) => [...older.map((m) => ({ ...m })), ...prev]);
+    requestAnimationFrame(() => {
+      const now = logRef.current;
+      if (now) now.scrollTop = now.scrollHeight - prevHeight; // keep the same message under the cursor
+      prependingRef.current = false;
+    });
+  }, [base, hasMore, messages]);
+
+  const onLogScroll = useCallback(() => {
+    const el = logRef.current;
+    if (el && el.scrollTop < 60) void loadOlder();
+  }, [loadOlder]);
 
   const applyFrame = useCallback((frame: Frame) => {
     if (frame.type === "sent") {
@@ -69,7 +102,13 @@ export default function Chat({ base }: { base: string }) {
     let cancelled = false;
     setMessages([]);
     setConnected(false);
-    loadHistory(base, chatId).then((hist) => { if (!cancelled) setMessages(hist.map((m) => ({ ...m }))); });
+    setHasMore(false);
+    prependingRef.current = false;
+    loadHistory(base, chatId).then((hist) => {
+      if (cancelled) return;
+      setMessages(hist.map((m) => ({ ...m })));
+      setHasMore(hist.length >= 50); // a full page ⇒ there may be older messages
+    });
 
     function clearReconnect() {
       if (reconnectRef.current.timer != null) {
@@ -172,7 +211,7 @@ export default function Chat({ base }: { base: string }) {
               </span>
             </header>
 
-            <div className="mw-chat__log" ref={logRef}>
+            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
               {messages.length === 0 && (
                 <p className="mw-muted" style={{ margin: "auto" }}>no messages yet. say hi 👋</p>
               )}
