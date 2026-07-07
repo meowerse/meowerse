@@ -658,7 +658,14 @@ export default function Chat({ base }: { base: string }) {
   // show inline, or null on success (the modal closes + we select the chat).
   async function onDirect(username: string): Promise<string | null> {
     const r = await openDirect(base, username);
-    if (r.error || !r.chatId) return r.error === "user_not_found" ? "no user with that username" : (r.error ?? "could not start chat");
+    if (r.error || !r.chatId) {
+      const copy: Record<string, string> = {
+        user_not_found: "no user with that username",
+        cannot_dm_self: "that's you — pick someone else",
+        username_required: "enter a username",
+      };
+      return copy[r.error ?? ""] ?? r.error ?? "could not start chat";
+    }
     const cs = await listChats(base);
     setChats(cs);
     setActiveId(r.chatId);
@@ -731,6 +738,7 @@ export default function Chat({ base }: { base: string }) {
         chats={chats}
         activeId={activeId}
         online={online}
+        meId={me?.id}
         onSelect={setActiveId}
         onNewChatClick={() => setNewChatOpen(true)}
         loading={loadingChats}
@@ -848,7 +856,9 @@ export default function Chat({ base }: { base: string }) {
               {messages.map((m) => {
                 const mine = me != null && m.senderId === me.id;
                 const key = m.tempId ?? m.id;
-                const seen = mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
+                // "seen" only for DMs — in a group one member's read watermark
+                // isn't "everyone saw it", so we don't imply it. (§ audit #1)
+                const seen = !isMembered && mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
                 // Resolve the sender's name + avatar. Groups + channels look up the
                 // member map (falling back to the raw sender id if unknown, e.g. a
                 // since-left member); DMs keep the peer shortcut. Same for the

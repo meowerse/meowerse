@@ -811,7 +811,7 @@ describe("Conversation DO", () => {
       ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at, is_deleted, deleted_at) VALUES ('s4','u2','',4000,1,4000)");
       ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('s2','u1','👍',5000)");
     });
-    const results = await stub("c34").search("hello", "u1");
+    const results = await stub("c34").search("hello", "c34", "u1");
     // Case-insensitive (LIKE), newest-first → s2 before s1; unrelated + deleted excluded.
     expect(results.map((m) => m.id)).toEqual(["s2", "s1"]);
     // Reactions ride along, with `mine` for the viewer.
@@ -823,8 +823,8 @@ describe("Conversation DO", () => {
     await runInDurableObject(stub("c35"), async (_i: Conversation, ctx: DurableObjectState) => {
       ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('s5','u1','anything',1000)");
     });
-    expect(await stub("c35").search("", "u1")).toEqual([]);
-    expect(await stub("c35").search("   ", "u1")).toEqual([]);
+    expect(await stub("c35").search("", "c35", "u1")).toEqual([]);
+    expect(await stub("c35").search("   ", "c35", "u1")).toEqual([]);
   });
 
   it("search: LIKE wildcards in the query are escaped (match literally, not as wildcards)", async () => {

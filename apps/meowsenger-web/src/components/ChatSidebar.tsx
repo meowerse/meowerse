@@ -32,6 +32,7 @@ export function ChatSidebar({
   chats,
   activeId,
   online,
+  meId,
   onSelect,
   onNewChatClick,
   loading,
@@ -39,6 +40,8 @@ export function ChatSidebar({
   chats: ChatSummary[];
   activeId: string | null;
   online: Set<string>;
+  // The signed-in user's id — to prefix their own last message with "you:".
+  meId?: string;
   onSelect: (id: string) => void;
   // Open the new-chat modal (Direct | Group). The modal lives in Chat.tsx.
   onNewChatClick: () => void;
@@ -103,7 +106,11 @@ export function ChatSidebar({
                   </span>
                   <span className="mw-chatrow__time">{relTime(c.lastActivity)}</span>
                 </span>
-                <span className="mw-chatrow__preview">{c.lastMessage ?? "no messages yet"}</span>
+                <span className="mw-chatrow__preview">
+                  {c.lastMessage
+                    ? <>{c.lastSenderId && c.lastSenderId === meId && <span className="mw-chatrow__you">you: </span>}{c.lastMessage}</>
+                    : "no messages yet"}
+                </span>
               </span>
               {unread && <span className="mw-chatrow__unread">{c.unreadCount}</span>}
             </button>

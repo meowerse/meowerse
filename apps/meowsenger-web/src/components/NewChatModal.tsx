@@ -13,6 +13,7 @@ const ERROR_COPY: Record<string, string> = {
   user_not_found: "no user with that username",
   bad_slug: "slug must be 3–32 chars: a–z, 0–9, -",
   slug_taken: "that slug is taken",
+  too_many_members: "too many members at once (max 200)",
   network: "couldn't reach the server",
 };
 

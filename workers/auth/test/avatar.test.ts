@@ -199,6 +199,26 @@ test("falls back to global fetch when deps.fetch is unset", async () => {
   }
 });
 
+test("a traversal/absolute file_path is rejected → 404, image bytes never fetched", async () => {
+  // Defense-in-depth: even though Telegram controls file_path, a value that could
+  // escape the /file/bot<token>/ prefix must be refused before we build the URL.
+  for (const bad of ["../../etc/passwd", "/etc/passwd", "photos/../../x", "http://evil/x", "a//b"]) {
+    const urls: string[] = [];
+    const deps = {
+      getDb: () => routedDb([linkRoute(42)]),
+      fetch: fakeFetch({
+        photos: { ok: true, result: { total_count: 1, photos: [[{ file_id: "big", width: 640, height: 640 }]] } },
+        file: { ok: true, result: { file_path: bad } },
+        urls,
+      }),
+    } as unknown as Deps;
+    const res = await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, deps, ACCT, CORS);
+    expect(res.status).toBe(404);
+    // getUserProfilePhotos + getFile ran, but the image byte fetch never did.
+    expect(urls.some((u) => u.includes("/file/bot"))).toBe(false);
+  }
+});
+
 test("image fetch not ok → 404", async () => {
   const urls: string[] = [];
   const deps = {

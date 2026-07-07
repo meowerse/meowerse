@@ -106,7 +106,7 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
               <span className="mw-setting__hint mw-muted">
                 {notifDenied
                   ? "blocked in your browser — re-enable notifications for this site in site settings."
-                  : "get a desktop notification when a message arrives while this tab is in the background."}
+                  : "get a desktop notification when a message arrives in the chat you have open while this tab is in the background."}
               </span>
             </div>
             {notifGranted ? (

@@ -119,6 +119,9 @@ async function handleCreateGroup(
   if (!name) return json({ error: "name_required" }, 400, cors, { "Cache-Control": "no-store" });
   const type = body.type === "channel" ? "channel" : "group";
   const usernames = Array.isArray(body.members) ? body.members.map((u) => String(u).trim()).filter(Boolean) : [];
+  // Bound the initial roster: each username costs a D1 lookup below, so cap the
+  // fan-out (a group can still grow past this via addMember one at a time).
+  if (usernames.length > 200) return json({ error: "too_many_members" }, 400, cors, { "Cache-Control": "no-store" });
   const memberIds: string[] = [];
   for (const uname of usernames) {
     const uid = await userIdByName(db, uname);
@@ -172,7 +175,7 @@ export async function handleSearch(
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ messages: [] }, 200, cors, { "Cache-Control": "no-store" });
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
-  const messages = await stub.search(q, me);
+  const messages = await stub.search(q, chatId, me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
 }
 

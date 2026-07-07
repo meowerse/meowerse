@@ -67,10 +67,14 @@ export async function handleAvatar(
   // 2) Resolve the file path.
   const fileRes = await doFetch(`${api}/getFile?file_id=${fileId}`);
   const file = (await fileRes.json()) as { ok?: boolean; result?: { file_path?: string } };
-  if (!file.ok || !file.result?.file_path) return notFound();
+  const filePath = file.result?.file_path;
+  // Defense-in-depth: the file_path is Telegram-controlled but flows into a URL —
+  // reject anything that could escape the /file/bot<token>/ prefix (traversal, absolute,
+  // scheme, or a host of its own). Legit paths look like "photos/file_123.jpg".
+  if (!file.ok || !filePath || filePath.startsWith("/") || filePath.includes("..") || filePath.includes(":") || filePath.includes("//")) return notFound();
 
   // 3) Stream the image bytes through (only ever on a cache miss).
-  const imgRes = await doFetch(`https://api.telegram.org/file/bot${token}/${file.result.file_path}`);
+  const imgRes = await doFetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
   if (!imgRes.ok) return notFound();
 
   const response = new Response(imgRes.body, {

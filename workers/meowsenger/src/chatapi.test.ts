@@ -278,15 +278,15 @@ describe("handleHistory", () => {
 
 // ---- Slice 9: within-chat search ----
 
-/** Fake CONVERSATION namespace whose `search` records its (query, viewerId) and
- *  returns a canned page — lets a test assert both the gate and the passthrough. */
+/** Fake CONVERSATION namespace whose `search` records its (query, chatId, viewerId)
+ *  and returns a canned page — lets a test assert both the gate and the passthrough. */
 function searchEnv(results: unknown[] = []) {
-  const calls: Array<{ query: string; viewerId?: string }> = [];
+  const calls: Array<{ query: string; chatId?: string; viewerId?: string }> = [];
   const CONVERSATION = {
     idFromName: (name: string) => name,
     get: () => ({
-      search: async (query: string, viewerId?: string) => {
-        calls.push({ query, viewerId });
+      search: async (query: string, chatId?: string, viewerId?: string) => {
+        calls.push({ query, chatId, viewerId });
         return results;
       },
     }),
@@ -325,7 +325,7 @@ describe("handleSearch", () => {
     const res = await handleSearch(cookieReq("https://x/api/chats/c1/search?q=hello", "s1"), env, db, now, "c1", cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: canned });
-    expect(calls).toEqual([{ query: "hello", viewerId: "u1" }]);
+    expect(calls).toEqual([{ query: "hello", chatId: "c1", viewerId: "u1" }]);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });

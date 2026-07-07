@@ -626,7 +626,7 @@ export class Conversation extends DurableObject<Env> {
    * can't broaden the scan. An empty/blank query returns []. Membership is gated at
    * the route (only a member's request reaches this RPC).
    */
-  async search(query: string, viewerId?: string, limit = 30): Promise<Wire[]> {
+  async search(query: string, chatId: string, viewerId?: string, limit = 30): Promise<Wire[]> {
     const q = (query ?? "").trim();
     if (!q) return [];
     const capped = Math.max(1, Math.min(Number(limit) || 30, 100));
@@ -642,7 +642,8 @@ export class Conversation extends DurableObject<Env> {
         capped,
       )
       .toArray();
-    const chatId = this.chatIdOf();
+    // chatId is passed in (not recovered from a live socket) so a REST search with
+    // no open connection still stamps the right chatId on each result. (§ audit #5)
     const wires = rows.map((r: Row) => this.rowToWire(r, chatId));
     this.attachReactions(wires, viewerId);
     return wires;
