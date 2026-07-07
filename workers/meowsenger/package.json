@@ -1,0 +1,26 @@
+{
+  "name": "@meowerse/meowsenger-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "wrangler deploy --dry-run --outdir /tmp/wr-meowsenger",
+    "test": "vitest run --coverage",
+    "provision": "bun scripts/provision.ts",
+    "secret:client-secret": "wrangler secret put OIDC_CLIENT_SECRET",
+    "d1:schema": "wrangler d1 execute meowsenger --remote --file schema.sql",
+    "d1:schema-local": "wrangler d1 execute meowsenger --local --file schema.sql"
+  },
+  "dependencies": {
+    "@meowerse/auth": "workspace:*",
+    "@meowerse/auth-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260625.1",
+    "@vitest/coverage-v8": "^4.1.9",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.105.0"
+  }
+}

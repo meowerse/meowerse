@@ -5,7 +5,7 @@
     "": {
       "name": "meowerse",
       "devDependencies": {
-        "turbo": "^2.10.0",
+        "turbo": "^2.10.3",
         "typescript": "^6.0.3",
       },
     },
@@ -140,6 +140,20 @@
       "version": "0.0.0",
       "devDependencies": {
         "wrangler": "^4.104.0",
+      },
+    },
+    "workers/meowsenger": {
+      "name": "@meowerse/meowsenger-worker",
+      "version": "0.0.0",
+      "dependencies": {
+        "@meowerse/auth": "workspace:*",
+        "@meowerse/auth-shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260625.1",
+        "@vitest/coverage-v8": "^4.1.9",
+        "vitest": "^4.1.9",
+        "wrangler": "^4.105.0",
       },
     },
   },
@@ -459,6 +473,8 @@
     "@meowerse/auth-worker": ["@meowerse/auth-worker@workspace:workers/auth"],
 
     "@meowerse/edge-worker": ["@meowerse/edge-worker@workspace:workers/edge"],
+
+    "@meowerse/meowsenger-worker": ["@meowerse/meowsenger-worker@workspace:workers/meowsenger"],
 
     "@meowerse/ts-shared": ["@meowerse/ts-shared@workspace:packages/ts-shared"],
 

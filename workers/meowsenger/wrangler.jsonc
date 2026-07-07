@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // meowsenger realtime backend. REST + BFF this slice; Durable Objects in Slice 2.
+  //
+  // SECRETS (never in this file): bunx wrangler secret put OIDC_CLIENT_SECRET
+  // D1: created via `wrangler d1 create meowsenger`; paste database_id below.
+  //
+  // NO smart placement: this worker fronts D1 (read-replicated) and, later,
+  // Durable Objects (located near first access) — edge placement is correct.
+  "name": "meowsenger",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "vars": {
+    "OIDC_ISSUER": "https://auth-api.alxnko.eu.org",
+    "OIDC_REDIRECT_URI": "https://meowsenger-api.alxnko.eu.org/auth/callback",
+    "WEB_ORIGIN": "https://meowsenger.alxnko.eu.org",
+    "CORS_ORIGINS": "https://meowsenger.alxnko.eu.org,http://localhost:4321"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "meowsenger", "database_id": "PLACEHOLDER_SET_IN_TASK_13" }
+  ],
+  "routes": [{ "pattern": "meowsenger-api.alxnko.eu.org", "custom_domain": true }]
+}
