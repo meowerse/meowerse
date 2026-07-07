@@ -12,7 +12,7 @@ export default function LoginForm({ base, turnstileSiteKey }: { base: string; tu
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (turnstileSiteKey && !token) { setError("please complete the challenge below."); return; }
+    if (turnstileSiteKey && !token) { setError("just a moment — verifying you're human. try again."); return; }
     setError(""); setBusy(true);
     try {
       const res = await postLogin(base, username, password, token || undefined);

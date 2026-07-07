@@ -21,7 +21,10 @@ resource "cloudflare_turnstile_widget" "auth" {
   account_id = var.cloudflare_account_id
   name       = "meowerse auth — login + signup"
   domains    = ["auth.alxnko.eu.org"]
-  mode       = "managed"
+  # invisible: no checkbox — the challenge runs in the background and a token is
+  # produced on widget render (escalates to interactive only for suspicious
+  # traffic). Turnstile.tsx captures that token via the callback.
+  mode = "invisible"
 }
 
 # No cloudflare_workers_secret resource exists in provider v5, so push the secret
