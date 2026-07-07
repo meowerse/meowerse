@@ -13,11 +13,13 @@
     "provision": "bun scripts/provision.ts",
     "secret:client-secret": "wrangler secret put OIDC_CLIENT_SECRET",
     "d1:schema": "wrangler d1 execute meowsenger --remote --file schema.sql",
-    "d1:schema-local": "wrangler d1 execute meowsenger --local --file schema.sql"
+    "d1:schema-local": "wrangler d1 execute meowsenger --local --file schema.sql",
+    "d1:schema-slice5": "wrangler d1 execute meowsenger --remote --file schema-slice5.sql"
   },
   "dependencies": {
     "@meowerse/auth": "workspace:*",
-    "@meowerse/auth-shared": "workspace:*"
+    "@meowerse/auth-shared": "workspace:*",
+    "@meowerse/ts-shared": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.0",

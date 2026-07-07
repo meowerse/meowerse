@@ -48,10 +48,11 @@ function stub(chatId: string): DurableObjectStub<Conversation> {
   return CONVERSATION.get(CONVERSATION.idFromName(chatId));
 }
 
-/** Open a WebSocket to the DO's fetch() and accept the client end. */
-async function connect(chatId: string, userId: string): Promise<WebSocket> {
+/** Open a WebSocket to the DO's fetch() and accept the client end. An optional
+ *  role mirrors what the gated router forwards (?role=); defaults to 'member'. */
+async function connect(chatId: string, userId: string, role?: string): Promise<WebSocket> {
   const res = await stub(chatId).fetch(
-    `https://do/ws?user=${userId}&chat=${chatId}`,
+    `https://do/ws?user=${userId}&chat=${chatId}${role ? `&role=${role}` : ""}`,
     { headers: { Upgrade: "websocket" } },
   );
   expect(res.status).toBe(101);
@@ -457,6 +458,61 @@ describe("Conversation DO", () => {
     expect(row?.body).toBe("old own msg");
 
     wa.close();
+  });
+
+  // ---- Slice 5: admin/owner message-delete (role forwarded by the router) ----
+
+  it("admin-delete: a role=admin socket deletes a PEER's message → {deleted} broadcast + historyFor isDeleted", async () => {
+    await seedChat("c20");
+    // A peer's (u2) message, deliberately OLD (48h) to prove admins bypass the 24h window.
+    await runInDurableObject(stub("c20"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('am1','u2','peer message',?)",
+        Date.now() - 48 * 3600_000,
+      );
+    });
+    // u1 connects as an admin (as the router would forward after reading D1).
+    const admin = await connect("c20", "u1", "admin");
+    const peer = await connect("c20", "u2");
+
+    const adminGot = waitFor(admin, (t) => t.includes('"deleted"'));
+    const peerGot = waitFor(peer, (t) => t.includes('"deleted"'));
+    admin.send(JSON.stringify({ type: "delete", id: "am1" }));
+
+    const [adminText, peerText] = await Promise.all([adminGot, peerGot]);
+    expect(JSON.parse(adminText)).toMatchObject({ type: "deleted", id: "am1" });
+    expect(JSON.parse(peerText)).toMatchObject({ type: "deleted", id: "am1" });
+
+    const history = await stub("c20").historyFor("c20", null);
+    const row = history.find((m) => m.id === "am1");
+    expect(row?.isDeleted).toBe(true);
+    expect(row?.body).toBe("");
+
+    admin.close();
+    peer.close();
+  });
+
+  it("admin-delete: a role=member socket deleting a PEER's message → {error, cannot_delete}, not deleted", async () => {
+    await seedChat("c21");
+    await runInDurableObject(stub("c21"), async (_i: Conversation, ctx: DurableObjectState) => {
+      // A fresh peer message (well within 24h) — a plain member STILL can't delete it.
+      ctx.storage.sql.exec(
+        "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('am2','u2','peer message',?)",
+        Date.now(),
+      );
+    });
+    // u1 connects as a plain member (default role).
+    const member = await connect("c21", "u1", "member");
+    const err = waitFor(member, (t) => t.includes('"error"'));
+    member.send(JSON.stringify({ type: "delete", id: "am2" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "cannot_delete" });
+
+    const history = await stub("c21").historyFor("c21", null);
+    const row = history.find((m) => m.id === "am2");
+    expect(row?.isDeleted).toBe(false);
+    expect(row?.body).toBe("peer message");
+
+    member.close();
   });
 
   it("alarm: hard-purges soft-deleted rows aged past the 24h window", async () => {

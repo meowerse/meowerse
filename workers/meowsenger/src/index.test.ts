@@ -70,6 +70,31 @@ describe("router", () => {
     const res = await handle(req("GET", "/api/chats/c1/messages"), env, d);
     expect(res.status).toBe(401);
   });
+
+  // Slice 5 route wiring: each new endpoint reaches its handler (asserted via the
+  // no-session 401, which every mutation returns before touching the DB).
+  const noSession = () => ({ getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never);
+  it("GET /api/slug-available is routed → 401 with no session", async () => {
+    expect((await handle(req("GET", "/api/slug-available?slug=abc"), env, noSession())).status).toBe(401);
+  });
+  it("GET /api/chats/:id/members is routed → 401", async () => {
+    expect((await handle(req("GET", "/api/chats/g1/members"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/members is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/members"), env, noSession())).status).toBe(401);
+  });
+  it("DELETE /api/chats/:id/members/:userId is routed → 401", async () => {
+    expect((await handle(req("DELETE", "/api/chats/g1/members/u2"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/members/:userId/role is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/members/u2/role"), env, noSession())).status).toBe(401);
+  });
+  it("POST /api/chats/:id/leave is routed → 401", async () => {
+    expect((await handle(req("POST", "/api/chats/g1/leave"), env, noSession())).status).toBe(401);
+  });
+  it("PATCH /api/chats/:id is routed → 401", async () => {
+    expect((await handle(req("PATCH", "/api/chats/g1"), env, noSession())).status).toBe(401);
+  });
 });
 
 describe("GET /ws upgrade", () => {
@@ -83,12 +108,13 @@ describe("GET /ws upgrade", () => {
       },
     });
   const session = { id: "s1", user_id: "u1", access_token: "a", refresh_token: null, access_exp: 1, created_at: 1, expires_at: 1e12 };
-  const depsWith = (over: Partial<{ session: unknown; member: boolean }> = {}) =>
+  const depsWith = (over: Partial<{ session: unknown; member: boolean; role: string }> = {}) =>
     ({
       getDb: () => ({
         async first(sql: string) {
           if (sql.includes("FROM sessions")) return over.session;
-          if (sql.includes("FROM chat_members")) return over.member ? { ok: 1 } : undefined;
+          // getRole (membership gate + role forwarding) reads `role`.
+          if (sql.includes("FROM chat_members")) return over.member ? { role: over.role ?? "member" } : undefined;
           return undefined;
         },
         async all() { return []; },
@@ -126,10 +152,13 @@ describe("GET /ws upgrade", () => {
         get: () => ({ fetch: (r: Request) => { forwardedUrl = r.url; return stubbed; } }),
       },
     } as unknown as Env;
-    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true }));
+    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin" }));
     expect(res).toBe(stubbed);
     expect(forwardedUrl).toContain("user=u1");
     expect(forwardedUrl).toContain("chat=c1");
+    // Slice 5: the caller's D1-derived role is forwarded so the DO can authorize
+    // admin/owner message-delete without a second membership read.
+    expect(forwardedUrl).toContain("role=admin");
   });
 });
 

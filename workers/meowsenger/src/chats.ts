@@ -1,4 +1,28 @@
+import { slugify } from "@meowerse/ts-shared";
 import type { DbClient, Row } from "./types";
+
+/** A chat member as surfaced to the member drawer (JOIN chat_members × users). */
+export interface MemberView {
+  userId: string;
+  username: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+  joinedAt: number;
+}
+
+/** Roles in strength order — index = rank, so `owner` > `admin` > `member`. */
+export type Role = "owner" | "admin" | "member";
+const ROLE_RANK: Record<string, number> = { owner: 2, admin: 1, member: 0 };
+/** True iff `role` is at least `min` in the rank order (unknown roles → false). */
+export function roleAtLeast(role: string | null | undefined, min: Role): boolean {
+  if (role == null) return false;
+  const r = ROLE_RANK[role];
+  return r != null && r >= ROLE_RANK[min];
+}
+
+/** Slug format shared by validation + availability checks. */
+export const SLUG_RE = /^[a-z0-9-]{3,32}$/;
 
 export interface ChatSummary {
   id: string; type: string; name: string | null;
@@ -93,4 +117,133 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
 export async function isMember(db: DbClient, chatId: string, userId: string): Promise<boolean> {
   const r = await db.first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
   return !!r;
+}
+
+// ---- Slice 5: groups, roles, member views, metadata ----
+
+/** The caller's role in a chat, or null if not a member. Authoritative — every
+ *  mutation gates on this, never on a client-sent role. */
+export async function getRole(db: DbClient, chatId: string, userId: string): Promise<Role | null> {
+  const r = await db.first("SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
+  if (!r) return null;
+  const role = String(r.role);
+  return role === "owner" || role === "admin" || role === "member" ? role : "member";
+}
+
+/** Is a slug free? (nothing else already claims it). Empty/undefined → false. */
+export async function slugAvailable(db: DbClient, slug: string): Promise<boolean> {
+  if (!slug) return false;
+  const r = await db.first("SELECT 1 AS ok FROM chats WHERE slug = ?", [slug]);
+  return !r;
+}
+
+/** Normalize a slug via the shared slugify, then validate the format. Returns the
+ *  normalized slug on success or null if it doesn't fit `^[a-z0-9-]{3,32}$`. */
+export function normalizeSlug(raw: string): string | null {
+  const s = slugify(raw);
+  return SLUG_RE.test(s) ? s : null;
+}
+
+export interface CreateGroupInput {
+  name: string;
+  creatorId: string;
+  memberIds: string[];
+  visibility?: string;
+  slug?: string | null;
+}
+
+/**
+ * Create a named group chat: the creator becomes `owner`, every other member is
+ * added as `member`. Slug (if given) is normalized + uniqueness-checked. Returns
+ * the new chat id, or `{error}` on bad input (invalid/taken slug).
+ */
+export async function createGroup(
+  db: DbClient,
+  input: CreateGroupInput,
+  now: number,
+): Promise<{ id: string } | { error: string }> {
+  const name = input.name.trim();
+  if (!name) return { error: "name_required" };
+  const visibility = input.visibility === "public" ? "public" : "private";
+
+  let slug: string | null = null;
+  if (input.slug != null && String(input.slug).trim() !== "") {
+    const normalized = normalizeSlug(String(input.slug));
+    if (!normalized) return { error: "bad_slug" };
+    if (!(await slugAvailable(db, normalized))) return { error: "slug_taken" };
+    slug = normalized;
+  }
+
+  const id = crypto.randomUUID();
+  await db.run(
+    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, 'group', ?, ?, ?, ?, NULL, ?, ?)",
+    [id, name, input.creatorId, now, now, visibility, slug],
+  );
+  await db.run(
+    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'owner', 0, NULL, ?)",
+    [id, input.creatorId, now],
+  );
+  // Distinct members other than the creator, added as plain members.
+  const others = [...new Set(input.memberIds)].filter((uid) => uid !== input.creatorId);
+  for (const uid of others) {
+    await db.run(
+      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+      [id, uid, now],
+    );
+  }
+  return { id };
+}
+
+/** Members of a chat with their user identity, oldest-joined first. */
+export async function listMembers(db: DbClient, chatId: string): Promise<MemberView[]> {
+  const rows = await db.all(
+    `SELECT m.user_id, m.role, m.joined_at,
+            u.username, u.display_name, u.avatar_url
+     FROM chat_members m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.chat_id = ? ORDER BY m.joined_at ASC`,
+    [chatId],
+  );
+  return rows.map((r: Row) => ({
+    userId: String(r.user_id),
+    username: String(r.username),
+    displayName: r.display_name == null ? null : String(r.display_name),
+    avatarUrl: r.avatar_url == null ? null : String(r.avatar_url),
+    role: String(r.role),
+    joinedAt: Number(r.joined_at),
+  }));
+}
+
+/** Rename a chat (authz enforced by the caller). */
+export async function renameChat(db: DbClient, chatId: string, name: string): Promise<void> {
+  await db.run("UPDATE chats SET name = ? WHERE id = ?", [name.trim(), chatId]);
+}
+
+/** Set a chat's visibility ('public'|'private'; anything else clamps to private). */
+export async function setVisibility(db: DbClient, chatId: string, visibility: string): Promise<void> {
+  const v = visibility === "public" ? "public" : "private";
+  await db.run("UPDATE chats SET visibility = ? WHERE id = ?", [v, chatId]);
+}
+
+/**
+ * Set (or clear) a chat's slug. `null`/empty clears it. A non-empty value is
+ * normalized + validated + uniqueness-checked. Returns `{ok:true, slug}` or
+ * `{ok:false, error}` — never throws on bad input.
+ */
+export async function setSlug(
+  db: DbClient,
+  chatId: string,
+  raw: string | null,
+): Promise<{ ok: true; slug: string | null } | { ok: false; error: string }> {
+  if (raw == null || String(raw).trim() === "") {
+    await db.run("UPDATE chats SET slug = NULL WHERE id = ?", [chatId]);
+    return { ok: true, slug: null };
+  }
+  const normalized = normalizeSlug(String(raw));
+  if (!normalized) return { ok: false, error: "bad_slug" };
+  // Free, or already owned by THIS chat (idempotent re-set).
+  const holder = await db.first("SELECT id FROM chats WHERE slug = ?", [normalized]);
+  if (holder && String(holder.id) !== chatId) return { ok: false, error: "slug_taken" };
+  await db.run("UPDATE chats SET slug = ? WHERE id = ?", [normalized, chatId]);
+  return { ok: true, slug: normalized };
 }

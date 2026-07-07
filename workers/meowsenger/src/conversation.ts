@@ -6,6 +6,10 @@ import { markRead, mirrorLastMessage } from "./chats";
 interface Attach {
   userId: string;
   chatId: string;
+  /** The user's role in THIS chat, forwarded (already gated) by the router. Used
+   *  for admin/owner message-delete. DM sockets carry 'member' → no behavior
+   *  change for DMs. Absent on legacy sockets → treated as 'member'. */
+  role?: string;
 }
 /** A short quoted snippet of the message a reply points at. */
 interface ReplySnippet {
@@ -57,11 +61,15 @@ export class Conversation extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
-  /** Router forwards the upgrade here with ?user=<id>&chat=<id> (already gated). */
+  /** Router forwards the upgrade here with ?user=<id>&chat=<id>&role=<role> (already gated). */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const userId = url.searchParams.get("user");
     const chatId = url.searchParams.get("chat");
+    // Role is trusted here because ONLY the gated router path can reach the DO,
+    // and it derives the role from D1 (never from the client). Default 'member'
+    // for legacy/DM sockets so behavior is unchanged when it's absent.
+    const role = url.searchParams.get("role") || "member";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400 });
 
     const pair = new WebSocketPair();
@@ -70,7 +78,7 @@ export class Conversation extends DurableObject<Env> {
     const server = pair[1];
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, chatId } satisfies Attach);
+    server.serializeAttachment({ userId, chatId, role } satisfies Attach);
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
     // Presence: derive who was online BEFORE this socket joined (exclude the
@@ -271,8 +279,11 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
-   * Soft-delete an own message within the 24h window. Ownership + window +
-   * not-already-deleted are enforced against the stored row. The row survives with
+   * Soft-delete a message. Allowed when EITHER the caller owns it and it's within
+   * the 24h window (Slice 4), OR the caller is an owner/admin of the chat (Slice 5
+   * — any message, any age; a group moderation power). The role is taken from the
+   * socket's Attach (set by the gated router from D1), never from the client.
+   * not-already-deleted is enforced against the stored row. The row survives with
    * is_deleted=1 + blank body (history renders a placeholder); an alarm hard-purges
    * it once it ages out. Broadcast {deleted} to ALL; on failure {error, cannot_delete}.
    */
@@ -286,7 +297,10 @@ export class Conversation extends DurableObject<Env> {
       .toArray()[0];
     const own = row && String(row.sender_id) === att.userId;
     const within = row && Date.now() - Number(row.created_at) <= DELETE_WINDOW_MS;
-    if (!row || Number(row.is_deleted) === 1 || !own || !within) {
+    const isAdmin = att.role === "owner" || att.role === "admin";
+    // Own+recent OR moderator. Admins may delete any message at any time.
+    const allowed = (own && within) || isAdmin;
+    if (!row || Number(row.is_deleted) === 1 || !allowed) {
       ws.send(JSON.stringify({ type: "error", code: "cannot_delete" }));
       return;
     }

@@ -17,7 +17,7 @@ function allowlist(env: Env): string[] {
 export function corsHeaders(origin: string | null, env: Env): Record<string, string> {
   const h: Record<string, string> = {
     "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     Vary: "Origin",
   };
