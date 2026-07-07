@@ -24,7 +24,9 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       return await handle(request, env, prodDeps(env));
-    } catch {
+    } catch (e) {
+      // Log server-side (surfaces in `wrangler tail`); client still gets a generic 500.
+      console.error("meowsenger fetch error:", (e as Error)?.stack ?? String(e));
       return json({ error: "internal error" }, 500, corsHeaders(request.headers.get("Origin"), env));
     }
   },

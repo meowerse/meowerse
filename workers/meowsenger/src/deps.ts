@@ -22,7 +22,9 @@ export function prodDeps(env: Env): Deps {
         clientSecret: env.OIDC_CLIENT_SECRET,
         redirectUri: env.OIDC_REDIRECT_URI!,
       })),
-    fetchFn: fetch,
+    // Bind to globalThis: workerd throws "Illegal invocation" if `fetch` is
+    // called as a method (deps.fetchFn(...)) with `this` !== the global.
+    fetchFn: fetch.bind(globalThis),
     now: () => Date.now(),
     newId: () => b64url(crypto.getRandomValues(new Uint8Array(32))),
   };
