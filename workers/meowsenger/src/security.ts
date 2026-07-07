@@ -27,3 +27,15 @@ export function corsHeaders(origin: string | null, env: Env): Record<string, str
 export function json(body: unknown, status: number, cors: Record<string, string>, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors, ...extra } });
 }
+
+/** Parse a Cookie header into a name→value map (never throws). */
+export function readCookies(header: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
