@@ -30,6 +30,14 @@ forgot something").
       hard-redirects to `/app`). Needs `state` plumbing to preserve the return URL. (Signed-in
       users work fully.)
 
+## Documented follow-ups (post-v1, not blocking the deploy)
+- [ ] **Global cross-chat search** — Slice 9 shipped within-chat search (DO RPC). Global needs a D1
+      FTS mirror or a per-user index DO (bodies are deliberately DO-only). 
+- [ ] **Full Web Push** — Slice 9 shipped backgrounded `Notification` (tab open). Tab-closed push
+      needs a service worker + VAPID keys + push-subscription storage + the DO sending pushes.
+- [ ] **Per-DO message erasure on account delete** — account delete removes D1 data; message bodies
+      in per-chat DO SQLite persist under the raw senderId. Full erasure = fan-out to each DO.
+
 ## Cross-cutting (do during the relevant slice / finalize)
 - [ ] **Per-slice correctness audit vs NextMeowsenger** — reply (quote + jump), forward (N targets
       + badge), edit (1h window), delete (perms + soft), roles (owner-unremovable), channels/invites

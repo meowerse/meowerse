@@ -452,32 +452,35 @@ events to bots), but auto-refreshes on login + the fallback covers the gap.
 
 ---
 
-## 11. Deployment wiring (concrete)
+## 11. Deployment wiring (concrete — SINGLE-HOST, as built)
 
-Service keys: **`meowsenger`** (worker) and **`meowsenger-web`** (app). Follow the documented
-"add one entry per service" recipe:
+**Both apps are single-host** (one Worker serves the Astro UI as static assets + the API/BFF; the
+frontend consolidation happened in slice 1 and auth's in the auth-consolidation track):
 
-- **Frontend:** `apps/meowsenger-web` (`@meowerse/meowsenger-web`), Cloudflare worker
-  `meowsenger-web`, `wrangler.jsonc` `assets: { directory: "./dist" }`, route
-  `meowsenger.alxnko.eu.org` `custom_domain: true` (no `dns.tf` edit).
-- **Backend:** `workers/meowsenger` (`@meowerse/meowsenger-worker`), Cloudflare worker
-  `meowsenger`, route `meowsenger-api.alxnko.eu.org` `custom_domain: true`, bindings:
-  `d1_databases` (`DB` → the `meowsenger` D1), `durable_objects` (`CONVERSATION` → `Conversation`
-  class) + a `migrations` block declaring `new_sqlite_classes: ["Conversation"]`,
-  `compatibility_flags: ["nodejs_compat"]`. **No** Smart Placement.
-- **Deploy scripts:** `infra/cloudflare/deploy-meowsenger.sh` (clone of `deploy-auth.sh`) and
-  `deploy-meowsenger-web.sh` (clone of `deploy-auth-web.sh`).
-- **`infra/services.sh`:** add `meowsenger)` → `workers/meowsenger packages/ts-shared
-  packages/auth-shared` and `meowsenger-web)` → `apps/meowsenger-web`.
-- **`justfile`:** `deploy-meowsenger` + `deploy-meowsenger-web` recipes.
-- **`infra/cloudflare/deploy.tf`:** two entries in `local.services`.
-- **`infra/cloudflare/waf.tf`:** add `meowsenger-api.alxnko.eu.org` to `var.waf_api_hosts`.
-- **`.github/workflows/deploy.yml`:** changed-service detection + deploy steps (workflow_dispatch).
-- **Secrets (set once via `wrangler secret put`):** session-signing secret, OIDC management token
-  (for `provision`), OIDC client secret (confidential). No Turso secrets (D1 is a binding).
+- **meowsenger** — service key `meowsenger`. ONE worker `meowsenger` (`workers/meowsenger`,
+  `@meowerse/meowsenger-worker`) on `meowsenger.alxnko.eu.org` (`custom_domain`), with
+  `assets: { directory: "../../apps/meowsenger-web/dist", binding: "ASSETS" }`, `main: src/index.ts`,
+  bindings: `d1_databases` (`DB` → the `meowsenger` D1), `durable_objects` (`CONVERSATION` →
+  `Conversation`) + `migrations` `new_sqlite_classes: ["Conversation"]`. **No** Smart Placement, **no**
+  `nodejs_compat` (D1 is a binding, no libsql). `apps/meowsenger-web` is a build-only Astro app (no
+  own wrangler.jsonc). `deploy-meowsenger.sh` builds the UI then deploys the worker.
+- **auth** — service key `auth`. ONE worker `workers/auth` on `auth.alxnko.eu.org` (`custom_domain`)
+  with `assets` → `apps/auth-web/dist` + all OIDC/API routes; **issuer = `https://auth.alxnko.eu.org`**.
+  `auth-api.alxnko.eu.org` retired. `apps/auth-web` is build-only. `deploy-auth.sh` builds the UI then
+  deploys the worker.
+- **infra:** `infra/services.sh` (`meowsenger` = `workers/meowsenger apps/meowsenger-web
+  packages/auth-shared packages/auth-sdk`; `auth` = `workers/auth apps/auth-web packages/auth-shared`),
+  `deploy.tf` `local.services` (one entry each), `justfile` (`deploy-meowsenger`, `deploy-auth`),
+  `waf.tf` `waf_api_hosts` = `[auth.alxnko.eu.org, api.meow.alxnko.eu.org, meowsenger.alxnko.eu.org]`,
+  `deploy.yml` (one build+deploy step each). Custom domains via wrangler (no `dns.tf` edit).
+- **D1 schema:** `workers/meowsenger/schema.sql` (fresh DB) + one-shot additive `schema-sliceN.sql`
+  files (`d1:schema-slice5`, `d1:schema-slice7`) applied once at deploy for the columns/tables added
+  after launch (chats `visibility`/`slug`/`invite_code`, `users.allow_auto_group_add`,
+  `join_requests`). The `Conversation` DO's own SQLite (messages/reactions) is created per-room in
+  its constructor.
+- **Secrets:** meowsenger worker = `OIDC_CLIENT_SECRET`. auth worker = its existing set
+  (AUTH_SIGNING_KEYS, STATE_SECRET, DATABASE_URL/AUTH_TOKEN, TELEGRAM_BOT_TOKEN, TURNSTILE_SECRET_KEY…).
 - **turbo.json / root package.json:** nothing — workspaces are globbed.
-
-The first deploy also runs `wrangler d1 create meowsenger` and applies the D1 schema.
 
 ---
 
