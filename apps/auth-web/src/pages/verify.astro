@@ -5,11 +5,13 @@ const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth-api.alxnko.eu.
 ---
 
 <Layout title="Verify with Telegram · Meowerse">
-  <h1>Verify your account</h1>
-  <p>Link your Telegram to verify your Meowerse account. Some apps only accept
-    verified accounts; verifying also lets you sign in with Telegram.</p>
-  <TelegramButton client:load base={base} kind="VERIFY_EXISTING" label="Verify with Telegram" />
-  <p class="muted">Open the bot, tap <strong>Start</strong>, and you’ll be verified
-    automatically. You’ll return here when it’s done.</p>
-  <p><a href="/account">Back to account</a></p>
+  <div class="mw-stack mw-narrow">
+    <h1>Verify your account</h1>
+    <p class="mw-muted">Link your Telegram to verify your Meowerse account. Some apps only accept
+      verified accounts; verifying also lets you sign in with Telegram.</p>
+    <TelegramButton client:load base={base} kind="VERIFY_EXISTING" label="Verify with Telegram" />
+    <p class="mw-muted">Open the bot, tap <strong>Start</strong>, and you’ll be verified
+      automatically. You’ll return here when it’s done.</p>
+    <p><a href="/account">Back to account</a></p>
+  </div>
 </Layout>

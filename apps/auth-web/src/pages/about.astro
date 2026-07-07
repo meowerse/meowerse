@@ -1,9 +1,9 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import { Card, ContactLinks } from "@meowerse/ui";
+import { Card } from "@meowerse/ui";
 ---
 <Layout title="about · meowerse">
-  <div class="mw-stack">
+  <div class="mw-prose">
     <h1>about meowerse accounts</h1>
     <p>Meowerse accounts is a single sign-on for the meowerse apps. Create one account, optionally verify it with Telegram, and use it to sign in across meowerse — deciding, per app, exactly which of your data it may see.</p>
     <p class="mw-muted">It's a personal project by alxnko, run on a best-effort basis on free-tier infrastructure. It is not a company, it shows no ads, and it does not track you.</p>
@@ -20,11 +20,5 @@ import { Card, ContactLinks } from "@meowerse/ui";
     <Card title="built on open standards">
       <p>OAuth 2.0 and OpenID Connect with PKCE, ES256-signed tokens, and a published JWKS — so any standards-compliant app can integrate.</p>
     </Card>
-
-    <div class="mw-section">
-      <h2>contact</h2>
-      <ContactLinks />
-    </div>
-    <p class="mw-muted"><a href="/privacy">privacy</a> · <a href="/terms">terms</a></p>
   </div>
 </Layout>
