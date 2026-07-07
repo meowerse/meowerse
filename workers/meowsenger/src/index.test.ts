@@ -54,6 +54,83 @@ describe("router", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
   });
+
+  it("GET /api/chats is routed → 401 with no session", async () => {
+    const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+    const res = await handle(req("GET", "/api/chats"), env, d);
+    expect(res.status).toBe(401);
+  });
+  it("POST /api/chats is routed → 401 with no session", async () => {
+    const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+    const res = await handle(req("POST", "/api/chats"), env, d);
+    expect(res.status).toBe(401);
+  });
+  it("GET /api/chats/:id/messages is routed (regex) → 401 with no session", async () => {
+    const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+    const res = await handle(req("GET", "/api/chats/c1/messages"), env, d);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /ws upgrade", () => {
+  const wsReq = (opts: { upgrade?: boolean; chat?: string; cookie?: string } = {}) =>
+    new Request(`https://meowsenger-api.alxnko.eu.org/ws${opts.chat ? `?chat=${opts.chat}` : ""}`, {
+      method: "GET",
+      headers: {
+        Origin: ORIGIN,
+        ...(opts.upgrade ? { Upgrade: "websocket" } : {}),
+        ...(opts.cookie ? { Cookie: opts.cookie } : {}),
+      },
+    });
+  const session = { id: "s1", user_id: "u1", access_token: "a", refresh_token: null, access_exp: 1, created_at: 1, expires_at: 1e12 };
+  const depsWith = (over: Partial<{ session: unknown; member: boolean }> = {}) =>
+    ({
+      getDb: () => ({
+        async first(sql: string) {
+          if (sql.includes("FROM sessions")) return over.session;
+          if (sql.includes("FROM chat_members")) return over.member ? { ok: 1 } : undefined;
+          return undefined;
+        },
+        async all() { return []; },
+        async run() {},
+      }),
+      now: () => 1,
+    }) as never;
+
+  it("426 when the Upgrade header is missing", async () => {
+    const res = await handle(wsReq({ chat: "c1" }), env, depsWith());
+    expect(res.status).toBe(426);
+  });
+  it("400 when ?chat is missing", async () => {
+    const res = await handle(wsReq({ upgrade: true }), env, depsWith());
+    expect(res.status).toBe(400);
+  });
+  it("401 with no valid session", async () => {
+    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=stale" }), env, depsWith({ session: undefined }));
+    expect(res.status).toBe(401);
+  });
+  it("403 for a non-member of the chat", async () => {
+    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), env, depsWith({ session, member: false }));
+    expect(res.status).toBe(403);
+  });
+  it("forwards to the DO stub for a member, passing the gated identity", async () => {
+    // The node pool's `Response` rejects a real 101 (workerd-only); the actual
+    // upgrade is covered by conversation.workers.test.ts. Here we just assert the
+    // gated request reaches the stub with ?user=&chat= and its response is returned.
+    let forwardedUrl = "";
+    const stubbed = new Response("upgraded", { status: 200 });
+    const wsEnv = {
+      ...env,
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({ fetch: (r: Request) => { forwardedUrl = r.url; return stubbed; } }),
+      },
+    } as unknown as Env;
+    const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true }));
+    expect(res).toBe(stubbed);
+    expect(forwardedUrl).toContain("user=u1");
+    expect(forwardedUrl).toContain("chat=c1");
+  });
 });
 
 describe("default fetch export", () => {
