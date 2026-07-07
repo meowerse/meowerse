@@ -1,7 +1,7 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import AppShell from "../components/AppShell.tsx";
-const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "https://meowsenger-api.alxnko.eu.org";
+const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
 <Layout title="meowsenger — app">
   <AppShell client:load base={base} />

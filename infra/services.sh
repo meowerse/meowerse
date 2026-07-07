@@ -10,8 +10,7 @@ service_paths() {
     worker)   echo "workers/edge" ;;
     auth)     echo "workers/auth packages/auth-shared" ;; # OIDC identity provider Worker
     auth-web) echo "apps/auth-web" ;;                      # auth UI (Cloudflare Pages)
-    meowsenger)     echo "workers/meowsenger packages/auth-shared packages/auth-sdk" ;;
-    meowsenger-web) echo "apps/meowsenger-web" ;;
+    meowsenger)     echo "workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk" ;; # one Worker: UI assets + BFF
     *)        return 1 ;;
   esac
 }

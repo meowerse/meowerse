@@ -1,24 +1,28 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // meowsenger realtime backend. REST + BFF this slice; Durable Objects in Slice 2.
+  // meowsenger — ONE Worker on meowsenger.alxnko.eu.org that serves the Astro UI
+  // (static assets) AND the OIDC BFF (/auth/*, /api/*). Durable Objects + /ws
+  // land in Slice 2 on this same worker/host, so the session cookie works for the
+  // WebSocket too (same origin). Cloudflare serves matching static assets BEFORE
+  // invoking the worker (they don't consume worker quota); non-asset paths
+  // (/auth/*, /api/*, 404s) run the fetch handler.
   //
   // SECRETS (never in this file): bunx wrangler secret put OIDC_CLIENT_SECRET
-  // D1: created via `wrangler d1 create meowsenger`; paste database_id below.
-  //
-  // NO smart placement: this worker fronts D1 (read-replicated) and, later,
-  // Durable Objects (located near first access) — edge placement is correct.
+  // D1: created via `wrangler d1 create meowsenger`.
+  // NO smart placement: fronts D1 (read-replicated) + (Slice 2) DOs (near first access).
   "name": "meowsenger",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  "assets": { "directory": "../../apps/meowsenger-web/dist", "binding": "ASSETS" },
   "vars": {
     "OIDC_ISSUER": "https://auth-api.alxnko.eu.org",
     "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
-    "OIDC_REDIRECT_URI": "https://meowsenger-api.alxnko.eu.org/auth/callback",
+    "OIDC_REDIRECT_URI": "https://meowsenger.alxnko.eu.org/auth/callback",
     "WEB_ORIGIN": "https://meowsenger.alxnko.eu.org",
-    "CORS_ORIGINS": "https://meowsenger.alxnko.eu.org,http://localhost:4321"
+    "CORS_ORIGINS": "https://meowsenger.alxnko.eu.org,http://localhost:4321,http://127.0.0.1:8787"
   },
   "d1_databases": [
     { "binding": "DB", "database_name": "meowsenger", "database_id": "d287edf4-c3c8-4328-9c47-14094f08ca42" }
   ],
-  "routes": [{ "pattern": "meowsenger-api.alxnko.eu.org", "custom_domain": true }]
+  "routes": [{ "pattern": "meowsenger.alxnko.eu.org", "custom_domain": true }]
 }

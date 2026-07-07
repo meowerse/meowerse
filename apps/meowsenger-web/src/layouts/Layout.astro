@@ -5,7 +5,9 @@ import { THEME_INIT_SCRIPT } from "@meowerse/ui";
 import MeowsengerHeader from "../components/MeowsengerHeader.tsx";
 interface Props { title: string }
 const { title } = Astro.props;
-const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "https://meowsenger-api.alxnko.eu.org";
+// Same-origin: the UI + BFF are one Worker on meowsenger.alxnko.eu.org, so API
+// calls use relative paths (base = "" → "/auth/login", "/api/session").
+const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
 <html lang="en">
   <head>

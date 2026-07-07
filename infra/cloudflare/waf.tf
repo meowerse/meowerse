@@ -26,8 +26,8 @@ variable "enable_waf" {
 
 variable "waf_api_hosts" {
   type        = list(string)
-  default     = ["auth-api.alxnko.eu.org", "api.meow.alxnko.eu.org", "meowsenger-api.alxnko.eu.org"]
-  description = "Worker-backed API hostnames to flood-protect. NOT the static UI (auth.alxnko.eu.org) — static assets don't consume the Worker quota."
+  default     = ["auth-api.alxnko.eu.org", "api.meow.alxnko.eu.org", "meowsenger.alxnko.eu.org"]
+  description = "Worker-backed API hostnames to flood-protect. auth's UI (auth.alxnko.eu.org) is static-only so it's excluded, but meowsenger.alxnko.eu.org serves the BFF worker (/auth,/api) alongside its assets, so it IS protected (assets are served pre-worker; 100/10s per IP is generous for a page load)."
 }
 
 # The FREE plan only permits a 10-second rate-limit period and a mitigation
