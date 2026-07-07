@@ -413,26 +413,27 @@ per-connection message rate bucket, membership gate on every mutation.
 
 ---
 
-## 10. Deferred slices (match-then-surpass roadmap)
+## 10. Scope decisions (what's in vs out)
 
-Each is its own spec → plan → PR after v1 core lands:
+**IN — full NextMeowsenger parity** (all in the §13 sequence, Slices 2–9): DMs, groups, **channels**
+(broadcast/admin-post/public-slug/subscribe), **public/private visibility** + gated preview,
+**invite links/codes** + `/join/<code>` + preview, **join requests** (approve/reject),
+auto-invite + `allow_auto_group_add`, reply, edit, delete (soft + bulk), **forwarding**, multi-select
+action bar, reactions, read receipts + unread, presence, typing, roles OWNER/ADMIN/MEMBER + member
+management, new-chat modal + contact picker + username search, slug validation, context menus,
+skeletons/empty states, mobile + desktop layouts, **server-side search**, account/data deletion,
+push/web notifications.
 
-1. **Channels** — broadcast type, admin-only post, public slug discovery (`/c/<slug>`), private
-   join approval. (`slugify` from `@meowerse/ts-shared`.)
-2. **Invites & join requests** — invite codes (`/join/<code>`), pending-request approval,
-   auto-invite-on-group-add with `allowAutoGroupAdd` opt-out.
-3. **Forwarding** — multi-select → forward to N chats.
-4. **Media / attachments** — R2 (requires enabling `enable_r2`; R2 needs a payment method — gated
-   on the account being able to).
-5. **Reactions / emoji.**
-6. **Server-side search** — now possible because messages are plaintext (D1 FTS or a per-user
-   index DO).
-7. **Push / web notifications.**
-8. **Avatars** — upload (R2) + `avatar_url`.
-9. **Account/data deletion** — sequential child-first erasure (Turso/D1 FKs don't cascade over
-   HTTP).
-10. **Opt-in E2EE "secret chats"** — per-DM, device-key exchange, Telegram-style; DO stores
-    opaque blobs for those rooms only.
+**SURPASSES NextMeowsenger** (things it lacked): presence/online status, typing indicators,
+server-side delivery/read receipts, sub-50ms DO broadcast (no in-process socket hack), proper
+indexes, server-side search (its E2EE made this impossible), no O(members) crypto blow-up.
+
+**OUT:**
+1. **Media / attachments + avatar upload** — need Cloudflare **R2**, which requires a payment
+   method. Free-tier-no-card blocks it. The ONE capability gated by the account, not the design.
+   (Everything else runs entirely free.)
+2. **Opt-in E2EE "secret chats"** — deliberately dropped (§1): E2EE breaks server search/preview/
+   late-joiner history and the OIDC (no-password) model; NextMeowsenger's own E2EE was broken.
 
 ---
 
@@ -479,18 +480,46 @@ The first deploy also runs `wrangler d1 create meowsenger` and applies the D1 sc
 
 ---
 
-## 13. Shipping sequence (v1 core as slices, not one mega-PR)
+## 13. Shipping sequence — FULL NextMeowsenger parity (minus E2EE)
 
-1. **Scaffold + auth** — `apps/meowsenger-web` + `workers/meowsenger` skeletons, OIDC BFF login,
-   D1 schema + user upsert, `/api/session`, deploy wiring. Deployable "logged-in empty shell".
-2. **DO realtime send/receive** — `Conversation` DO, `/ws`, send + broadcast + history, D1
-   last-message mirror. DMs only.
-3. **Presence / typing / read receipts + unread.**
-4. **Reply / edit / delete + history pagination + `alarm()` purge.**
-5. **Sidebar + new-chat modal + contact search + groups + member management/roles.**
-6. **Polish + protection** — WAF host, rate buckets, skeletons/empty states, mobile master/detail,
-   final deploy.
+Goal: match **every** NextMeowsenger feature and surpass it. Built slice-by-slice, tested;
+**one coordinated deploy at the end** (user directive 2026-07-07: "deploy when we fully finish").
 
-Each slice: spec-conformant, tested, merged to master, deployed, verified live.
+1. **Scaffold + auth** ✅ LIVE — OIDC BFF login, D1 users/sessions, `/api/session`, single-host worker.
+2. **Realtime DM send/receive** (in progress) — `Conversation` DO (Hibernation WS + SQLite log),
+   `/ws`, send + broadcast + history pagination, D1 last-message mirror. DMs.
+3. **Presence · typing · read receipts + unread** — in-memory presence/typing (broadcast, TTL),
+   per-member `last_read_at`/`unread_count`, mark-read, live sidebar unread badges.
+4. **Reply · edit · delete · multi-select** — reply (quoted + jump-to-original), edit (own, 1h),
+   delete (soft; sender 24h / admin any; bulk), multi-select action bar (copy / bulk-delete),
+   context menu per message, `alarm()` hard-purge of soft-deleted.
+5. **Groups + member management** — create named group, roles OWNER/ADMIN/MEMBER (+ enforcement),
+   add/promote/demote/remove/leave, member drawer, new-chat modal (username search + member
+   picker + contact picker), full sidebar (sort/preview/live/skeletons/empty states).
+6. **Channels + visibility** — CHANNEL type (broadcast, admin-only post), public slug discovery
+   `/c/<slug>` (+ live slug-availability check), subscribe/unsubscribe, PUBLIC/PRIVATE visibility
+   on groups+channels, gated preview (join/subscribe/request-access CTA + lock screen), toggle.
+7. **Invites + join requests** — invite codes (generate/refresh 12-char, `/join/<code>` + preview
+   page), join requests for private chats/channels (request → admin approve/reject, pending tab),
+   auto-invite-on-group-add + `allow_auto_group_add` privacy opt-out.
+8. **Forwarding + polish + protection** — forward multi-select → N chats, forwarded/edited badges,
+   settings modal (username change + live availability, privacy toggle), mobile master/detail +
+   **desktop full-width layout**, WAF host in rate-limit rule, in-DO per-connection message rate
+   bucket, membership gates audited.
+9. **Reactions · search · notifications · deletion** — emoji reactions, **server-side message
+   search** (now possible — plaintext; D1 FTS or index DO), account/data deletion (child-first
+   erasure), push/web notifications.
+
+**Parallel track — auth consolidation:** merge `apps/auth-web` into `workers/auth` (one worker on
+`auth.alxnko.eu.org` serving static assets + all OIDC/UI routes), change issuer →
+`https://auth.alxnko.eu.org`, re-point + re-provision the meowsenger client, retire
+`auth-api.alxnko.eu.org`. Safe because meowsenger is the only client. Update all docs.
+
+**Out of scope:** (a) **Media / attachments + avatar upload** — need Cloudflare **R2**, which
+requires a payment method; the account is free-tier-no-card, so this is the ONE NextMeowsenger
+capability gated by the account, not the design. (b) **E2EE** — deliberately dropped (see §1).
+
+Each slice: spec-conformant + tested (node + workers pools) on its branch. Deploy is a single
+coordinated cutover at the end (meowsenger + auth), then verify live.
 ```
 
