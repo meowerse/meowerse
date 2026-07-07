@@ -86,4 +86,38 @@ describe("handleCallback", () => {
     const res = await handleCallback(cbReq("code=abc&state=st"), env, deps(db, badAuth));
     expect(res.status).toBe(400);
   });
+  it("returns 400 when the id_token fails verification", async () => {
+    const { db } = memDb();
+    const badAuth = { ...authOk(), async verifyIdToken() { throw new Error("nonce-mismatch"); } } as AuthClient;
+    const res = await handleCallback(cbReq("code=abc&state=st"), env, deps(db, badAuth));
+    expect(res.status).toBe(400);
+  });
+  it("returns 400 on a corrupt txn cookie (bad JSON)", async () => {
+    const { db } = memDb();
+    const res = await handleCallback(cbReq("code=abc&state=st", "__Host-mw_txn=%7Bnot-json"), env, deps(db, authOk()));
+    expect(res.status).toBe(400);
+  });
+  it("returns 400 when /userinfo is not ok", async () => {
+    const { db } = memDb();
+    const d = {
+      ...deps(db, authOk()),
+      fetchFn: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch,
+    };
+    const res = await handleCallback(cbReq("code=abc&state=st"), env, d);
+    expect(res.status).toBe(400);
+  });
+  it("falls back to claims.verified and null refresh/0 expiry when token+userinfo omit them", async () => {
+    const { db, s, u } = memDb();
+    // token without refresh_token / expires_in → `?? null` and `?? 0` branches;
+    // userinfo without `verified` → `info.verified ?? claims.verified === true`.
+    const leanAuth = {
+      ...authOk(),
+      async exchangeCode() { return { access_token: "AT", id_token: "ID" }; },
+    } as AuthClient;
+    const d = deps(db, leanAuth, { sub: "u1", preferred_username: "alex" });
+    const res = await handleCallback(cbReq("code=abc&state=st"), env, d);
+    expect(res.status).toBe(302);
+    expect(s.has("sess1")).toBe(true);
+    expect(u.has("u1")).toBe(true);
+  });
 });

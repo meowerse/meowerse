@@ -28,10 +28,25 @@ describe("upsertUser", () => {
     await upsertUser(db, { sub: "u2", preferred_username: "bob" }, now);
     expect(u.get("u2")).toMatchObject({ display_name: null, avatar_url: null, verified: 0 });
   });
+  it("falls back to sub for username when preferred_username is absent", async () => {
+    const { db, u } = memDb();
+    await upsertUser(db, { sub: "u3" }, now);
+    expect(u.get("u3")).toMatchObject({ username: "u3" });
+  });
   it("getUser returns the typed row", async () => {
     const { db } = memDb();
     await upsertUser(db, { sub: "u1", preferred_username: "alex", verified: true }, now);
     const got = await getUser(db, "u1");
     expect(got).toEqual({ id: "u1", username: "alex", displayName: null, avatarUrl: null, verified: true });
+  });
+  it("getUser maps non-null display_name / avatar_url", async () => {
+    const { db } = memDb();
+    await upsertUser(db, { sub: "u4", preferred_username: "kit", name: "Kit", picture: "http://x/k.png", verified: false }, now);
+    const got = await getUser(db, "u4");
+    expect(got).toEqual({ id: "u4", username: "kit", displayName: "Kit", avatarUrl: "http://x/k.png", verified: false });
+  });
+  it("getUser returns null for a missing id", async () => {
+    const { db } = memDb();
+    expect(await getUser(db, "ghost")).toBeNull();
   });
 });

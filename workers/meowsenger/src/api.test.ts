@@ -34,6 +34,19 @@ describe("handleSession", () => {
     const res = await handleSession(cookieReq("s1"), db, now, cors);
     expect(await res.json()).toEqual({ authenticated: true, user: { id: "u1", username: "alex", displayName: "Alex", avatarUrl: null, verified: true } });
   });
+  it("returns authenticated:false when the cookie's session is gone", async () => {
+    // cookie present but no session row → getSession returns null (if (!s) branch)
+    const { db } = memDb();
+    const res = await handleSession(cookieReq("stale"), db, now, cors);
+    expect(await res.json()).toEqual({ authenticated: false });
+  });
+  it("returns authenticated:false when the session's user is gone", async () => {
+    // valid session but the user row was deleted → getUser returns null (if (!user) branch)
+    const session = { id: "s1", user_id: "u1", access_token: "a", refresh_token: null, access_exp: now, created_at: now, expires_at: now + 1e9 };
+    const { db } = memDb(session, undefined);
+    const res = await handleSession(cookieReq("s1"), db, now, cors);
+    expect(await res.json()).toEqual({ authenticated: false });
+  });
 });
 
 describe("handleLogout", () => {

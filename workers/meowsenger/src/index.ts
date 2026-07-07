@@ -1,14 +1,21 @@
 import type { Env } from "./types";
 import { corsHeaders, json } from "./security";
 import { type Deps, prodDeps } from "./deps";
+import { handleLogin, handleCallback } from "./oidc";
+import { handleSession, handleLogout } from "./api";
 
 /** Thin hand-rolled router (no framework) to stay under the 10ms CPU budget. */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
   const cors = corsHeaders(req.headers.get("Origin"), env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   const path = new URL(req.url).pathname;
+  const m = req.method;
 
-  if (path === "/health" && req.method === "GET") return json({ ok: true }, 200, cors);
+  if (path === "/health" && m === "GET") return json({ ok: true }, 200, cors);
+  if (path === "/auth/login" && m === "GET") return handleLogin(deps.auth());
+  if (path === "/auth/callback" && m === "GET") return handleCallback(req, env, deps);
+  if (path === "/api/session" && m === "GET") return handleSession(req, deps.getDb(), deps.now(), cors);
+  if (path === "/auth/logout" && m === "POST") return handleLogout(req, deps.getDb(), deps.now(), cors);
 
   return json({ error: "not found" }, 404, cors);
 }
