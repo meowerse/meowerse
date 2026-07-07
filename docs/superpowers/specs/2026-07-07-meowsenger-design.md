@@ -428,10 +428,19 @@ push/web notifications.
 server-side delivery/read receipts, sub-50ms DO broadcast (no in-process socket hack), proper
 indexes, server-side search (its E2EE made this impossible), no O(members) crypto blow-up.
 
+**Avatars — from Telegram, free (no R2, no upload):** the user's avatar is the Telegram Login
+Widget `photo_url` (a stable `t.me/i/userpic/...` CDN URL) that `workers/auth` already captures
+(`telegram.ts` → `avatar_url`) and returns as the `picture` claim from `/userinfo`. meowsenger's
+`upsertUser` maps `picture` → `users.avatar_url` on every login, so the chat UI shows Telegram
+avatars with an initials fallback. **Refresh cadence:** updated whenever the user logs in (userinfo
+re-fetched; auth refreshes `avatar_url` on each Telegram re-auth). Not instant-live (Telegram
+doesn't push photo-change events to bots), but auto-refreshes on login — acceptable. (Bot
+deep-link logins have no `photo_url` → initials fallback.)
+
 **OUT:**
-1. **Media / attachments + avatar upload** — need Cloudflare **R2**, which requires a payment
-   method. Free-tier-no-card blocks it. The ONE capability gated by the account, not the design.
-   (Everything else runs entirely free.)
+1. **Message attachments / file uploads** — dropped by choice (user: "without files"). This was
+   meowsenger's only R2 dependency, so with it gone **meowsenger is 100% free-tier — nothing is
+   account-gated.** (Avatars come from Telegram, above — no upload needed.)
 2. **Opt-in E2EE "secret chats"** — deliberately dropped (§1): E2EE breaks server search/preview/
    late-joiner history and the OIDC (no-password) model; NextMeowsenger's own E2EE was broken.
 
