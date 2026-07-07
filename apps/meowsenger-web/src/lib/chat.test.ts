@@ -13,7 +13,7 @@ function stubFetch(body: unknown) {
 
 describe("listChats", () => {
   it("returns the chats array (credentialed GET /api/chats)", async () => {
-    const chats = [{ id: "c1", type: "direct", name: null, lastMessage: "hi", lastSenderId: "u2", lastActivity: 1, unreadCount: 0, peerUsername: "bob", peerDisplayName: "Bob", peerAvatarUrl: null }];
+    const chats = [{ id: "c1", type: "direct", name: null, lastMessage: "hi", lastSenderId: "u2", lastActivity: 1, unreadCount: 0, peerId: "u2", peerUsername: "bob", peerDisplayName: "Bob", peerAvatarUrl: null }];
     const mock = stubFetch({ chats });
     expect(await listChats(BASE)).toEqual(chats);
     expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats`, { credentials: "include" });

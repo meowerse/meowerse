@@ -20,6 +20,7 @@ function memDb(users: Record<string, { username: string; displayName: string | n
             const pu = peer ? users[String(peer.user_id)] : undefined;
             return {
               ...c, role: "member", unread_count: 0, last_read_at: null,
+              peer_id: peer?.user_id ?? null,
               peer_username: pu?.username ?? null,
               peer_display_name: pu?.displayName ?? null,
               peer_avatar_url: pu?.avatarUrl ?? null,
@@ -105,11 +106,13 @@ describe("listChats", () => {
     });
     await createOrGetDirect(db, "u1", "u2", 1000);
     const forAlice = await listChats(db, "u1");
+    expect(forAlice[0].peerId).toBe("u2");
     expect(forAlice[0].peerUsername).toBe("bob");
     expect(forAlice[0].peerDisplayName).toBe("Bob");
     expect(forAlice[0].peerAvatarUrl).toBeNull();
     // From bob's side the peer is alice — order-independent.
     const forBob = await listChats(db, "u2");
+    expect(forBob[0].peerId).toBe("u1");
     expect(forBob[0].peerUsername).toBe("alice");
     expect(forBob[0].peerAvatarUrl).toBe("https://a/1");
   });

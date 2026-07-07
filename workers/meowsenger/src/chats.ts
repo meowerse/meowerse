@@ -6,6 +6,9 @@ export interface ChatSummary {
   unreadCount: number;
   // For a DM ('direct'), the OTHER member's identity so the sidebar can render a
   // name + avatar without a second round-trip. Null for groups (Slice 5).
+  // `peerId` is the other member's user_id — the key presence/read frames use, so
+  // the UI can map a `{userId}` frame back to this chat's peer.
+  peerId: string | null;
   peerUsername: string | null;
   peerDisplayName: string | null;
   peerAvatarUrl: string | null;
@@ -65,6 +68,7 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
   // renders groups by their own name), so the join is scoped to type = 'direct'.
   const rows = await db.all(
     `SELECT c.id, c.type, c.name, c.last_message, c.last_sender_id, c.last_activity, m.unread_count,
+            om.user_id AS peer_id,
             pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url
      FROM chat_members m
      JOIN chats c ON c.id = m.chat_id
@@ -78,6 +82,7 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
     lastMessage: r.last_message == null ? null : String(r.last_message),
     lastSenderId: r.last_sender_id == null ? null : String(r.last_sender_id),
     lastActivity: Number(r.last_activity), unreadCount: Number(r.unread_count ?? 0),
+    peerId: r.peer_id == null ? null : String(r.peer_id),
     peerUsername: r.peer_username == null ? null : String(r.peer_username),
     peerDisplayName: r.peer_display_name == null ? null : String(r.peer_display_name),
     peerAvatarUrl: r.peer_avatar_url == null ? null : String(r.peer_avatar_url),

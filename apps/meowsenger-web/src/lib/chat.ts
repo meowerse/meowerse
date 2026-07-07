@@ -12,7 +12,9 @@ export interface ChatSummary {
   lastSenderId: string | null;
   lastActivity: number;
   unreadCount: number;
-  // DM peer identity (null for groups — Slice 5).
+  // DM peer identity (null for groups — Slice 5). `peerId` is the other member's
+  // user_id — presence/read WS frames key on this, so the UI maps `{userId}`→peer.
+  peerId: string | null;
   peerUsername: string | null;
   peerDisplayName: string | null;
   peerAvatarUrl: string | null;
