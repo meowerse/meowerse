@@ -275,13 +275,19 @@ meowsenger never sees a password. Login is delegated to `auth.alxnko.eu.org`.
    the D1 `sessions` table (§4.1), keyed by an opaque high-entropy session id, and sets that id
    in a `__Host-mw_session` cookie (httpOnly, Secure, SameSite=Lax, Path=/). No tokens ever
    reach JS → no XSS token theft. Sessions are TTL'd and swept by `expires_at`.
-4. **Every REST/WS request** carries `__Host-mw_session`. The worker loads the session, and
-   validates the OIDC access token via JWKS + `assertAccessToken(header, payload, RESOURCE_AUD)`
-   from `@meowerse/auth-shared`. Refresh (via `@meowerse/auth` `refresh`) happens server-side when
-   the access token nears expiry.
-5. **User upsert:** on first login (and refreshed each login) the worker upserts the caller into
-   D1 `users` from the id_token claims (`sub`, `username`, `display_name`, `verified`). This is
-   the messenger's searchable user directory — it never reads auth's accounts DB directly.
+4. **Every REST/WS request** carries `__Host-mw_session`; the worker authenticates by loading that
+   session from D1 (opaque id → `user_id`). The OIDC **id_token is verified once at the callback**
+   (JWKS/ES256 + iss/aud/nonce/exp via `@meowerse/auth` `verifyIdToken`); the access token is
+   retained server-side only to call meowerse resource APIs later (none in v1), with server-side
+   `refresh` to extend the session. The messenger is **not** the access-token audience (that's the
+   shared `api.meow` resource), so it does not act as a resource server — its own session cookie is
+   the auth boundary.
+5. **User upsert:** the profile claims (`preferred_username`, `name`, `picture`, `verified`) live in
+   **`/userinfo`**, not the id_token (the auth worker keeps data-bearing claims out of the
+   id_token — confirmed in `workers/auth/src/token.ts`). At the callback the worker fetches
+   `/userinfo` with the access token and upserts the caller into D1 `users`
+   (`sub`→id, `preferred_username`→username, `name`→display_name, `picture`→avatar_url, verified).
+   This is the messenger's searchable user directory — it never reads auth's accounts DB directly.
 6. **Logout:** clear session server-side + cookie; optionally `buildLogoutUrl` back to auth with
    `post_logout_redirect_uri` = meowsenger.
 
