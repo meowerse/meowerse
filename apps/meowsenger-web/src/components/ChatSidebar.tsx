@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { ChatSummary } from "../lib/chat";
 import { Avatar } from "./Avatar";
 
@@ -13,8 +12,14 @@ function relTime(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** A DM's display title: the peer's name, else username, else a generic label. */
+/** True for a group chat (vs a 1:1 DM). */
+function isGroup(c: ChatSummary): boolean {
+  return c.type === "group";
+}
+
+/** A chat's display title: groups by their name; DMs by the peer's name/username. */
 function chatTitle(c: ChatSummary): string {
+  if (isGroup(c)) return c.name || "group";
   return c.peerDisplayName || c.peerUsername || c.name || "direct message";
 }
 
@@ -23,52 +28,23 @@ export function ChatSidebar({
   activeId,
   online,
   onSelect,
-  onNewChat,
+  onNewChatClick,
   loading,
 }: {
   chats: ChatSummary[];
   activeId: string | null;
   online: Set<string>;
   onSelect: (id: string) => void;
-  onNewChat: (username: string) => Promise<string | null>;
+  // Open the new-chat modal (Direct | Group). The modal lives in Chat.tsx.
+  onNewChatClick: () => void;
   loading: boolean;
 }) {
-  const [uname, setUname] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function start() {
-    const u = uname.trim().replace(/^@/, "");
-    if (!u || busy) return;
-    setBusy(true);
-    setError(null);
-    const err = await onNewChat(u);
-    setBusy(false);
-    if (err) {
-      setError(err);
-    } else {
-      setUname("");
-    }
-  }
-
   return (
     <aside className="mw-chat__side">
       <div className="mw-chat__new">
-        <div className="mw-row" style={{ flexWrap: "nowrap", gap: "var(--space-2)" }}>
-          <input
-            type="text"
-            value={uname}
-            placeholder="start a chat by username…"
-            aria-label="username"
-            onChange={(e) => setUname(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") start(); }}
-            style={{ flex: 1, minWidth: 0, minHeight: 38, padding: "8px 12px", font: "inherit", fontSize: "var(--text-sm)", color: "var(--text-primary)", background: "var(--surface-1)", border: "0.5px solid var(--border-strong)", borderRadius: "var(--radius)" }}
-          />
-          <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={start} disabled={busy || !uname.trim()}>
-            {busy ? "…" : "chat"}
-          </button>
-        </div>
-        {error && <p className="mw-chat__err">{error}</p>}
+        <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" onClick={onNewChatClick}>
+          + new chat
+        </button>
       </div>
 
       <nav className="mw-chat__list" aria-label="chats">
@@ -78,8 +54,10 @@ export function ChatSidebar({
         )}
         {chats.map((c) => {
           const title = chatTitle(c);
+          const group = isGroup(c);
           const unread = c.unreadCount > 0;
-          const isOnline = c.peerId != null && online.has(c.peerId);
+          // Only DMs carry a peer presence dot — a group's "online" is shown in its header.
+          const isOnline = !group && c.peerId != null && online.has(c.peerId);
           return (
             <button
               key={c.id}
@@ -87,7 +65,9 @@ export function ChatSidebar({
               onClick={() => onSelect(c.id)}
             >
               <span className="mw-chatrow__avatar">
-                <Avatar url={c.peerAvatarUrl} name={title} size="md" />
+                {group
+                  ? <span className="mw-avatar mw-avatar--md mw-groupavatar" aria-label={title}><span aria-hidden="true" className="mono" data-case="preserve">{(title[0] ?? "#").toUpperCase()}</span></span>
+                  : <Avatar url={c.peerAvatarUrl} name={title} size="md" />}
                 {isOnline && <span className="mw-dot mw-dot--on" aria-label="online" />}
               </span>
               <span className="mw-chatrow__body">

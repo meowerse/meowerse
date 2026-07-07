@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
-import { listChats, openDirect, loadHistory, wsUrl, type ChatSummary, type Message } from "../lib/chat";
+import { listChats, openDirect, loadHistory, wsUrl, getMembers, type ChatSummary, type Message, type Member } from "../lib/chat";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
 import { MessageMenu, type MenuItem } from "./MessageMenu";
+import { NewChatModal } from "./NewChatModal";
+import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
+
+/** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
+type SenderInfo = { name: string; avatarUrl: string | null; role: string };
 
 /** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
  *  edit/delete, spec §6). */
@@ -64,6 +69,13 @@ export default function Chat({ base }: { base: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set()); // selected message ids
   const [menu, setMenu] = useState<{ m: Bubble; x: number; y: number } | null>(null); // context menu
   const [toast, setToast] = useState<string | null>(null); // transient non-blocking note
+  // Slice 5 — group UI state.
+  const [newChatOpen, setNewChatOpen] = useState(false); // the Direct|Group modal
+  const [drawerOpen, setDrawerOpen] = useState(false); // the member-management drawer
+  // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for
+  // DMs (which use the peer shortcut). Fetched on opening a group + refreshed on
+  // membership changes.
+  const [memberMap, setMemberMap] = useState<Map<string, SenderInfo>>(new Map());
 
   const socketRef = useRef<WebSocket | null>(null);
   // Live message-row elements by real id, for jump-to-original scroll + highlight.
@@ -96,6 +108,19 @@ export default function Chat({ base }: { base: string }) {
 
   const activeChat = chats.find((c) => c.id === activeId) ?? null;
   const peerId = activeChat?.peerId ?? null;
+  const isGroup = activeChat?.type === "group";
+
+  // Fetch + index the active group's roster into a userId→{name,avatar,role} map
+  // so MessageItem can render each sender's identity. No-op for DMs.
+  const loadMembers = useCallback(async (chatId: string) => {
+    const list: Member[] = await getMembers(base, chatId);
+    if (activeRef.current !== chatId) return; // switched away mid-fetch
+    const map = new Map<string, SenderInfo>();
+    for (const m of list) {
+      map.set(m.userId, { name: m.displayName || m.username, avatarUrl: m.avatarUrl, role: m.role });
+    }
+    setMemberMap(map);
+  }, [base]);
 
   // Load who-am-i + the sidebar list once.
   useEffect(() => {
@@ -238,6 +263,9 @@ export default function Chat({ base }: { base: string }) {
     setSelectMode(false);
     setSelected(new Set());
     setMenu(null);
+    // Reset group-scoped state so a prior group's roster/drawer never leaks.
+    setDrawerOpen(false);
+    setMemberMap(new Map());
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
     if (!activeId) return;
@@ -306,6 +334,13 @@ export default function Chat({ base }: { base: string }) {
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
   }, [base, activeId, applyFrame, sendRead]);
+
+  // When the active chat is a group, (re)load its roster into the sender map. Keyed
+  // on activeId + type so switching to a group or a DM→group upgrade refetches; DMs
+  // clear the map (the socket-switch effect already reset it).
+  useEffect(() => {
+    if (activeId && isGroup) void loadMembers(activeId);
+  }, [activeId, isGroup, loadMembers]);
 
   // Live-ish sidebar: refresh listChats on window focus + a 15s interval while the
   // tab is visible. Surfaces unread for background chats (no per-user inbox DO in
@@ -460,7 +495,9 @@ export default function Chat({ base }: { base: string }) {
     return items;
   }
 
-  async function onNewChat(username: string): Promise<string | null> {
+  // Open-or-create a DM from the modal's Direct tab. Returns an error message to
+  // show inline, or null on success (the modal closes + we select the chat).
+  async function onDirect(username: string): Promise<string | null> {
     const r = await openDirect(base, username);
     if (r.error || !r.chatId) return r.error === "user_not_found" ? "no user with that username" : (r.error ?? "could not start chat");
     const cs = await listChats(base);
@@ -469,8 +506,39 @@ export default function Chat({ base }: { base: string }) {
     return null;
   }
 
+  // After the modal creates a group: refresh the sidebar + select the new chat.
+  async function onCreatedGroup(chatId: string) {
+    const cs = await listChats(base);
+    setChats(cs);
+    setActiveId(chatId);
+  }
+
+  // Refresh the sidebar list + (if the active chat is a group) its roster after a
+  // member-drawer mutation, without disturbing the socket/messages.
+  async function refreshAfterMemberChange() {
+    const cs = await listChats(base);
+    const act = activeRef.current;
+    setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
+    if (act && chats.find((c) => c.id === act)?.type === "group") void loadMembers(act);
+  }
+
+  // The caller left the active group: close the drawer, drop it from the list, and
+  // clear the active selection (the chat may have been deleted server-side).
+  function onLeftGroup() {
+    const left = activeRef.current;
+    setDrawerOpen(false);
+    setActiveId(null);
+    if (left) setChats((prev) => prev.filter((c) => c.id !== left));
+    void listChats(base).then(setChats);
+  }
+
   const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
   const peerOnline = peerId != null && online.has(peerId);
+  // Group header derivations: the group's own name, member count (from the live
+  // roster, falling back to the summary), and how many members are currently online.
+  const groupName = activeChat?.name || "group";
+  const memberCount = memberMap.size || activeChat?.memberCount || 0;
+  const onlineCount = isGroup ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
   const open = activeId != null;
   // The "seen" tick shows on MY most-recent message once the peer has read up to it.
   const myLastId = (() => {
@@ -494,7 +562,7 @@ export default function Chat({ base }: { base: string }) {
         activeId={activeId}
         online={online}
         onSelect={setActiveId}
-        onNewChat={onNewChat}
+        onNewChatClick={() => setNewChatOpen(true)}
         loading={loadingChats}
       />
 
@@ -513,19 +581,47 @@ export default function Chat({ base }: { base: string }) {
               >
                 ‹
               </button>
-              <span className="mw-chat__headavatar">
-                <Avatar url={activeChat.peerAvatarUrl} name={peerName} size="md" />
-                <span className={`mw-dot ${peerOnline ? "mw-dot--on" : "mw-dot--off"}`} aria-label={peerOnline ? "online" : "offline"} />
-              </span>
-              <span className="mw-chat__headcol">
-                <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
-                {peerTyping
-                  ? <span className="mw-chat__typing">typing…</span>
-                  : <span className="mw-chat__presence">{peerOnline ? "online" : "offline"}</span>}
-              </span>
-              <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
-                {connected ? "connected" : "connecting…"}
-              </span>
+              {isGroup ? (
+                <>
+                  <button
+                    className="mw-chat__grouphead"
+                    onClick={() => setDrawerOpen(true)}
+                    aria-label="group members"
+                  >
+                    <span className="mw-chat__headavatar">
+                      <span className="mw-avatar mw-avatar--md mw-groupavatar" aria-label={groupName}>
+                        <span aria-hidden="true" className="mono" data-case="preserve">{(groupName[0] ?? "#").toUpperCase()}</span>
+                      </span>
+                    </span>
+                    <span className="mw-chat__headcol">
+                      <span className="mw-chat__peer" data-case="preserve">{groupName}</span>
+                      <span className="mw-chat__presence">
+                        {memberCount} member{memberCount === 1 ? "" : "s"}
+                        {onlineCount > 0 ? ` · ${onlineCount} online` : ""}
+                      </span>
+                    </span>
+                  </button>
+                  <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
+                    {connected ? "connected" : "connecting…"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="mw-chat__headavatar">
+                    <Avatar url={activeChat.peerAvatarUrl} name={peerName} size="md" />
+                    <span className={`mw-dot ${peerOnline ? "mw-dot--on" : "mw-dot--off"}`} aria-label={peerOnline ? "online" : "offline"} />
+                  </span>
+                  <span className="mw-chat__headcol">
+                    <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
+                    {peerTyping
+                      ? <span className="mw-chat__typing">typing…</span>
+                      : <span className="mw-chat__presence">{peerOnline ? "online" : "offline"}</span>}
+                  </span>
+                  <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
+                    {connected ? "connected" : "connecting…"}
+                  </span>
+                </>
+              )}
             </header>
 
             <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
@@ -536,14 +632,24 @@ export default function Chat({ base }: { base: string }) {
                 const mine = me != null && m.senderId === me.id;
                 const key = m.tempId ?? m.id;
                 const seen = mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
+                // Resolve the sender's name + avatar. Groups look up the member map
+                // (falling back to the raw sender id if unknown, e.g. a since-left
+                // member); DMs keep the peer shortcut. Same for the quoted-reply name.
+                const sender = isGroup
+                  ? (memberMap.get(m.senderId) ?? { name: m.senderId, avatarUrl: null })
+                  : { name: peerName, avatarUrl: activeChat.peerAvatarUrl };
+                const replyName = isGroup && m.replyTo
+                  ? (memberMap.get(m.replyTo.senderId)?.name ?? m.replyTo.senderId)
+                  : peerName;
                 return (
                   <MessageItem
                     key={key}
                     m={m}
                     meId={me?.id ?? null}
                     mine={mine}
-                    peerName={peerName}
-                    peerAvatarUrl={activeChat.peerAvatarUrl}
+                    senderName={sender.name}
+                    senderAvatarUrl={sender.avatarUrl}
+                    replyName={replyName}
                     seen={seen}
                     canEdit={canEdit(m)}
                     canDelete={canDelete(m)}
@@ -597,6 +703,26 @@ export default function Chat({ base }: { base: string }) {
         <MessageMenu x={menu.x} y={menu.y} items={menuItems(menu.m)} onClose={() => setMenu(null)} />
       )}
       {toast && <div className="mw-toast" role="status">{toast}</div>}
+
+      <NewChatModal
+        base={base}
+        open={newChatOpen}
+        onClose={() => setNewChatOpen(false)}
+        onDirect={onDirect}
+        onCreated={onCreatedGroup}
+      />
+
+      {drawerOpen && activeChat && isGroup && (
+        <MemberDrawer
+          base={base}
+          chat={activeChat}
+          meId={me?.id ?? null}
+          online={online}
+          onClose={() => setDrawerOpen(false)}
+          onChanged={refreshAfterMemberChange}
+          onLeft={onLeftGroup}
+        />
+      )}
     </div>
   );
 }

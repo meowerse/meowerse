@@ -22,8 +22,9 @@ export function MessageItem({
   m,
   meId,
   mine,
-  peerName,
-  peerAvatarUrl,
+  senderName,
+  senderAvatarUrl,
+  replyName,
   seen,
   canEdit,
   canDelete,
@@ -43,8 +44,14 @@ export function MessageItem({
   m: Bubble;
   meId: string | null;
   mine: boolean;
-  peerName: string;
-  peerAvatarUrl: string | null;
+  // The sender's resolved display name + avatar for a non-own message. In a DM
+  // this is the peer; in a group it's looked up from the member map (or the raw
+  // sender id if unknown). Own messages ignore both.
+  senderName: string;
+  senderAvatarUrl: string | null;
+  // Name to show for THIS message's quoted-reply parent ("you" if it's mine,
+  // otherwise the parent sender's resolved name — the peer in a DM).
+  replyName: string;
   seen: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -123,9 +130,9 @@ export function MessageItem({
           aria-label="select message"
         />
       )}
-      {!mine && <Avatar url={peerAvatarUrl} name={peerName} size="sm" />}
+      {!mine && <Avatar url={senderAvatarUrl} name={senderName} size="sm" />}
       <div className="mw-msg__col">
-        {!mine && <span className="mw-msg__name" data-case="preserve">{peerName}</span>}
+        {!mine && <span className="mw-msg__name" data-case="preserve">{senderName}</span>}
 
         {deleted ? (
           <div className={`mw-bubble mw-bubble--deleted${mine ? " mw-bubble--me" : ""}`}>
@@ -162,7 +169,7 @@ export function MessageItem({
                   aria-label="jump to replied message"
                 >
                   <span className="mw-quote__name" data-case="preserve">
-                    {meId != null && m.replyTo.senderId === meId ? "you" : peerName}
+                    {meId != null && m.replyTo.senderId === meId ? "you" : replyName}
                   </span>
                   <span className="mw-quote__body">{m.replyTo.body}</span>
                 </button>
