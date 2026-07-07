@@ -42,6 +42,7 @@ import {
   upsertClientByName,
 } from "./dashboard";
 import { userinfoClaims } from "./userinfo";
+import { handleAvatar } from "./avatar";
 import { checkRateLimit } from "./ratelimit";
 import { turnstileGate } from "./turnstile";
 
@@ -549,7 +550,7 @@ async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<s
   try {
     const signing = await getSigning(env);
     const { header, payload } = await verifyJwt(token, signing.jwks, { iss: issuer(env), aud: resourceAud, now: now(deps) });
-    const res = await userinfoClaims(deps.getDb(), { header, payload, resourceAud });
+    const res = await userinfoClaims(deps.getDb(), { header, payload, resourceAud, issuer: issuer(env) });
     if (!res.ok) return json({ error: "invalid_token" }, 401, { ...cors, ...noStore });
     return json(res.claims, 200, { ...cors, ...noStore });
   } catch {
@@ -821,6 +822,10 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   }
   if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
+  // Public, unauthenticated avatar proxy: cross-origin <img> loads its current
+  // Telegram photo. `ctx` is threaded through Deps so it can edge-cache the bytes.
+  const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]+)$/);
+  if (av && m === "GET") return handleAvatar(req, env, ctx ? { ...deps, ctx } : deps, av[1]!, cors);
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
   return json({ error: "not_found" }, 404, cors);

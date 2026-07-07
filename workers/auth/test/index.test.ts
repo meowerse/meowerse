@@ -146,6 +146,40 @@ test("userinfo without a bearer → 401", async () => {
   expect(r.status).toBe(401);
 });
 
+test("GET /avatar/<id> routes to the proxy and streams the current Telegram photo", async () => {
+  const { env, deps } = await fixture();
+  const { db } = memStore();
+  db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username, display_name, avatar_url) VALUES (?, ?, ?, ?, ?)", args: [42, "acct_tg", "tg", "TG", null] } as never);
+  const urls: string[] = [];
+  const fetchStub = (async (url: string) => {
+    urls.push(url);
+    if (url.includes("/getUserProfilePhotos"))
+      return { json: async () => ({ ok: true, result: { total_count: 1, photos: [[{ file_id: "big", width: 640, height: 640 }]] } }) } as unknown as Response;
+    if (url.includes("/getFile")) return { json: async () => ({ ok: true, result: { file_path: "photos/x.jpg" } }) } as unknown as Response;
+    return { ok: true, body: "IMG" as unknown as ReadableStream, headers: { get: () => "image/png" } } as unknown as Response;
+  }) as unknown as typeof fetch;
+  const avDeps = { getDb: () => db, clock: () => 1000, fetch: fetchStub };
+  const waited: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => waited.push(p) } as unknown as ExecutionContext;
+  const r = await handle(
+    new Request("https://iss/avatar/acct_tg"),
+    { ...env, TELEGRAM_BOT_TOKEN: "T", SKIP_MIGRATIONS: "1" } as never,
+    avDeps as never,
+    ctx,
+  );
+  expect(r.status).toBe(200);
+  expect(r.headers.get("Content-Type")).toBe("image/png");
+  expect(r.headers.get("Cache-Control")).toBe("public, max-age=21600");
+  expect(urls.some((u) => u.includes("/getUserProfilePhotos"))).toBe(true);
+});
+
+test("GET /avatar/<id> with no bot token configured → 404", async () => {
+  const { env, deps } = await fixture();
+  const r = await handle(new Request("https://iss/avatar/acct_tg"), env, deps);
+  expect(r.status).toBe(404);
+  expect(((await r.json()) as { error: string }).error).toBe("no_avatar");
+});
+
 test("logout revokes + clears the session cookie and redirects to the UI", async () => {
   const { env, deps } = await fixture();
   const r = await handle(new Request("https://iss/logout", { headers: { Cookie: "__Host-mw_sess=whatever" } }), env, deps);

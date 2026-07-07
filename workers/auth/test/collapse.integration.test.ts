@@ -108,7 +108,7 @@ test("userinfoClaims: one query yields scope-filtered profile + telegram + live 
   const db = await freshDb();
   await db.execute({ sql: "INSERT INTO accounts (id, username, display_name, avatar_url) VALUES ('acct_u','uni','Uni','http://img')" });
   await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (77, 'acct_u', 'uni_tg')" });
-  const base = { header: { typ: TYP.ACCESS }, resourceAud: "https://api.meow" };
+  const base = { header: { typ: TYP.ACCESS }, resourceAud: "https://api.meow", issuer: "https://iss" };
   const payload = (scope: string) => ({ token_use: TOKEN_USE.ACCESS, sub: "acct_u", scope, aud: "https://api.meow" });
 
   const full = await userinfoClaims(db, { ...base, payload: payload("openid profile telegram verified") });
@@ -172,6 +172,7 @@ test("null profile fields survive the collapses (all-null account)", async () =>
     header: { typ: TYP.ACCESS },
     payload: { token_use: TOKEN_USE.ACCESS, sub: "acct_z", scope: "openid profile telegram verified", aud: "https://api.meow" },
     resourceAud: "https://api.meow",
+    issuer: "https://iss",
   });
   expect(ui.ok && ui.claims).toEqual({ sub: "acct_z", preferred_username: null, name: null, picture: null, verified: false });
 });

@@ -11,7 +11,7 @@ export type UserinfoResult = { ok: true; claims: Record<string, unknown> } | { o
  */
 export async function userinfoClaims(
   db: DbClient,
-  i: { header: Record<string, unknown>; payload: Record<string, unknown>; resourceAud: string },
+  i: { header: Record<string, unknown>; payload: Record<string, unknown>; resourceAud: string; issuer: string },
 ): Promise<UserinfoResult> {
   if (!assertAccessToken(i.header, i.payload, i.resourceAud)) return { ok: false };
   const accountId = String(i.payload.sub ?? "");
@@ -36,7 +36,11 @@ export async function userinfoClaims(
   if (scope.includes("profile")) {
     claims.preferred_username = arow.username;
     claims.name = arow.display_name;
-    claims.picture = arow.avatar_url;
+    // Always the CURRENT Telegram photo via our reliable avatar proxy (never the
+    // stale `t.me/i/userpic/...` snapshot). Only when the account is TG-linked;
+    // otherwise `picture` is omitted. Uses the live issuer so it auto-follows a
+    // host change.
+    claims.picture = arow.telegram_id != null ? `${i.issuer}/avatar/${accountId}` : null;
   }
   if (scope.includes("telegram") && arow.telegram_id != null) {
     claims.telegram_id = arow.telegram_id;

@@ -174,8 +174,10 @@ export interface Deps {
   schemaReady?: Promise<void>;
   /** Unix-seconds clock; injected in tests for determinism. Defaults to wall time. */
   clock?: () => number;
-  /** Outbound fetch (Turnstile siteverify). Injectable so tests never hit the network; defaults to global fetch. */
+  /** Outbound fetch (Turnstile siteverify, Telegram avatar proxy). Injectable so tests never hit the network; defaults to global fetch. */
   fetch?: typeof fetch;
+  /** ExecutionContext for off-response-path work (e.g. edge cache.put). Present in prod, unset in tests. */
+  ctx?: ExecutionContext;
 }
 
 /** Build production Deps from env, lazily creating one libsql/web client. */
