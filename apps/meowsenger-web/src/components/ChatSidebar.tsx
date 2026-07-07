@@ -12,14 +12,19 @@ function relTime(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** True for a group chat (vs a 1:1 DM). */
-function isGroup(c: ChatSummary): boolean {
-  return c.type === "group";
+/** True for a channel (broadcast). */
+function isChannel(c: ChatSummary): boolean {
+  return c.type === "channel";
 }
 
-/** A chat's display title: groups by their name; DMs by the peer's name/username. */
+/** True for a group OR channel — both carry a name + roster (vs a 1:1 DM). */
+function isMembered(c: ChatSummary): boolean {
+  return c.type === "group" || c.type === "channel";
+}
+
+/** A chat's display title: groups/channels by their name; DMs by the peer's name. */
 function chatTitle(c: ChatSummary): string {
-  if (isGroup(c)) return c.name || "group";
+  if (isMembered(c)) return c.name || (isChannel(c) ? "channel" : "group");
   return c.peerDisplayName || c.peerUsername || c.name || "direct message";
 }
 
@@ -54,10 +59,11 @@ export function ChatSidebar({
         )}
         {chats.map((c) => {
           const title = chatTitle(c);
-          const group = isGroup(c);
+          const membered = isMembered(c);
+          const channel = isChannel(c);
           const unread = c.unreadCount > 0;
-          // Only DMs carry a peer presence dot — a group's "online" is shown in its header.
-          const isOnline = !group && c.peerId != null && online.has(c.peerId);
+          // Only DMs carry a peer presence dot — a group/channel's "online" is shown in its header.
+          const isOnline = !membered && c.peerId != null && online.has(c.peerId);
           return (
             <button
               key={c.id}
@@ -65,14 +71,18 @@ export function ChatSidebar({
               onClick={() => onSelect(c.id)}
             >
               <span className="mw-chatrow__avatar">
-                {group
-                  ? <span className="mw-avatar mw-avatar--md mw-groupavatar" aria-label={title}><span aria-hidden="true" className="mono" data-case="preserve">{(title[0] ?? "#").toUpperCase()}</span></span>
+                {membered
+                  ? <span className={`mw-avatar mw-avatar--md mw-groupavatar${channel ? " mw-groupavatar--channel" : ""}`} aria-label={title}><span aria-hidden="true" className="mono" data-case="preserve">{(title[0] ?? "#").toUpperCase()}</span></span>
                   : <Avatar url={c.peerAvatarUrl} name={title} size="md" />}
                 {isOnline && <span className="mw-dot mw-dot--on" aria-label="online" />}
               </span>
               <span className="mw-chatrow__body">
                 <span className="mw-chatrow__top">
-                  <span className="mw-chatrow__name" data-case="preserve">{title}</span>
+                  <span className="mw-chatrow__name" data-case="preserve">
+                    {channel && <span className="mw-chatrow__glyph" aria-hidden="true">📡 </span>}
+                    {membered && !channel && <span className="mw-chatrow__glyph" aria-hidden="true">👥 </span>}
+                    {title}
+                  </span>
                   <span className="mw-chatrow__time">{relTime(c.lastActivity)}</span>
                 </span>
                 <span className="mw-chatrow__preview">{c.lastMessage ?? "no messages yet"}</span>

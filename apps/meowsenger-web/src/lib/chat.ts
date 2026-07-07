@@ -25,6 +25,22 @@ export interface ChatSummary {
   peerAvatarUrl: string | null;
 }
 
+/**
+ * The public preview of a discoverable chat (mirrors the worker's `ChatPreview`).
+ * Carries NO message content — discovery must never leak the log. `isMember`
+ * reflects the *caller*. Returned by GET /api/chats/by-slug/:slug for public chats
+ * (to anyone signed in) or any chat the caller is already a member of.
+ */
+export interface ChatPreview {
+  id: string;
+  // 'direct' | 'group' | 'channel'.
+  type: string;
+  name: string | null;
+  memberCount: number;
+  visibility: string;
+  isMember: boolean;
+}
+
 /** A group member with identity + role (mirrors the worker's MemberView). */
 export interface Member {
   userId: string;
@@ -138,6 +154,29 @@ export async function createGroup(
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "group", ...input }),
+    });
+    return (await r.json()) as { chatId?: string; error?: string; username?: string };
+  } catch {
+    return { error: "network" };
+  }
+}
+
+/**
+ * POST /api/chats { type:"channel", name, members?, visibility?, slug? } — create a
+ * broadcast channel with the caller as owner. A channel is a group where only
+ * owner/admin post (the DO enforces the read-only rule for `member`); it's created
+ * exactly like a group otherwise. Returns the new chatId or an error code.
+ */
+export async function createChannel(
+  base: string,
+  input: { name: string; members?: string[]; visibility?: string; slug?: string | null },
+): Promise<{ chatId?: string; error?: string; username?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "channel", ...input }),
     });
     return (await r.json()) as { chatId?: string; error?: string; username?: string };
   } catch {
@@ -269,4 +308,46 @@ export async function slugAvailable(base: string, slug: string): Promise<boolean
  */
 export async function searchUsers(base: string, username: string): Promise<{ chatId?: string; error?: string }> {
   return openDirect(base, username);
+}
+
+// ---- Slice 6: public discovery + open-join ---------------------------------
+
+/**
+ * GET /api/chats/by-slug/:slug — resolve a chat for discovery. Returns a
+ * `ChatPreview` for a public chat (to any signed-in caller) or any chat the caller
+ * is a member of; `{error:"private"}` for a private-non-member or unknown slug
+ * (the two are deliberately indistinguishable — no existence leak). Any network
+ * failure also degrades to `{error:"private"}` (the safe, no-leak default) — the
+ * lock card is shown rather than a spurious preview. The preview carries no messages.
+ */
+export async function getBySlug(base: string, slug: string): Promise<ChatPreview | { error: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/by-slug/${encodeURIComponent(slug)}`, { credentials: "include" });
+    const d = (await r.json()) as ChatPreview | { error?: string };
+    if ("error" in d && d.error) return { error: d.error };
+    return d as ChatPreview;
+  } catch {
+    return { error: "private" };
+  }
+}
+
+/**
+ * POST /api/chats/:id/join — open-join a PUBLIC chat as a plain member. Idempotent
+ * (an already-member returns ok). A private/unknown chat is refused with
+ * `{error:"must_request"}` (403). The `/subscribe` alias (channels) is the same
+ * server operation; the UI calls `/join` for both and just labels the button.
+ */
+export async function joinChat(
+  base: string,
+  chatId: string,
+): Promise<{ ok?: boolean; joined?: boolean; error?: string }> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/join`, {
+      method: "POST",
+      credentials: "include",
+    });
+    return (await r.json()) as { ok?: boolean; joined?: boolean; error?: string };
+  } catch {
+    return { error: "network" };
+  }
 }

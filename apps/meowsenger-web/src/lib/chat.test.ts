@@ -14,6 +14,9 @@ import {
   updateChat,
   slugAvailable,
   searchUsers,
+  createChannel,
+  getBySlug,
+  joinChat,
 } from "./chat";
 
 const BASE = "https://meowsenger.alxnko.eu.org";
@@ -273,5 +276,72 @@ describe("searchUsers", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: "bob" }),
     });
+  });
+});
+
+// ---- Slice 6: channels + public discovery + open-join -------------------------
+
+describe("createChannel", () => {
+  it("POSTs a channel payload (type:'channel') and returns the chatId", async () => {
+    const mock = stubFetch({ chatId: "ch1", created: true });
+    expect(await createChannel(BASE, { name: "announce", members: ["bob"], visibility: "public", slug: "announce" }))
+      .toEqual({ chatId: "ch1", created: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "channel", name: "announce", members: ["bob"], visibility: "public", slug: "announce" }),
+    });
+  });
+  it("omits members when not provided (optional initial roster)", async () => {
+    const mock = stubFetch({ chatId: "ch2", created: true });
+    expect(await createChannel(BASE, { name: "solo", visibility: "private" })).toEqual({ chatId: "ch2", created: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "channel", name: "solo", visibility: "private" }),
+    });
+  });
+  it("surfaces a server error code (e.g. slug_taken)", async () => {
+    stubFetch({ error: "slug_taken" });
+    expect(await createChannel(BASE, { name: "t" })).toEqual({ error: "slug_taken" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await createChannel(BASE, { name: "t" })).toEqual({ error: "network" });
+  });
+});
+
+describe("getBySlug", () => {
+  it("returns the ChatPreview (encoded slug in the GET path)", async () => {
+    const preview = { id: "ch1", type: "channel", name: "announce", memberCount: 12, visibility: "public", isMember: false };
+    const mock = stubFetch(preview);
+    expect(await getBySlug(BASE, "an nounce")).toEqual(preview);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/by-slug/an%20nounce`, { credentials: "include" });
+  });
+  it("passes through a {error:'private'} lock response", async () => {
+    stubFetch({ error: "private" });
+    expect(await getBySlug(BASE, "secret")).toEqual({ error: "private" });
+  });
+  it("degrades to {error:'private'} on a network error (safe, no-leak default)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "private" });
+  });
+});
+
+describe("joinChat", () => {
+  it("POSTs /join (credentialed, no body) and returns the result", async () => {
+    const mock = stubFetch({ ok: true, joined: true });
+    expect(await joinChat(BASE, "ch1")).toEqual({ ok: true, joined: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/ch1/join`, { method: "POST", credentials: "include" });
+  });
+  it("surfaces a 403 must_request (private chat)", async () => {
+    stubFetch({ error: "must_request" });
+    expect(await joinChat(BASE, "ch1")).toEqual({ error: "must_request" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await joinChat(BASE, "ch1")).toEqual({ error: "network" });
   });
 });

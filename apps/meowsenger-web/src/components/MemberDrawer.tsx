@@ -89,6 +89,8 @@ export function MemberDrawer({
   const myRole = members.find((m) => m.userId === meId)?.role;
   const canManage = atLeast(myRole, "admin");
   const isOwner = myRole === "owner";
+  // A channel reuses this drawer verbatim — only the noun in the copy differs.
+  const noun = chat.type === "channel" ? "channel" : "group";
 
   const refresh = useCallback(async () => {
     const list = await getMembers(base, chat.id);
@@ -198,11 +200,11 @@ export function MemberDrawer({
   })();
 
   return (
-    <div className="mw-drawer" role="dialog" aria-label="group members" aria-modal="true">
+    <div className="mw-drawer" role="dialog" aria-label={`${noun} members`} aria-modal="true">
       <div className="mw-drawer__backdrop" onClick={onClose} />
       <aside className="mw-drawer__panel">
         <header className="mw-drawer__head">
-          <h2 className="mw-drawer__title" data-case="preserve">{chat.name ?? "group"}</h2>
+          <h2 className="mw-drawer__title" data-case="preserve">{chat.name ?? noun}</h2>
           <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="close" onClick={onClose}>✕</button>
         </header>
 
@@ -279,7 +281,7 @@ export function MemberDrawer({
         {isOwner && (
           <div className="mw-drawer__section mw-drawer__meta">
             {!editing ? (
-              <button className="mw-btn mw-btn--secondary mw-btn--sm" onClick={startEdit}>group settings</button>
+              <button className="mw-btn mw-btn--secondary mw-btn--sm" onClick={startEdit}>{noun} settings</button>
             ) : (
               <div className="mw-form">
                 <label className="mw-field">
@@ -288,7 +290,7 @@ export function MemberDrawer({
                     type="text"
                     className="mw-input"
                     value={name}
-                    aria-label="group name"
+                    aria-label={`${noun} name`}
                     onChange={(e) => setName(e.target.value)}
                   />
                 </label>
@@ -341,7 +343,7 @@ export function MemberDrawer({
             onClick={doLeave}
             disabled={busyId === "__leave"}
           >
-            {busyId === "__leave" ? "…" : "leave group"}
+            {busyId === "__leave" ? "…" : `leave ${noun}`}
           </button>
         </footer>
       </aside>

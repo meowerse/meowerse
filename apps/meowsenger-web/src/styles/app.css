@@ -435,6 +435,70 @@ body:has(.mw-chat) main.mw-container {
 .mw-rolebadge--admin { background: var(--surface-muted); color: var(--text-secondary); }
 .mw-rolebadge--member { background: transparent; color: var(--text-muted); }
 
+/* ---- slice 6: channels — broadcast glyphs, read-only note, type badge ------ */
+
+/* A channel avatar is tinted distinctly from a group's (cooler, broadcast-y). */
+.mw-groupavatar--channel {
+  background: color-mix(in srgb, var(--mw-green) 12%, var(--surface-2));
+  color: var(--text-accent);
+}
+
+/* Small leading glyph in sidebar/header titles (📡 channel · 👥 group). Sits on
+   the title baseline; the emoji itself carries the meaning (aria-hidden). */
+.mw-chatrow__glyph, .mw-chat__glyph { font-size: 0.85em; opacity: 0.9; }
+
+/* Read-only note that replaces the composer for a plain member of a channel. */
+.mw-readonly {
+  display: flex; align-items: center; justify-content: center; gap: var(--space-2);
+  padding: var(--space-4) clamp(var(--space-3), 4vw, var(--space-5));
+  border-top: 1px solid var(--border); background: var(--surface-1);
+  font-size: var(--text-sm); color: var(--text-secondary);
+}
+.mw-readonly__glyph { font-size: var(--text-base); }
+/* Placeholder while a channel's role loads — reserves the composer's height so the
+   log doesn't jump when the read-only note or Composer resolves in. */
+.mw-readonly--pending { min-height: 66px; }
+
+/* Info note (e.g. the "channel is broadcast — only admins post" hint in the modal). */
+.mw-note {
+  margin: 0; padding: 8px 12px; border-radius: var(--radius);
+  font-size: var(--text-sm); line-height: var(--leading-snug);
+}
+.mw-note--info {
+  background: color-mix(in srgb, var(--mw-green) 10%, var(--surface-muted));
+  border-left: 3px solid var(--mw-green); color: var(--text-secondary);
+}
+
+/* Type badge (channel | group) on the discovery preview card. */
+.mw-typebadge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em;
+}
+.mw-typebadge--channel { background: color-mix(in srgb, var(--mw-green) 16%, transparent); color: var(--text-accent); }
+.mw-typebadge--group { background: var(--surface-muted); color: var(--text-secondary); }
+
+/* ---- slice 6: public discovery / gated preview page (/join) --------------- */
+.mw-discover {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 60vh; padding: var(--space-6) var(--space-4);
+}
+.mw-discover__card {
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
+  width: min(420px, 100%); text-align: center;
+  padding: clamp(var(--space-5), 6vw, var(--space-7)) var(--space-5);
+  background: var(--surface-1); border: 0.5px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+}
+.mw-discover__card--loading { gap: var(--space-4); }
+.mw-discover__card--lock .mw-discover__lockglyph { font-size: 2.5rem; line-height: 1; }
+.mw-discover__avatar { width: 64px; height: 64px; font-size: var(--text-xl); }
+.mw-discover__title { margin: 0; font-size: var(--text-xl); font-weight: 700; }
+.mw-discover__actions {
+  display: flex; gap: var(--space-2); justify-content: center;
+  margin-top: var(--space-2); flex-wrap: wrap;
+}
+
 /* ---- mobile: single column, swap between list + conversation -------------- */
 @media (max-width: 719px) {
   .mw-chat { grid-template-columns: 1fr; }

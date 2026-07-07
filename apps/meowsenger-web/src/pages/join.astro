@@ -1,0 +1,17 @@
+---
+// Public discovery / gated preview — one STATIC page for both groups and channels.
+//
+// Why one query-driven page (not /g/[slug] + /c/[slug])? This app builds to STATIC
+// output (no SSR adapter, assets `not_found_handling` defaults to `none`), so a
+// dynamic route can only emit files for slugs known at build time — but slugs are
+// user-created at runtime. A per-slug page would 404 on a static host. `/join` is a
+// single real file the host always serves; the target slug rides in the query
+// (`?g=<slug>` group, `?c=<slug>` channel) and the ChannelPreview island fetches it
+// client-side. Nothing sensitive is server-rendered.
+import Layout from "../layouts/Layout.astro";
+import ChannelPreview from "../components/ChannelPreview.tsx";
+const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
+---
+<Layout title="meowsenger — join">
+  <ChannelPreview client:load base={base} />
+</Layout>

@@ -39,6 +39,8 @@ const ERROR_COPY: Record<string, string> = {
   cannot_edit: "can't edit this message anymore",
   cannot_delete: "can't delete this message anymore",
   bad_body: "message couldn't be sent",
+  // Slice 6 — a plain member tried to post in a broadcast channel (DO-enforced).
+  read_only: "this is a broadcast channel — only admins can post",
 };
 
 // A peer's "typing…" auto-clears if no fresh on:true arrives within this window
@@ -108,7 +110,24 @@ export default function Chat({ base }: { base: string }) {
 
   const activeChat = chats.find((c) => c.id === activeId) ?? null;
   const peerId = activeChat?.peerId ?? null;
+  const isChannel = activeChat?.type === "channel";
+  // Groups + channels both render the multi-member view (roster, member map, per-
+  // sender identity). "membered" = has a roster; DMs use the peer shortcut instead.
   const isGroup = activeChat?.type === "group";
+  const isMembered = isGroup || isChannel;
+  // The caller's own role in the active membered chat, derived from the roster map
+  // (owner | admin | member). Undefined for DMs / before the roster loads.
+  const myRole = me ? memberMap.get(me.id)?.role : undefined;
+  // Has the active channel's roster loaded yet? Until it has we can't know the
+  // caller's role, so we DON'T flash the Composer (a member would see it briefly
+  // before the read-only note replaces it) — the input area stays empty meanwhile.
+  const channelRoleKnown = memberMap.size > 0;
+  // A channel is broadcast: only owner/admin post. A plain `member` on a channel
+  // sees a read-only note instead of the Composer (the DO also enforces this).
+  const channelReadOnly = isChannel && myRole === "member";
+  // Suppress the Composer on a channel until the role is known (avoids the flash);
+  // owner/admin then get it, `member` gets the read-only note.
+  const channelComposerPending = isChannel && !channelRoleKnown;
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map
   // so MessageItem can render each sender's identity. No-op for DMs.
@@ -122,10 +141,24 @@ export default function Chat({ base }: { base: string }) {
     setMemberMap(map);
   }, [base]);
 
-  // Load who-am-i + the sidebar list once.
+  // Load who-am-i + the sidebar list once. Honor a `?chat=<id>` deep-link (set by
+  // the discovery flow — /join navigates to /app?chat=<id> after join) by selecting
+  // that chat once it's present in the list, then stripping the param so a later
+  // manual switch + refresh doesn't snap back to it.
   useEffect(() => {
     getSession(base).then((s) => setMe(s.user ?? null));
-    listChats(base).then((cs) => { setChats(cs); setLoadingChats(false); });
+    listChats(base).then((cs) => {
+      setChats(cs);
+      setLoadingChats(false);
+      if (typeof window === "undefined") return;
+      const wanted = new URLSearchParams(window.location.search).get("chat");
+      if (wanted && cs.some((c) => c.id === wanted)) {
+        setActiveId(wanted);
+        const url = new URL(window.location.href);
+        url.searchParams.delete("chat");
+        window.history.replaceState({}, "", url.pathname + url.search);
+      }
+    });
   }, [base]);
 
   // Clear the toast timer on unmount so it can't fire into a dead component.
@@ -335,12 +368,14 @@ export default function Chat({ base }: { base: string }) {
     };
   }, [base, activeId, applyFrame, sendRead]);
 
-  // When the active chat is a group, (re)load its roster into the sender map. Keyed
-  // on activeId + type so switching to a group or a DM→group upgrade refetches; DMs
-  // clear the map (the socket-switch effect already reset it).
+  // When the active chat is a group OR channel, (re)load its roster into the sender
+  // map (channels need it too, both to render per-sender identity and to derive the
+  // caller's own role → the read-only gate). Keyed on activeId + isMembered so
+  // switching between membered chats refetches; DMs clear the map (the socket-switch
+  // effect already reset it).
   useEffect(() => {
-    if (activeId && isGroup) void loadMembers(activeId);
-  }, [activeId, isGroup, loadMembers]);
+    if (activeId && isMembered) void loadMembers(activeId);
+  }, [activeId, isMembered, loadMembers]);
 
   // Live-ish sidebar: refresh listChats on window focus + a 15s interval while the
   // tab is visible. Surfaces unread for background chats (no per-user inbox DO in
@@ -513,13 +548,16 @@ export default function Chat({ base }: { base: string }) {
     setActiveId(chatId);
   }
 
-  // Refresh the sidebar list + (if the active chat is a group) its roster after a
-  // member-drawer mutation, without disturbing the socket/messages.
+  // Refresh the sidebar list + (if the active chat is a group/channel) its roster
+  // after a member-drawer mutation, without disturbing the socket/messages. Read
+  // the type from the FRESH `cs` (not the stale `chats` closure) so a just-changed
+  // roster always reloads.
   async function refreshAfterMemberChange() {
     const cs = await listChats(base);
     const act = activeRef.current;
     setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
-    if (act && chats.find((c) => c.id === act)?.type === "group") void loadMembers(act);
+    const actType = act ? cs.find((c) => c.id === act)?.type : undefined;
+    if (act && (actType === "group" || actType === "channel")) void loadMembers(act);
   }
 
   // The caller left the active group: close the drawer, drop it from the list, and
@@ -534,11 +572,12 @@ export default function Chat({ base }: { base: string }) {
 
   const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
   const peerOnline = peerId != null && online.has(peerId);
-  // Group header derivations: the group's own name, member count (from the live
-  // roster, falling back to the summary), and how many members are currently online.
-  const groupName = activeChat?.name || "group";
+  // Membered-chat header derivations: the group/channel's own name, member count
+  // (from the live roster, falling back to the summary), and how many members are
+  // currently online.
+  const groupName = activeChat?.name || (isChannel ? "channel" : "group");
   const memberCount = memberMap.size || activeChat?.memberCount || 0;
-  const onlineCount = isGroup ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
+  const onlineCount = isMembered ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
   const open = activeId != null;
   // The "seen" tick shows on MY most-recent message once the peer has read up to it.
   const myLastId = (() => {
@@ -581,21 +620,28 @@ export default function Chat({ base }: { base: string }) {
               >
                 ‹
               </button>
-              {isGroup ? (
+              {isMembered ? (
                 <>
                   <button
                     className="mw-chat__grouphead"
                     onClick={() => setDrawerOpen(true)}
-                    aria-label="group members"
+                    aria-label={isChannel ? "channel members" : "group members"}
                   >
                     <span className="mw-chat__headavatar">
-                      <span className="mw-avatar mw-avatar--md mw-groupavatar" aria-label={groupName}>
+                      <span
+                        className={`mw-avatar mw-avatar--md mw-groupavatar${isChannel ? " mw-groupavatar--channel" : ""}`}
+                        aria-label={groupName}
+                      >
                         <span aria-hidden="true" className="mono" data-case="preserve">{(groupName[0] ?? "#").toUpperCase()}</span>
                       </span>
                     </span>
                     <span className="mw-chat__headcol">
-                      <span className="mw-chat__peer" data-case="preserve">{groupName}</span>
+                      <span className="mw-chat__peer" data-case="preserve">
+                        {isChannel && <span className="mw-chat__glyph" aria-hidden="true">📡 </span>}
+                        {groupName}
+                      </span>
                       <span className="mw-chat__presence">
+                        {isChannel ? "channel · " : ""}
                         {memberCount} member{memberCount === 1 ? "" : "s"}
                         {onlineCount > 0 ? ` · ${onlineCount} online` : ""}
                       </span>
@@ -632,13 +678,14 @@ export default function Chat({ base }: { base: string }) {
                 const mine = me != null && m.senderId === me.id;
                 const key = m.tempId ?? m.id;
                 const seen = mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
-                // Resolve the sender's name + avatar. Groups look up the member map
-                // (falling back to the raw sender id if unknown, e.g. a since-left
-                // member); DMs keep the peer shortcut. Same for the quoted-reply name.
-                const sender = isGroup
+                // Resolve the sender's name + avatar. Groups + channels look up the
+                // member map (falling back to the raw sender id if unknown, e.g. a
+                // since-left member); DMs keep the peer shortcut. Same for the
+                // quoted-reply name.
+                const sender = isMembered
                   ? (memberMap.get(m.senderId) ?? { name: m.senderId, avatarUrl: null })
                   : { name: peerName, avatarUrl: activeChat.peerAvatarUrl };
-                const replyName = isGroup && m.replyTo
+                const replyName = isMembered && m.replyTo
                   ? (memberMap.get(m.replyTo.senderId)?.name ?? m.replyTo.senderId)
                   : peerName;
                 return (
@@ -686,6 +733,18 @@ export default function Chat({ base }: { base: string }) {
                 >delete</button>
                 <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={exitSelect}>cancel</button>
               </div>
+            ) : channelComposerPending ? (
+              // Channel roster still loading → role unknown. Reserve the composer's
+              // footprint (no flash of the input) until we know member vs admin.
+              <div className="mw-readonly mw-readonly--pending" aria-hidden="true" />
+            ) : channelReadOnly ? (
+              // Broadcast channel + the caller is a plain member → no Composer. The
+              // DO also rejects a member post ({error:"read_only"}), but hiding the
+              // input is the honest UX. Owner/admin fall through to the Composer.
+              <div className="mw-readonly" role="note">
+                <span className="mw-readonly__glyph" aria-hidden="true">📡</span>
+                <span>subscribed — only admins post in a channel.</span>
+              </div>
             ) : (
               <Composer
                 onSend={sendWith}
@@ -712,7 +771,7 @@ export default function Chat({ base }: { base: string }) {
         onCreated={onCreatedGroup}
       />
 
-      {drawerOpen && activeChat && isGroup && (
+      {drawerOpen && activeChat && isMembered && (
         <MemberDrawer
           base={base}
           chat={activeChat}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "@meowerse/ui";
-import { createGroup, slugAvailable, slugify } from "../lib/chat";
+import { createGroup, createChannel, slugAvailable, slugify } from "../lib/chat";
 
 /** A chosen group member, held as a chip until the group is created. */
 interface Chip {
@@ -9,7 +9,7 @@ interface Chip {
 
 /** Human-readable copy for the server error codes the create path can return. */
 const ERROR_COPY: Record<string, string> = {
-  name_required: "give the group a name",
+  name_required: "give it a name",
   user_not_found: "no user with that username",
   bad_slug: "slug must be 3–32 chars: a–z, 0–9, -",
   slug_taken: "that slug is taken",
@@ -17,11 +17,13 @@ const ERROR_COPY: Record<string, string> = {
 };
 
 /**
- * The "new chat" modal: a Direct | Group tabbed dialog. Direct resolves an exact
- * username → open-or-create a DM (via the parent's `onDirect`, which wraps the
- * existing `openDirect`). Group collects a name, a chip list of member usernames,
- * a visibility toggle and an optional slug (live-checked + normalized), then calls
- * `createGroup`. On success the parent selects the new chat and the modal closes.
+ * The "new chat" modal: a Direct | Group | Channel tabbed dialog. Direct resolves
+ * an exact username → open-or-create a DM (via the parent's `onDirect`, which wraps
+ * the existing `openDirect`). Group and Channel share the same form (name, member
+ * chips, visibility toggle, optional live-checked slug) but call `createGroup` vs
+ * `createChannel` — a channel is a broadcast group where only owner/admin post
+ * (the DO enforces the read-only rule). On success the parent selects the new chat
+ * and the modal closes.
  *
  * There is no fuzzy user search in v1 (exact usernames only) — the pickers resolve
  * usernames on submit/add, and the server surfaces `user_not_found` for typos.
@@ -41,13 +43,14 @@ export function NewChatModal({
   // Called with the new group's chatId after a successful create.
   onCreated: (chatId: string) => void;
 }) {
-  const [tab, setTab] = useState<"direct" | "group">("direct");
+  const [tab, setTab] = useState<"direct" | "group" | "channel">("direct");
+  const isChannel = tab === "channel";
 
   // ---- Direct tab ----
   const [directName, setDirectName] = useState("");
   const [directErr, setDirectErr] = useState<string | null>(null);
 
-  // ---- Group tab ----
+  // ---- Group / Channel tab (shared form; the tab picks create* + copy) ----
   const [name, setName] = useState("");
   const [memberInput, setMemberInput] = useState("");
   const [members, setMembers] = useState<Chip[]>([]);
@@ -112,19 +115,19 @@ export function NewChatModal({
     if (busy) return;
     const trimmed = name.trim();
     if (!trimmed) { setGroupErr(ERROR_COPY.name_required); return; }
-    if (members.length < 1) { setGroupErr("add at least one member"); return; }
+    // Groups need at least one other member; a channel is broadcast — the owner can
+    // create it empty and share the link, so initial members are optional there.
+    if (!isChannel && members.length < 1) { setGroupErr("add at least one member"); return; }
     if (slug && slugState === "taken") { setGroupErr(ERROR_COPY.slug_taken); return; }
     if (slug && slugState === "bad") { setGroupErr(ERROR_COPY.bad_slug); return; }
     setBusy(true); setGroupErr(null);
-    const r = await createGroup(base, {
-      name: trimmed,
-      members: members.map((m) => m.username),
-      visibility,
-      slug: slug || null,
-    });
+    const usernames = members.map((m) => m.username);
+    const r = isChannel
+      ? await createChannel(base, { name: trimmed, members: usernames, visibility, slug: slug || null })
+      : await createGroup(base, { name: trimmed, members: usernames, visibility, slug: slug || null });
     setBusy(false);
     if (r.error || !r.chatId) {
-      setGroupErr(ERROR_COPY[r.error ?? ""] ?? "could not create group");
+      setGroupErr(ERROR_COPY[r.error ?? ""] ?? `could not create ${isChannel ? "channel" : "group"}`);
       return;
     }
     onCreated(r.chatId);
@@ -155,6 +158,12 @@ export function NewChatModal({
           className={`mw-tab${tab === "group" ? " is-active" : ""}`}
           onClick={() => setTab("group")}
         >group</button>
+        <button
+          role="tab"
+          aria-selected={tab === "channel"}
+          className={`mw-tab${tab === "channel" ? " is-active" : ""}`}
+          onClick={() => setTab("channel")}
+        >channel</button>
       </div>
 
       {tab === "direct" ? (
@@ -182,21 +191,28 @@ export function NewChatModal({
         </div>
       ) : (
         <div className="mw-form" role="tabpanel">
+          {isChannel && (
+            <p className="mw-note mw-note--info">
+              a channel is broadcast — only admins post. everyone else subscribes to read.
+            </p>
+          )}
           <label className="mw-field">
-            <span className="mw-field__label">group name</span>
+            <span className="mw-field__label">{isChannel ? "channel name" : "group name"}</span>
             <input
               type="text"
               className="mw-input"
               value={name}
-              placeholder="e.g. weekend plans"
-              aria-label="group name"
+              placeholder={isChannel ? "e.g. announcements" : "e.g. weekend plans"}
+              aria-label={isChannel ? "channel name" : "group name"}
               data-autofocus
               onChange={(e) => setName(e.target.value)}
             />
           </label>
 
           <div className="mw-field">
-            <span className="mw-field__label">members</span>
+            <span className="mw-field__label">
+              members {isChannel && <span className="mw-field__opt">(optional)</span>}
+            </span>
             {members.length > 0 && (
               <div className="mw-chips">
                 {members.map((m) => (
@@ -269,9 +285,9 @@ export function NewChatModal({
             <button
               className="mw-btn mw-btn--primary mw-btn--sm"
               onClick={submitGroup}
-              disabled={busy || !name.trim() || members.length < 1}
+              disabled={busy || !name.trim() || (!isChannel && members.length < 1)}
             >
-              {busy ? "…" : "create group"}
+              {busy ? "…" : isChannel ? "create channel" : "create group"}
             </button>
           </div>
         </div>
