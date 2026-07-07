@@ -32,7 +32,7 @@ describe("d1Client", () => {
   it("run() executes without returning rows", async () => {
     const { db, calls } = fakeD1();
     await d1Client(db as never).run("INSERT INTO users (id) VALUES (?)", ["u1"]);
-    expect(calls[0].params).toEqual(["u1"]);
+    expect(calls[0]?.params).toEqual(["u1"]);
   });
   it("all() falls back to [] when D1 returns no results field", async () => {
     // Exercises the `res.results ?? []` nullish fallback + default params = [].
