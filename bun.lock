@@ -27,6 +27,24 @@
         "vitest": "^4.1.9",
       },
     },
+    "apps/meowsenger-web": {
+      "name": "@meowerse/meowsenger-web",
+      "dependencies": {
+        "@astrojs/react": "^6.0.0",
+        "@meowerse/ui": "workspace:*",
+        "astro": "^7.0.2",
+        "react": "^19.2.7",
+        "react-dom": "^19.2.7",
+      },
+      "devDependencies": {
+        "@astrojs/check": "^0.9.9",
+        "@types/react": "^19.2.17",
+        "@types/react-dom": "^19.2.3",
+        "@vitest/coverage-v8": "^4.1.9",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.9",
+      },
+    },
     "apps/web": {
       "name": "@meowerse/web",
       "dependencies": {
@@ -473,6 +491,8 @@
     "@meowerse/auth-worker": ["@meowerse/auth-worker@workspace:workers/auth"],
 
     "@meowerse/edge-worker": ["@meowerse/edge-worker@workspace:workers/edge"],
+
+    "@meowerse/meowsenger-web": ["@meowerse/meowsenger-web@workspace:apps/meowsenger-web"],
 
     "@meowerse/meowsenger-worker": ["@meowerse/meowsenger-worker@workspace:workers/meowsenger"],
 
