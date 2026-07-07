@@ -21,12 +21,14 @@ function chatTitle(c: ChatSummary): string {
 export function ChatSidebar({
   chats,
   activeId,
+  online,
   onSelect,
   onNewChat,
   loading,
 }: {
   chats: ChatSummary[];
   activeId: string | null;
+  online: Set<string>;
   onSelect: (id: string) => void;
   onNewChat: (username: string) => Promise<string | null>;
   loading: boolean;
@@ -76,13 +78,18 @@ export function ChatSidebar({
         )}
         {chats.map((c) => {
           const title = chatTitle(c);
+          const unread = c.unreadCount > 0;
+          const isOnline = c.peerId != null && online.has(c.peerId);
           return (
             <button
               key={c.id}
-              className={`mw-chatrow${c.id === activeId ? " is-active" : ""}`}
+              className={`mw-chatrow${c.id === activeId ? " is-active" : ""}${unread ? " has-unread" : ""}`}
               onClick={() => onSelect(c.id)}
             >
-              <Avatar url={c.peerAvatarUrl} name={title} size="md" />
+              <span className="mw-chatrow__avatar">
+                <Avatar url={c.peerAvatarUrl} name={title} size="md" />
+                {isOnline && <span className="mw-dot mw-dot--on" aria-label="online" />}
+              </span>
               <span className="mw-chatrow__body">
                 <span className="mw-chatrow__top">
                   <span className="mw-chatrow__name" data-case="preserve">{title}</span>
@@ -90,7 +97,7 @@ export function ChatSidebar({
                 </span>
                 <span className="mw-chatrow__preview">{c.lastMessage ?? "no messages yet"}</span>
               </span>
-              {c.unreadCount > 0 && <span className="mw-chatrow__unread">{c.unreadCount}</span>}
+              {unread && <span className="mw-chatrow__unread">{c.unreadCount}</span>}
             </button>
           );
         })}
