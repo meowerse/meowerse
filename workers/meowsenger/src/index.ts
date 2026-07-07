@@ -1,4 +1,7 @@
 import type { Env } from "./types";
+// Durable Object class must be exported from the worker entrypoint so wrangler
+// can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
+export { Conversation } from "./conversation";
 import { corsHeaders, json } from "./security";
 import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
