@@ -429,13 +429,19 @@ server-side delivery/read receipts, sub-50ms DO broadcast (no in-process socket 
 indexes, server-side search (its E2EE made this impossible), no O(members) crypto blow-up.
 
 **Avatars — from Telegram, free (no R2, no upload):** the user's avatar is the Telegram Login
-Widget `photo_url` (a stable `t.me/i/userpic/...` CDN URL) that `workers/auth` already captures
-(`telegram.ts` → `avatar_url`) and returns as the `picture` claim from `/userinfo`. meowsenger's
-`upsertUser` maps `picture` → `users.avatar_url` on every login, so the chat UI shows Telegram
-avatars with an initials fallback. **Refresh cadence:** updated whenever the user logs in (userinfo
-re-fetched; auth refreshes `avatar_url` on each Telegram re-auth). Not instant-live (Telegram
-doesn't push photo-change events to bots), but auto-refreshes on login — acceptable. (Bot
-deep-link logins have no `photo_url` → initials fallback.)
+Widget `photo_url` (a public `t.me/i/userpic/...` CDN URL — no token, no expiry timer; the
+CDN path Telegram Mini Apps/widgets use for third-party avatar display) that `workers/auth`
+already captures (`telegram.ts` → `avatar_url`) and returns as the `picture` claim from
+`/userinfo`. meowsenger's `upsertUser` maps `picture` → `users.avatar_url` on every login.
+**Two required safeguards for the chat UI (without them avatars silently fail):**
+1. **CSP** — the UI `_headers` is `default-src 'self'`, which blocks external images; add
+   `img-src 'self' https://t.me https://*.telegram.org data:` or Telegram avatars won't load.
+2. **Initials fallback** — every avatar `<img>` gets `onError` → render the display-name initial.
+   Covers the hash changing after a photo update (old URL 404s), privacy-hidden photos, and
+   bot-deep-link logins (no `photo_url`). A bad URL degrades to initials, never a broken image.
+**Refresh cadence:** updated whenever the user logs in (userinfo re-fetched; auth refreshes
+`avatar_url` on each Telegram re-auth). Not instant-live (Telegram doesn't push photo-change
+events to bots), but auto-refreshes on login + the fallback covers the gap.
 
 **OUT:**
 1. **Message attachments / file uploads** — dropped by choice (user: "without files"). This was
