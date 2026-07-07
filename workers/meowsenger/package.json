@@ -7,7 +7,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "lint": "bun run --filter @meowerse/meowsenger-web build && wrangler deploy --dry-run --outdir /tmp/wr-meowsenger",
-    "test": "vitest run --coverage",
+    "test": "vitest run --coverage --config vitest.config.ts && vitest run --config vitest.workers.config.ts --passWithNoTests",
+    "test:node": "vitest run --config vitest.config.ts",
+    "test:do": "vitest run --config vitest.workers.config.ts --passWithNoTests",
     "provision": "bun scripts/provision.ts",
     "secret:client-secret": "wrangler secret put OIDC_CLIENT_SECRET",
     "d1:schema": "wrangler d1 execute meowsenger --remote --file schema.sql",
@@ -18,6 +20,7 @@
     "@meowerse/auth-shared": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^4.20260625.1",
     "@vitest/coverage-v8": "^4.1.9",
     "vitest": "^4.1.9",
