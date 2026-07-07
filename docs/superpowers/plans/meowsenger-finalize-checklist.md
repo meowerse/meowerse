@@ -21,6 +21,15 @@ forgot something").
 - [ ] **Own-message avatar** — intentionally omitted (WhatsApp-style, avatar only on peer side).
       Confirm the design reads well; easy to add if wanted.
 
+## Slice-6 follow-ups
+- [ ] **Pretty discovery URLs** — public chats currently share via `/join?g=<slug>` / `?c=<slug>`
+      (static build can't do `/g/[slug]` dynamic routes). Optional polish: route `/g/*` + `/c/*`
+      in the meowsenger worker to serve the `/join` shell (pretty links). Nice-to-have.
+- [ ] **Return-path after login on a discovery link** — an unauthenticated visitor to a share link
+      lands on `/app` after OIDC login, not back on the join/auto-join flow (OIDC callback
+      hard-redirects to `/app`). Needs `state` plumbing to preserve the return URL. (Signed-in
+      users work fully.)
+
 ## Cross-cutting (do during the relevant slice / finalize)
 - [ ] **Per-slice correctness audit vs NextMeowsenger** — reply (quote + jump), forward (N targets
       + badge), edit (1h window), delete (perms + soft), roles (owner-unremovable), channels/invites
