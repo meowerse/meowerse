@@ -4,6 +4,11 @@ export interface ChatSummary {
   id: string; type: string; name: string | null;
   lastMessage: string | null; lastSenderId: string | null; lastActivity: number;
   unreadCount: number;
+  // For a DM ('direct'), the OTHER member's identity so the sidebar can render a
+  // name + avatar without a second round-trip. Null for groups (Slice 5).
+  peerUsername: string | null;
+  peerDisplayName: string | null;
+  peerAvatarUrl: string | null;
 }
 
 /** Order-independent key for a 1:1 DM, so A+B and B+A resolve to one chat. */
@@ -46,9 +51,17 @@ export async function mirrorLastMessage(
 }
 
 export async function listChats(db: DbClient, userId: string): Promise<ChatSummary[]> {
+  // For DMs, LEFT JOIN the OTHER member (chat_members om where om.user_id <> me)
+  // and their user row so the sidebar shows the peer's name + avatar. For groups
+  // there is more than one "other" member — the peer columns stay null (Slice 5
+  // renders groups by their own name), so the join is scoped to type = 'direct'.
   const rows = await db.all(
-    `SELECT c.id, c.type, c.name, c.last_message, c.last_sender_id, c.last_activity, m.unread_count
-     FROM chat_members m JOIN chats c ON c.id = m.chat_id
+    `SELECT c.id, c.type, c.name, c.last_message, c.last_sender_id, c.last_activity, m.unread_count,
+            pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url
+     FROM chat_members m
+     JOIN chats c ON c.id = m.chat_id
+     LEFT JOIN chat_members om ON om.chat_id = c.id AND om.user_id <> m.user_id AND c.type = 'direct'
+     LEFT JOIN users pu ON pu.id = om.user_id
      WHERE m.user_id = ? ORDER BY c.last_activity DESC`,
     [userId],
   );
@@ -57,6 +70,9 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
     lastMessage: r.last_message == null ? null : String(r.last_message),
     lastSenderId: r.last_sender_id == null ? null : String(r.last_sender_id),
     lastActivity: Number(r.last_activity), unreadCount: Number(r.unread_count ?? 0),
+    peerUsername: r.peer_username == null ? null : String(r.peer_username),
+    peerDisplayName: r.peer_display_name == null ? null : String(r.peer_display_name),
+    peerAvatarUrl: r.peer_avatar_url == null ? null : String(r.peer_avatar_url),
   }));
 }
 

@@ -2,11 +2,30 @@ import { describe, it, expect } from "vitest";
 import { createOrGetDirect, listChats, mirrorLastMessage, directKey } from "./chats";
 import type { DbClient, Row } from "./types";
 
-function memDb() {
+function memDb(users: Record<string, { username: string; displayName: string | null; avatarUrl: string | null }> = {}) {
   const chats = new Map<string, Row>(); const members: Row[] = [];
   const db: DbClient = {
     async all(sql, p = []) {
-      if (sql.includes("FROM chat_members m")) return chats.size ? [...chats.values()].map(c => ({ ...c, role: "member", unread_count: 0, last_read_at: null })) : [];
+      // Model the sidebar JOIN: for each of `me`'s memberships, find the OTHER
+      // direct member and their user row (peer identity). Group peer cols = null.
+      if (sql.includes("FROM chat_members m")) {
+        const me = String(p[0]);
+        return members
+          .filter((m) => m.user_id === me)
+          .map((m) => {
+            const c = chats.get(String(m.chat_id))!;
+            const peer = c.type === "direct"
+              ? members.find((o) => o.chat_id === m.chat_id && o.user_id !== me)
+              : undefined;
+            const pu = peer ? users[String(peer.user_id)] : undefined;
+            return {
+              ...c, role: "member", unread_count: 0, last_read_at: null,
+              peer_username: pu?.username ?? null,
+              peer_display_name: pu?.displayName ?? null,
+              peer_avatar_url: pu?.avatarUrl ?? null,
+            };
+          });
+      }
       return [];
     },
     async first(sql, p = []) {
@@ -55,5 +74,20 @@ describe("listChats", () => {
     await createOrGetDirect(db, "u1", "u2", 1000);
     const rows = await listChats(db, "u1");
     expect(rows.length).toBe(1);
+  });
+  it("includes the DM peer's identity (the OTHER member), from each side", async () => {
+    const { db } = memDb({
+      u1: { username: "alice", displayName: "Alice", avatarUrl: "https://a/1" },
+      u2: { username: "bob", displayName: "Bob", avatarUrl: null },
+    });
+    await createOrGetDirect(db, "u1", "u2", 1000);
+    const forAlice = await listChats(db, "u1");
+    expect(forAlice[0].peerUsername).toBe("bob");
+    expect(forAlice[0].peerDisplayName).toBe("Bob");
+    expect(forAlice[0].peerAvatarUrl).toBeNull();
+    // From bob's side the peer is alice — order-independent.
+    const forBob = await listChats(db, "u2");
+    expect(forBob[0].peerUsername).toBe("alice");
+    expect(forBob[0].peerAvatarUrl).toBe("https://a/1");
   });
 });
