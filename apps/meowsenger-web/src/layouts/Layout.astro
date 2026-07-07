@@ -1,0 +1,23 @@
+---
+import "@meowerse/ui/tokens.css";
+import "../styles/app.css";
+import { THEME_INIT_SCRIPT } from "@meowerse/ui";
+import MeowsengerHeader from "../components/MeowsengerHeader.tsx";
+interface Props { title: string }
+const { title } = Astro.props;
+const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "https://meowsenger-api.alxnko.eu.org";
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <script is:inline set:html={THEME_INIT_SCRIPT}></script>
+  </head>
+  <body>
+    <MeowsengerHeader client:idle base={base} />
+    <main class="mw-container">
+      <slot />
+    </main>
+  </body>
+</html>
