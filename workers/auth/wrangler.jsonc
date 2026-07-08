@@ -15,10 +15,20 @@
   "compatibility_flags": ["nodejs_compat"],
   // ONE Worker on auth.alxnko.eu.org serves the Astro UI (static assets) AND all
   // OIDC/API routes. Cloudflare serves a matching static asset BEFORE invoking the
-  // worker (GET page paths /login /consent /account … render as HTML without the
-  // worker); non-asset paths (POST /login, /authorize, /token, /api/*, …) hit the
-  // fetch handler, which falls back to env.ASSETS.fetch(req) for the Astro 404.
-  "assets": { "directory": "../../apps/auth-web/dist", "binding": "ASSETS" },
+  // worker: GET page paths (/account, /developers, /verify, …) render as HTML for
+  // free; non-asset paths (/authorize, /token, /api/*, /tg/*, …) hit the fetch handler,
+  // which falls back to env.ASSETS.fetch(req) for the Astro 404.
+  //
+  // COLLISION: /signup, /login, /consent are BOTH a page (GET renders the form) AND an
+  // API endpoint (POST submits it). CF answers a POST to an asset path with 405 WITHOUT
+  // running the worker, so the worker's POST handler is unreachable for these three —
+  // run_worker_first makes the worker run FIRST for exactly these paths (POST → handler;
+  // GET → no match → env.ASSETS.fetch serves the page). Every other page stays free.
+  "assets": {
+    "directory": "../../apps/auth-web/dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/signup", "/login", "/consent"]
+  },
   // Smart Placement: this worker is DB-bound (every request round-trips to the
   // Turso primary in aws-eu-west-1). Let Cloudflare run the isolate NEAR Turso
   // instead of at the user's edge, so N sequential db hops pay one long RTT to
