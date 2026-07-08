@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
-import { listChats, openDirect, loadHistory, wsUrl, getMembers, applyReaction, type ChatSummary, type Message, type Member } from "../lib/chat";
+import { listChats, openDirect, loadHistory, loadHistoryAround, loadHistoryAfter, resolveChat, wsUrl, getMembers, applyReaction, type ChatSummary, type Message, type Member } from "../lib/chat";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
@@ -35,8 +35,6 @@ type Frame =
 // Own-message action windows (UX gating only — the server enforces both, §7).
 const EDIT_WINDOW_MS = 3600_000; // 1h
 const DELETE_WINDOW_MS = 24 * 3600_000; // 24h
-// Max older-history pages to fetch while hunting for a reply's original message.
-const JUMP_MAX_PAGES = 10;
 // How long the ".is-flash" highlight lingers after a jump-to-original.
 const FLASH_MS = 1200;
 
@@ -51,6 +49,17 @@ const ERROR_COPY: Record<string, string> = {
   // stays open + the Composer stays usable, we just nudge the user to slow down.
   rate_limited: "you're sending too fast — slow down a moment",
 };
+
+/** DM header sub-line when the peer is offline: "last seen 5m ago" (else "offline"). */
+function lastSeenLabel(ms: number | null | undefined): string {
+  if (!ms) return "offline";
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return "last seen just now";
+  if (s < 3600) return `last seen ${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `last seen ${Math.floor(s / 3600)}h ago`;
+  if (s < 604800) return `last seen ${Math.floor(s / 86400)}d ago`;
+  return "last seen " + new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 /**
  * Fire a browser notification for an incoming message while the tab is backgrounded
@@ -146,6 +155,17 @@ export default function Chat({ base }: { base: string }) {
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
 
+  // "Detached" view: after jumping to an old message we render a window AROUND it
+  // (via historyAround), disconnected from the live tail. hasNewer ⇒ there are newer
+  // messages below the loaded window → we suppress autoscroll + live-append, show a
+  // "jump to latest" affordance, and let the user page DOWN (loadNewer) back to live.
+  const [hasNewer, setHasNewer] = useState(false);
+  const hasNewerRef = useRef(false);
+  useEffect(() => { hasNewerRef.current = hasNewer; }, [hasNewer]);
+  const loadingNewerRef = useRef(false);
+  // A ?m=<messageId> deep-link to consume once the chat's first history has loaded.
+  const pendingJumpRef = useRef<string | null>(null);
+
   // Ref mirror of the current user id (Slice 9 — read inside the stable applyFrame
   // to tell an incoming reaction/message apart from our own, without re-deriving it).
   const meIdRef = useRef<string | null>(null);
@@ -189,25 +209,53 @@ export default function Chat({ base }: { base: string }) {
     setMemberMap(map);
   }, [base]);
 
-  // Load who-am-i + the sidebar list once. Honor a `?chat=<id>` deep-link (set by
-  // the discovery flow — /join navigates to /app?chat=<id> after join) by selecting
-  // that chat once it's present in the list, then stripping the param so a later
-  // manual switch + refresh doesn't snap back to it.
+  // Load who-am-i + the sidebar list once, then honor a deep-link in the URL:
+  //   /app?chat=<idOrSlug>[&m=<messageId>]
+  // The URL is kept in sync with the open chat (see the sync effect below) so a
+  // reload / shared link lands back in the same chat (+ jumps to the message).
+  //   - a chat the caller is a member of → open it, stash ?m for a post-load jump.
+  //   - not a member → resolveChat: a public/slug chat forwards to the /join preview;
+  //     otherwise a "no access" toast (never leaks a private chat's existence).
   useEffect(() => {
     getSession(base).then((s) => setMe(s.user ?? null));
     listChats(base).then((cs) => {
       setChats(cs);
       setLoadingChats(false);
       if (typeof window === "undefined") return;
-      const wanted = new URLSearchParams(window.location.search).get("chat");
-      if (wanted && cs.some((c) => c.id === wanted)) {
+      const params = new URLSearchParams(window.location.search);
+      const wanted = params.get("chat");
+      const msg = params.get("m");
+      if (!wanted) return;
+      const mine = cs.find((c) => c.id === wanted);
+      if (mine) {
+        if (msg) pendingJumpRef.current = msg;
         setActiveId(wanted);
-        const url = new URL(window.location.href);
-        url.searchParams.delete("chat");
-        window.history.replaceState({}, "", url.pathname + url.search);
+        return;
       }
+      // Not in the caller's list — could be a slug, or a chat they can join.
+      void resolveChat(base, wanted).then((r) => {
+        if (r.error || !r.id) { showToast("you don't have access to this chat"); return; }
+        if (r.isMember) { if (msg) pendingJumpRef.current = msg; setActiveId(r.id); return; }
+        if (r.slug) {
+          const key = r.type === "channel" ? "c" : "g";
+          window.location.assign(`/join?${key}=${encodeURIComponent(r.slug)}${msg ? `&m=${encodeURIComponent(msg)}` : ""}`);
+        } else {
+          showToast("you don't have access to this chat");
+        }
+      }).catch(() => showToast("you don't have access to this chat"));
     });
   }, [base]);
+
+  // Keep the address bar in sync with the open chat, so a reload / copied link
+  // returns here. replaceState (not push) — chat switches aren't history entries.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (activeId) url.searchParams.set("chat", activeId);
+    else url.searchParams.delete("chat");
+    url.searchParams.delete("m"); // the message anchor is one-shot (consumed on open)
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }, [activeId]);
 
   // Clear the toast timer on unmount so it can't fire into a dead component.
   useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
@@ -217,6 +265,11 @@ export default function Chat({ base }: { base: string }) {
   const sendRead = useCallback((msgs: Bubble[]) => {
     const ws = socketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || msgs.length === 0) return;
+    // Only mark seen when the tab is actually VISIBLE. A chat open in a background
+    // tab (or a hidden/minimized window) must not auto-ack — that would advance the
+    // peer's "seen" tick and wipe our own unread badge for messages no human saw.
+    // The visibilitychange/focus catch-up below re-acks once the tab is shown.
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     const newest = msgs[msgs.length - 1].createdAt;
     if (newest <= sentReadUpToRef.current) return;
     sentReadUpToRef.current = newest;
@@ -228,7 +281,10 @@ export default function Chat({ base }: { base: string }) {
   // Keep an autoscroll pinned to the newest message — unless we're prepending
   // older history (then Composer/onScroll preserves the position instead).
   useEffect(() => {
-    if (prependingRef.current) return;
+    // Don't snap to the bottom while prepending older history, nor while viewing a
+    // detached window around a jumped-to old message (hasNewer) — either would yank
+    // the user away from what they're reading.
+    if (prependingRef.current || hasNewerRef.current) return;
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
@@ -257,16 +313,43 @@ export default function Chat({ base }: { base: string }) {
     }));
   }, [base]);
 
+  // Forward pagination — only meaningful in a detached window (hasNewer). Loads the
+  // next page of NEWER messages via after=<newestLoadedId> and appends; when a page
+  // comes back short the window has reconnected with the live tail → clear detached.
+  const loadNewer = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId || loadingNewerRef.current || !hasNewerRef.current) return;
+    const newest = messagesRef.current[messagesRef.current.length - 1];
+    if (!newest) return;
+    loadingNewerRef.current = true;
+    try {
+      const rows = await loadHistoryAfter(base, chatId, newest.id);
+      if (activeRef.current !== chatId) return;
+      if (rows.length > 0) {
+        setMessages((prev) => {
+          const have = new Set(prev.map((b) => b.id));
+          return [...prev, ...rows.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
+        });
+      }
+      if (rows.length < 50) setHasNewer(false); // short page ⇒ caught up to the tail
+    } finally {
+      loadingNewerRef.current = false;
+    }
+  }, [base]);
+
   const onLogScroll = useCallback(() => {
     const el = logRef.current;
     if (!el) return;
     if (el.scrollTop < 60) void loadOlder();
-    // Track bottom-ness for read-send + autoscroll; when the user scrolls back to
-    // the bottom, that counts as "seen everything" → send a read receipt.
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Near the bottom of a DETACHED window → page forward toward the live tail.
+    if (dist < 120 && hasNewerRef.current) void loadNewer();
+    // Track bottom-ness for read-send + autoscroll; scrolling back to the real
+    // bottom (not a detached window's end) counts as "seen everything".
+    const atBottom = dist < NEAR_BOTTOM_PX;
     atBottomRef.current = atBottom;
-    if (atBottom) setMessages((prev) => { sendRead(prev); return prev; });
-  }, [loadOlder, sendRead]);
+    if (atBottom && !hasNewerRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+  }, [loadOlder, loadNewer, sendRead]);
 
   // Surface a small transient note (e.g. a server rejection). Non-blocking: it
   // auto-dismisses after a few seconds and never interrupts typing.
@@ -281,15 +364,20 @@ export default function Chat({ base }: { base: string }) {
       // Reconcile the optimistic bubble: swap tempId → the server message.
       setMessages((prev) => prev.map((b) => (b.tempId && b.tempId === frame.tempId ? { ...frame.message } : b)));
     } else if (frame.type === "message") {
-      // Broadcast from a peer (or an echo we already have). Dedupe by real id.
-      setMessages((prev) => {
-        if (prev.some((b) => b.id === frame.message.id)) return prev;
-        const next = [...prev, { ...frame.message }];
-        // A new peer message while we're reading (log at bottom) is immediately
-        // "seen" → send a read receipt so their "seen" tick advances.
-        if (atBottomRef.current) sendRead(next);
-        return next;
-      });
+      // A live message belongs at the tail. If we're viewing a DETACHED window
+      // (jumped to an old message, hasNewer), the tail isn't loaded — appending it
+      // there would render it out of context, so skip the append; the sidebar unread
+      // + the "jump to latest" button surface it. Otherwise append (dedupe by id).
+      if (!hasNewerRef.current) {
+        setMessages((prev) => {
+          if (prev.some((b) => b.id === frame.message.id)) return prev;
+          const next = [...prev, { ...frame.message }];
+          // A new peer message while we're reading (log at bottom) is immediately
+          // "seen" → send a read receipt so their "seen" tick advances.
+          if (atBottomRef.current) sendRead(next);
+          return next;
+        });
+      }
       // Slice 9 — a backgrounded notification for a message from someone else. The
       // helper self-gates on document.hidden + granted permission (never prompts).
       if (frame.message.senderId !== meIdRef.current) {
@@ -373,6 +461,8 @@ export default function Chat({ base }: { base: string }) {
     setMessages([]);
     setConnected(false);
     setHasMore(false);
+    setHasNewer(false); // never inherit a detached window across a chat switch
+    loadingNewerRef.current = false;
     setLoadingHistory(true);
     prependingRef.current = false;
     loadHistory(base, chatId).then((hist) => {
@@ -383,6 +473,11 @@ export default function Chat({ base }: { base: string }) {
       // Opening a chat with messages = reading it → send a read receipt (once the
       // socket is up sendRead no-ops if closed; the onopen handler re-sends).
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
+      // Consume a pending ?m deep-link jump now the first page is in — after a rAF
+      // so rows register (flashRow finds it if loaded, else it pulls a window).
+      const jump = pendingJumpRef.current;
+      pendingJumpRef.current = null;
+      if (jump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(jump); });
     });
 
     function clearReconnect() {
@@ -456,8 +551,15 @@ export default function Chat({ base }: { base: string }) {
       const act = activeRef.current;
       setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
     }
-    function onFocus() { void refresh(); }
-    function onVisible() { if (document.visibilityState === "visible") void refresh(); }
+    // On return to the tab, if the open chat is pinned to the bottom, ack whatever
+    // arrived while we were away (the read guard suppressed it live). Mirrors the
+    // "seen everything when at bottom" rule; a user scrolled up isn't auto-acked.
+    function catchUpRead() {
+      if (document.visibilityState !== "visible") return;
+      if (activeRef.current && atBottomRef.current) sendRead(messagesRef.current);
+    }
+    function onFocus() { void refresh(); catchUpRead(); }
+    function onVisible() { if (document.visibilityState === "visible") { void refresh(); catchUpRead(); } }
     const iv = window.setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, SIDEBAR_POLL_MS);
@@ -474,6 +576,9 @@ export default function Chat({ base }: { base: string }) {
   function send(body: string, replyToId?: string | null) {
     const ws = socketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !activeId || !me) return;
+    // Sending from a detached window (jumped to an old message): snap back to the
+    // live tail first so the optimistic bubble lands in context, then send.
+    if (hasNewerRef.current) { void jumpToLatest().then(() => send(body, replyToId)); return; }
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Build an optimistic reply snippet from the armed message so the quoted
     // preview shows instantly; the `sent` frame replaces it with the server's.
@@ -545,34 +650,91 @@ export default function Chat({ base }: { base: string }) {
     void navigator.clipboard?.writeText(text).then(() => showToast("copied"), () => showToast("couldn't copy"));
   }
 
+  // Build + copy a shareable deep-link. Chat → /app?chat=<id>; message → +&m=<id>.
+  // A member opening it lands in the chat (and jumps to the message); a non-member is
+  // routed to the public /join preview when the chat has a slug (see the mount effect).
+  function chatLink(chatId: string, msgId?: string): string {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    return `${origin}/app?chat=${encodeURIComponent(chatId)}${msgId ? `&m=${encodeURIComponent(msgId)}` : ""}`;
+  }
+  function copyLink(url: string) {
+    void navigator.clipboard?.writeText(url).then(() => showToast("link copied"), () => showToast("couldn't copy"));
+  }
+  function copyChatLink() { if (activeId) copyLink(chatLink(activeId)); }
+  function copyMessageLink(m: Bubble) { if (activeId && !m.pending) copyLink(chatLink(activeId, m.id)); }
+
   // Register/unregister a message row element for jump-to-original.
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
     if (el) rowsRef.current.set(id, el);
     else rowsRef.current.delete(id);
   }, []);
 
-  // Scroll a loaded message into view and flash it briefly.
-  function flashRow(id: string) {
+  // Scroll a loaded message into view and flash it — but start the flash only once
+  // the row is actually on screen. The smooth scroll is async (can take a while
+  // after loading pages), so adding the class immediately meant the 1.2s highlight
+  // finished before you arrived. An IntersectionObserver fires the flash on landing.
+  function flashRow(id: string): boolean {
     const el = rowsRef.current.get(id);
     if (!el) return false;
     el.scrollIntoView({ block: "center", behavior: "smooth" });
-    el.classList.add("is-flash");
-    window.setTimeout(() => el.classList.remove("is-flash"), FLASH_MS);
+    let flashed = false;
+    const flash = () => {
+      if (flashed) return;
+      flashed = true;
+      el.classList.add("is-flash");
+      const done = () => { el.classList.remove("is-flash"); el.removeEventListener("animationend", done); };
+      el.addEventListener("animationend", done);
+      window.setTimeout(done, FLASH_MS + 500); // reduced-motion never fires animationend
+    };
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { io.disconnect(); flash(); }
+    }, { root: logRef.current, threshold: 0.5 });
+    io.observe(el);
+    window.setTimeout(() => { io.disconnect(); flash(); }, 1500); // safety if IO never fires
     return true;
   }
 
-  // Jump to a reply's original: if it's loaded, scroll + flash; otherwise page
-  // older history (capped) until the id appears, then flash. No-op if never found.
-  async function jumpToReply(id: string) {
+  // Jump to any message by id: if it's already loaded, scroll + flash. Otherwise
+  // fetch a window AROUND it from the server (historyAround) — O(1), works no matter
+  // how far back it is — replace the log with that window (detached from the live
+  // tail when hasNewer), then flash it once it renders. Toast if it can't be found.
+  async function jumpToMessage(id: string) {
     if (flashRow(id)) return;
-    for (let i = 0; i < JUMP_MAX_PAGES; i++) {
-      if (!hasMoreRef.current) break;
-      await loadOlder();
-      // Let the prepend commit + refs register before we look again.
-      await new Promise((r) => requestAnimationFrame(() => r(null)));
-      if (rowsRef.current.has(id)) { flashRow(id); return; }
-    }
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    let around;
+    try { around = await loadHistoryAround(base, chatId, id); }
+    catch { showToast("couldn't load that message"); return; }
+    if (activeRef.current !== chatId) return;
+    if (!around.found) { showToast("message not found"); return; }
+    prependingRef.current = true; // suppress the autoscroll-to-bottom on this replace
+    setMessages(around.messages.map((m) => ({ ...m })));
+    setHasMore(around.hasOlder);
+    setHasNewer(around.hasNewer);
+    // Flash after the new window has painted + its rows registered.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    prependingRef.current = false;
+    flashRow(id);
   }
+
+  // Snap back to the live tail from a detached window (the "jump to latest" button
+  // and the pre-send hook use this): reload the newest page + re-attach to live.
+  const jumpToLatest = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    const hist = await loadHistory(base, chatId);
+    if (activeRef.current !== chatId) return;
+    hasNewerRef.current = false; // imperative so a re-entrant send() sees it at once
+    setHasNewer(false);
+    setMessages(hist.map((m) => ({ ...m })));
+    setHasMore(hist.length >= 50);
+    atBottomRef.current = true;
+    if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [base, sendRead]);
 
   // ---- selection / multi-select action bar ----
   function enterSelect(seed?: Bubble) {
@@ -650,6 +812,7 @@ export default function Chat({ base }: { base: string }) {
     if (canDelete(m)) items.push({ label: "delete", onClick: () => sendDelete(m) });
     items.push({ label: "forward", onClick: () => forwardOne(m) });
     items.push({ label: "copy", onClick: () => copyText(m.body) });
+    if (!m.pending) items.push({ label: "copy link", onClick: () => copyMessageLink(m) });
     items.push({ label: "select", onClick: () => enterSelect(m) });
     return items;
   }
@@ -787,6 +950,12 @@ export default function Chat({ base }: { base: string }) {
                     </span>
                   </button>
                   <button
+                    className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
+                    onClick={copyChatLink}
+                    aria-label="copy link to this chat"
+                    title="copy link"
+                  >🔗</button>
+                  <button
                     className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
                     onClick={() => setSearchOpen((v) => !v)}
                     aria-label="search this chat"
@@ -807,8 +976,14 @@ export default function Chat({ base }: { base: string }) {
                     <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
                     {peerTyping
                       ? <span className="mw-chat__typing">typing…</span>
-                      : <span className="mw-chat__presence">{peerOnline ? "online" : "offline"}</span>}
+                      : <span className="mw-chat__presence">{peerOnline ? "online" : lastSeenLabel(activeChat.peerLastSeenAt)}</span>}
                   </span>
+                  <button
+                    className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
+                    onClick={copyChatLink}
+                    aria-label="copy link to this chat"
+                    title="copy link"
+                  >🔗</button>
                   <button
                     className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
                     onClick={() => setSearchOpen((v) => !v)}
@@ -830,7 +1005,7 @@ export default function Chat({ base }: { base: string }) {
                 chatId={activeId}
                 resolveName={(id) => resolveSenderNameRef.current(id)}
                 meId={me?.id ?? null}
-                onJump={jumpToReply}
+                onJump={jumpToMessage}
                 onClose={() => setSearchOpen(false)}
               />
             )}
@@ -905,12 +1080,19 @@ export default function Chat({ base }: { base: string }) {
                     onContextMenu={(mm, x, y) => setMenu({ m: mm, x, y })}
                     onReact={openEmoji}
                     onToggleReaction={sendReact}
-                    onJumpToReply={jumpToReply}
+                    onJumpToReply={jumpToMessage}
                     registerRef={registerRow}
                   />
                 );
               })}
             </div>
+
+            {hasNewer && (
+              // Viewing a detached window (jumped to an old message) — a way back to live.
+              <button className="mw-chat__tolatest" onClick={() => void jumpToLatest()} aria-label="jump to latest messages">
+                jump to latest ↓
+              </button>
+            )}
 
             {selectMode ? (
               <div className="mw-selectbar" role="toolbar" aria-label="selection actions">

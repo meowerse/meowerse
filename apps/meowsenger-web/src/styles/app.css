@@ -94,7 +94,7 @@ body:has(.mw-chat) main.mw-container {
 .mw-dot--off { background: var(--text-muted); opacity: 0.55; }
 
 /* ---- conversation pane ---------------------------------------------------- */
-.mw-chat__main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.mw-chat__main { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
 .mw-chat__empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: var(--space-6); }
 
 .mw-chat__head {
@@ -172,14 +172,16 @@ body:has(.mw-chat) main.mw-container {
   border-top: 1px solid var(--border);
   background: var(--surface-1);
 }
-.mw-composer input {
-  flex: 1; min-width: 0; min-height: 42px; padding: 10px 14px;
-  font: inherit; font-size: var(--text-base); color: var(--text-primary);
+/* A <textarea> (not <input>) so mobile browsers never attach the credentials /
+   autofill accessory. Auto-grows one→several rows (JS caps the height at 140px). */
+.mw-composer__input {
+  flex: 1; min-width: 0; min-height: 42px; max-height: 140px; padding: 10px 14px;
+  font: inherit; font-size: var(--text-base); line-height: 1.35; color: var(--text-primary);
   background: var(--surface-0); border: 0.5px solid var(--border-strong);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-lg); resize: none; overflow-y: auto;
   transition: border-color var(--dur-fast) var(--ease);
 }
-.mw-composer input:focus { border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
+.mw-composer__input:focus { border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
 .mw-composer .mw-btn { border-radius: var(--radius-pill); }
 
 /* ---- slice 4: reply / edit / delete / multi-select / context menu --------- */
@@ -261,7 +263,7 @@ body:has(.mw-chat) main.mw-container {
 
 /* Reply chip above the composer input. */
 .mw-composer { flex-direction: column; align-items: stretch; }
-.mw-composer__row { display: flex; gap: var(--space-2); align-items: center; }
+.mw-composer__row { display: flex; gap: var(--space-2); align-items: flex-end; }
 .mw-replybar {
   display: flex; align-items: center; gap: var(--space-2);
   padding: 6px 10px; margin-bottom: var(--space-2);
@@ -682,6 +684,17 @@ body:has(.mw-chat) main.mw-container {
 /* Header search toggle (🔍): sits in the header's right cluster, next to status. */
 .mw-chat__searchbtn { flex: none; padding: 4px 8px; font-size: var(--text-base); line-height: 1; }
 .mw-chat__searchbtn.is-on { color: var(--text-accent); background: var(--surface-muted); }
+.mw-chat__linkbtn { flex: none; padding: 4px 8px; font-size: var(--text-base); line-height: 1; }
+/* Floating "jump to latest" pill, shown while a detached window is open. Sits just
+   above the composer, centered; tapping snaps back to the live tail. */
+.mw-chat__tolatest {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 84px; z-index: 5;
+  padding: 6px 14px; font-size: var(--text-sm); font-weight: 600;
+  color: var(--mw-on-green); background: var(--mw-green);
+  border: 0; border-radius: var(--radius-pill); cursor: pointer;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.18);
+}
+.mw-chat__tolatest:hover { filter: brightness(1.05); }
 
 /* Emoji picker popover: a horizontal row of large tappable emoji (Slice 9). */
 .mw-emojipick {
