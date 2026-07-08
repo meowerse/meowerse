@@ -148,8 +148,8 @@ export default function Chat({ base }: { base: string }) {
   // re-sending the same receipt on every scroll tick / re-render.
   const sentReadUpToRef = useRef(0);
 
-  // Ref mirrors of state that loadOlder reads while awaited in a loop (reply-jump),
-  // where a captured-render closure would go stale after each prepend.
+  // Ref mirrors of state read from stable callbacks / async paths (loadOlder,
+  // loadNewer, catchUpRead) where a captured-render closure would go stale.
   const messagesRef = useRef<Bubble[]>([]);
   const hasMoreRef = useRef(false);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
@@ -248,8 +248,14 @@ export default function Chat({ base }: { base: string }) {
 
   // Keep the address bar in sync with the open chat, so a reload / copied link
   // returns here. replaceState (not push) — chat switches aren't history entries.
+  const urlSyncReadyRef = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Skip the FIRST run: on mount activeId is null and the deep-link (?chat/?m) is
+    // still being read asynchronously (after listChats resolves). Stripping the params
+    // here would clobber the link before it's consumed — the bug that broke deep-links.
+    // Sync only from the first real (de)selection onward.
+    if (!urlSyncReadyRef.current) { urlSyncReadyRef.current = true; return; }
     const url = new URL(window.location.href);
     if (activeId) url.searchParams.set("chat", activeId);
     else url.searchParams.delete("chat");
@@ -456,6 +462,10 @@ export default function Chat({ base }: { base: string }) {
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
     if (!activeId) return;
     const chatId = activeId; // non-null capture for the closures below
+    // Grab (and clear) a pending ?m deep-link jump for THIS chat synchronously, so a
+    // fast switch away before history loads can't leak it into the next chat's load.
+    const pendingJump = pendingJumpRef.current;
+    pendingJumpRef.current = null;
 
     let cancelled = false;
     setMessages([]);
@@ -473,11 +483,10 @@ export default function Chat({ base }: { base: string }) {
       // Opening a chat with messages = reading it → send a read receipt (once the
       // socket is up sendRead no-ops if closed; the onopen handler re-sends).
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
-      // Consume a pending ?m deep-link jump now the first page is in — after a rAF
-      // so rows register (flashRow finds it if loaded, else it pulls a window).
-      const jump = pendingJumpRef.current;
-      pendingJumpRef.current = null;
-      if (jump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(jump); });
+      // Consume the pending ?m deep-link jump captured above, now the first page is
+      // in — after a rAF so rows register (flashRow finds it if loaded, else it pulls
+      // a window).
+      if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
     });
 
     function clearReconnect() {
@@ -577,8 +586,14 @@ export default function Chat({ base }: { base: string }) {
     const ws = socketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !activeId || !me) return;
     // Sending from a detached window (jumped to an old message): snap back to the
-    // live tail first so the optimistic bubble lands in context, then send.
-    if (hasNewerRef.current) { void jumpToLatest().then(() => send(body, replyToId)); return; }
+    // live tail first so the optimistic bubble lands in context, then send — but only
+    // if we're still in the SAME chat (a switch during the reload must not redeliver
+    // this message into the newly-opened chat over its socket).
+    if (hasNewerRef.current) {
+      const at = activeRef.current;
+      void jumpToLatest().then(() => { if (activeRef.current === at) send(body, replyToId); });
+      return;
+    }
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Build an optimistic reply snippet from the armed message so the quoted
     // preview shows instantly; the `sent` frame replaces it with the server's.
@@ -644,11 +659,12 @@ export default function Chat({ base }: { base: string }) {
     return !!me && m.senderId === me.id && !m.pending && !m.isDeleted && Date.now() - m.createdAt <= DELETE_WINDOW_MS;
   }
 
-  // Copy one message's body to the clipboard (best-effort; a note on success).
-  function copyText(text: string) {
+  // Best-effort clipboard write with a toast on the outcome.
+  function copy(text: string, okMsg: string) {
     if (!text) return;
-    void navigator.clipboard?.writeText(text).then(() => showToast("copied"), () => showToast("couldn't copy"));
+    void navigator.clipboard?.writeText(text).then(() => showToast(okMsg), () => showToast("couldn't copy"));
   }
+  function copyText(text: string) { copy(text, "copied"); }
 
   // Build + copy a shareable deep-link. Chat → /app?chat=<id>; message → +&m=<id>.
   // A member opening it lands in the chat (and jumps to the message); a non-member is
@@ -657,9 +673,7 @@ export default function Chat({ base }: { base: string }) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     return `${origin}/app?chat=${encodeURIComponent(chatId)}${msgId ? `&m=${encodeURIComponent(msgId)}` : ""}`;
   }
-  function copyLink(url: string) {
-    void navigator.clipboard?.writeText(url).then(() => showToast("link copied"), () => showToast("couldn't copy"));
-  }
+  function copyLink(url: string) { copy(url, "link copied"); }
   function copyChatLink() { if (activeId) copyLink(chatLink(activeId)); }
   function copyMessageLink(m: Bubble) { if (activeId && !m.pending) copyLink(chatLink(activeId, m.id)); }
 

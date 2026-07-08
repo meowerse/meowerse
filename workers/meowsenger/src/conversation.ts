@@ -51,6 +51,13 @@ const HISTORY_PAGE = 50;
 /** Half-window size for a centered `historyAround` page: up to this many messages
  *  on each side of (and including) the anchor, so a deep-link lands with context. */
 const AROUND_HALF = 25;
+/** The message columns every history/search query selects, including the LEFT JOIN
+ *  reply-preview columns. Kept in ONE place so history (before/after/around) and
+ *  search can never drift apart when a column is added. Used with the same
+ *  `FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` join. */
+const HISTORY_COLS =
+  "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
+  " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
 /** How long the reply quote-preview keeps of the original body. */
 const REPLY_SNIPPET = 120;
 /** Own-message edit window (1h) and delete window (24h). */
@@ -96,6 +103,9 @@ export class Conversation extends DurableObject<Env> {
    * in-flight flood to remember.
    */
   private sendTimes = new Map<WebSocket, number[]>();
+  // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
+  // ~once/60s per user (see webSocketClose). Bounded by this chat's member count.
+  private lastSeenStamp = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -388,11 +398,18 @@ export class Conversation extends DurableObject<Env> {
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
       // Now fully offline (in this room) → stamp last_seen_at for the "last seen …"
-      // DM header. Off the close path (waitUntil), errors swallowed. Wall time is
-      // fine here (no ordering requirement, unlike message created_at).
-      this.ctx.waitUntil(
-        this.d1().run("UPDATE users SET last_seen_at = ? WHERE id = ?", [Date.now(), att.userId]).catch(() => {}),
-      );
+      // DM header. DEBOUNCED to at most ~once/60s per user: the UI is minute-grained,
+      // and a flapping client reconnects to THIS same DO (kept warm by the churn), so
+      // the in-memory stamp collapses a reconnect storm to one write/min — otherwise a
+      // single flapping socket could approach the free-tier D1 write budget. Off the
+      // close path (waitUntil); wall time is fine (no ordering requirement).
+      const nowMs = Date.now();
+      if (nowMs - (this.lastSeenStamp.get(att.userId) ?? 0) >= 60_000) {
+        this.lastSeenStamp.set(att.userId, nowMs);
+        this.ctx.waitUntil(
+          this.d1().run("UPDATE users SET last_seen_at = ? WHERE id = ?", [nowMs, att.userId]).catch(() => {}),
+        );
+      }
     }
   }
 
@@ -569,9 +586,7 @@ export class Conversation extends DurableObject<Env> {
     // LEFT JOIN the reply target so each row carries its quote-preview (reply_*).
     // A soft-deleted target yields no snippet (the join keeps the row but we drop
     // the preview below). Deleted rows themselves stay in the page as placeholders.
-    const cols =
-      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
-      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const cols = HISTORY_COLS;
     const rows =
       cursor != null
         ? this.ctx.storage.sql
@@ -608,9 +623,7 @@ export class Conversation extends DurableObject<Env> {
       .exec("SELECT created_at FROM messages WHERE id = ?", afterId)
       .toArray()[0]?.created_at;
     if (at == null) return [];
-    const cols =
-      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
-      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const cols = HISTORY_COLS;
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
@@ -645,9 +658,7 @@ export class Conversation extends DurableObject<Env> {
       .toArray()[0]?.created_at;
     if (at == null) return { messages: [], hasOlder: false, hasNewer: false, found: false };
     const targetAt = Number(at);
-    const cols =
-      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
-      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const cols = HISTORY_COLS;
     // Older half INCLUDES the anchor (created_at <= targetAt); newest-first for the
     // LIMIT, then reversed to ascending.
     const older = this.ctx.storage.sql
@@ -733,9 +744,7 @@ export class Conversation extends DurableObject<Env> {
     if (!q) return [];
     const capped = Math.max(1, Math.min(Number(limit) || 30, 100));
     const pattern = `%${escapeLike(q)}%`;
-    const cols =
-      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
-      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const cols = HISTORY_COLS;
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
