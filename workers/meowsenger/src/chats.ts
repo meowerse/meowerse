@@ -28,6 +28,10 @@ export interface ChatSummary {
   id: string; type: string; name: string | null;
   lastMessage: string | null; lastSenderId: string | null; lastActivity: number;
   unreadCount: number;
+  // Slug (groups/channels only) + visibility, so the client can build a shareable
+  // link (slug preferred, else id) without a round-trip. `peerLastSeenAt` is the DM
+  // peer's last-connected ms (null if never / group) for the "last seen …" header.
+  slug: string | null; visibility: string; peerLastSeenAt: number | null;
   // For a DM ('direct'), the OTHER member's identity so the sidebar can render a
   // name + avatar without a second round-trip. Null for groups (Slice 5).
   // `peerId` is the other member's user_id — the key presence/read frames use, so
@@ -91,9 +95,10 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
   // there is more than one "other" member — the peer columns stay null (Slice 5
   // renders groups by their own name), so the join is scoped to type = 'direct'.
   const rows = await db.all(
-    `SELECT c.id, c.type, c.name, c.last_message, c.last_sender_id, c.last_activity, m.unread_count,
+    `SELECT c.id, c.type, c.name, c.slug, c.visibility, c.last_message, c.last_sender_id, c.last_activity, m.unread_count,
             om.user_id AS peer_id,
-            pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url
+            pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url,
+            pu.last_seen_at AS peer_last_seen_at
      FROM chat_members m
      JOIN chats c ON c.id = m.chat_id
      LEFT JOIN chat_members om ON om.chat_id = c.id AND om.user_id <> m.user_id AND c.type = 'direct'
@@ -103,6 +108,8 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
   );
   return rows.map((r: Row) => ({
     id: String(r.id), type: String(r.type), name: r.name == null ? null : String(r.name),
+    slug: r.slug == null ? null : String(r.slug),
+    visibility: r.visibility == null ? "private" : String(r.visibility),
     lastMessage: r.last_message == null ? null : String(r.last_message),
     lastSenderId: r.last_sender_id == null ? null : String(r.last_sender_id),
     lastActivity: Number(r.last_activity), unreadCount: Number(r.unread_count ?? 0),
@@ -110,6 +117,7 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
     peerUsername: r.peer_username == null ? null : String(r.peer_username),
     peerDisplayName: r.peer_display_name == null ? null : String(r.peer_display_name),
     peerAvatarUrl: r.peer_avatar_url == null ? null : String(r.peer_avatar_url),
+    peerLastSeenAt: r.peer_last_seen_at == null ? null : Number(r.peer_last_seen_at),
   }));
 }
 
@@ -333,6 +341,45 @@ export async function getPreviewBySlug(
   // (A private-no-slug chat can't be resolved by slug, so it never reaches here.)
   const requestStatus = callerId == null ? "none" : await requestStatusFor(db, id, callerId);
   return { ...base, canRequest: true, requestStatus };
+}
+
+/**
+ * Resolve a chat by id OR slug for a signed-in user, for a shareable deep-link
+ * (`GET /api/chats/:idOrSlug/resolve`). Same access rules as getPreviewBySlug but
+ * keyed by either identifier, and it also returns `slug`/`role` so the client can
+ * decide whether to open the chat directly or route to the /join preview:
+ *  - member → openable payload (isMember:true) → client opens /app?chat=<id>.
+ *  - non-member + public → preview (open-join).
+ *  - non-member + private + slug → preview + canRequest/requestStatus (request flow).
+ *  - non-member + private + no slug, OR unknown id/slug → null (404, no leak).
+ */
+export async function resolveChat(
+  db: DbClient,
+  idOrSlug: string,
+  userId: string,
+): Promise<(ChatPreview & { slug: string | null; role: Role | null }) | null> {
+  let row = await db.first("SELECT id, type, name, visibility, slug FROM chats WHERE id = ?", [idOrSlug]);
+  if (!row) {
+    const normalized = normalizeSlug(idOrSlug);
+    if (normalized) row = await db.first("SELECT id, type, name, visibility, slug FROM chats WHERE slug = ?", [normalized]);
+  }
+  if (!row) return null;
+  const id = String(row.id);
+  const visibility = String(row.visibility);
+  const slug = row.slug == null ? null : String(row.slug);
+  const role = await getRole(db, id, userId);
+  const isMember = role != null;
+  const countRow = await db.first("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?", [id]);
+  const base = {
+    id, type: String(row.type), name: row.name == null ? null : String(row.name),
+    memberCount: Number(countRow?.n ?? 0), visibility, isMember, slug, role,
+  };
+  if (isMember || visibility === "public") return base;
+  if (slug) {
+    const requestStatus = await requestStatusFor(db, id, userId);
+    return { ...base, canRequest: true, requestStatus };
+  }
+  return null; // private, no slug, non-member → hidden (no existence leak)
 }
 
 /**

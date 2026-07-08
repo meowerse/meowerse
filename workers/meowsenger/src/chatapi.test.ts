@@ -3,6 +3,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleResolveChat,
   handleSearch,
   handleForward,
   callerId,
@@ -274,6 +275,81 @@ describe("handleHistory", () => {
     await handleHistory(cookieReq("https://x/api/chats/c1/messages", "s1"), env, db, now, "c1", cors);
     expect(seenViewer).toBe("u1");
   });
+  it("?around=<id> routes to historyAround and returns its window shape", async () => {
+    let seenAround: string | undefined = "UNSET";
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const env = {
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          historyAround: async (_c: string, id: string) => {
+            seenAround = id;
+            return { messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true };
+          },
+        }),
+      },
+    } as unknown as Env;
+    const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?around=m5", "s1"), env, db, now, "c1", cors);
+    expect(seenAround).toBe("m5");
+    expect(await res.json()).toEqual({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
+  });
+  it("?after=<id> routes to historyAfter (forward page)", async () => {
+    let seenAfter: string | undefined = "UNSET";
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const env = {
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          historyAfter: async (_c: string, id: string) => {
+            seenAfter = id;
+            return [{ id: "m6" }];
+          },
+        }),
+      },
+    } as unknown as Env;
+    const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?after=m6", "s1"), env, db, now, "c1", cors);
+    expect(seenAfter).toBe("m6");
+    expect(await res.json()).toEqual({ messages: [{ id: "m6" }] });
+  });
+});
+
+describe("GET /api/chats/:idOrSlug/resolve", () => {
+  it("401 with no session", async () => {
+    const { db } = groupApiDb({ chats: [{ id: "c1", slug: "open", visibility: "public" }] });
+    const res = await handleResolveChat(cookieReq("https://x/api/chats/c1/resolve"), db, now, "c1", cors);
+    expect(res.status).toBe(401);
+  });
+  it("member → openable payload (isMember:true) resolved by id", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u1"),
+      chats: [{ id: "c1", slug: "room", type: "group", name: "Room", visibility: "private" }],
+      members: [{ chatId: "c1", userId: "u1", role: "member", joinedAt: 1 }],
+    });
+    const res = await handleResolveChat(cookieReq("https://x/api/chats/c1/resolve", "s1"), db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: "c1", slug: "room", visibility: "private", isMember: true, role: "member" });
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+  it("public chat, non-member → preview (isMember:false)", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "c1", slug: "open", type: "group", name: "Open", visibility: "public" }],
+      members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleResolveChat(cookieReq("https://x/api/chats/c1/resolve", "s1"), db, now, "c1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: "c1", isMember: false, visibility: "public" });
+  });
+  it("private, NO slug, non-member → 404 not_found (no existence leak)", async () => {
+    const { db } = groupApiDb({
+      session: validSession("u9"),
+      chats: [{ id: "c1", type: "group", name: "Hidden", visibility: "private" }],
+      members: [{ chatId: "c1", userId: "owner", role: "owner", joinedAt: 1 }],
+    });
+    const res = await handleResolveChat(cookieReq("https://x/api/chats/c1/resolve", "s1"), db, now, "c1", cors);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
+  });
 });
 
 // ---- Slice 9: within-chat search ----
@@ -390,6 +466,8 @@ function groupApiDb(opts: {
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
       if (sql.includes("SELECT 1 AS ok FROM chats WHERE slug")) return [...chats.values()].some((c) => c.slug === p[0]) ? { ok: 1 } : undefined;
       if (sql.includes("SELECT id FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
+      // resolveChat looks the chat up by id FIRST (before falling back to slug).
+      if (sql.includes("SELECT id, type, name, visibility, slug FROM chats WHERE id")) return chats.get(String(p[0]));
       // Slice 6: discovery preview (by slug) + join visibility check (by id) + count.
       // Slice 7 added `slug` to the preview SELECT — match on the common prefix.
       if (sql.includes("SELECT id, type, name, visibility")) return [...chats.values()].find((c) => c.slug === p[0]);

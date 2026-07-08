@@ -23,6 +23,12 @@ export interface ChatSummary {
   peerUsername: string | null;
   peerDisplayName: string | null;
   peerAvatarUrl: string | null;
+  // Slug (groups/channels only) + visibility, so a shareable link prefers the slug.
+  // `peerLastSeenAt` is the DM peer's last-connected ms (null if never/group) for the
+  // "last seen …" header. Optional so an older payload without them still parses.
+  slug?: string | null;
+  visibility?: string;
+  peerLastSeenAt?: number | null;
 }
 
 /**
@@ -204,6 +210,65 @@ export async function loadHistory(base: string, chatId: string, before?: string)
     return d.messages ?? [];
   } catch {
     return [];
+  }
+}
+
+/** GET ?around=<msgId> — a window centered on a message (deep-link jump), ascending,
+ *  with hasOlder/hasNewer (more to page each side) + found (false ⇒ unknown id). */
+export async function loadHistoryAround(
+  base: string,
+  chatId: string,
+  msgId: string,
+): Promise<{ messages: Message[]; hasOlder: boolean; hasNewer: boolean; found: boolean }> {
+  const r = await fetch(
+    `${base}/api/chats/${encodeURIComponent(chatId)}/messages?around=${encodeURIComponent(msgId)}`,
+    { credentials: "include" },
+  );
+  const d = (await r.json()) as { messages?: Message[]; hasOlder?: boolean; hasNewer?: boolean; found?: boolean };
+  return { messages: d.messages ?? [], hasOlder: !!d.hasOlder, hasNewer: !!d.hasNewer, found: !!d.found };
+}
+
+/** GET ?after=<msgId> — the next page of NEWER messages (forward paging in a
+ *  detached window), ascending. Empty on a network error. */
+export async function loadHistoryAfter(base: string, chatId: string, afterId: string): Promise<Message[]> {
+  try {
+    const r = await fetch(
+      `${base}/api/chats/${encodeURIComponent(chatId)}/messages?after=${encodeURIComponent(afterId)}`,
+      { credentials: "include" },
+    );
+    const d = (await r.json()) as { messages?: Message[] };
+    return d.messages ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Fields a resolved chat carries for a shareable deep-link (mirrors the worker's
+ *  resolveChat). `isMember` ⇒ open it directly; else it's a preview/join target. */
+export interface ChatResolution {
+  id: string;
+  type: string;
+  name: string | null;
+  slug: string | null;
+  visibility: string;
+  isMember: boolean;
+  role: string | null;
+  memberCount: number;
+  canRequest?: boolean;
+  requestStatus?: RequestStatus;
+  error?: string;
+}
+
+/** GET /api/chats/:idOrSlug/resolve — resolve a link target for the current user.
+ *  On any failure returns { error } (never throws) so the caller can toast. */
+export async function resolveChat(base: string, idOrSlug: string): Promise<ChatResolution> {
+  try {
+    const r = await fetch(`${base}/api/chats/${encodeURIComponent(idOrSlug)}/resolve`, { credentials: "include" });
+    const d = (await r.json()) as Partial<ChatResolution>;
+    if (!r.ok || !d.id) return { error: d.error ?? "not_found" } as ChatResolution;
+    return d as ChatResolution;
+  } catch {
+    return { error: "network" } as ChatResolution;
   }
 }
 

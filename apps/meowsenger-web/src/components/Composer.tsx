@@ -34,12 +34,24 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const idleTimer = useRef<number | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  // A <textarea>, not <input>: browsers never run username/password autofill on a
+  // textarea, so the mobile credentials/autofill strip (which ignores
+  // autocomplete=off on an <input>) never attaches. It also gives free multi-line
+  // composing (Shift+Enter). Matches the inline-edit field, which is already one.
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Focus the input when a reply is armed, so the user can type immediately.
   useEffect(() => {
     if (replyTo) inputRef.current?.focus();
   }, [replyTo]);
+
+  // Auto-grow with the content, from one row up to a few, then scroll.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+  }, [text]);
 
   function stopTyping() {
     if (idleTimer.current != null) {
@@ -86,14 +98,13 @@ export function Composer({
         </div>
       )}
       <div className="mw-composer__row">
-      <input
+      <textarea
         ref={inputRef}
-        type="text"
+        className="mw-composer__input"
+        rows={1}
         autoComplete="off"
         autoCapitalize="sentences"
         enterKeyHint="send"
-        data-1p-ignore
-        data-lpignore="true"
         value={text}
         placeholder="type a message…"
         aria-label="message"
@@ -105,6 +116,7 @@ export function Composer({
         }}
         onBlur={stopTyping}
         onKeyDown={(e) => {
+          // Enter sends; Shift+Enter inserts a newline.
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();

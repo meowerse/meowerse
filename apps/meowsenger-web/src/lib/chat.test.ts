@@ -3,6 +3,9 @@ import {
   listChats,
   openDirect,
   loadHistory,
+  loadHistoryAround,
+  loadHistoryAfter,
+  resolveChat,
   wsUrl,
   slugify,
   createGroup,
@@ -114,6 +117,51 @@ describe("loadHistory", () => {
   it("returns [] on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await loadHistory(BASE, "c1")).toEqual([]);
+  });
+});
+
+describe("loadHistoryAround", () => {
+  it("GETs ?around=<id> (encoded) and returns the window shape", async () => {
+    const mock = stubFetch({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
+    expect(await loadHistoryAround(BASE, "c1", "m 5")).toEqual({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?around=m%205`, { credentials: "include" });
+  });
+  it("defaults missing flags/messages safely (found:false)", async () => {
+    stubFetch({});
+    expect(await loadHistoryAround(BASE, "c1", "m5")).toEqual({ messages: [], hasOlder: false, hasNewer: false, found: false });
+  });
+});
+
+describe("loadHistoryAfter", () => {
+  it("GETs ?after=<id> (encoded) and returns the messages", async () => {
+    const mock = stubFetch({ messages: [{ id: "m6" }] });
+    expect(await loadHistoryAfter(BASE, "c1", "m 6")).toEqual([{ id: "m6" }]);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?after=m%206`, { credentials: "include" });
+  });
+  it("defaults to [] when the body has no messages", async () => {
+    stubFetch({});
+    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual([]);
+  });
+  it("returns [] on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual([]);
+  });
+});
+
+describe("resolveChat", () => {
+  it("returns the resolution on a 200 with an id (credentialed GET /resolve)", async () => {
+    const body = { id: "c1", type: "group", name: "Room", slug: "room", visibility: "public", isMember: true, role: "member", memberCount: 3 };
+    const mock = stubFetch(body);
+    expect(await resolveChat(BASE, "room")).toEqual(body);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/room/resolve`, { credentials: "include" });
+  });
+  it("returns {error} on a non-ok response (404)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "not_found" }), { status: 404 })));
+    expect(await resolveChat(BASE, "ghost")).toEqual({ error: "not_found" });
+  });
+  it("returns {error:'network'} on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await resolveChat(BASE, "c1")).toEqual({ error: "network" });
   });
 });
 

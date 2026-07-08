@@ -116,6 +116,51 @@ describe("Conversation DO", () => {
     expect(older.map((m) => m.body)).toEqual(["first"]);
   });
 
+  it("historyAround: centered window (incl. anchor), ascending, hasOlder/hasNewer; unknown id → found:false", async () => {
+    const s = stub("caround");
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      for (let i = 1; i <= 60; i++) {
+        ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES (?, 'u1', ?, ?)", `m${i}`, `b${i}`, i * 1000);
+      }
+    });
+    const around = await s.historyAround("caround", "m30");
+    expect(around.found).toBe(true);
+    // 25 older-or-equal (m6..m30) + 25 strictly-newer (m31..m55), ascending, incl. anchor.
+    expect(around.messages.length).toBe(50);
+    expect(around.messages[0].id).toBe("m6");
+    expect(around.messages[around.messages.length - 1].id).toBe("m55");
+    expect(around.messages.some((m) => m.id === "m30")).toBe(true);
+    const times = around.messages.map((m) => m.createdAt);
+    expect(times).toEqual([...times].sort((a, b) => a - b)); // strictly ascending
+    expect(around.hasOlder).toBe(true); // m1..m5 exist below the window
+    expect(around.hasNewer).toBe(true); // m56..m60 exist above
+    expect(await s.historyAround("caround", "nope")).toEqual({ messages: [], hasOlder: false, hasNewer: false, found: false });
+  });
+
+  it("historyAround: anchoring on the newest message → hasNewer:false", async () => {
+    const s = stub("caround2");
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      for (let i = 1; i <= 10; i++) {
+        ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES (?, 'u1', ?, ?)", `n${i}`, `b${i}`, i * 1000);
+      }
+    });
+    const around = await s.historyAround("caround2", "n10");
+    expect(around.found).toBe(true);
+    expect(around.hasNewer).toBe(false);
+    expect(around.messages[around.messages.length - 1].id).toBe("n10");
+  });
+
+  it("historyAfter: a forward page of strictly-newer messages, ascending; unknown id → []", async () => {
+    const s = stub("cafter");
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      for (let i = 1; i <= 5; i++) {
+        ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES (?, 'u1', ?, ?)", `f${i}`, `b${i}`, i * 1000);
+      }
+    });
+    expect((await s.historyAfter("cafter", "f3")).map((m) => m.id)).toEqual(["f4", "f5"]);
+    expect(await s.historyAfter("cafter", "nope")).toEqual([]);
+  });
+
   it("persists a message sent over the socket and mirrors it into historyFor", async () => {
     await seedChat("c4");
     const wa = await connect("c4", "u1");
