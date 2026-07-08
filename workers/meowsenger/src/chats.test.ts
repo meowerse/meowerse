@@ -16,6 +16,7 @@ import {
   roleAtLeast,
   chatType,
   getPreviewBySlug,
+  resolveChat,
   joinPublic,
   requestJoin,
   listRequests,
@@ -196,6 +197,10 @@ function groupDb(users: Record<string, { username: string; displayName: string |
       }
       if (sql.includes("SELECT id FROM chats WHERE slug")) {
         return [...chats.values()].find((c) => c.slug === p[0]);
+      }
+      // resolveChat looks the chat up by id FIRST (before falling back to slug).
+      if (sql.includes("SELECT id, type, name, visibility, slug FROM chats WHERE id")) {
+        return chats.get(String(p[0]));
       }
       // Slice 6: discovery preview (by slug) + chatType/join lookups (by id).
       // Slice 7 added `slug` to the preview SELECT — match on the common prefix.
@@ -482,6 +487,40 @@ describe("getPreviewBySlug", () => {
   it("malformed slug → {error:'private'}", async () => {
     const { db } = groupDb();
     expect(await getPreviewBySlug(db, "!!", "someone")).toEqual({ error: "private" });
+  });
+});
+
+describe("resolveChat (deep-link by id-or-slug)", () => {
+  it("by id, member → openable payload with slug + visibility + role", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Room", creatorId: "o", memberIds: ["m1"], visibility: "public", slug: "room" }, 1) as { id: string };
+    expect(await resolveChat(db, r.id, "m1")).toMatchObject({
+      id: r.id, type: "group", name: "Room", slug: "room", visibility: "public", isMember: true, role: "member",
+    });
+  });
+  it("by slug, member (owner) → resolves the same chat", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Room", creatorId: "o", memberIds: [], slug: "room" }, 1) as { id: string };
+    expect(await resolveChat(db, "room", "o")).toMatchObject({ id: r.id, isMember: true, role: "owner" });
+  });
+  it("public chat, non-member → preview (isMember:false)", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Open", creatorId: "o", memberIds: [], visibility: "public", slug: "open" }, 1) as { id: string };
+    expect(await resolveChat(db, r.id, "stranger")).toMatchObject({ id: r.id, isMember: false, visibility: "public" });
+  });
+  it("private+slug chat, non-member → request-access preview", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Secret", creatorId: "o", memberIds: [], slug: "secret" }, 1) as { id: string };
+    expect(await resolveChat(db, r.id, "stranger")).toMatchObject({ isMember: false, canRequest: true, requestStatus: "none" });
+  });
+  it("private, NO slug, non-member → null (no existence leak)", async () => {
+    const { db } = groupDb();
+    const r = await createGroup(db, { name: "Hidden", creatorId: "o", memberIds: [] }, 1) as { id: string };
+    expect(await resolveChat(db, r.id, "stranger")).toBeNull();
+  });
+  it("unknown id/slug → null", async () => {
+    const { db } = groupDb();
+    expect(await resolveChat(db, "ghost", "someone")).toBeNull();
   });
 });
 

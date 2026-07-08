@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at    INTEGER NOT NULL,
   -- Slice 7 privacy: 1 = this user may be added to groups directly (default);
   -- 0 = adding them instead yields an invite the actor must share (opt-out).
-  allow_auto_group_add INTEGER NOT NULL DEFAULT 1
+  allow_auto_group_add INTEGER NOT NULL DEFAULT 1,
+  -- Last time this user's final live socket dropped (ms), for the DM "last seen …"
+  -- header. Null until they've connected + disconnected at least once.
+  last_seen_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 

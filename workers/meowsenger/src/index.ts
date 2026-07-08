@@ -11,6 +11,7 @@ import {
   handleListChats,
   handleCreateChat,
   handleHistory,
+  handleResolveChat,
   handleSearch,
   handleForward,
   handleListMembers,
@@ -70,6 +71,11 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(bySlug[1]), cors);
   const hist = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), hist[1], cors);
+  // Resolve a chat by id-or-slug for a shareable deep-link (member → open; public/
+  // private+slug → preview; else 404). The `/resolve` suffix disambiguates from
+  // the bare `/api/chats/:id` PATCH below.
+  const resolveM = path.match(/^\/api\/chats\/([^/]+)\/resolve$/);
+  if (resolveM && m === "GET") return handleResolveChat(req, deps.getDb(), deps.now(), decodeURIComponent(resolveM[1]), cors);
   // Slice 9: within-chat search (member-gated). :id is the chat being searched.
   const search = path.match(/^\/api\/chats\/([^/]+)\/search$/);
   if (search && m === "GET") return handleSearch(req, env, deps.getDb(), deps.now(), search[1], cors);

@@ -17,6 +17,7 @@ import {
   slugAvailable,
   normalizeSlug,
   getPreviewBySlug,
+  resolveChat,
   joinPublic,
   requestJoin,
   listRequests,
@@ -133,7 +134,13 @@ async function handleCreateGroup(
   return json({ chatId: r.id, created: true }, 200, cors, { "Cache-Control": "no-store" });
 }
 
-/** GET /api/chats/:id/messages?before=<id> — history from the chat's DO (RPC). */
+/**
+ * GET /api/chats/:id/messages — history from the chat's DO (RPC). Three modes,
+ * all member-gated: ?around=<msgId> returns a centered window (deep-link jump,
+ * + hasOlder/hasNewer/found), ?after=<msgId> pages forward (detached-window
+ * loadNewer), else ?before=<id> pages backward (default). Slice 9: the caller is
+ * the viewerId so each message's reactions carry `mine`.
+ */
 export async function handleHistory(
   req: Request,
   env: Env,
@@ -145,11 +152,39 @@ export async function handleHistory(
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
   if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
-  const before = new URL(req.url).searchParams.get("before");
+  const q = new URL(req.url).searchParams;
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
-  // Slice 9: pass the caller as viewerId so each message's reactions carry `mine`.
-  const messages = await stub.historyFor(chatId, before, me);
+  const around = q.get("around");
+  if (around) {
+    const r = await stub.historyAround(chatId, around, me);
+    return json({ messages: r.messages, hasOlder: r.hasOlder, hasNewer: r.hasNewer, found: r.found }, 200, cors, { "Cache-Control": "no-store" });
+  }
+  const after = q.get("after");
+  if (after) {
+    const messages = await stub.historyAfter(chatId, after, me);
+    return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
+  }
+  const messages = await stub.historyFor(chatId, q.get("before"), me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
+}
+
+/**
+ * GET /api/chats/:idOrSlug/resolve — resolve a chat by id-or-slug for the signed-in
+ * caller, for a shareable deep-link. Member → openable payload; public/private+slug
+ * non-member → preview; otherwise 404 (no existence leak). See chats.resolveChat.
+ */
+export async function handleResolveChat(
+  req: Request,
+  db: DbClient,
+  now: number,
+  idOrSlug: string,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
+  const r = await resolveChat(db, idOrSlug, me);
+  if (!r) return json({ error: "not_found" }, 404, cors, { "Cache-Control": "no-store" });
+  return json(r, 200, cors, { "Cache-Control": "no-store" });
 }
 
 /**

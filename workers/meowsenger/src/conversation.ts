@@ -48,6 +48,9 @@ interface Wire {
 
 const MAX_BODY = 4000;
 const HISTORY_PAGE = 50;
+/** Half-window size for a centered `historyAround` page: up to this many messages
+ *  on each side of (and including) the anchor, so a deep-link lands with context. */
+const AROUND_HALF = 25;
 /** How long the reply quote-preview keeps of the original body. */
 const REPLY_SNIPPET = 120;
 /** Own-message edit window (1h) and delete window (24h). */
@@ -384,6 +387,12 @@ export class Conversation extends DurableObject<Env> {
     // multi-tab user closing ONE tab doesn't flap offline while another remains.
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
+      // Now fully offline (in this room) → stamp last_seen_at for the "last seen …"
+      // DM header. Off the close path (waitUntil), errors swallowed. Wall time is
+      // fine here (no ordering requirement, unlike message created_at).
+      this.ctx.waitUntil(
+        this.d1().run("UPDATE users SET last_seen_at = ? WHERE id = ?", [Date.now(), att.userId]).catch(() => {}),
+      );
     }
   }
 
@@ -584,6 +593,99 @@ export class Conversation extends DurableObject<Env> {
     const wires = rows.map((r: Row) => this.rowToWire(r, chatId)).reverse();
     this.attachReactions(wires, viewerId);
     return wires;
+  }
+
+  /**
+   * Forward history page (deep-linking): mirror of `historyFor` but FORWARD —
+   * returns up to HISTORY_PAGE messages STRICTLY NEWER than `afterId`, ascending.
+   * `afterId`'s created_at is resolved exactly as `historyFor` resolves `beforeId`;
+   * an unknown `afterId` yields [] (there's nothing to page forward from). The
+   * query is already ascending, so — unlike `historyFor` — there's no `.reverse()`.
+   * Reactions attach for `viewerId`.
+   */
+  async historyAfter(chatId: string, afterId: string, viewerId?: string): Promise<Wire[]> {
+    const at = this.ctx.storage.sql
+      .exec("SELECT created_at FROM messages WHERE id = ?", afterId)
+      .toArray()[0]?.created_at;
+    if (at == null) return [];
+    const cols =
+      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
+      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
+          " WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT ?",
+        Number(at),
+        HISTORY_PAGE,
+      )
+      .toArray();
+    // Already ascending — do NOT reverse.
+    const wires = rows.map((r: Row) => this.rowToWire(r, chatId));
+    this.attachReactions(wires, viewerId);
+    return wires;
+  }
+
+  /**
+   * Centered history window around `msgId` (deep-linking): resolves the anchor's
+   * created_at (`targetAt`); an unknown id → { messages: [], hasOlder:false,
+   * hasNewer:false, found:false }. Otherwise builds a window of up to AROUND_HALF
+   * older messages (created_at <= targetAt — INCLUDING the anchor) reversed to
+   * ascending, concatenated with up to AROUND_HALF strictly-newer messages
+   * (ascending). `hasOlder`/`hasNewer` report whether any message exists beyond the
+   * respective window edge (so the client knows more can be paged). Reactions
+   * attach for `viewerId`.
+   */
+  async historyAround(
+    chatId: string,
+    msgId: string,
+    viewerId?: string,
+  ): Promise<{ messages: Wire[]; hasOlder: boolean; hasNewer: boolean; found: boolean }> {
+    const at = this.ctx.storage.sql
+      .exec("SELECT created_at FROM messages WHERE id = ?", msgId)
+      .toArray()[0]?.created_at;
+    if (at == null) return { messages: [], hasOlder: false, hasNewer: false, found: false };
+    const targetAt = Number(at);
+    const cols =
+      "m.id, m.sender_id, m.body, m.created_at, m.reply_to_id, m.edited_at, m.is_deleted, m.is_forwarded," +
+      " r.id AS reply_id, r.sender_id AS reply_sender, r.body AS reply_body, r.is_deleted AS reply_is_deleted";
+    // Older half INCLUDES the anchor (created_at <= targetAt); newest-first for the
+    // LIMIT, then reversed to ascending.
+    const older = this.ctx.storage.sql
+      .exec(
+        `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
+          " WHERE m.created_at <= ? ORDER BY m.created_at DESC LIMIT ?",
+        targetAt,
+        AROUND_HALF,
+      )
+      .toArray()
+      .map((r: Row) => this.rowToWire(r, chatId))
+      .reverse();
+    const newer = this.ctx.storage.sql
+      .exec(
+        `SELECT ${cols} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id` +
+          " WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT ?",
+        targetAt,
+        AROUND_HALF,
+      )
+      .toArray()
+      .map((r: Row) => this.rowToWire(r, chatId));
+    const window = [...older, ...newer];
+    // Existence probes just past each window edge (created_at is strictly
+    // monotonic, so a single row beyond the edge means there's more to page).
+    const first = window[0];
+    const last = window[window.length - 1];
+    const hasOlder =
+      first != null &&
+      this.ctx.storage.sql
+        .exec("SELECT 1 AS ok FROM messages WHERE created_at < ? LIMIT 1", first.createdAt)
+        .toArray().length > 0;
+    const hasNewer =
+      last != null &&
+      this.ctx.storage.sql
+        .exec("SELECT 1 AS ok FROM messages WHERE created_at > ? LIMIT 1", last.createdAt)
+        .toArray().length > 0;
+    this.attachReactions(window, viewerId);
+    return { messages: window, hasOlder, hasNewer, found: true };
   }
 
   /**
