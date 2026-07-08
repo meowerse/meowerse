@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // meowerse API Worker — the DEPLOYED backend (replaces the Go Fiber api at
-  // deploy time; the Go apps/api stays in the repo for a future container host).
+  // meowerse API Worker — the deployed backend on api.meow.alxnko.eu.org.
   //
   // SECRETS (never in this file): set with wrangler before first deploy —
   //   bunx wrangler secret put DATABASE_URL
