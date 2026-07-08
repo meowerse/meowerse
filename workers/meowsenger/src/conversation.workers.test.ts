@@ -683,8 +683,12 @@ describe("Conversation DO", () => {
       wa.send(JSON.stringify({ type: "send", tempId: `t${i}`, body: `flood-${i}` }));
     }
 
-    // Let the DO drain the queued frames.
-    await new Promise((r) => setTimeout(r, 300));
+    // Wait for the DO to drain the queued frames and deliver the rate_limited
+    // reply. A fixed sleep flakes on slower/loaded CI runners (the frame can take
+    // >300ms to round-trip), so poll for the condition with a generous ceiling.
+    for (let waited = 0; !rateLimited && waited < 5000; waited += 25) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     expect(rateLimited).toBe(true);
 
     // At most RATE_MAX (30) of the flood bodies were persisted; the over-limit ones

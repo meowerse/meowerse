@@ -9,7 +9,7 @@ import { b64urlEncode, b64urlDecode, sha256 } from "@meowerse/auth-shared";
  * mandatory in the verify path.
  */
 export interface AuthClientConfig {
-  issuer: string; // e.g. https://auth-api.alxnko.eu.org
+  issuer: string; // e.g. https://auth.alxnko.eu.org
   clientId: string;
   clientSecret?: string;
   redirectUri: string;

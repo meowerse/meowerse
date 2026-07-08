@@ -14,7 +14,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
   "vars": {
-    "AUTH_CONFIRM_URL": "https://auth-api.alxnko.eu.org/internal/tg/confirm",
+    "AUTH_CONFIRM_URL": "https://auth.alxnko.eu.org/internal/tg/confirm",
     "BOT_USERNAME": "meowersebot"
   }
 }

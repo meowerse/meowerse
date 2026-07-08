@@ -22,7 +22,7 @@ bun add @meowerse/auth
 import { createAuthClient } from "@meowerse/auth";
 
 const auth = createAuthClient({
-  issuer: "https://auth-api.alxnko.eu.org",
+  issuer: "https://auth.alxnko.eu.org",
   clientId: "your_client_id",
   redirectUri: "https://yourapp.example/callback",
   // clientSecret: process.env.CLIENT_SECRET  // confidential clients only
@@ -38,7 +38,7 @@ const claims = await auth.verifyIdToken(tokens.id_token, { nonce });
 const userId = claims.sub;
 
 // 3. read profile / telegram / verified claims
-const profile = await fetch("https://auth-api.alxnko.eu.org/userinfo", {
+const profile = await fetch("https://auth.alxnko.eu.org/userinfo", {
   headers: { Authorization: "Bearer " + tokens.access_token },
 }).then((r) => r.json());
 
@@ -79,7 +79,7 @@ const manifest = defineAuthClient({
 });
 
 const result = await provision(manifest, {
-  issuer: "https://auth-api.alxnko.eu.org",
+  issuer: "https://auth.alxnko.eu.org",
   managementToken: process.env.MEOWERSE_MGMT_TOKEN,
 });
 // result.clientId + result.clientSecret (shown once)
@@ -91,7 +91,7 @@ Not on a JS stack? Any RFC-compliant OIDC client works — point it at the
 discovery document and it self-configures:
 
 ```
-https://auth-api.alxnko.eu.org/.well-known/openid-configuration
+https://auth.alxnko.eu.org/.well-known/openid-configuration
 ```
 
 Requirements: `response_type=code` with PKCE `S256`, id_token alg `ES256`
