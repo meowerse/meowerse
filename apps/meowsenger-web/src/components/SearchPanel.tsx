@@ -70,6 +70,8 @@ export function SearchPanel({
         <input
           ref={inputRef}
           type="search"
+          autoComplete="off"
+          enterKeyHint="search"
           className="mw-search__input"
           placeholder="search this chat…"
           value={q}

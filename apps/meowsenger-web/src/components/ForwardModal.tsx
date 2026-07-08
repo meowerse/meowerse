@@ -101,6 +101,8 @@ export function ForwardModal({
         <span className="mw-field__label">search chats</span>
         <input
           type="text"
+          autoComplete="off"
+          enterKeyHint="search"
           className="mw-input"
           value={query}
           placeholder="search by name…"

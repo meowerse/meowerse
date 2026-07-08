@@ -173,6 +173,10 @@ export function NewChatModal({
             <span className="mw-field__label">username</span>
             <input
               type="text"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               className="mw-input"
               value={directName}
               placeholder="username…"
@@ -201,6 +205,7 @@ export function NewChatModal({
             <span className="mw-field__label">{isChannel ? "channel name" : "group name"}</span>
             <input
               type="text"
+              autoComplete="off"
               className="mw-input"
               value={name}
               placeholder={isChannel ? "e.g. announcements" : "e.g. weekend plans"}
@@ -232,6 +237,10 @@ export function NewChatModal({
             <div className="mw-row" style={{ flexWrap: "nowrap", gap: "var(--space-2)" }}>
               <input
                 type="text"
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mw-input"
                 value={memberInput}
                 placeholder="add by username…"
@@ -270,6 +279,10 @@ export function NewChatModal({
               <span className="mw-slug__at">/</span>
               <input
                 type="text"
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mw-input mw-slug__input"
                 value={slug}
                 placeholder="url-slug"
