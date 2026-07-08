@@ -67,7 +67,7 @@ test-go:
             awk -v t="$total" -v m="$min" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' \
                 || { echo "    FAIL: coverage ${total}% < ${min}% in $dir"; exit 1; }
         )
-    done < <(find . -name go.mod -not -path '*/node_modules/*')
+    done < <(find . -name go.mod -not -path '*/node_modules/*' -not -path '*/.claude/*')
     if [ "$found" -eq 0 ]; then
         echo "No Go modules found."
     fi
@@ -96,7 +96,7 @@ lint-go:
             fi
             go vet ./...
         )
-    done < <(find . -name go.mod -not -path '*/node_modules/*')
+    done < <(find . -name go.mod -not -path '*/node_modules/*' -not -path '*/.claude/*')
 
 # Build the JS workspace via Turbo.
 build:
