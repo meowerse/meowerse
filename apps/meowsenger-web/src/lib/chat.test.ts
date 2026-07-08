@@ -5,6 +5,7 @@ import {
   loadHistory,
   loadHistoryAround,
   loadHistoryAfter,
+  searchGlobal,
   resolveChat,
   wsUrl,
   slugify,
@@ -672,6 +673,26 @@ describe("searchChat", () => {
   it("returns [] on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await searchChat(BASE, "c1", "hi")).toEqual([]);
+  });
+});
+
+describe("searchGlobal", () => {
+  it("GETs /api/search with the trimmed+encoded query and returns results", async () => {
+    const results = [{ id: "m1", chatId: "c1", senderId: "u2", body: "found", createdAt: 1000 }];
+    const mock = stubFetch({ results });
+    expect(await searchGlobal(BASE, "  hi ")).toEqual(results);
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/search?q=hi`, { credentials: "include" });
+  });
+  it("short-circuits a blank query to [] without a request", async () => {
+    const mock = stubFetch({ results: [{ id: "x" }] });
+    expect(await searchGlobal(BASE, "   ")).toEqual([]);
+    expect(mock).not.toHaveBeenCalled();
+  });
+  it("returns [] when the body has no results / on a network error", async () => {
+    stubFetch({});
+    expect(await searchGlobal(BASE, "hi")).toEqual([]);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await searchGlobal(BASE, "hi")).toEqual([]);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   handlePushSubscribe,
   handlePushUnsubscribe,
   handleSearch,
+  handleGlobalSearch,
   handleForward,
   callerId,
   handleListMembers,
@@ -1461,5 +1462,35 @@ describe("Web Push endpoints", () => {
     const { db } = memDb({ session: validSession("u1") });
     const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), db, now, cors);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("GET /api/search (global cross-chat)", () => {
+  it("401 without a session", async () => {
+    const { db } = memDb();
+    const res = await handleGlobalSearch(cookieReq("https://x/api/search?q=hi"), fakeEnv(), db, now, cors);
+    expect(res.status).toBe(401);
+  });
+  it("blank query → { results: [] } (no fan-out)", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handleGlobalSearch(cookieReq("https://x/api/search?q=%20%20", "s1"), fakeEnv(), db, now, cors);
+    expect(await res.json()).toEqual({ results: [] });
+  });
+  it("fans out to the caller's chats and returns merged, newest-first", async () => {
+    const db = {
+      first: async (sql: string) => (sql.includes("FROM sessions") ? validSession("u1") : undefined),
+      all: async (sql: string) => (sql.includes("chat_members WHERE user_id") ? [{ chat_id: "c1" }, { chat_id: "c2" }] : []),
+      run: async () => {},
+    } as unknown as Parameters<typeof handleGlobalSearch>[2];
+    const byChat: Record<string, unknown[]> = {
+      c1: [{ id: "m1", chatId: "c1", body: "hi c1", createdAt: 1000 }],
+      c2: [{ id: "m2", chatId: "c2", body: "hi c2", createdAt: 2000 }],
+    };
+    const env = {
+      CONVERSATION: { idFromName: (n: string) => n, get: (n: string) => ({ search: async () => byChat[n] ?? [] }) },
+    } as unknown as Env;
+    const res = await handleGlobalSearch(cookieReq("https://x/api/search?q=hi", "s1"), env, db, now, cors);
+    const d = (await res.json()) as { results: Array<{ id: string }> };
+    expect(d.results.map((m) => m.id)).toEqual(["m2", "m1"]); // newest first across chats
   });
 });

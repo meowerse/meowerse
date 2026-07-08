@@ -15,6 +15,10 @@ interface Attach {
    *  D1. Only 'channel' changes behavior: a member socket on a channel is
    *  read-only (broadcast — only owner/admin post). Absent → non-channel. */
   type?: string;
+  /** True while this tab is backgrounded/hidden (the client sends {type:"away"} on
+   *  visibilitychange). A user is shown "away" (not "online") when ALL their sockets
+   *  are away. Absent → not away. */
+  away?: boolean;
 }
 /** A short quoted snippet of the message a reply points at. */
 interface ReplySnippet {
@@ -151,9 +155,12 @@ export class Conversation extends DurableObject<Env> {
     // a genuine transition). Tell the new socket the current roster, and — only if
     // this user wasn't already present — announce them coming online to the peers.
     const before = this.onlineUsers(server);
-    server.send(JSON.stringify({ type: "presence_snapshot", online: before }));
+    server.send(JSON.stringify({ type: "presence_snapshot", online: before, away: this.awayUsers(server) }));
     if (!before.includes(userId)) {
-      this.broadcast({ type: "presence", userId, online: true }, server);
+      // A brand-new connection is visible/online (the client sends {away:true} if the
+      // tab is actually hidden); if the user was already present-but-away elsewhere,
+      // this fresh socket makes them active → away:false is correct.
+      this.broadcast({ type: "presence", userId, online: true, away: false }, server);
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -172,6 +179,22 @@ export class Conversation extends DurableObject<Env> {
       if (a?.userId) s.add(a.userId);
     }
     return [...s];
+  }
+
+  /** Users who are online (≥1 socket) but whose EVERY socket is `away` (all their
+   *  tabs backgrounded) — shown as "away" rather than "online". Same hibernation-safe
+   *  derivation as onlineUsers. */
+  private awayUsers(except?: WebSocket): string[] {
+    const all = new Set<string>();
+    const active = new Set<string>(); // has ≥1 NON-away socket
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const a = ws.deserializeAttachment() as Attach | null;
+      if (!a?.userId) continue;
+      all.add(a.userId);
+      if (!a.away) active.add(a.userId);
+    }
+    return [...all].filter((u) => !active.has(u));
   }
 
   /** Send a JSON frame to every live socket, optionally excluding one. */
@@ -193,6 +216,7 @@ export class Conversation extends DurableObject<Env> {
       id?: string;
       emoji?: string;
       replyToId?: string | null;
+      away?: boolean;
     };
     try {
       msg = JSON.parse(typeof raw === "string" ? raw : "");
@@ -211,6 +235,13 @@ export class Conversation extends DurableObject<Env> {
       const upTo = Number(msg.upTo) || 0;
       this.ctx.waitUntil(markRead(this.d1(), att.chatId, att.userId, upTo).catch(() => {}));
       this.broadcast({ type: "read_receipt", userId: att.userId, upTo }, ws);
+      return;
+    }
+    // Away/back: record this tab's visibility on its attachment, then broadcast the
+    // user's DERIVED status (away iff ALL their sockets are away). Peers-only.
+    if (msg.type === "away") {
+      ws.serializeAttachment({ ...att, away: !!msg.away });
+      this.broadcast({ type: "presence", userId: att.userId, online: true, away: this.awayUsers().includes(att.userId) }, ws);
       return;
     }
 

@@ -781,6 +781,23 @@ export async function searchChat(base: string, chatId: string, q: string): Promi
 }
 
 /**
+ * GET /api/search?q= — GLOBAL search across ALL the caller's chats. Returns matching
+ * messages newest-first (each a full `Message` carrying its `chatId` for context), or
+ * [] for a blank query / any failure. Trimmed here so a whitespace-only query is a no-op.
+ */
+export async function searchGlobal(base: string, q: string): Promise<Message[]> {
+  const query = q.trim();
+  if (!query) return [];
+  try {
+    const r = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}`, { credentials: "include" });
+    const d = (await r.json()) as { results?: Message[] };
+    return d.results ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * POST /api/account/delete { confirm:true } — erase the caller's meowsenger data
  * (memberships/join-requests/sessions/user + owned-chat handling) and clear the
  * session cookie. This is meowsenger-side deletion only — the auth account is

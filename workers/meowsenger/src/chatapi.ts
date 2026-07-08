@@ -246,6 +246,40 @@ export async function handleSearch(
 }
 
 /**
+ * GET /api/search?q= — GLOBAL search across every chat the caller is a member of.
+ * Fans out the within-chat search to each chat's DO (in parallel, capped), merges,
+ * and returns the newest matches (each carries its chatId so the UI shows context).
+ * Each DO search is already member-scoped by construction (we only query the
+ * caller's own chats). No chat-scoped gate needed beyond the membership list.
+ */
+export async function handleGlobalSearch(
+  req: Request,
+  env: Env,
+  db: DbClient,
+  now: number,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
+  const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+  if (!q) return json({ results: [] }, 200, cors, { "Cache-Control": "no-store" });
+  // The caller's chats (cap the fan-out so a huge membership can't blow up).
+  const rows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ? LIMIT 60", [me]);
+  const ns = conversation(env);
+  const PER_CHAT = 8;
+  const lists = await Promise.all(
+    rows.map(async (r) => {
+      const chatId = String(r.chat_id);
+      try { return await ns.get(ns.idFromName(chatId)).search(q, chatId, me, PER_CHAT); }
+      catch { return []; }
+    }),
+  );
+  const all = lists.flat();
+  all.sort((a, b) => b.createdAt - a.createdAt);
+  return json({ results: all.slice(0, 40) }, 200, cors, { "Cache-Control": "no-store" });
+}
+
+/**
  * POST /api/chats/:id/forward { messages:[{body}] } — forward up to 20 messages
  * into a TARGET chat. Gated server-side against the TARGET (never the source):
  * the caller must be a member, and if the target is a channel only owner/admin may

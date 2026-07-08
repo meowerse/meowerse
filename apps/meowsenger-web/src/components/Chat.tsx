@@ -21,8 +21,8 @@ type Frame =
   | { type: "ready"; chatId: string; you: string }
   | { type: "sent"; tempId: string; message: Message }
   | { type: "message"; message: Message }
-  | { type: "presence_snapshot"; online: string[] }
-  | { type: "presence"; userId: string; online: boolean }
+  | { type: "presence_snapshot"; online: string[]; away?: string[] }
+  | { type: "presence"; userId: string; online: boolean; away?: boolean }
   | { type: "typing"; userId: string; on: boolean }
   | { type: "read_receipt"; userId: string; upTo: number }
   | { type: "edited"; id: string; body: string; editedAt: number }
@@ -99,6 +99,8 @@ export default function Chat({ base }: { base: string }) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   // Presence roster (userIds with a live socket in this chat) + the peer's state.
   const [online, setOnline] = useState<Set<string>>(new Set());
+  // Users who are online but with all tabs backgrounded → shown "away" not "online".
+  const [away, setAway] = useState<Set<string>>(new Set());
   const [peerTyping, setPeerTyping] = useState(false);
   // Newest createdAt the peer has read up to (for the "seen" tick on my messages).
   const [peerLastReadAt, setPeerLastReadAt] = useState(0);
@@ -337,7 +339,20 @@ export default function Chat({ base }: { base: string }) {
           return [...prev, ...rows.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
         });
       }
-      if (rows.length < 50) setHasNewer(false); // short page ⇒ caught up to the tail
+      if (rows.length < 50) {
+        // Short page ⇒ we've reached the live tail → reattach (resume live-append).
+        hasNewerRef.current = false;
+        setHasNewer(false);
+        // Catch any message that landed AFTER the historyAfter query but was suppressed
+        // while detached: pull the newest page and merge (it overlaps the window's end).
+        const tail = await loadHistory(base, chatId);
+        if (activeRef.current === chatId && tail.length > 0) {
+          setMessages((prev) => {
+            const have = new Set(prev.map((b) => b.id));
+            return [...prev, ...tail.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
+          });
+        }
+      }
     } finally {
       loadingNewerRef.current = false;
     }
@@ -391,10 +406,16 @@ export default function Chat({ base }: { base: string }) {
       }
     } else if (frame.type === "presence_snapshot") {
       setOnline(new Set(frame.online));
+      setAway(new Set(frame.away ?? []));
     } else if (frame.type === "presence") {
       setOnline((prev) => {
         const next = new Set(prev);
         if (frame.online) next.add(frame.userId); else next.delete(frame.userId);
+        return next;
+      });
+      setAway((prev) => {
+        const next = new Set(prev);
+        if (frame.online && frame.away) next.add(frame.userId); else next.delete(frame.userId);
         return next;
       });
     } else if (frame.type === "typing") {
@@ -435,11 +456,25 @@ export default function Chat({ base }: { base: string }) {
     ws.send(JSON.stringify({ type: "typing", on: active }));
   }, []);
 
+  // Tell the room this tab's visibility so peers see "away" (all tabs hidden) vs
+  // "online". Sent on visibilitychange + on (re)connect for the current state.
+  const sendAway = useCallback((awayNow: boolean) => {
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "away", away: awayNow }));
+  }, []);
+  useEffect(() => {
+    function onVis() { sendAway(document.visibilityState !== "visible"); }
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [sendAway]);
+
   // Open exactly ONE socket to the active chat; reload history on select.
   useEffect(() => {
     activeRef.current = activeId;
     // Reset per-chat presence/typing/receipt state on every switch.
     setOnline(new Set());
+    setAway(new Set());
     setPeerTyping(false);
     setPeerLastReadAt(0);
     sentTypingRef.current = false;
@@ -509,6 +544,9 @@ export default function Chat({ base }: { base: string }) {
         // and reconnects). Allow a re-send by clearing the dedupe high-water mark.
         sentReadUpToRef.current = 0;
         if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+        // Report this tab's current visibility on connect (always — a fresh VISIBLE
+        // tab must clear a stale "away" if the user was away on another/older socket).
+        if (typeof document !== "undefined") sendAway(document.visibilityState !== "visible");
       };
       ws.onmessage = (ev) => {
         if (cancelled) return;
@@ -676,6 +714,14 @@ export default function Chat({ base }: { base: string }) {
   function copyLink(url: string) { copy(url, "link copied"); }
   function copyChatLink() { if (activeId) copyLink(chatLink(activeId)); }
   function copyMessageLink(m: Bubble) { if (activeId && !m.pending) copyLink(chatLink(activeId, m.id)); }
+
+  // Open a global-search hit: jump in place if it's the already-open chat, else
+  // switch to it and let the chat-switch effect consume the pending jump.
+  function openSearchResult(chatId: string, msgId: string) {
+    if (chatId === activeRef.current) { void jumpToMessage(msgId); return; }
+    pendingJumpRef.current = msgId;
+    setActiveId(chatId);
+  }
 
   // Register/unregister a message row element for jump-to-original.
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
@@ -880,6 +926,8 @@ export default function Chat({ base }: { base: string }) {
 
   const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
   const peerOnline = peerId != null && online.has(peerId);
+  // Online but all their tabs are backgrounded → "away".
+  const peerAway = peerOnline && peerId != null && away.has(peerId);
   // Membered-chat header derivations: the group/channel's own name, member count
   // (from the live roster, falling back to the summary), and how many members are
   // currently online.
@@ -916,7 +964,9 @@ export default function Chat({ base }: { base: string }) {
         activeId={activeId}
         online={online}
         meId={me?.id}
+        base={base}
         onSelect={setActiveId}
+        onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
         loading={loadingChats}
       />
@@ -984,13 +1034,13 @@ export default function Chat({ base }: { base: string }) {
                 <>
                   <span className="mw-chat__headavatar">
                     <Avatar url={activeChat.peerAvatarUrl} name={peerName} size="md" />
-                    <span className={`mw-dot ${peerOnline ? "mw-dot--on" : "mw-dot--off"}`} aria-label={peerOnline ? "online" : "offline"} />
+                    <span className={`mw-dot ${peerAway ? "mw-dot--away" : peerOnline ? "mw-dot--on" : "mw-dot--off"}`} aria-label={peerAway ? "away" : peerOnline ? "online" : "offline"} />
                   </span>
                   <span className="mw-chat__headcol">
                     <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
                     {peerTyping
                       ? <span className="mw-chat__typing">typing…</span>
-                      : <span className="mw-chat__presence">{peerOnline ? "online" : lastSeenLabel(activeChat.peerLastSeenAt)}</span>}
+                      : <span className="mw-chat__presence">{peerAway ? "away" : peerOnline ? "online" : lastSeenLabel(activeChat.peerLastSeenAt)}</span>}
                   </span>
                   <button
                     className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
