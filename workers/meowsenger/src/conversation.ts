@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage } from "./chats";
+import { pushTargetsForChat, sendPush, deletePushSubscription } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -350,7 +351,30 @@ export class Conversation extends DurableObject<Env> {
     // The message is already persisted + broadcast; a failed sidebar mirror is
     // non-critical, so swallow its error rather than surface an unhandled rejection.
     this.ctx.waitUntil(mirrorLastMessage(this.d1(), chatId, body, senderId, now).catch(() => {}));
+    // Web Push: notify members with NO live socket in this room (offline, or busy in
+    // another chat) — their service worker decides whether to show it. Off the path.
+    this.ctx.waitUntil(this.pushOffline(chatId, senderId).catch(() => {}));
     return id;
+  }
+
+  /**
+   * Send a payloadless Web Push to every subscription of a chat member who has NO
+   * live socket in this room (so they aren't already getting it over the wire) and
+   * isn't the sender. A dead endpoint (404/410) is pruned. No-op when VAPID isn't
+   * configured. One D1 read for the target endpoints; sends run concurrently.
+   */
+  private async pushOffline(chatId: string, senderId: string): Promise<void> {
+    if (!this.env.VAPID_PRIVATE_JWK) return; // push not configured
+    const exclude = [senderId, ...this.onlineUsers()];
+    const endpoints = await pushTargetsForChat(this.d1(), chatId, exclude);
+    if (endpoints.length === 0) return;
+    const now = Date.now();
+    await Promise.all(
+      endpoints.map(async (ep) => {
+        const status = await sendPush(ep, this.env, now);
+        if (status === 404 || status === 410) await deletePushSubscription(this.d1(), ep).catch(() => {});
+      }),
+    );
   }
 
   /**

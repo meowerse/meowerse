@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Modal, ConfirmDialog } from "@meowerse/ui";
 import { getPrivacy, setPrivacy, deleteAccount } from "../lib/chat";
+import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush } from "../lib/push";
 
-/** Whether the browser exposes the Notification API at all (SSR-safe). */
+/** Whether this browser can do Web Push at all (SSR-safe). */
 function notificationsSupported(): boolean {
-  return typeof Notification !== "undefined";
+  return pushSupported();
 }
 
 /**
@@ -21,6 +22,9 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
   // Slice 9 — Notification.permission mirrored into state ("default" | "granted" |
   // "denied"), or null when the API is unavailable. Drives the notifications toggle.
   const [notifPerm, setNotifPerm] = useState<NotificationPermission | null>(null);
+  // Whether an active push subscription exists (drives on/off), + an in-flight flag.
+  const [subscribed, setSubscribed] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
   // Slice 9 — the type-to-confirm delete dialog + its in-flight/error state.
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -31,7 +35,9 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
     if (!open) return;
     let cancelled = false;
     setAllow(null); setErr(null); setDeleteErr(null);
-    setNotifPerm(notificationsSupported() ? Notification.permission : null);
+    const perm = pushPermission();
+    setNotifPerm(perm === "unsupported" ? null : (perm as NotificationPermission));
+    void pushSubscribed().then((s) => { if (!cancelled) setSubscribed(s); });
     getPrivacy(base).then((p) => { if (!cancelled) setAllow(p.allowAutoGroupAdd); });
     return () => { cancelled = true; };
   }, [open, base]);
@@ -45,17 +51,26 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
     if (r.error) { setAllow(!next); setErr("couldn't save — try again"); } // revert
   }
 
-  // Slice 9 — request notification permission. ONLY ever called from this explicit
-  // tap (never auto-prompted). Mirrors the resulting permission back into state.
+  // Enable Web Push: requests permission (ONLY on this explicit tap), registers the
+  // service worker, and subscribes. Mirrors the resulting permission + subscribed
+  // state. Turning it off unsubscribes locally + on the server.
   async function enableNotifications() {
-    if (!notificationsSupported()) return;
+    if (!notificationsSupported() || notifBusy) return;
+    setNotifBusy(true);
     try {
-      const result = await Notification.requestPermission();
-      setNotifPerm(result);
+      const result = await enablePush(base);
+      if (result !== "unsupported") setNotifPerm(result as NotificationPermission);
+      if (result === "granted") setSubscribed(true);
     } catch {
-      // Older callback-style browsers or a user gesture issue — reread the value.
-      setNotifPerm(Notification.permission);
+      setNotifPerm(pushPermission() as NotificationPermission);
+    } finally {
+      setNotifBusy(false);
     }
+  }
+  async function disableNotifications() {
+    if (notifBusy) return;
+    setNotifBusy(true);
+    try { await disablePush(base); setSubscribed(false); } finally { setNotifBusy(false); }
   }
 
   // Slice 9 — delete the caller's meowsenger data, then (on success) redirect home.
@@ -71,7 +86,6 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
     setDeleteErr("couldn't delete — try again");
   }
 
-  const notifGranted = notifPerm === "granted";
   const notifDenied = notifPerm === "denied";
 
   return (
@@ -106,18 +120,24 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
               <span className="mw-setting__hint mw-muted">
                 {notifDenied
                   ? "blocked in your browser — re-enable notifications for this site in site settings."
-                  : "get a desktop notification when a message arrives in the chat you have open while this tab is in the background."}
+                  : "get a push notification for new messages even when meowsenger is closed. clicking it opens the chat."}
               </span>
             </div>
-            {notifGranted ? (
-              <span className="mw-setting__on mw-muted" aria-label="notifications enabled">on ✓</span>
+            {subscribed ? (
+              <button
+                type="button"
+                className="mw-btn mw-btn--ghost mw-btn--sm"
+                onClick={disableNotifications}
+                disabled={notifBusy}
+                aria-label="turn off notifications"
+              >{notifBusy ? "…" : "on ✓ · turn off"}</button>
             ) : (
               <button
                 type="button"
                 className="mw-btn mw-btn--secondary mw-btn--sm"
                 onClick={enableNotifications}
-                disabled={notifDenied}
-              >enable</button>
+                disabled={notifDenied || notifBusy}
+              >{notifBusy ? "…" : "enable"}</button>
             )}
           </div>
         )}

@@ -4,6 +4,9 @@ import {
   handleCreateChat,
   handleHistory,
   handleResolveChat,
+  handlePushKey,
+  handlePushSubscribe,
+  handlePushUnsubscribe,
   handleSearch,
   handleForward,
   callerId,
@@ -1430,5 +1433,33 @@ describe("handleForward", () => {
     expect(await res.json()).toEqual({ forwarded: 17 });
     expect(calls).toHaveLength(17);
     expect(calls.every((c) => c.forwarded === true && c.body.length > 0)).toBe(true);
+  });
+});
+
+describe("Web Push endpoints", () => {
+  it("GET /api/push/key returns the VAPID public key (public, no session)", () => {
+    const res = handlePushKey({ VAPID_PUBLIC_KEY: "PUBKEY" } as unknown as Parameters<typeof handlePushKey>[0], cors);
+    expect(res.status).toBe(200);
+  });
+  it("POST /api/push/subscribe → 401 without a session", async () => {
+    const { db } = memDb();
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", undefined, { method: "POST", body: JSON.stringify({ endpoint: "e1" }) }), db, now, cors);
+    expect(res.status).toBe(401);
+  });
+  it("POST /api/push/subscribe → 400 on a bad body", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({}) }), db, now, cors);
+    expect(res.status).toBe(400);
+  });
+  it("POST /api/push/subscribe → 200 stores the subscription", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+  it("POST /api/push/unsubscribe → 200 (idempotent) for a member", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), db, now, cors);
+    expect(res.status).toBe(200);
   });
 });
