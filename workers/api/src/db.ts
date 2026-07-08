@@ -2,8 +2,7 @@ import { createClient } from "@libsql/client/web";
 import type { DbClient, Env } from "./types";
 
 /**
- * CREATE TABLE statement. Identical columns/shape to the Go api
- * (apps/api/internal/meow/sqlite_store.go) so both backends speak the same DB.
+ * CREATE TABLE statement for the `meows` table.
  */
 export const SCHEMA = `CREATE TABLE IF NOT EXISTS meows (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
