@@ -27,6 +27,7 @@ import {
 import { addMember, removeMember, promote, demote, leave } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
 import { getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
+import { savePushSubscription, deletePushSubscription } from "./push";
 
 /** Max message body length, mirrored from the DO (kept in sync with conversation.ts). */
 const MAX_BODY = 4000;
@@ -185,6 +186,36 @@ export async function handleResolveChat(
   const r = await resolveChat(db, idOrSlug, me);
   if (!r) return json({ error: "not_found" }, 404, cors, { "Cache-Control": "no-store" });
   return json(r, 200, cors, { "Cache-Control": "no-store" });
+}
+
+// ---- Web Push subscription management --------------------------------------------
+// (NS = { "Cache-Control": "no-store" } is declared once, below, and reused here.)
+
+/** GET /api/push/key — the VAPID public key for the browser's applicationServerKey.
+ *  Public (no session needed); empty when push isn't configured. */
+export function handlePushKey(env: Env, cors: Record<string, string>): Response {
+  return json({ key: env.VAPID_PUBLIC_KEY ?? "" }, 200, cors, NS);
+}
+
+/** POST /api/push/subscribe — store the caller's browser PushSubscription. */
+export async function handlePushSubscribe(req: Request, db: DbClient, now: number, cors: Record<string, string>): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  let body: { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+  try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
+  if (!body.endpoint || typeof body.endpoint !== "string") return json({ error: "bad_body" }, 400, cors, NS);
+  await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now);
+  return json({ ok: true }, 200, cors, NS);
+}
+
+/** POST /api/push/unsubscribe — remove a subscription by endpoint (idempotent). */
+export async function handlePushUnsubscribe(req: Request, db: DbClient, now: number, cors: Record<string, string>): Promise<Response> {
+  const me = await callerId(req, db, now);
+  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
+  let body: { endpoint?: string };
+  try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
+  if (body.endpoint) await deletePushSubscription(db, body.endpoint);
+  return json({ ok: true }, 200, cors, NS);
 }
 
 /**
@@ -706,6 +737,7 @@ export async function handleDeleteAccount(
   }
   // 2–4. Remove the caller's remaining D1 footprint, child-first.
   await db.run("DELETE FROM join_requests WHERE user_id = ?", [me]);
+  await db.run("DELETE FROM push_subscriptions WHERE user_id = ?", [me]);
   await db.run("DELETE FROM sessions WHERE user_id = ?", [me]);
   await db.run("DELETE FROM users WHERE id = ?", [me]);
 

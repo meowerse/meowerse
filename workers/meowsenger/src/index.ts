@@ -12,6 +12,9 @@ import {
   handleCreateChat,
   handleHistory,
   handleResolveChat,
+  handlePushKey,
+  handlePushSubscribe,
+  handlePushUnsubscribe,
   handleSearch,
   handleForward,
   handleListMembers,
@@ -56,6 +59,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (path === "/api/account/privacy" && m === "POST") return handleSetPrivacy(req, deps.getDb(), deps.now(), cors);
   // Slice 9: erase the caller's meowsenger data (session-gated + confirm-required).
   if (path === "/api/account/delete" && m === "POST") return handleDeleteAccount(req, deps.getDb(), deps.now(), cors);
+  // Web Push: the VAPID public key (public), + subscribe/unsubscribe (session-gated).
+  if (path === "/api/push/key" && m === "GET") return handlePushKey(env, cors);
+  if (path === "/api/push/subscribe" && m === "POST") return handlePushSubscribe(req, deps.getDb(), deps.now(), cors);
+  if (path === "/api/push/unsubscribe" && m === "POST") return handlePushUnsubscribe(req, deps.getDb(), deps.now(), cors);
   const inviteAccept = path.match(/^\/api\/invite\/([^/]+)\/accept$/);
   if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteAccept[1]), cors);
   const inviteResolve = path.match(/^\/api\/invite\/([^/]+)$/);

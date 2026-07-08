@@ -80,3 +80,16 @@ CREATE TABLE IF NOT EXISTS join_requests (
   UNIQUE (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_join_requests_chat ON join_requests(chat_id, status);
+
+-- Web Push subscriptions: one row per browser/device push endpoint. Keyed by the
+-- endpoint (a push service URL, unique per subscription). p256dh/auth are the
+-- client's keys, stored for a possible future encrypted payload (unused by the
+-- current payloadless design). A user can have several (multiple devices/browsers).
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint    TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  p256dh      TEXT,
+  auth        TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
