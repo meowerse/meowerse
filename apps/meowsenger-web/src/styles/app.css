@@ -141,6 +141,16 @@ body:has(.mw-chat) main.mw-container {
 }
 .mw-msg:not(.mw-msg--me) .mw-bubble { border-bottom-left-radius: var(--radius-sm); }
 .mw-bubble.is-pending { opacity: 0.6; }
+/* Touch devices: a long-press opens the message context menu, so suppress the
+   native text selection + iOS callout the hold would otherwise start — their
+   selection handles/magnifier render ABOVE the page and buried the menu's top
+   item ("reply"). Copy stays available via the menu's own "copy" action. Coarse
+   pointer only, so desktop keeps select-to-copy; the edit textarea stays
+   selectable. */
+@media (pointer: coarse) {
+  .mw-bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .mw-bubble textarea, .mw-bubble input { -webkit-user-select: text; user-select: text; }
+}
 .mw-bubble__body { font-size: var(--text-base); line-height: var(--leading-snug); white-space: pre-wrap; word-break: break-word; min-width: 0; }
 .mw-bubble__time { flex: none; font-size: 10px; color: var(--text-muted); align-self: flex-end; }
 
