@@ -1,5 +1,4 @@
-// Meow mirrors the Go struct (apps/api/internal/meow/meow.go) field-for-field,
-// matching its json tags exactly: id, text, slug, created_at.
+// Meow mirrors the api Worker's row shape (workers/api): id, text, slug, created_at.
 export interface Meow {
   id: number;
   text: string;

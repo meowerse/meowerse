@@ -1,4 +1,0 @@
-go 1.26
-
-use ./packages/go-shared
-use ./apps/api
