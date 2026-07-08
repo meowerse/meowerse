@@ -16,6 +16,7 @@ import {
   handlePushSubscribe,
   handlePushUnsubscribe,
   handleSearch,
+  handleGlobalSearch,
   handleForward,
   handleListMembers,
   handleAddMember,
@@ -63,6 +64,8 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (path === "/api/push/key" && m === "GET") return handlePushKey(env, cors);
   if (path === "/api/push/subscribe" && m === "POST") return handlePushSubscribe(req, deps.getDb(), deps.now(), cors);
   if (path === "/api/push/unsubscribe" && m === "POST") return handlePushUnsubscribe(req, deps.getDb(), deps.now(), cors);
+  // Global cross-chat message search (fans out to the caller's chats' DOs).
+  if (path === "/api/search" && m === "GET") return handleGlobalSearch(req, env, deps.getDb(), deps.now(), cors);
   const inviteAccept = path.match(/^\/api\/invite\/([^/]+)\/accept$/);
   if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteAccept[1]), cors);
   const inviteResolve = path.match(/^\/api\/invite\/([^/]+)$/);

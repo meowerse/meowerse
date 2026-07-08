@@ -47,7 +47,10 @@ body:has(.mw-chat) main.mw-container {
 .mw-chat__new {
   padding: var(--space-3) var(--space-3);
   border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: var(--space-2);
 }
+.mw-side__search { width: 100%; }
+.mw-side__searchnote { padding: var(--space-4) var(--space-3); font-size: var(--text-sm); text-align: center; }
 .mw-chat__err { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-danger); }
 .mw-chat__list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
 
@@ -91,6 +94,7 @@ body:has(.mw-chat) main.mw-container {
 }
 .mw-dot { display: inline-block; }
 .mw-dot--on { background: var(--mw-green); }
+.mw-dot--away { background: #e0a52e; } /* amber — online but all tabs backgrounded */
 .mw-dot--off { background: var(--text-muted); opacity: 0.55; }
 
 /* ---- conversation pane ---------------------------------------------------- */

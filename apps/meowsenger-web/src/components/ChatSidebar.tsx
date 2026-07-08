@@ -1,4 +1,5 @@
-import type { ChatSummary } from "../lib/chat";
+import { useEffect, useState } from "react";
+import { searchGlobal, type ChatSummary, type Message } from "../lib/chat";
 import { Avatar } from "./Avatar";
 
 /** Short relative time for the sidebar (now / 5m / 3h / 2d, else a date). */
@@ -33,7 +34,9 @@ export function ChatSidebar({
   activeId,
   online,
   meId,
+  base,
   onSelect,
+  onOpenResult,
   onNewChatClick,
   loading,
 }: {
@@ -42,18 +45,73 @@ export function ChatSidebar({
   online: Set<string>;
   // The signed-in user's id — to prefix their own last message with "you:".
   meId?: string;
+  base: string;
   onSelect: (id: string) => void;
+  // Open a global-search hit: (chatId, messageId) → parent opens the chat + jumps.
+  onOpenResult: (chatId: string, msgId: string) => void;
   // Open the new-chat modal (Direct | Group). The modal lives in Chat.tsx.
   onNewChatClick: () => void;
   loading: boolean;
 }) {
+  // Global cross-chat search: debounced query → server → results shown IN PLACE of
+  // the chat list. Clicking a hit opens that chat + jumps to the message.
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<Message[] | null>(null); // null = not searching
+  const [searching, setSearching] = useState(false);
+  const chatById = new Map(chats.map((c) => [c.id, c]));
+  useEffect(() => {
+    const query = q.trim();
+    if (!query) { setResults(null); setSearching(false); return; }
+    setSearching(true);
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      searchGlobal(base, query).then((r) => { if (!cancelled) { setResults(r); setSearching(false); } });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [q, base]);
+  const searchMode = q.trim().length > 0;
+
   return (
     <aside className="mw-chat__side">
       <div className="mw-chat__new">
         <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" onClick={onNewChatClick}>
           + new chat
         </button>
+        <input
+          type="search"
+          className="mw-input mw-side__search"
+          placeholder="search all messages…"
+          aria-label="search all messages"
+          autoComplete="off"
+          enterKeyHint="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
       </div>
+
+      {searchMode ? (
+        <nav className="mw-chat__list" aria-label="search results">
+          {searching && <div className="mw-side__searchnote mw-muted">searching…</div>}
+          {!searching && results && results.length === 0 && (
+            <div className="mw-side__searchnote mw-muted">no matches</div>
+          )}
+          {!searching && results && results.map((m) => {
+            const c = chatById.get(m.chatId);
+            const title = c ? chatTitle(c) : "chat";
+            return (
+              <button key={m.id} className="mw-chatrow" onClick={() => { onOpenResult(m.chatId, m.id); setQ(""); }}>
+                <span className="mw-chatrow__body">
+                  <span className="mw-chatrow__top">
+                    <span className="mw-chatrow__name" data-case="preserve">{title}</span>
+                    <span className="mw-chatrow__time">{relTime(m.createdAt)}</span>
+                  </span>
+                  <span className="mw-chatrow__preview">{m.body || "…"}</span>
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      ) : (
 
       <nav className="mw-chat__list" aria-label="chats">
         {loading && chats.length === 0 && (
@@ -117,6 +175,7 @@ export function ChatSidebar({
           );
         })}
       </nav>
+      )}
     </aside>
   );
 }
