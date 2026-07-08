@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { upsertUser, getUser, getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
+import { upsertUser, getUser, getAllowAutoGroupAdd, setAllowAutoGroupAdd, touchLastSeen } from "./users";
 import type { DbClient, Row } from "./types";
 
 function memDb() {
@@ -13,6 +13,8 @@ function memDb() {
         u.set(String(p[0]), { id: p[0], username: p[1], display_name: p[2], avatar_url: p[3], verified: p[4], updated_at: p[5], allow_auto_group_add: 1 });
       } else if (sql.startsWith("UPDATE users SET allow_auto_group_add")) {
         const row = u.get(String(p[1])); if (row) row.allow_auto_group_add = Number(p[0]);
+      } else if (sql.startsWith("UPDATE users SET last_seen_at")) {
+        const row = u.get(String(p[1])); if (row) row.last_seen_at = Number(p[0]);
       }
     },
   };
@@ -73,5 +75,14 @@ describe("getAllowAutoGroupAdd / setAllowAutoGroupAdd", () => {
     expect(await getAllowAutoGroupAdd(db, "u1")).toBe(false);
     await setAllowAutoGroupAdd(db, "u1", true);
     expect(await getAllowAutoGroupAdd(db, "u1")).toBe(true);
+  });
+});
+
+describe("touchLastSeen", () => {
+  it("stamps last_seen_at for the user", async () => {
+    const { db, u } = memDb();
+    await upsertUser(db, { sub: "u1", preferred_username: "alex" }, now);
+    await touchLastSeen(db, "u1", 123456);
+    expect(u.get("u1")?.last_seen_at).toBe(123456);
   });
 });

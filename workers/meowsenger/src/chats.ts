@@ -27,6 +27,9 @@ export const SLUG_RE = /^[a-z0-9-]{3,32}$/;
 export interface ChatSummary {
   id: string; type: string; name: string | null;
   lastMessage: string | null; lastSenderId: string | null; lastActivity: number;
+  // Has-unread flag (0/1), derived lazily from last_activity vs the member's
+  // last_read_at — NOT an exact count (that cost O(members) writes/message). The
+  // sidebar renders it as a dot, not a number.
   unreadCount: number;
   // Slug (groups/channels only) + visibility, so the client can build a shareable
   // link (slug preferred, else id) without a round-trip. `peerLastSeenAt` is the DM
@@ -67,7 +70,14 @@ export async function createOrGetDirect(
   return { id, created: true };
 }
 
-/** Off-critical-path mirror from the DO after a send, so the sidebar shows a preview. */
+/**
+ * Off-critical-path mirror from the DO after a send, so the sidebar shows a preview.
+ * ONE D1 row write (the chat's preview + last_activity). Deliberately does NOT bump
+ * a per-member unread counter: that was O(members) writes per message and a single
+ * busy group could exhaust the free-tier D1 write budget. "Has unread" is instead
+ * derived lazily in `listChats` (last_activity > the member's last_read_at), which
+ * costs zero extra writes — see the CASE in the sidebar query.
+ */
 export async function mirrorLastMessage(
   db: DbClient, chatId: string, body: string, senderId: string, now: number,
 ): Promise<void> {
@@ -75,17 +85,19 @@ export async function mirrorLastMessage(
     "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = ? WHERE id = ?",
     [body.slice(0, 140), senderId, now, chatId],
   );
-  await db.run(
-    "UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id <> ?",
-    [chatId, senderId],
-  );
 }
 
-/** Mark a chat read up to a timestamp for one member: clear unread + set last_read_at. */
+/**
+ * Mark a chat read up to a timestamp for one member by advancing `last_read_at`.
+ * MONOTONIC + guarded: the WHERE only matches when this moves the cursor FORWARD
+ * (or it was null), so a stale/duplicate `read` is a no-op — no wasted D1 write, and
+ * a late-arriving lower `upTo` can't un-read the chat. Unread is derived from this
+ * vs `last_activity` in `listChats` (see mirrorLastMessage).
+ */
 export async function markRead(db: DbClient, chatId: string, userId: string, upTo: number): Promise<void> {
   await db.run(
-    "UPDATE chat_members SET unread_count = 0, last_read_at = ? WHERE chat_id = ? AND user_id = ?",
-    [upTo, chatId, userId],
+    "UPDATE chat_members SET last_read_at = ? WHERE chat_id = ? AND user_id = ? AND (last_read_at IS NULL OR last_read_at < ?)",
+    [upTo, chatId, userId, upTo],
   );
 }
 
@@ -95,7 +107,8 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
   // there is more than one "other" member — the peer columns stay null (Slice 5
   // renders groups by their own name), so the join is scoped to type = 'direct'.
   const rows = await db.all(
-    `SELECT c.id, c.type, c.name, c.slug, c.visibility, c.last_message, c.last_sender_id, c.last_activity, m.unread_count,
+    `SELECT c.id, c.type, c.name, c.slug, c.visibility, c.last_message, c.last_sender_id, c.last_activity,
+            CASE WHEN c.last_activity > COALESCE(m.last_read_at, m.joined_at) THEN 1 ELSE 0 END AS unread_count,
             om.user_id AS peer_id,
             pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url,
             pu.last_seen_at AS peer_last_seen_at

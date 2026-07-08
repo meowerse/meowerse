@@ -27,10 +27,8 @@ import {
 import { addMember, removeMember, promote, demote, leave } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
 import { getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
-import { savePushSubscription, deletePushSubscription } from "./push";
-
-/** Max message body length, mirrored from the DO (kept in sync with conversation.ts). */
-const MAX_BODY = 4000;
+import { savePushSubscription, deletePushSubscription, isAllowedPushEndpoint } from "./push";
+import { MAX_MESSAGE_BODY as MAX_BODY } from "@meowerse/ts-shared";
 
 /** Look up a user id by username, or null. */
 async function userIdByName(db: DbClient, username: string): Promise<string | null> {
@@ -204,6 +202,10 @@ export async function handlePushSubscribe(req: Request, db: DbClient, now: numbe
   let body: { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
   try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
   if (!body.endpoint || typeof body.endpoint !== "string") return json({ error: "bad_body" }, 400, cors, NS);
+  // The stored endpoint is later POSTed to by the DO (server-side fetch). Reject
+  // anything that isn't a real push-service URL so it can't be used as a blind SSRF
+  // / outbound-request amplifier to an attacker-chosen host.
+  if (!isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
   await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now);
   return json({ ok: true }, 200, cors, NS);
 }
@@ -224,8 +226,8 @@ export async function handlePushUnsubscribe(req: Request, db: DbClient, now: num
  * isn't in). An empty/blank `q` short-circuits to `[]` without touching the DO.
  * Otherwise the DO's `search` RPC runs a LIKE-escaped scan of THIS chat's log and
  * returns matching Wires (newest-first, with reactions). Global cross-chat search
- * is a deliberate follow-up (needs a D1 mirror/FTS index — bodies live only in the
- * DO).
+ * is `handleGlobalSearch` below — a bounded fan-out across the caller's chats (no
+ * D1/FTS mirror; bodies live only in each DO).
  */
 export async function handleSearch(
   req: Request,
@@ -263,8 +265,9 @@ export async function handleGlobalSearch(
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ results: [] }, 200, cors, { "Cache-Control": "no-store" });
-  // The caller's chats (cap the fan-out so a huge membership can't blow up).
-  const rows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ? LIMIT 60", [me]);
+  // The caller's chats (cap the fan-out so a huge membership can't blow up — each
+  // chat is one DO round-trip). 20 keeps a global search to ≤20 concurrent DO reads.
+  const rows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ? LIMIT 20", [me]);
   const ns = conversation(env);
   const PER_CHAT = 8;
   const lists = await Promise.all(
@@ -320,10 +323,22 @@ export async function handleForward(
     .map((m) => (m && typeof (m as { body?: unknown }).body === "string" ? String((m as { body: string }).body).trim() : ""))
     .filter((b) => b.length > 0 && b.length <= MAX_BODY);
   const ns = conversation(env);
+  const stub = ns.get(ns.idFromName(chatId));
   let forwarded = 0;
-  for (const b of bodies) {
-    await ns.get(ns.idFromName(chatId)).appendMessage(me, b, true);
-    forwarded++;
+  try {
+    for (const b of bodies) {
+      // Pass the real chatId: a target DO with no live socket can't recover it, so
+      // without it mirrorLastMessage + pushOffline would silently no-op.
+      await stub.appendMessage(chatId, me, b, true);
+      forwarded++;
+    }
+  } catch (e) {
+    // The DO throws "rate_limited" once the caller trips the per-user forward flood
+    // meter — stop and report partial progress (429). Anything else propagates.
+    if (e instanceof Error && e.message.includes("rate_limited")) {
+      return json({ error: "rate_limited", forwarded }, 429, cors, { "Cache-Control": "no-store" });
+    }
+    throw e;
   }
   return json({ forwarded }, 200, cors, { "Cache-Control": "no-store" });
 }

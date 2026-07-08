@@ -535,8 +535,9 @@ Goal: match **every** NextMeowsenger feature and surpass it. Built slice-by-slic
    **desktop full-width layout**, WAF host in rate-limit rule, in-DO per-connection message rate
    bucket, membership gates audited.
 9. **Reactions · search · notifications · deletion** — emoji reactions, **server-side message
-   search** (now possible — plaintext; D1 FTS or index DO), account/data deletion (child-first
-   erasure), push/web notifications.
+   search** — within-chat AND **global cross-chat** (shipped as a bounded fan-out across the
+   caller's chat DOs — no D1 FTS/index mirror needed, since bodies live only in each DO),
+   account/data deletion (child-first erasure), push/web notifications (payloadless VAPID tickle).
 
 **Parallel track — auth consolidation:** merge `apps/auth-web` into `workers/auth` (one worker on
 `auth.alxnko.eu.org` serving static assets + all OIDC/UI routes), change issuer →
