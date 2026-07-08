@@ -5,7 +5,7 @@
 import { provision } from "@meowerse/auth";
 import { meowsengerClient } from "../auth.config";
 
-const issuer = process.env.OIDC_ISSUER ?? "https://auth-api.alxnko.eu.org";
+const issuer = process.env.OIDC_ISSUER ?? "https://auth.alxnko.eu.org";
 const managementToken = process.env.MGMT_TOKEN;
 if (!managementToken) {
   console.error("Set MGMT_TOKEN (create one in the auth dashboard → management tokens).");

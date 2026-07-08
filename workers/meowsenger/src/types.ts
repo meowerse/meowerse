@@ -2,7 +2,7 @@ export interface Env {
   DB: D1Database;                 // D1 binding (wrangler.jsonc)
   CONVERSATION?: DurableObjectNamespace; // one Conversation DO per chat (Slice 2)
   ASSETS?: Fetcher;               // static-assets binding (serves the Astro UI)
-  OIDC_ISSUER?: string;           // https://auth-api.alxnko.eu.org
+  OIDC_ISSUER?: string;           // https://auth.alxnko.eu.org
   OIDC_CLIENT_ID?: string;        // from provision (public)
   OIDC_CLIENT_SECRET?: string;    // from provision (secret)
   OIDC_REDIRECT_URI?: string;     // https://meowsenger.alxnko.eu.org/auth/callback
