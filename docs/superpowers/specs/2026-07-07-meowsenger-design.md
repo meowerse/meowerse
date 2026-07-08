@@ -467,7 +467,12 @@ frontend consolidation happened in slice 1 and auth's in the auth-consolidation 
 - **auth** — service key `auth`. ONE worker `workers/auth` on `auth.alxnko.eu.org` (`custom_domain`)
   with `assets` → `apps/auth-web/dist` + all OIDC/API routes; **issuer = `https://auth.alxnko.eu.org`**.
   `auth-api.alxnko.eu.org` retired. `apps/auth-web` is build-only. `deploy-auth.sh` builds the UI then
-  deploys the worker.
+  deploys the worker. **`assets.run_worker_first: ["/signup","/login","/consent"]`** — those three paths
+  are BOTH a page (GET) and an API POST; Cloudflare 405s a POST to an asset path WITHOUT running the
+  worker, so the worker must run first for them (GET still falls through to `env.ASSETS.fetch`). Every
+  other page stays asset-served-before-worker. **Build must source `.env`** so `PUBLIC_TURNSTILE_SITE_KEY`
+  bakes into the invisible-Turnstile widget on `/signup` + `/login` (a worktree has no `.env`; source the
+  main-repo one before building, else signup/login fail `turnstile_failed`).
 - **infra:** `infra/services.sh` (`meowsenger` = `workers/meowsenger apps/meowsenger-web
   packages/auth-shared packages/auth-sdk`; `auth` = `workers/auth apps/auth-web packages/auth-shared`),
   `deploy.tf` `local.services` (one entry each), `justfile` (`deploy-meowsenger`, `deploy-auth`),
