@@ -853,9 +853,18 @@ export default function Chat({ base }: { base: string }) {
                   <p className="mw-emptylog__text mw-muted">no messages yet. say hi</p>
                 </div>
               )}
-              {messages.map((m) => {
+              {messages.map((m, i) => {
                 const mine = me != null && m.senderId === me.id;
                 const key = m.tempId ?? m.id;
+                // Group consecutive messages from the same sender (within 5 min) so
+                // the avatar + name render once per run, not on every bubble. A new
+                // sender, a >5min gap, or a tombstone between them starts a new run.
+                const prev = messages[i - 1];
+                const firstInRun =
+                  !prev || prev.senderId !== m.senderId || prev.isDeleted || m.createdAt - prev.createdAt > 5 * 60_000;
+                // Sender avatar + name are group/channel-only, and only on the first
+                // of a run. DMs never show them (the peer is named in the header).
+                const showSenderMeta = isMembered && !mine && firstInRun;
                 // "seen" only for DMs — in a group one member's read watermark
                 // isn't "everyone saw it", so we don't imply it. (§ audit #1)
                 const seen = !isMembered && mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
@@ -877,6 +886,9 @@ export default function Chat({ base }: { base: string }) {
                     mine={mine}
                     senderName={sender.name}
                     senderAvatarUrl={sender.avatarUrl}
+                    grouped={isMembered}
+                    showSenderMeta={showSenderMeta}
+                    firstInRun={firstInRun}
                     replyName={replyName}
                     seen={seen}
                     canEdit={canEdit(m)}

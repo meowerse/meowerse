@@ -24,6 +24,9 @@ export function MessageItem({
   mine,
   senderName,
   senderAvatarUrl,
+  grouped,
+  showSenderMeta,
+  firstInRun,
   replyName,
   seen,
   canEdit,
@@ -51,6 +54,14 @@ export function MessageItem({
   // sender id if unknown). Own messages ignore both.
   senderName: string;
   senderAvatarUrl: string | null;
+  // True in a group/channel (has a roster); false in a 1:1 DM. Drives whether the
+  // avatar column exists at all (DMs show no per-message avatar/name).
+  grouped: boolean;
+  // Group/channel-only: show the sender avatar + name for this row (true only on
+  // the first message of a same-sender run). DMs always pass false.
+  showSenderMeta: boolean;
+  // First message of a same-sender run — drives the tightened within-run spacing.
+  firstInRun: boolean;
   // Name to show for THIS message's quoted-reply parent ("you" if it's mine,
   // otherwise the parent sender's resolved name — the peer in a DM).
   replyName: string;
@@ -117,7 +128,7 @@ export function MessageItem({
       key={key}
       ref={rowRef}
       data-mid={m.id}
-      className={`mw-msg${mine ? " mw-msg--me" : ""}${selected ? " is-selected" : ""}`}
+      className={`mw-msg${mine ? " mw-msg--me" : ""}${!firstInRun ? " mw-msg--run" : ""}${selected ? " is-selected" : ""}`}
       onContextMenu={(e) => {
         if (deleted) return;
         e.preventDefault();
@@ -136,9 +147,14 @@ export function MessageItem({
           aria-label="select message"
         />
       )}
-      {!mine && <Avatar url={senderAvatarUrl} name={senderName} size="sm" />}
+      {/* Avatar column exists only in group/channel non-own rows: the sender's
+          avatar on the first of a run, an equal-width spacer on continuations so
+          bubbles stay aligned. DMs (and own rows) render nothing here. */}
+      {grouped && !mine && (showSenderMeta
+        ? <Avatar url={senderAvatarUrl} name={senderName} size="sm" />
+        : <span className="mw-msg__avatar-spacer" aria-hidden="true" />)}
       <div className="mw-msg__col">
-        {!mine && <span className="mw-msg__name" data-case="preserve">{senderName}</span>}
+        {showSenderMeta && <span className="mw-msg__name" data-case="preserve">{senderName}</span>}
 
         {deleted ? (
           <div className={`mw-bubble mw-bubble--deleted${mine ? " mw-bubble--me" : ""}`}>
