@@ -1,0 +1,59 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { Card } from "@meowerse/ui";
+---
+<Layout title="privacy · meowsenger">
+  <div class="mw-prose">
+    <h1>privacy policy</h1>
+    <p class="mw-muted">Last updated 2026-07-08. Meowsenger is operated by an individual (alxnko) on a best-effort basis. This describes exactly what the service does with your data — nothing more.</p>
+
+    <Card title="your identity">
+      <p>Meowsenger has no accounts of its own — you sign in with your <strong>meowerse account</strong> via OpenID Connect. With your consent it receives only your username, display name, avatar, and verified status (the <code class="mono" data-case="preserve">openid</code>, <code class="mono" data-case="preserve">profile</code>, and <code class="mono" data-case="preserve">verified</code> scopes). It never sees or stores your password. How that identity data is handled is covered by <a href="https://auth.alxnko.eu.org/privacy">meowerse accounts' privacy policy</a>.</p>
+    </Card>
+
+    <Card title="what we store">
+      <ul>
+        <li>Your messages — bodies, timestamps, edits, replies, forwards, and reactions.</li>
+        <li>Your chats: direct chats, groups, and channels, with their name, visibility, slug, and invite codes.</li>
+        <li>Membership and roles (owner / admin / member), and join requests.</li>
+        <li>Read state: read receipts and unread counts.</li>
+        <li>A cached copy of your username, display name, and avatar from your meowerse account, refreshed on sign-in.</li>
+      </ul>
+    </Card>
+
+    <Card title="not end-to-end encrypted">
+      <p>Messages are encrypted in transit (HTTPS/WSS) and at rest, but <strong>not end-to-end encrypted</strong> — the server can read message bodies. This is deliberate: it's what enables search, chat previews, and reading history when you join a chat late. Treat meowsenger as private-but-server-readable, not secret.</p>
+    </Card>
+
+    <Card title="what stays in memory only">
+      <ul>
+        <li>Presence (who's online) and typing indicators are derived from live connections and are never written to the database.</li>
+      </ul>
+    </Card>
+
+    <Card title="session data">
+      <ul>
+        <li>A session is a cookie holding a random id whose hash is stored server-side; the cookie is <code class="mono" data-case="preserve">__Host-</code> prefixed, HttpOnly, Secure, and SameSite=Lax.</li>
+        <li>No email, no SMS, no analytics, no advertising, and no third-party trackers or cookies.</li>
+      </ul>
+    </Card>
+
+    <Card title="processors">
+      <ul>
+        <li>Cloudflare — hosts the worker, stores chats in D1 and messages in Durable Objects, and keeps short-lived edge request logs.</li>
+        <li>meowerse accounts — your identity provider (sign-in and profile).</li>
+        <li>Telegram — only involved in serving your avatar, which is fetched from your linked Telegram account.</li>
+      </ul>
+    </Card>
+
+    <Card title="retention & your rights">
+      <ul>
+        <li>Your chats and messages are kept until deleted. Deleting a message soft-deletes it; leaving or deleting a chat removes your membership.</li>
+        <li>From <strong>settings → danger zone</strong> you can permanently delete your meowsenger data.</li>
+        <li>To remove your identity entirely, delete your meowerse account.</li>
+      </ul>
+    </Card>
+
+    <p class="mw-muted">Questions or data requests? Reach out via any of the contact links in the footer below.</p>
+  </div>
+</Layout>

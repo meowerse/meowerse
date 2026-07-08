@@ -121,6 +121,11 @@ body:has(.mw-chat) main.mw-container {
 /* ---- message rows + bubbles ----------------------------------------------- */
 .mw-msg { display: flex; align-items: flex-end; gap: var(--space-2); max-width: min(70ch, 82%); }
 .mw-msg--me { align-self: flex-end; flex-direction: row-reverse; }
+/* A same-sender run continuation: pull up to tighten the log's inter-row gap. */
+.mw-msg--run { margin-top: calc(var(--space-2) * -1 + 2px); }
+/* Empty avatar column on run continuations — same width as .mw-avatar--sm (28px)
+   so grouped bubbles stay aligned under the run's avatar. */
+.mw-msg__avatar-spacer { flex: none; width: 28px; }
 .mw-msg__col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mw-msg__name { font-size: var(--text-xs); color: var(--text-secondary); padding-inline: var(--space-1); }
 
@@ -353,6 +358,10 @@ body:has(.mw-chat) main.mw-container {
   border-radius: var(--radius); transition: border-color var(--dur-fast) var(--ease);
 }
 .mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
+/* When an input sits inside the shared .mw-field wrapper, @meowerse/ui's
+   `.mw-field input:focus` otherwise decides the border — re-assert the same green
+   focus border (app.css loads after the lib) so every text input focuses alike. */
+.mw-field input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
 
 /* Tabs (Direct | Group) in the new-chat modal. */
 .mw-tabs {
@@ -688,7 +697,7 @@ body:has(.mw-chat) main.mw-container {
   transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .mw-emojipick__btn:hover { background: var(--surface-muted); transform: scale(1.15); }
-.mw-emojipick__btn:focus-visible { background: var(--surface-muted); outline: 2px solid var(--mw-green); outline-offset: -2px; }
+.mw-emojipick__btn:focus-visible { background: var(--surface-muted); }
 
 /* Reaction pills below a bubble: emoji + count, highlighted when it's mine. */
 .mw-reactions {
@@ -728,7 +737,10 @@ body:has(.mw-chat) main.mw-container {
   background: var(--surface-0); color: var(--text-primary);
   font-size: var(--text-sm); font-family: inherit;
 }
-.mw-search__input:focus-visible { outline: 2px solid var(--mw-green); outline-offset: -1px; border-color: var(--mw-green); }
+/* Focus = the design-system halo (box-shadow, global) + the app's green border,
+   exactly like every other text input. No local `outline` — stacking one on the
+   halo is what produced the double green ring. */
+.mw-search__input:focus-visible { border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
 .mw-search__close { flex: none; padding: 4px 8px; }
 .mw-search__results {
   display: flex; flex-direction: column; gap: 2px;

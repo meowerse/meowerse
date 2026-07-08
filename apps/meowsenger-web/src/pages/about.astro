@@ -1,0 +1,28 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { Card } from "@meowerse/ui";
+---
+<Layout title="about · meowsenger">
+  <div class="mw-prose">
+    <h1>about meowsenger</h1>
+    <p>Meowsenger is fast, real-time chat for the meowerse. Sign in with your meowerse account and start messaging — direct chats, groups, and broadcast channels, in real time.</p>
+    <p class="mw-muted">It's a personal project by alxnko, run on a best-effort basis on free-tier infrastructure. It is not a company, it shows no ads, and it does not track you.</p>
+
+    <Card title="what it does">
+      <ul>
+        <li>Direct messages, private and public groups, and broadcast channels — each with a shareable slug and invite links.</li>
+        <li>Replies, edits, deletes, forwarding, reactions, and in-chat search.</li>
+        <li>Typing indicators, presence, read receipts, and unread counts, live over WebSockets.</li>
+        <li>Roles (owner / admin / member), member management, and join requests for private-but-discoverable chats.</li>
+      </ul>
+    </Card>
+
+    <Card title="how it's built">
+      <p>One meowerse account signs you in via OpenID Connect — no separate password. Messages live in per-chat Cloudflare Durable Objects (with an embedded SQLite log) and the chat graph in Cloudflare D1, so it stays fast without a server to run. Avatars come straight from your linked Telegram, always current.</p>
+    </Card>
+
+    <Card title="one thing to know">
+      <p>Meowsenger is <strong>not end-to-end encrypted</strong>. Messages are encrypted in transit and at rest, but the server can read them — that's what makes search, previews, and reading history as a late-joiner possible. Don't send anything you'd want no one but the recipient to ever be able to read.</p>
+    </Card>
+  </div>
+</Layout>
