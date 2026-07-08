@@ -42,8 +42,11 @@ function memDb(users: Record<string, { username: string; displayName: string | n
               ? members.find((o) => o.chat_id === m.chat_id && o.user_id !== me)
               : undefined;
             const pu = peer ? users[String(peer.user_id)] : undefined;
+            // Model the lazy has-unread derivation: last_activity > COALESCE(last_read_at, joined_at).
+            const lastRead = m.last_read_at ?? m.joined_at ?? 0;
+            const unread = Number(c.last_activity) > Number(lastRead) ? 1 : 0;
             return {
-              ...c, role: "member", unread_count: 0, last_read_at: null,
+              ...c, role: "member", unread_count: unread, last_read_at: m.last_read_at ?? null,
               peer_id: peer?.user_id ?? null,
               peer_username: pu?.username ?? null,
               peer_display_name: pu?.displayName ?? null,
@@ -60,12 +63,13 @@ function memDb(users: Record<string, { username: string; displayName: string | n
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: "direct", name: null, created_by: p[1], created_at: p[2], last_activity: p[3], last_message: null, last_sender_id: null, direct_key: p[4] });
-      else if (sql.startsWith("INSERT INTO chat_members")) members.push({ chat_id: p[0], user_id: p[1], unread_count: 0, last_read_at: null });
+      else if (sql.startsWith("INSERT INTO chat_members")) members.push({ chat_id: p[0], user_id: p[1], unread_count: 0, last_read_at: null, joined_at: p[2] });
       else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
-      // markRead: clear unread + advance last_read_at for one (chat, user).
-      else if (sql.startsWith("UPDATE chat_members SET unread_count = 0, last_read_at")) {
+      // markRead: advance last_read_at monotonically for one (chat, user) — the guard
+      // (last_read_at IS NULL OR < upTo) means a stale/duplicate read is a no-op.
+      else if (sql.startsWith("UPDATE chat_members SET last_read_at")) {
         const m = members.find((x) => x.chat_id === p[1] && x.user_id === p[2]);
-        if (m) { m.unread_count = 0; m.last_read_at = p[0]; }
+        if (m && (m.last_read_at == null || Number(m.last_read_at) < Number(p[3]))) m.last_read_at = p[0];
       }
     },
   };
@@ -99,21 +103,39 @@ describe("mirrorLastMessage", () => {
   });
 });
 describe("markRead", () => {
-  it("clears unread and advances last_read_at for one member only", async () => {
+  it("advances last_read_at monotonically for one member only", async () => {
     const { db, members } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    // Simulate u1 having accrued unread.
     const u1 = members.find((m) => m.chat_id === a.id && m.user_id === "u1")!;
     const u2 = members.find((m) => m.chat_id === a.id && m.user_id === "u2")!;
-    u1.unread_count = 5;
 
     await markRead(db, a.id, "u1", 4200);
-
-    expect(u1.unread_count).toBe(0);
     expect(u1.last_read_at).toBe(4200);
     // The other member is untouched.
-    expect(u2.unread_count).toBe(0);
     expect(u2.last_read_at).toBeNull();
+
+    // A stale (lower) upTo is a no-op — never moves the cursor backwards.
+    await markRead(db, a.id, "u1", 3000);
+    expect(u1.last_read_at).toBe(4200);
+    // A newer upTo advances it.
+    await markRead(db, a.id, "u1", 5000);
+    expect(u1.last_read_at).toBe(5000);
+  });
+});
+describe("unread (derived, no per-member counter)", () => {
+  it("has-unread = last_activity > last_read_at; a send marks the non-reader, reading clears it", async () => {
+    const { db } = memDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1000);
+    // Fresh DM: last_activity == joined_at → nobody unread.
+    expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
+    // A message bumps last_activity → the non-reader (u2) is now unread.
+    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
+    // u2 reads up to the message → back to read; a later message re-flags it.
+    await markRead(db, a.id, "u2", 3000);
+    expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
+    await mirrorLastMessage(db, a.id, "again", "u1", 4000);
+    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
   });
 });
 describe("listChats", () => {

@@ -1311,15 +1311,15 @@ function forwardDb(opts: {
 }
 
 /**
- * Fake CONVERSATION namespace that records every appendMessage(senderId, body,
- * forwarded) call so a test can assert what was forwarded to which chat.
+ * Fake CONVERSATION namespace that records every appendMessage(chatId, senderId,
+ * body, forwarded) call so a test can assert what was forwarded to which chat.
  */
 function forwardEnv() {
   const calls: Array<{ chatId: string; senderId: string; body: string; forwarded: boolean }> = [];
   const CONVERSATION = {
     idFromName: (name: string) => name,
-    get: (chatId: string) => ({
-      appendMessage: async (senderId: string, body: string, forwarded: boolean) => {
+    get: () => ({
+      appendMessage: async (chatId: string, senderId: string, body: string, forwarded: boolean) => {
         calls.push({ chatId, senderId, body, forwarded });
         return `msg-${calls.length}`;
       },
@@ -1435,6 +1435,28 @@ describe("handleForward", () => {
     expect(calls).toHaveLength(17);
     expect(calls.every((c) => c.forwarded === true && c.body.length > 0)).toBe(true);
   });
+
+  it("stops + returns 429 when the DO trips the forward flood meter (partial progress reported)", async () => {
+    const db = forwardDb({ session: validSession("u1"), members: { "t1::u1": "member" }, types: { t1: "group" } });
+    let n = 0;
+    const CONVERSATION = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        appendMessage: async () => {
+          n++;
+          if (n > 1) throw new Error("rate_limited");
+          return "msg-1";
+        },
+      }),
+    };
+    const env = { CONVERSATION } as unknown as Env;
+    const res = await handleForward(
+      cookieReq("https://x/api/chats/t1/forward", "s1", { method: "POST", body: JSON.stringify({ messages: [{ body: "a" }, { body: "b" }, { body: "c" }] }) }),
+      env, db, now, "t1", cors,
+    );
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "rate_limited", forwarded: 1 });
+  });
 });
 
 describe("Web Push endpoints", () => {
@@ -1452,11 +1474,17 @@ describe("Web Push endpoints", () => {
     const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({}) }), db, now, cors);
     expect(res.status).toBe(400);
   });
-  it("POST /api/push/subscribe → 200 stores the subscription", async () => {
+  it("POST /api/push/subscribe → 200 stores the subscription (allowlisted push host)", async () => {
     const { db } = memDb({ session: validSession("u1") });
-    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc123", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+  it("POST /api/push/subscribe → 400 bad_endpoint for a non-push-service URL (SSRF guard)", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://attacker.example/internal" }) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_endpoint" });
   });
   it("POST /api/push/unsubscribe → 200 (idempotent) for a member", async () => {
     const { db } = memDb({ session: validSession("u1") });

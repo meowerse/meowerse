@@ -13,6 +13,35 @@ import type { DbClient, Env, Row } from "./types";
 
 const enc = new TextEncoder();
 
+/** Hostnames (exact or dot-suffix) of the real browser push services. A stored
+ *  endpoint is later POSTed to by the server, so anything outside this set is a
+ *  potential SSRF target and is rejected at subscribe time. */
+const PUSH_HOSTS = [
+  "fcm.googleapis.com", // Chrome / Chromium (exact)
+  ".push.services.mozilla.com", // Firefox
+  ".push.apple.com", // Safari / iOS web push
+  ".notify.windows.com", // Edge / Windows (WNS)
+];
+
+/**
+ * Is `endpoint` a well-formed https URL on a known push-service host? Guards the
+ * subscribe path so an authenticated user can't register an arbitrary URL that the
+ * DO would then POST to on every message (blind SSRF / outbound amplifier). The
+ * suffix check (`.push.apple.com`) can't be spoofed by `…push.apple.com.evil.com`
+ * (that ends in `.evil.com`), and the exact FCM host avoids a bare-suffix bypass.
+ */
+export function isAllowedPushEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  return PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h));
+}
+
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let s = "";

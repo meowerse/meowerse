@@ -84,7 +84,9 @@ const TYPING_TTL_MS = 5000;
 // How close to the bottom (px) still counts as "at bottom" for read + autoscroll.
 const NEAR_BOTTOM_PX = 80;
 // Background poll cadence to surface unread for non-active chats (v1 simplification).
-const SIDEBAR_POLL_MS = 15000;
+// 45s keeps D1 reads modest (each poll is one listChats read per open tab) while
+// still feeling live; a focused tab also refreshes on visibilitychange/focus.
+const SIDEBAR_POLL_MS = 45000;
 
 export default function Chat({ base }: { base: string }) {
   const [me, setMe] = useState<SessionUser | null>(null);

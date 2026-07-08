@@ -68,3 +68,10 @@ export async function getAllowAutoGroupAdd(db: DbClient, userId: string): Promis
 export async function setAllowAutoGroupAdd(db: DbClient, userId: string, allow: boolean): Promise<void> {
   await db.run("UPDATE users SET allow_auto_group_add = ? WHERE id = ?", [allow ? 1 : 0, userId]);
 }
+
+/** Stamp a user's `last_seen_at` (ms) — called by the DO when their final live
+ *  socket in a room drops, for the DM "last seen …" header. Keeps every `users`
+ *  D1 write in this module (the DO orchestrates but never writes user rows inline). */
+export async function touchLastSeen(db: DbClient, userId: string, at: number): Promise<void> {
+  await db.run("UPDATE users SET last_seen_at = ? WHERE id = ?", [at, userId]);
+}

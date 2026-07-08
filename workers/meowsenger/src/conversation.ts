@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
+import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage } from "./chats";
+import { touchLastSeen } from "./users";
 import { pushTargetsForChat, sendPush, deletePushSubscription } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
@@ -51,7 +53,9 @@ interface Wire {
   reactions?: ReactionAgg[];
 }
 
-const MAX_BODY = 4000;
+/** Max message body length — the single source is `@meowerse/ts-shared` (shared with
+ *  the REST forward handler) so the DO and the API can never drift apart. */
+const MAX_BODY = MAX_MESSAGE_BODY;
 const HISTORY_PAGE = 50;
 /** Half-window size for a centered `historyAround` page: up to this many messages
  *  on each side of (and including) the anchor, so a deep-link lands with context. */
@@ -70,9 +74,14 @@ const EDIT_WINDOW_MS = 3600_000;
 const DELETE_WINDOW_MS = 24 * 3600_000;
 /** How long a soft-deleted row lingers before the alarm hard-purges it. */
 const PURGE_AFTER_MS = 24 * 3600_000;
-/** Per-connection flood window + cap: at most RATE_MAX `send`s per RATE_WINDOW_MS. */
+/** Per-connection flood window + cap: at most RATE_MAX `send`s per RATE_WINDOW_MS.
+ *  The same window+cap meters the forward RPC (`appendMessage`), keyed by user. */
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX = 30;
+/** Coalesce Web Push per chat: at most one offline fan-out (D1 read + POSTs) per
+ *  this window. A tickle only needs to say "something happened"; the recipient's SW
+ *  fetches the details. Skips the per-message D1 read on a busy channel. */
+const PUSH_DEBOUNCE_MS = 30_000;
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
 const MAX_EMOJI_LEN = 8;
@@ -108,9 +117,17 @@ export class Conversation extends DurableObject<Env> {
    * in-flight flood to remember.
    */
   private sendTimes = new Map<WebSocket, number[]>();
+  // Same flood meter for the forward RPC (`appendMessage`), keyed by userId — the
+  // forwarder has no socket, so it can't use `sendTimes`. In-memory/best-effort
+  // (dies on hibernation, like `sendTimes`); all forwards to THIS chat funnel through
+  // this one DO, so it bounds per-user forward volume + the push fan-out it triggers.
+  private appendTimes = new Map<string, number[]>();
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
-  // ~once/60s per user (see webSocketClose). Bounded by this chat's member count.
+  // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
   private lastSeenStamp = new Map<string, number>();
+  // Last time (ms) we fanned out a Web Push for this chat, to coalesce pushes to
+  // ~once/PUSH_DEBOUNCE_MS (see pushOffline). One entry per chat this DO serves (1).
+  private lastPush = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -396,10 +413,15 @@ export class Conversation extends DurableObject<Env> {
    */
   private async pushOffline(chatId: string, senderId: string): Promise<void> {
     if (!this.env.VAPID_PRIVATE_JWK) return; // push not configured
+    // Coalesce: at most one offline fan-out per chat per window. Stamp BEFORE the
+    // D1 read so a burst skips the read entirely (the recipient's SW fetches the
+    // details when it wakes, so a suppressed tickle loses nothing).
+    const now = Date.now();
+    if (now - (this.lastPush.get(chatId) ?? 0) < PUSH_DEBOUNCE_MS) return;
+    this.lastPush.set(chatId, now);
     const exclude = [senderId, ...this.onlineUsers()];
     const endpoints = await pushTargetsForChat(this.d1(), chatId, exclude);
     if (endpoints.length === 0) return;
-    const now = Date.now();
     await Promise.all(
       endpoints.map(async (ep) => {
         const status = await sendPush(ep, this.env, now);
@@ -409,61 +431,79 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
-   * DO RPC (Slice 8): append a message to THIS chat's log on behalf of `senderId`
+   * DO RPC (Slice 8): append a message to `chatId`'s log on behalf of `senderId`
    * — used by the forward REST handler, which has already gated the caller against
-   * the target chat's membership + channel-post rule. No ack socket (the forwarder
-   * isn't necessarily connected to the target), so the message fans out to ALL
-   * live sockets and mirrors to the sidebar exactly like a normal send. `forwarded`
-   * sets is_forwarded so the target renders the "forwarded" badge. Returns the id.
+   * the target chat's membership + channel-post rule and passes the real `chatId`
+   * (a DO with no live socket can't recover it, so mirror + push would otherwise
+   * no-op). No ack socket (the forwarder isn't necessarily connected to the
+   * target), so the message fans out to ALL live sockets and mirrors to the sidebar
+   * exactly like a normal send. `forwarded` sets is_forwarded so the target renders
+   * the "forwarded" badge. Metered per-user (see `appendTimes`) so forward can't
+   * bypass the WS flood limiter — a rate-limited call throws so the handler stops.
+   * Returns the id.
    */
-  async appendMessage(senderId: string, body: string, forwarded: boolean): Promise<string> {
-    return this.insertAndBroadcast(senderId, this.chatIdOf(), body, { forwarded });
+  async appendMessage(chatId: string, senderId: string, body: string, forwarded: boolean): Promise<string> {
+    if (this.isAppendRateLimited(senderId)) throw new Error("rate_limited");
+    return this.insertAndBroadcast(senderId, chatId, body, { forwarded });
   }
 
   /**
-   * The chatId this DO serves — recovered from any live socket's attachment (all
-   * sockets in a room share it). The forward RPC has no request URL to read it
-   * from, and the Wire only needs it for the client's own bookkeeping; if the room
-   * has no live socket, "" is harmless (the persisted row + mirror don't use it).
+   * Meter a forward on `userId`: prune timestamps older than RATE_WINDOW_MS, then
+   * decide. At/over RATE_MAX in the window → true (caller stops, nothing recorded).
+   * Otherwise record `now` and return false. In-memory only (see `appendTimes`).
    */
-  private chatIdOf(): string {
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as { chatId?: string } | null;
-      if (a?.chatId) return a.chatId;
+  private isAppendRateLimited(userId: string): boolean {
+    const now = Date.now();
+    const times = (this.appendTimes.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (times.length >= RATE_MAX) {
+      this.appendTimes.set(userId, times);
+      return true;
     }
-    return "";
+    times.push(now);
+    this.appendTimes.set(userId, times);
+    return false;
   }
 
-  /** Hibernation handler: a socket closed — mirror the close back and drop it. */
+  /** Hibernation handler: a socket closed cleanly — clean up, then mirror the close back. */
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    // Recover the closing socket's user before we close it, so we can decide
-    // whether that user is now fully offline.
-    const att = ws.deserializeAttachment() as Attach | null;
-    // Drop this socket's rate bucket so the in-memory Map doesn't leak entries
-    // for closed connections.
-    this.sendTimes.delete(ws);
+    this.handleDisconnect(ws);
     try {
       ws.close(code, reason);
     } catch {
       /* already closing */
     }
-    // Presence: only announce offline if this user has NO other live socket. The
-    // exclude-and-recheck (`onlineUsers(ws)` skips the closing socket) means a
-    // multi-tab user closing ONE tab doesn't flap offline while another remains.
+  }
+
+  /**
+   * Hibernation handler: a socket dropped ABNORMALLY (network loss, tab killed).
+   * The runtime routes these to `webSocketError`, NOT `webSocketClose` — without
+   * this handler an abnormal drop would remove the socket from getWebSockets() but
+   * never clear presence or stamp last-seen, so peers would show the user online
+   * forever. Runs the exact same cleanup as a clean close.
+   */
+  async webSocketError(ws: WebSocket): Promise<void> {
+    this.handleDisconnect(ws);
+  }
+
+  /**
+   * Shared close/error cleanup: drop the socket's rate bucket, and — if this was the
+   * user's LAST live socket in the room — broadcast presence-offline and stamp
+   * last_seen_at. The exclude-and-recheck (`onlineUsers(ws)` skips the departing
+   * socket) means a multi-tab user closing ONE tab doesn't flap offline while another
+   * remains. The last_seen write is DEBOUNCED to ~once/60s per user (the UI is
+   * minute-grained, and a flapping client reconnects to THIS same warm DO, so the
+   * in-memory stamp collapses a reconnect storm to one write/min) and runs off the
+   * path (waitUntil; wall time is fine — no ordering requirement).
+   */
+  private handleDisconnect(ws: WebSocket): void {
+    const att = ws.deserializeAttachment() as Attach | null;
+    this.sendTimes.delete(ws);
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
-      // Now fully offline (in this room) → stamp last_seen_at for the "last seen …"
-      // DM header. DEBOUNCED to at most ~once/60s per user: the UI is minute-grained,
-      // and a flapping client reconnects to THIS same DO (kept warm by the churn), so
-      // the in-memory stamp collapses a reconnect storm to one write/min — otherwise a
-      // single flapping socket could approach the free-tier D1 write budget. Off the
-      // close path (waitUntil); wall time is fine (no ordering requirement).
       const nowMs = Date.now();
       if (nowMs - (this.lastSeenStamp.get(att.userId) ?? 0) >= 60_000) {
         this.lastSeenStamp.set(att.userId, nowMs);
-        this.ctx.waitUntil(
-          this.d1().run("UPDATE users SET last_seen_at = ? WHERE id = ?", [nowMs, att.userId]).catch(() => {}),
-        );
+        this.ctx.waitUntil(touchLastSeen(this.d1(), att.userId, nowMs).catch(() => {}));
       }
     }
   }
@@ -615,6 +655,10 @@ export class Conversation extends DurableObject<Env> {
       "DELETE FROM messages WHERE is_deleted = 1 AND deleted_at < ?",
       Date.now() - PURGE_AFTER_MS,
     );
+    // Reap reactions whose message is gone (hard-purged above, or never existed) so
+    // they don't accumulate as dead rows — attachReactions filters by page ids, so
+    // these are invisible but still leak DO SQLite space.
+    this.ctx.storage.sql.exec("DELETE FROM reactions WHERE message_id NOT IN (SELECT id FROM messages)");
     const remaining = this.ctx.storage.sql
       .exec("SELECT MIN(deleted_at) AS oldest FROM messages WHERE is_deleted = 1")
       .toArray()[0]?.oldest;
@@ -763,7 +807,14 @@ export class Conversation extends DurableObject<Env> {
    */
   private attachReactions(wires: Wire[], viewerId?: string): void {
     if (wires.length === 0) return;
-    const ids = wires.map((w) => w.id);
+    // A soft-deleted message renders as a "message deleted" placeholder — it must
+    // NOT carry reaction pills. Only aggregate for live rows; tombstones get [].
+    const live = wires.filter((w) => !w.isDeleted);
+    if (live.length === 0) {
+      for (const w of wires) w.reactions = [];
+      return;
+    }
+    const ids = live.map((w) => w.id);
     const placeholders = ids.map(() => "?").join(",");
     const rows = this.ctx.storage.sql
       .exec(

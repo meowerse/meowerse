@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { sendPush, savePushSubscription, deletePushSubscription, pushTargetsForChat } from "./push";
+import { sendPush, savePushSubscription, deletePushSubscription, pushTargetsForChat, isAllowedPushEndpoint } from "./push";
 import type { DbClient, Env, Row } from "./types";
 
 let env: Env;
@@ -44,6 +44,23 @@ function pushDb() {
   };
   return { db, subs, members };
 }
+
+describe("isAllowedPushEndpoint", () => {
+  it("accepts the known https push-service hosts", () => {
+    expect(isAllowedPushEndpoint("https://fcm.googleapis.com/fcm/send/abc")).toBe(true);
+    expect(isAllowedPushEndpoint("https://updates.push.services.mozilla.com/wpush/v2/xxx")).toBe(true);
+    expect(isAllowedPushEndpoint("https://web.push.apple.com/xyz")).toBe(true);
+    expect(isAllowedPushEndpoint("https://ab1.notify.windows.com/w/?token=t")).toBe(true);
+  });
+  it("rejects other hosts, http, suffix-spoofs, and junk (SSRF guard)", () => {
+    expect(isAllowedPushEndpoint("https://attacker.example/internal")).toBe(false);
+    expect(isAllowedPushEndpoint("http://fcm.googleapis.com/fcm/send/abc")).toBe(false); // not https
+    expect(isAllowedPushEndpoint("https://web.push.apple.com.evil.com/x")).toBe(false); // suffix spoof
+    expect(isAllowedPushEndpoint("https://fcm.googleapis.com.evil.com/x")).toBe(false); // exact-host spoof
+    expect(isAllowedPushEndpoint("not a url")).toBe(false);
+    expect(isAllowedPushEndpoint("")).toBe(false);
+  });
+});
 
 describe("sendPush", () => {
   it("POSTs a VAPID Authorization header + payloadless body and returns the status", async () => {

@@ -13,6 +13,9 @@ export interface ChatSummary {
   lastMessage: string | null;
   lastSenderId: string | null;
   lastActivity: number;
+  // Has-unread flag (0/1), derived server-side (last_activity vs the member's
+  // last_read_at) — NOT an exact count. Rendered as a dot; the client also zeroes it
+  // optimistically on read. Named `unreadCount` for wire-compat with the worker.
   unreadCount: number;
   // Member count for a group (undefined for DMs). Optional so an older list payload
   // without it still parses; the header/drawer prefer the live members fetch.

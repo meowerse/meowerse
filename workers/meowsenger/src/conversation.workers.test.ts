@@ -310,9 +310,9 @@ describe("Conversation DO", () => {
     wb.close();
   });
 
-  it("read → peer gets read_receipt and D1 chat_members is cleared/advanced", async () => {
+  it("read → peer gets read_receipt and D1 last_read_at advances (unread derived, not counted)", async () => {
     await seedChat("c11");
-    await seedChatMember("c11", "u1", 3); // u1 has 3 unread to clear
+    await seedChatMember("c11", "u1", 0);
     const wa = await connect("c11", "u1");
     const wb = await connect("c11", "u2");
 
@@ -322,17 +322,24 @@ describe("Conversation DO", () => {
     const peerText = await peerGot;
     expect(JSON.parse(peerText)).toMatchObject({ type: "read_receipt", userId: "u1", upTo: 5000 });
 
-    // markRead runs in waitUntil, so poll D1 for the cleared/advanced state.
-    let row: { unread_count: number; last_read_at: number | null } | null = null;
+    // markRead runs in waitUntil, so poll D1 for the advanced last_read_at.
+    let row: { last_read_at: number | null } | null = null;
     for (let i = 0; i < 20; i++) {
-      row = await DB.prepare("SELECT unread_count, last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?")
+      row = await DB.prepare("SELECT last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?")
         .bind("c11", "u1")
-        .first<{ unread_count: number; last_read_at: number | null }>();
-      if (row && row.unread_count === 0 && row.last_read_at === 5000) break;
+        .first<{ last_read_at: number | null }>();
+      if (row && row.last_read_at === 5000) break;
       await new Promise((r) => setTimeout(r, 25));
     }
-    expect(row?.unread_count).toBe(0);
     expect(row?.last_read_at).toBe(5000);
+
+    // A stale (lower) read is a no-op — the monotonic guard won't move it backwards.
+    wa.send(JSON.stringify({ type: "read", upTo: 4000 }));
+    await new Promise((r) => setTimeout(r, 100));
+    const after = await DB.prepare("SELECT last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?")
+      .bind("c11", "u1")
+      .first<{ last_read_at: number | null }>();
+    expect(after?.last_read_at).toBe(5000);
 
     wa.close();
     wb.close();
@@ -647,6 +654,10 @@ describe("Conversation DO", () => {
       ctx.storage.sql.exec(
         "INSERT INTO messages (id, sender_id, body, created_at) VALUES ('keep','u1','alive',2000)",
       );
+      // A reaction on the doomed message + one on the survivor: the purge must reap
+      // the orphan ('gone') but keep the live one ('keep').
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('gone','u1','👍',1)");
+      ctx.storage.sql.exec("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES ('keep','u1','🎉',2)");
       // Arm an alarm so runDurableObjectAlarm has a scheduled handler to fire.
       await ctx.storage.setAlarm(Date.now() + 1000);
     });
@@ -660,6 +671,10 @@ describe("Conversation DO", () => {
       const ids = ctx.storage.sql.exec("SELECT id FROM messages").toArray().map((r) => String(r.id));
       expect(ids).not.toContain("gone");
       expect(ids).toContain("keep");
+      // The orphaned reaction is reaped; the survivor's reaction stays.
+      const reactedIds = ctx.storage.sql.exec("SELECT DISTINCT message_id FROM reactions").toArray().map((r) => String(r.message_id));
+      expect(reactedIds).not.toContain("gone");
+      expect(reactedIds).toContain("keep");
     });
   });
 
@@ -668,7 +683,9 @@ describe("Conversation DO", () => {
   it("appendMessage RPC: inserts the message and returns its id → shows in historyFor with isForwarded:true", async () => {
     await seedChat("c26");
     const s = stub("c26");
-    const id = await s.appendMessage("u1", "forwarded body", true);
+    // No socket is connected to this room — the RPC must still mirror the sidebar
+    // (the forward-into-an-unopened-chat case). chatId is passed in explicitly.
+    const id = await s.appendMessage("c26", "u1", "forwarded body", true);
     expect(typeof id).toBe("string");
     expect(id.length).toBeGreaterThan(0);
 
@@ -677,6 +694,18 @@ describe("Conversation DO", () => {
     expect(row?.body).toBe("forwarded body");
     expect(row?.senderId).toBe("u1");
     expect(row?.isForwarded).toBe(true);
+
+    // CO1: with the real chatId threaded through, the D1 sidebar mirror lands even
+    // with zero live sockets (previously chatId was "" → the UPDATE matched nothing).
+    let chat: { last_message: string | null } | null = null;
+    for (let i = 0; i < 20; i++) {
+      chat = await DB.prepare("SELECT last_message FROM chats WHERE id = ?")
+        .bind("c26")
+        .first<{ last_message: string | null }>();
+      if (chat && chat.last_message === "forwarded body") break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(chat?.last_message).toBe("forwarded body");
   });
 
   it("appendMessage RPC: broadcasts {message} to a connected peer (no ack, forwarder not connected)", async () => {
@@ -684,7 +713,7 @@ describe("Conversation DO", () => {
     const peer = await connect("c27", "u2");
     const peerGot = waitFor(peer, (t) => t.includes('"message"') && t.includes("fwd to peer"));
     // The forwarder (u1) is NOT connected — the RPC fans out to all live sockets.
-    await stub("c27").appendMessage("u1", "fwd to peer", true);
+    await stub("c27").appendMessage("c27", "u1", "fwd to peer", true);
     const peerText = await peerGot;
     const frame = JSON.parse(peerText) as { type: string; message: { senderId: string; body: string; isForwarded: boolean } };
     expect(frame.type).toBe("message");
@@ -709,6 +738,37 @@ describe("Conversation DO", () => {
     expect(row?.isForwarded).toBe(false);
 
     wa.close();
+  });
+
+  it("appendMessage RPC: per-user forward flood meter throws rate_limited past the cap", async () => {
+    await seedChat("cfwdrl");
+    // Run every call inside ONE instance so the in-memory per-user bucket persists.
+    await runInDurableObject(stub("cfwdrl"), async (inst: Conversation) => {
+      // RATE_MAX (30) forwards in the window succeed...
+      for (let i = 0; i < 30; i++) await inst.appendMessage("cfwdrl", "u1", `f${i}`, true);
+      // ...the next from the SAME user is refused (mirrors the WS send flood limiter),
+      // so forward can't bypass throttling to spam messages + Web Push.
+      await expect(inst.appendMessage("cfwdrl", "u1", "over", true)).rejects.toThrow(/rate_limited/);
+      // A DIFFERENT user is metered independently → still allowed.
+      await expect(inst.appendMessage("cfwdrl", "u2", "ok", true)).resolves.toBeTruthy();
+    });
+  });
+
+  it("webSocketError: an abnormal drop of the last socket clears presence (mirrors close)", async () => {
+    await seedChat("cwserr");
+    const peer = await connect("cwserr", "u2");
+    const gone = waitFor(peer, (t) => t.includes('"presence"') && t.includes('"online":false') && t.includes('"u1"'));
+    await connect("cwserr", "u1");
+    // The runtime routes an abnormal termination (network loss / killed tab) to
+    // webSocketError, NOT webSocketClose — it must run the same presence cleanup.
+    await runInDurableObject(stub("cwserr"), async (inst: Conversation, ctx: DurableObjectState) => {
+      const u1sock = ctx
+        .getWebSockets()
+        .find((w) => (w.deserializeAttachment() as { userId?: string } | null)?.userId === "u1");
+      await inst.webSocketError(u1sock!);
+    });
+    expect(JSON.parse(await gone)).toMatchObject({ type: "presence", userId: "u1", online: false });
+    peer.close();
   });
 
   it("rate bucket: >30 sends in the window → a {rate_limited} error frame and the over-limit message is NOT persisted", async () => {

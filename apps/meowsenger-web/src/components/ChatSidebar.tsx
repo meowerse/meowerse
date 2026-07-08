@@ -140,6 +140,7 @@ export function ChatSidebar({
           const title = chatTitle(c);
           const membered = isMembered(c);
           const channel = isChannel(c);
+          // unreadCount is a 0/1 has-unread flag (derived server-side; not a count).
           const unread = c.unreadCount > 0;
           // Only DMs carry a peer presence dot — a group/channel's "online" is shown in its header.
           const isOnline = !membered && c.peerId != null && online.has(c.peerId);
@@ -170,7 +171,7 @@ export function ChatSidebar({
                     : "no messages yet"}
                 </span>
               </span>
-              {unread && <span className="mw-chatrow__unread">{c.unreadCount}</span>}
+              {unread && <span className="mw-chatrow__unread" aria-label="unread" />}
             </button>
           );
         })}
