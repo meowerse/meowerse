@@ -382,6 +382,10 @@ export function MemberDrawer({
             <div className="mw-row" style={{ flexWrap: "nowrap", gap: "var(--space-2)" }}>
               <input
                 type="text"
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mw-input"
                 value={addInput}
                 placeholder="add member by username…"
@@ -503,6 +507,7 @@ export function MemberDrawer({
                   <span className="mw-field__label">name</span>
                   <input
                     type="text"
+                    autoComplete="off"
                     className="mw-input"
                     value={name}
                     aria-label={`${noun} name`}
@@ -532,6 +537,10 @@ export function MemberDrawer({
                     <span className="mw-slug__at">/</span>
                     <input
                       type="text"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       className="mw-input mw-slug__input"
                       value={slug}
                       placeholder="url-slug"

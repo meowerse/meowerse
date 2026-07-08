@@ -165,6 +165,8 @@ export function MessageItem({
             <div className="mw-edit">
               <textarea
                 className="mw-edit__input"
+                autoComplete="off"
+                autoCapitalize="sentences"
                 value={draft}
                 autoFocus
                 aria-label="edit message"

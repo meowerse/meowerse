@@ -89,6 +89,11 @@ export function Composer({
       <input
         ref={inputRef}
         type="text"
+        autoComplete="off"
+        autoCapitalize="sentences"
+        enterKeyHint="send"
+        data-1p-ignore
+        data-lpignore="true"
         value={text}
         placeholder="type a message…"
         aria-label="message"
