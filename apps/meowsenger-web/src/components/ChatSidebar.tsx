@@ -162,6 +162,11 @@ export function ChatSidebar({
                     {channel && <span className="mw-chatrow__glyph" aria-hidden="true">📡 </span>}
                     {membered && !channel && <span className="mw-chatrow__glyph" aria-hidden="true">👥 </span>}
                     {title}
+                    {/* Chat type is otherwise conveyed only by the aria-hidden emoji —
+                        give the row's accessible name a visually-hidden type word. */}
+                    {membered
+                      ? <span className="mw-sr-only"> {channel ? "channel" : "group"}</span>
+                      : <span className="mw-sr-only"> direct message</span>}
                   </span>
                   <span className="mw-chatrow__time">{relTime(c.lastActivity)}</span>
                 </span>
