@@ -44,9 +44,19 @@
   // WebSockets (Hibernation API) + an embedded SQLite message log. The class is
   // exported from src/index.ts (Task 3); new_sqlite_classes registers its
   // SQLite storage backend on first deploy.
+  // UserInbox: one DO per user holding their live "inbox" WebSocket(s). Every
+  // Conversation DO POSTs a compact sidebar delta to the recipients' inbox DOs on a
+  // new message → realtime sidebar for chats they don't have open. NO SQLite (deltas
+  // are ephemeral) → registered via new_classes, not new_sqlite_classes.
   "durable_objects": {
-    "bindings": [{ "name": "CONVERSATION", "class_name": "Conversation" }]
+    "bindings": [
+      { "name": "CONVERSATION", "class_name": "Conversation" },
+      { "name": "USER_INBOX", "class_name": "UserInbox" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Conversation"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Conversation"] },
+    { "tag": "v2", "new_classes": ["UserInbox"] }
+  ],
   "routes": [{ "pattern": "meowsenger.alxnko.eu.org", "custom_domain": true }]
 }

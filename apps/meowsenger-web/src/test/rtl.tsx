@@ -28,6 +28,16 @@ export class MockWebSocket {
   static get last(): MockWebSocket {
     return MockWebSocket.instances[MockWebSocket.instances.length - 1];
   }
+  /** The most recent CONVERSATION (room) socket — the `<Chat>` view also opens a
+   *  persistent inbox socket (realtime sidebar), so tests that mean the room socket
+   *  must select it by URL rather than by "last constructed". */
+  static get room(): MockWebSocket {
+    return [...MockWebSocket.instances].reverse().find((s) => s.url.includes("/ws?chat="))!;
+  }
+  /** The most recent inbox socket (realtime sidebar deltas), or undefined. */
+  static get inbox(): MockWebSocket | undefined {
+    return [...MockWebSocket.instances].reverse().find((s) => s.url.includes("/inbox/ws"));
+  }
 
   url: string;
   readyState: number = MockWebSocket.CONNECTING;

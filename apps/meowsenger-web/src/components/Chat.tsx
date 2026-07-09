@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@meowerse/ui";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
-import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member } from "../lib/chat";
+import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
 import { useConversation } from "../hooks/useConversation";
+import { useInbox } from "../hooks/useInbox";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
@@ -148,13 +149,53 @@ export default function Chat({ base }: { base: string }) {
     void listChats(base).then(setChats);
   }, [showToast, base]);
 
+  // Apply one realtime sidebar update: move the chat to the top, refresh its preview +
+  // activity, and set unread (0 when it's the chat you're viewing, else a has-unread
+  // dot). A delta for a chat not in the list (e.g. a brand-new chat someone just made
+  // with you) falls back to a full listChats fetch. Shared by the open-chat socket
+  // (onActiveMessage) and the cross-chat inbox socket (onInboxDelta).
+  const applySidebarDelta = useCallback(
+    (chatId: string, preview: string, at: number, senderId: string, isActive: boolean) => {
+      setChats((prev) => {
+        const idx = prev.findIndex((c) => c.id === chatId);
+        if (idx === -1) { void listChats(base).then(setChats); return prev; }
+        const updated: ChatSummary = {
+          ...prev[idx],
+          lastMessage: preview,
+          lastSenderId: senderId,
+          lastActivity: at,
+          // Active chat: leave unread to the read-receipt path (onActiveRead) — a
+          // message while scrolled up is genuinely unread. Cross-chat: a has-unread dot.
+          unreadCount: isActive ? prev[idx].unreadCount : 1,
+        };
+        return [updated, ...prev.filter((_, i) => i !== idx)];
+      });
+    },
+    [base],
+  );
+  // A message in the OPEN chat arrived over its socket → update its sidebar row now.
+  const onActiveMessage = useCallback(
+    (message: Message) => applySidebarDelta(message.chatId, message.body.slice(0, 140), message.createdAt, message.senderId, true),
+    [applySidebarDelta],
+  );
+
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
     messages, connected, loadingHistory, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, sendDelete, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
-  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onMessageDeleted, consumeReply, onRevoked });
+  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onMessageDeleted, consumeReply, onRevoked });
+
+  // Cross-chat realtime sidebar: one persistent inbox socket delivers a delta whenever
+  // someone messages a chat you DON'T have open → it jumps to the top with a fresh
+  // preview + unread dot, without waiting for the poll. (The open chat updates via
+  // onActiveMessage above; the inbox DO excludes members who are in the room.)
+  const onInboxDelta = useCallback(
+    (d: InboxDelta) => applySidebarDelta(d.chatId, d.preview, d.at, d.senderId, d.chatId === activeRef.current),
+    [applySidebarDelta, activeRef],
+  );
+  useInbox(base, me != null, onInboxDelta);
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.

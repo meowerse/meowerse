@@ -195,6 +195,22 @@ describe("GET /ws upgrade", () => {
     const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), env, depsWith({ session, member: false }));
     expect(res.status).toBe(403);
   });
+
+  const inboxReq = (opts: { upgrade?: boolean; cookie?: string } = {}) =>
+    new Request("https://meowsenger-api.alxnko.eu.org/inbox/ws", {
+      method: "GET",
+      headers: { Origin: ORIGIN, ...(opts.upgrade ? { Upgrade: "websocket" } : {}), ...(opts.cookie ? { Cookie: opts.cookie } : {}) },
+    });
+  it("inbox/ws: 426 without the Upgrade header", async () => {
+    expect((await handle(inboxReq(), env, depsWith())).status).toBe(426);
+  });
+  it("inbox/ws: 401 without a valid session (no membership gate — own inbox only)", async () => {
+    expect((await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=stale" }), env, depsWith({ session: undefined }))).status).toBe(401);
+  });
+  it("inbox/ws: 503 when USER_INBOX isn't bound (session OK, no chat/role read needed)", async () => {
+    // env (test fixture) has no USER_INBOX binding → the gated handler reports unavailable.
+    expect((await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), env, depsWith({ session }))).status).toBe(503);
+  });
   it("forwards to the DO stub for a member, passing the gated identity", async () => {
     // The node pool's `Response` rejects a real 101 (workerd-only); the actual
     // upgrade is covered by conversation.workers.test.ts. Here we just assert the

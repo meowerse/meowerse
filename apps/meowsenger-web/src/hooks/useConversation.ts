@@ -67,6 +67,10 @@ export interface UseConversationInput {
   onToast: (text: string) => void;
   /** A read receipt was sent for `chatId` → the view zeroes its sidebar unread. */
   onActiveRead: (chatId: string) => void;
+  /** A live message arrived in the OPEN chat → the view updates that chat's sidebar
+   *  row (preview + move-to-top) in realtime, without waiting for the poll/inbox.
+   *  Optional so hook-only tests can omit it. */
+  onActiveMessage?: (message: Message) => void;
   /** A `deleted` frame landed → the view drops the id from its own selection set. */
   onMessageDeleted: (id: string) => void;
   /** Called at the EXACT send-dispatch point → the view clears its armed reply. */
@@ -154,12 +158,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const resolveSenderNameRef = useRef(input.resolveSenderName);
   const onToastRef = useRef(input.onToast);
   const onActiveReadRef = useRef(input.onActiveRead);
+  const onActiveMessageRef = useRef(input.onActiveMessage);
   const onMessageDeletedRef = useRef(input.onMessageDeleted);
   const onRevokedRef = useRef(input.onRevoked);
   useEffect(() => {
     resolveSenderNameRef.current = input.resolveSenderName;
     onToastRef.current = input.onToast;
     onActiveReadRef.current = input.onActiveRead;
+    onActiveMessageRef.current = input.onActiveMessage;
     onMessageDeletedRef.current = input.onMessageDeleted;
     onRevokedRef.current = input.onRevoked;
   });
@@ -263,6 +269,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const applyFrame = useCallback((frame: Frame) => {
     if (frame.type === "sent") {
       setMessages((prev) => prev.map((b) => (b.tempId && b.tempId === frame.tempId ? { ...frame.message } : b)));
+      onActiveMessageRef.current?.(frame.message); // my own send → refresh this chat's sidebar row
     } else if (frame.type === "message") {
       // A live message belongs at the tail. In a DETACHED window (hasNewer) the tail
       // isn't loaded, so appending would render it out of context → skip; the unread
@@ -278,6 +285,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (frame.message.senderId !== meIdRef.current) {
         maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
       }
+      onActiveMessageRef.current?.(frame.message); // realtime sidebar preview for the open chat
     } else if (frame.type === "presence_snapshot") {
       setOnline(new Set(frame.online));
       setAway(new Set(frame.away ?? []));

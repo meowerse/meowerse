@@ -286,6 +286,23 @@ export function wsUrl(base: string, chatId: string): string {
   return `${wsOrigin}/ws?chat=${encodeURIComponent(chatId)}`;
 }
 
+/** The user's persistent inbox socket (realtime sidebar deltas). One per user, not
+ *  per chat — session-gated by the router to the caller's own UserInbox DO. */
+export function inboxWsUrl(base: string): string {
+  const origin = base || (typeof location !== "undefined" ? location.origin : "");
+  return `${origin.replace(/^http/, "ws")}/inbox/ws`;
+}
+
+/** A realtime sidebar delta relayed by the UserInbox DO on a message in a chat the
+ *  user doesn't have open (see workers inbox.ts). */
+export interface InboxDelta {
+  chatId: string;
+  preview: string;
+  at: number;
+  senderId: string;
+  forwarded?: boolean;
+}
+
 // ---- Slice 5: group creation + member management + metadata ----------------
 
 /**
