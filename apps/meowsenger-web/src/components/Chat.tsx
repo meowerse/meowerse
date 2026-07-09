@@ -750,18 +750,37 @@ export default function Chat({ base }: { base: string }) {
                   className="mw-btn mw-btn--ghost mw-btn--sm"
                   onClick={forwardSelected}
                   disabled={selected.size === 0}
-                >forward</button>
+                  aria-label="forward"
+                >
+                  <span className="mw-tlabel">forward</span>
+                  <span className="mw-ticon" aria-hidden="true">↪</span>
+                </button>
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm"
                   onClick={copySelected}
                   disabled={selected.size === 0}
-                >copy</button>
+                  aria-label="copy"
+                >
+                  <span className="mw-tlabel">copy</span>
+                  <span className="mw-ticon" aria-hidden="true">⧉</span>
+                </button>
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm mw-selectbar__danger"
                   onClick={requestDeleteSelected}
                   disabled={selected.size === 0}
-                >delete</button>
-                <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={exitSelect}>cancel</button>
+                  aria-label="delete"
+                >
+                  <span className="mw-tlabel">delete</span>
+                  <span className="mw-ticon" aria-hidden="true">🗑</span>
+                </button>
+                <button
+                  className="mw-btn mw-btn--primary mw-btn--sm"
+                  onClick={exitSelect}
+                  aria-label="cancel"
+                >
+                  <span className="mw-tlabel">cancel</span>
+                  <span className="mw-ticon" aria-hidden="true">✕</span>
+                </button>
               </div>
             ) : channelComposerPending ? (
               // Channel roster still loading → role unknown. Reserve the composer's
