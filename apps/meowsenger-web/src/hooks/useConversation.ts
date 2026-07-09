@@ -181,10 +181,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (chatId) onActiveReadRef.current(chatId);
   }, []);
 
-  // Autoscroll pinned to the newest message — unless prepending older history or
-  // viewing a detached window (either would yank the user away from what they read).
+  // Autoscroll pinned to the newest message — unless prepending older history, in
+  // a detached (jumped) window, OR the user has scrolled up to read back. Without
+  // the atBottom guard, any incoming frame (message/edit/delete/reaction) re-renders
+  // `messages` and teleports a reader to the bottom mid-scroll. Own-sends still pin:
+  // send()/initial-load/jumpToLatest all set atBottomRef.current = true first.
   useEffect(() => {
-    if (prependingRef.current || hasNewerRef.current) return;
+    if (prependingRef.current || hasNewerRef.current || !atBottomRef.current) return;
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);

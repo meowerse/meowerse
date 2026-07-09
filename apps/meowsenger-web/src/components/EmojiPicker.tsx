@@ -34,9 +34,12 @@ export function EmojiPicker({
     setPos({ left, top });
   }, [x, y]);
 
-  // Focus the first emoji on open (keyboard accessibility).
+  // Focus the first emoji on open, and restore focus to the trigger on close
+  // (keyboard accessibility — mirrors packages/ui Modal).
   useEffect(() => {
+    const restore = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { restore?.focus?.(); };
   }, []);
 
   // Close on outside pointerdown or Escape.
