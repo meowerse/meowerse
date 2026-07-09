@@ -355,3 +355,28 @@ describe("Chat island — per-chat UI reset on switch (audit trap)", () => {
     expect(screen.queryByLabelText("close search")).toBeNull();
   });
 });
+
+describe("Chat island — mobile header (connection dot + overflow menu)", () => {
+  it("the connection dot reflects the socket state", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const dot = document.querySelector(".mw-chat__conn") as HTMLElement;
+    expect(dot).toBeTruthy();
+    // Socket not open yet, browser online (happy-dom default) → "reconnecting".
+    expect(dot.getAttribute("data-state")).toBe("wait");
+    open(ws);
+    await waitFor(() => expect(dot.getAttribute("data-state")).toBe("on"));
+  });
+
+  it("the ⋯ overflow menu exposes search + copy link", async () => {
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    act(() => fireEvent.click(screen.getByLabelText("more chat actions")));
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    expect(screen.getByText("🔗 copy link")).toBeTruthy();
+    // Choosing "search" from the menu opens the in-chat search panel.
+    act(() => fireEvent.click(screen.getByText("🔍 search")));
+    await waitFor(() => expect(screen.getByLabelText("close search")).toBeTruthy());
+  });
+});

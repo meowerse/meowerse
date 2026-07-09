@@ -108,13 +108,24 @@ body:has(.mw-chat) main.mw-container {
   border-bottom: 1px solid var(--border);
   background: var(--surface-1);
 }
-.mw-chat__headcol { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+/* flex:1 so the name column claims the space the (now compact) right cluster leaves
+   — the old text status + inline buttons used to squeeze the name off-screen. */
+.mw-chat__headcol { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .mw-chat__peer { font-weight: 600; font-size: var(--text-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Sub-line under the peer name: presence (muted) or a green "typing…". */
-.mw-chat__presence { font-size: var(--text-xs); color: var(--text-muted); }
+/* Sub-line under the peer name: presence (muted) or a green "typing…". Ellipsize so a
+   long "N members · X online" never wraps the header taller. */
+.mw-chat__presence { font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mw-chat__typing { font-size: var(--text-xs); color: var(--text-accent); font-weight: 500; }
-.mw-chat__status { margin-left: auto; font-size: var(--text-xs); color: var(--text-muted); }
-.mw-chat__status.is-on { color: var(--text-accent); }
+/* Connection-status dot (replaced a "connected"/"connecting…" text label that ate
+   header width): green=connected, amber=reconnecting, red=offline — compact, and
+   dev-legible at a glance so a broken socket is visible. */
+.mw-chat__conn { flex: none; width: 9px; height: 9px; border-radius: var(--radius-pill); background: var(--text-muted); }
+.mw-chat__conn[data-state="on"] { background: var(--mw-green); }
+.mw-chat__conn[data-state="wait"] { background: var(--warning); }
+.mw-chat__conn[data-state="off"] { background: var(--text-danger); }
+/* Header actions: inline icon buttons on desktop, collapsed into the ⋯ menu on phones. */
+.mw-chat__actions { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+.mw-chat__more { display: none; flex: none; padding: 4px 8px; font-size: var(--text-lg); line-height: 1; }
 .mw-chat__back { display: none; padding: 4px 8px; font-size: var(--text-lg); line-height: 1; }
 
 .mw-chat__log {
@@ -827,7 +838,7 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 
 /* Touch: give the header icon buttons a 44px min hit area (WCAG 2.5.5). */
 @media (pointer: coarse) {
-  .mw-chat__back, .mw-chat__searchbtn, .mw-chat__linkbtn { min-width: 44px; min-height: 44px; }
+  .mw-chat__back, .mw-chat__searchbtn, .mw-chat__linkbtn, .mw-chat__more { min-width: 44px; min-height: 44px; }
 }
 
 /* ---- mobile: single column, swap between list + conversation -------------- */
@@ -836,6 +847,9 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   .mw-chat[data-open="1"] .mw-chat__side { display: none; }
   .mw-chat[data-open="0"] .mw-chat__main { display: none; }
   .mw-chat__back { display: inline-flex; }
+  /* Collapse the header actions into the ⋯ overflow menu so the name gets the room. */
+  .mw-chat__actions { display: none; }
+  .mw-chat__more { display: inline-flex; }
   .mw-msg { max-width: 92%; }
   /* On touch, the hover action row is unreliable — rely on long-press → menu. */
   .mw-msg__actions { display: none; }
