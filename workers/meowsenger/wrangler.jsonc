@@ -13,7 +13,10 @@
   "name": "meowsenger",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
-  "assets": { "directory": "../../apps/meowsenger-web/dist", "binding": "ASSETS" },
+  // not_found_handling: serve the built 404.html (404 status) for any path matching
+  // no asset, so env.ASSETS.fetch(req) on an unknown route renders the styled Astro
+  // 404 instead of a bare, browser-default "page can't be found".
+  "assets": { "directory": "../../apps/meowsenger-web/dist", "binding": "ASSETS", "not_found_handling": "404-page" },
   "vars": {
     "OIDC_ISSUER": "https://auth.alxnko.eu.org",
     "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
