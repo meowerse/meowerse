@@ -36,6 +36,9 @@ export function SearchPanel({
 }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Message[] | null>(null); // null = not searched yet
+  // The term the current `results` correspond to — so the "no match" label doesn't
+  // show a mismatched query after the input is edited but before a new run (#36).
+  const [searchedTerm, setSearchedTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Bump on every run so a slow earlier request can't overwrite a newer one.
@@ -45,7 +48,7 @@ export function SearchPanel({
   useEffect(() => { inputRef.current?.focus(); }, []);
 
   // Reset when switching chats (the panel is re-mounted per chat via a key).
-  useEffect(() => { setQ(""); setResults(null); setLoading(false); }, [chatId]);
+  useEffect(() => { setQ(""); setResults(null); setSearchedTerm(""); setLoading(false); }, [chatId]);
 
   async function run(term: string) {
     const query = term.trim();
@@ -54,6 +57,7 @@ export function SearchPanel({
     setLoading(true);
     const found = await searchChat(base, chatId, query);
     if (run !== runRef.current) return; // a newer search superseded this one
+    setSearchedTerm(query); // pin the term these results answer, before showing them
     setResults(found);
     setLoading(false);
   }
@@ -98,7 +102,7 @@ export function SearchPanel({
           {loading ? (
             <p className="mw-search__note mw-muted">searching…</p>
           ) : results && results.length === 0 ? (
-            <p className="mw-search__note mw-muted">no messages match “{q.trim()}”.</p>
+            <p className="mw-search__note mw-muted">no messages match “{searchedTerm}”.</p>
           ) : (
             results?.map((m) => {
               const name = m.senderId === meId ? "you" : resolveName(m.senderId);

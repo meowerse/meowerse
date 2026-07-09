@@ -117,6 +117,11 @@ export function MemberDrawer({
   const [savingMeta, setSavingMeta] = useState(false);
   const slugSeq = useRef(0);
 
+  // Focus management for the aria-modal dialog (mirrors packages/ui Modal): the panel
+  // ref anchors the focus trap; `restoreRef` remembers the opener to restore on close.
+  const panelRef = useRef<HTMLElement>(null);
+  const restoreRef = useRef<Element | null>(null);
+
   const myRole = members.find((m) => m.userId === meId)?.role;
   const canManage = atLeast(myRole, "admin");
   const isOwner = myRole === "owner";
@@ -146,6 +151,30 @@ export function MemberDrawer({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Focus management (a11y, mirrors packages/ui Modal): on mount remember what was
+  // focused, move focus into the panel (its first focusable — the close button), and
+  // trap Tab/Shift+Tab inside it; on unmount restore focus to the opener. Escape is
+  // handled by the effect above, so this handler only manages the Tab trap.
+  useEffect(() => {
+    restoreRef.current = document.activeElement;
+    const panel = panelRef.current;
+    panel?.querySelector<HTMLElement>("[data-autofocus],button,[href],input,select,textarea")?.focus();
+
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Tab" || !panel) return;
+      const f = panel.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])');
+      const first = f[0], last = f[f.length - 1];
+      if (!first || !last) return;
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      (restoreRef.current as HTMLElement | null)?.focus?.();
+    };
+  }, []);
 
   // Create-on-demand the invite code once the caller is known to be owner/admin, so
   // the invite section can show the link immediately (get-or-create is idempotent).
@@ -311,7 +340,7 @@ export function MemberDrawer({
   return (
     <div className="mw-drawer" role="dialog" aria-label={`${noun} members`} aria-modal="true">
       <div className="mw-drawer__backdrop" onClick={onClose} />
-      <aside className="mw-drawer__panel">
+      <aside className="mw-drawer__panel" ref={panelRef}>
         <header className="mw-drawer__head">
           <h2 className="mw-drawer__title" data-case="preserve">{chat.name ?? noun}</h2>
           <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="close" onClick={onClose}>✕</button>

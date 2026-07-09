@@ -112,17 +112,30 @@ export function NewChatModal({
     else onClose();
   }
 
+  // A username typed into the add-member box but not yet "added" (chipped) still
+  // counts as a chosen member. Fold it into the effective roster — deduped the same
+  // way addChip does — so it isn't silently dropped and can't wrongly block submit
+  // (#11). Both the gate and the create call use this, and the button enables off it.
+  const pendingMember = memberInput.trim().replace(/^@/, "");
+  const effectiveMembers: Chip[] =
+    pendingMember && !members.some((m) => m.username.toLowerCase() === pendingMember.toLowerCase())
+      ? [...members, { username: pendingMember }]
+      : members;
+
   async function submitGroup() {
     if (busy) return;
     const trimmed = name.trim();
     if (!trimmed) { setGroupErr(ERROR_COPY.name_required); return; }
     // Groups need at least one other member; a channel is broadcast — the owner can
     // create it empty and share the link, so initial members are optional there.
-    if (!isChannel && members.length < 1) { setGroupErr("add at least one member"); return; }
+    if (!isChannel && effectiveMembers.length < 1) { setGroupErr("add at least one member"); return; }
     if (slug && slugState === "taken") { setGroupErr(ERROR_COPY.slug_taken); return; }
     if (slug && slugState === "bad") { setGroupErr(ERROR_COPY.bad_slug); return; }
     setBusy(true); setGroupErr(null);
-    const usernames = members.map((m) => m.username);
+    // Reflect the folded-in member as a chip and clear the input we just consumed.
+    setMembers(effectiveMembers);
+    setMemberInput("");
+    const usernames = effectiveMembers.map((m) => m.username);
     const r = isChannel
       ? await createChannel(base, { name: trimmed, members: usernames, visibility, slug: slug || null })
       : await createGroup(base, { name: trimmed, members: usernames, visibility, slug: slug || null });
@@ -299,7 +312,7 @@ export function NewChatModal({
             <button
               className="mw-btn mw-btn--primary mw-btn--sm"
               onClick={submitGroup}
-              disabled={busy || !name.trim() || (!isChannel && members.length < 1)}
+              disabled={busy || !name.trim() || (!isChannel && effectiveMembers.length < 1)}
             >
               {busy ? "…" : isChannel ? "create channel" : "create group"}
             </button>
