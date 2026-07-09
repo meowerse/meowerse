@@ -16,6 +16,9 @@ type Frame =
   | { type: "edited"; id: string; body: string; editedAt: number }
   | { type: "deleted"; id: string }
   | { type: "reaction"; id: string; emoji: string; userId: string; on: boolean }
+  // The server closed this socket because the user was removed from / left the chat
+  // (membership revoked) → the client drops the chat and stops reconnecting.
+  | { type: "revoked" }
   | { type: "error"; code: string };
 
 // How long the ".is-flash" highlight lingers after a jump-to-original.
@@ -68,6 +71,8 @@ export interface UseConversationInput {
   onMessageDeleted: (id: string) => void;
   /** Called at the EXACT send-dispatch point → the view clears its armed reply. */
   consumeReply: () => void;
+  /** The server revoked membership (removed/left) → the view drops the chat + toasts. */
+  onRevoked: () => void;
 }
 
 export interface UseConversation {
@@ -137,6 +142,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
   useEffect(() => { hasNewerRef.current = hasNewer; }, [hasNewer]);
   const loadingNewerRef = useRef(false);
   const pendingJumpRef = useRef<string | null>(null);
+  // Set when a `revoked` frame arrives → the onclose handler must NOT reconnect
+  // (the /ws gate would reject the now-removed member anyway). Reset per chat switch.
+  const revokedRef = useRef(false);
 
   // Mirror the current user id + all view callbacks into refs so the stable
   // sendRead/applyFrame read the CURRENT values without depending on them (keeping
@@ -147,11 +155,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const onToastRef = useRef(input.onToast);
   const onActiveReadRef = useRef(input.onActiveRead);
   const onMessageDeletedRef = useRef(input.onMessageDeleted);
+  const onRevokedRef = useRef(input.onRevoked);
   useEffect(() => {
     resolveSenderNameRef.current = input.resolveSenderName;
     onToastRef.current = input.onToast;
     onActiveReadRef.current = input.onActiveRead;
     onMessageDeletedRef.current = input.onMessageDeleted;
+    onRevokedRef.current = input.onRevoked;
   });
 
   // Send a `read` receipt for the newest message, if we haven't already and the
@@ -295,6 +305,11 @@ export function useConversation(input: UseConversationInput): UseConversation {
       setMessages((prev) => prev.map((b) =>
         b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b,
       ));
+    } else if (frame.type === "revoked") {
+      // Membership revoked (removed/left). Mark it so the imminent onclose does NOT
+      // reconnect, then let the view drop the chat + toast.
+      revokedRef.current = true;
+      onRevokedRef.current();
     } else if (frame.type === "error") {
       onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
     }
@@ -349,6 +364,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     sentTypingRef.current = false;
     sentReadUpToRef.current = 0;
     atBottomRef.current = true;
+    revokedRef.current = false;
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
     if (!activeId) return;
@@ -403,6 +419,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (cancelled || closingRef.current || activeRef.current !== chatId) return;
         setConnected(false);
         sentTypingRef.current = false;
+        // Membership was revoked → don't reconnect (the /ws gate would reject us now).
+        if (revokedRef.current) return;
         const n = Math.min(reconnectRef.current.attempts++, 10);
         const delay = Math.min(500 * 2 ** n, 5000);
         clearReconnect();
