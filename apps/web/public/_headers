@@ -1,0 +1,11 @@
+# Cloudflare Pages headers for the web app.
+#
+# Cache-Control caveat: Cloudflare COMBINES same-name headers across EVERY
+# matching rule — a more-specific path does NOT override a blanket one. So there
+# is deliberately NO Cache-Control under /*: a blanket rule there would merge
+# into this immutable one (e.g. "no-store, …, immutable") and defeat caching.
+# Set exactly ONE Cache-Control per path.
+
+# Content-hashed build assets (/_astro/*) never change under a given URL — cache hard.
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
