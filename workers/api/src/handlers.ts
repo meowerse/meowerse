@@ -16,23 +16,34 @@ export function validateText(input: unknown): TextResult {
   return { ok: true, text, slug: slugify(text) };
 }
 
-/** Insert a validated meow and read it back. Returns the persisted row. */
+const CREATE_SQL = "INSERT INTO meows (text, slug) VALUES (?, ?) RETURNING id, text, slug, created_at";
+
+/** Insert a validated meow, returning the persisted row in ONE round-trip
+ *  (INSERT … RETURNING — no separate SELECT read-back; Turso is remote, ~200-400ms
+ *  per hop, so halving the round-trips halves the latency + rows-read). */
 export async function createMeow(db: DbClient, text: string, slug: string): Promise<Meow> {
-  const ins = await db.execute({
-    sql: "INSERT INTO meows (text, slug) VALUES (?, ?)",
-    args: [text, slug],
-  });
-  const id = Number(ins.lastInsertRowid ?? 0);
-  const sel = await db.execute({
-    sql: "SELECT id, text, slug, created_at FROM meows WHERE id = ?",
-    args: [id],
-  });
-  return sel.rows[0] as unknown as Meow;
+  const res = await db.execute({ sql: CREATE_SQL, args: [text, slug] });
+  return res.rows[0] as unknown as Meow;
 }
 
-/** List all meows, newest first. */
-export async function listMeows(db: DbClient): Promise<Meow[]> {
-  const res = await db.execute("SELECT id, text, slug, created_at FROM meows ORDER BY id DESC");
+/** Insert MANY validated meows in a SINGLE round-trip via db.batch (one network
+ *  hop for the whole batch instead of N sequential INSERTs). Rows in input order. */
+export async function createMeows(db: DbClient, items: { text: string; slug: string }[]): Promise<Meow[]> {
+  if (items.length === 0) return [];
+  const results = await db.batch(items.map((i) => ({ sql: CREATE_SQL, args: [i.text, i.slug] })));
+  return results.map((r) => r.rows[0] as unknown as Meow);
+}
+
+/** Default page size for the public list — bounds per-request rows-read + CPU +
+ *  payload regardless of table growth. */
+export const LIST_LIMIT = 100;
+
+/** List the newest meows (capped at LIST_LIMIT). `beforeId` keyset-paginates older
+ *  rows (WHERE id < ?) via the id primary-key index — no unbounded scan, no OFFSET. */
+export async function listMeows(db: DbClient, beforeId?: number, limit = LIST_LIMIT): Promise<Meow[]> {
+  const res = beforeId
+    ? await db.execute({ sql: "SELECT id, text, slug, created_at FROM meows WHERE id < ? ORDER BY id DESC LIMIT ?", args: [beforeId, limit] })
+    : await db.execute({ sql: "SELECT id, text, slug, created_at FROM meows ORDER BY id DESC LIMIT ?", args: [limit] });
   return res.rows as unknown as Meow[];
 }
 
@@ -43,13 +54,14 @@ export interface BatchOpResult {
   error?: string;
 }
 
-/** Execute a single batch op. Only {op:"create", text} is supported. */
-export async function runBatchOp(db: DbClient, op: unknown): Promise<BatchOpResult> {
+/** Validate a single batch op's SHAPE + text (pure, NO db) → the insertable
+ *  {text,slug} or a per-op error. Lets handleBatch validate everything first and
+ *  then batch-insert only the valid ops in one round-trip. */
+export function validateBatchOp(op: unknown): { ok: true; text: string; slug: string } | { ok: false; status: number; error: string } {
   if (!op || typeof op !== "object" || (op as { op?: unknown }).op !== "create") {
-    return { status: 400, error: "unsupported op" };
+    return { ok: false, status: 400, error: "unsupported op" };
   }
   const v = validateText((op as { text?: unknown }).text);
-  if (!v.ok) return { status: 400, error: v.error };
-  const meow = await createMeow(db, v.text, v.slug);
-  return { status: 201, meow };
+  if (!v.ok) return { ok: false, status: 400, error: v.error };
+  return { ok: true, text: v.text, slug: v.slug };
 }

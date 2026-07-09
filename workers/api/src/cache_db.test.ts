@@ -18,6 +18,10 @@ function fakeDb(rows: Meow[] = []): DbClient & { count: number } {
       state.count++;
       return { rows: rows as unknown as Record<string, unknown>[] };
     },
+    async batch(stmts: { sql: string; args: unknown[] }[]) {
+      state.count++;
+      return stmts.map(() => ({ rows: rows as unknown as Record<string, unknown>[] }));
+    },
   };
   return state;
 }
