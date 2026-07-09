@@ -41,12 +41,41 @@ import {
 } from "./chatapi";
 import { getRole, chatType } from "./chats";
 
+// The expensive D1-write POSTs (create-group / add-member / join|subscribe /
+// invite / join-request / push-subscribe). Free-tier D1 caps writes at 100k/day
+// ACCOUNT-WIDE, so an authenticated abuser looping these could drain the whole
+// fleet's daily budget. These get the per-IP write throttle before dispatch;
+// everything else is intentionally left alone: GETs/reads, logout, the message hot
+// path (that's WS→DO, not an HTTP route here), and single-row edits (role/remove/
+// leave). The trailing `$` keeps `/request` from matching the `/requests` inbox and
+// keeps `/members` from matching `/members/:id/role`.
+const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|invite|request))?|push\/subscribe)$/;
+
+/**
+ * Per-IP edge rate limit for the expensive D1-write POSTs. Returns true (allow)
+ * when the WRITE_LIMIT binding is absent (tests / unconfigured env) so behavior is
+ * unchanged; otherwise consults the Cloudflare Workers Rate Limiting binding keyed
+ * by client IP. That binding is edge-local and performs NO D1 writes, so throttling
+ * never itself consumes the write budget it exists to protect.
+ */
+async function writeThrottle(env: Env, req: Request): Promise<boolean> {
+  if (!env.WRITE_LIMIT) return true;
+  const ip = req.headers.get("CF-Connecting-IP") ?? "";
+  const { success } = await env.WRITE_LIMIT.limit({ key: "w:" + ip });
+  return success;
+}
+
 /** Thin hand-rolled router (no framework) to stay under the 10ms CPU budget. */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
   const cors = corsHeaders(req.headers.get("Origin"), env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   const path = new URL(req.url).pathname;
   const m = req.method;
+
+  // Guard the expensive write POSTs with the per-IP throttle before any dispatch.
+  if (m === "POST" && EXPENSIVE_WRITE.test(path) && !(await writeThrottle(env, req))) {
+    return json({ error: "rate_limited" }, 429, cors);
+  }
 
   if (path === "/health" && m === "GET") return json({ ok: true }, 200, cors);
   if (path === "/auth/login" && m === "GET") return handleLogin(deps.auth());

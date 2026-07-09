@@ -31,6 +31,15 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "meowsenger", "database_id": "d287edf4-c3c8-4328-9c47-14094f08ca42" }
   ],
+  // Per-IP write throttle for the expensive D1-write POSTs (create-group/add-member/
+  // join/invite/request/push-subscribe). Free-tier D1 caps writes at 100k/day
+  // account-wide, so an authenticated abuser looping these could drain the fleet's
+  // whole daily budget. The Workers Rate Limiting binding is edge-local and free —
+  // it performs NO D1 writes itself (a D1-backed limiter would be its own write-sink).
+  // `period` accepts only 10 or 60; enforced in src/index.ts before dispatch.
+  "ratelimits": [
+    { "name": "WRITE_LIMIT", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } }
+  ],
   // Slice 2: one Conversation Durable Object per chat — holds the room's live
   // WebSockets (Hibernation API) + an embedded SQLite message log. The class is
   // exported from src/index.ts (Task 3); new_sqlite_classes registers its
