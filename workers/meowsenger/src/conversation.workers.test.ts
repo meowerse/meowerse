@@ -77,6 +77,14 @@ function waitFor(ws: WebSocket, pred: (text: string) => boolean): Promise<string
   });
 }
 
+/** Resolve when the client socket closes, or reject after 2s. */
+function waitForClose(ws: WebSocket): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out waiting for close")), 2000);
+    ws.addEventListener("close", () => { clearTimeout(timer); resolve(); });
+  });
+}
+
 describe("Conversation DO", () => {
   it("upgrades a websocket request → 101 + a client socket", async () => {
     const res = await stub("c1").fetch(
@@ -769,6 +777,43 @@ describe("Conversation DO", () => {
     });
     expect(JSON.parse(await gone)).toMatchObject({ type: "presence", userId: "u1", online: false });
     peer.close();
+  });
+
+  it("dropUser(revoked=true): sends {revoked} to the target's sockets then closes them", async () => {
+    await seedChat("cdrop1");
+    const target = await connect("cdrop1", "u1");
+    const peer = await connect("cdrop1", "u2");
+    const gotRevoked = waitFor(target, (t) => t.includes('"revoked"'));
+    const closed = waitForClose(target);
+    await stub("cdrop1").dropUser("u1", true);
+    expect(JSON.parse(await gotRevoked)).toMatchObject({ type: "revoked" });
+    await closed; // the server closed the socket → the client's close fires
+    peer.close();
+  });
+
+  it("dropUser(revoked=false): closes the target's sockets WITHOUT a {revoked} frame (demote → reconnect fresh)", async () => {
+    await seedChat("cdrop2");
+    const target = await connect("cdrop2", "u3");
+    let sawRevoked = false;
+    target.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes('"revoked"')) sawRevoked = true; });
+    const closed = waitForClose(target);
+    await stub("cdrop2").dropUser("u3", false);
+    await closed;
+    expect(sawRevoked).toBe(false); // plain close so the client reconnects with its new role
+  });
+
+  it("dropUser: leaves OTHER users' sockets untouched", async () => {
+    await seedChat("cdrop3");
+    const target = await connect("cdrop3", "u1");
+    const bystander = await connect("cdrop3", "u2");
+    let bystanderClosed = false;
+    bystander.addEventListener("close", () => { bystanderClosed = true; });
+    const closedT = waitForClose(target);
+    await stub("cdrop3").dropUser("u1", true);
+    await closedT;
+    // The bystander (u2) was never dropped.
+    expect(bystanderClosed).toBe(false);
+    bystander.close();
   });
 
   it("rate bucket: >30 sends in the window → a {rate_limited} error frame and the over-limit message is NOT persisted", async () => {

@@ -46,7 +46,7 @@ function msg(over: Partial<Message> = {}): Message {
 }
 
 function setup(activeId: string | null = "c1", me: SessionUser | null = ME) {
-  const cb = { onToast: vi.fn(), onActiveRead: vi.fn(), onMessageDeleted: vi.fn(), consumeReply: vi.fn() };
+  const cb = { onToast: vi.fn(), onActiveRead: vi.fn(), onMessageDeleted: vi.fn(), consumeReply: vi.fn(), onRevoked: vi.fn() };
   const hook = renderHook(
     (props: { activeId: string | null }) =>
       useConversation({ base: "", activeId: props.activeId, me, resolveSenderName: (id) => `name-${id}`, ...cb }),
@@ -550,5 +550,15 @@ describe("useConversation — lifecycle", () => {
     await waitFor(() => expect(s.result.current.messages.length).toBe(1));
     act(() => s.rerender({ activeId: null }));
     expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it("a {revoked} frame fires onRevoked and stops the socket reconnecting", async () => {
+    const { ws, onRevoked } = await open([msg({ id: "m1", createdAt: 1000 })]);
+    act(() => ws.mockEmit({ type: "revoked" }));
+    expect(onRevoked).toHaveBeenCalledTimes(1);
+    // The server then closes the socket — the removed member must NOT reconnect.
+    act(() => ws.mockDrop());
+    await new Promise((r) => setTimeout(r, 700)); // past the 500ms first backoff
+    expect(MockWebSocket.instances.length).toBe(1);
   });
 });

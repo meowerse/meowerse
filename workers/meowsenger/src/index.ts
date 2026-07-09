@@ -97,14 +97,14 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // Slice 5: member management + chat metadata. Order matters — the more
   // specific member/role sub-routes must precede the bare `/api/chats/:id`.
   const memberRole = path.match(/^\/api\/chats\/([^/]+)\/members\/([^/]+)\/role$/);
-  if (memberRole && m === "POST") return handleSetRole(req, deps.getDb(), deps.now(), memberRole[1], memberRole[2], cors);
+  if (memberRole && m === "POST") return handleSetRole(req, env, deps.getDb(), deps.now(), memberRole[1], memberRole[2], cors);
   const member = path.match(/^\/api\/chats\/([^/]+)\/members\/([^/]+)$/);
-  if (member && m === "DELETE") return handleRemoveMember(req, deps.getDb(), deps.now(), member[1], member[2], cors);
+  if (member && m === "DELETE") return handleRemoveMember(req, env, deps.getDb(), deps.now(), member[1], member[2], cors);
   const members = path.match(/^\/api\/chats\/([^/]+)\/members$/);
   if (members && m === "GET") return handleListMembers(req, deps.getDb(), deps.now(), members[1], cors);
   if (members && m === "POST") return handleAddMember(req, deps.getDb(), deps.now(), members[1], cors);
   const leaveM = path.match(/^\/api\/chats\/([^/]+)\/leave$/);
-  if (leaveM && m === "POST") return handleLeave(req, deps.getDb(), deps.now(), leaveM[1], cors);
+  if (leaveM && m === "POST") return handleLeave(req, env, deps.getDb(), deps.now(), leaveM[1], cors);
   // Slice 6 open-join: `/join` (groups) + its `/subscribe` alias (channels) share
   // one handler — both add the caller to a public chat as a plain member.
   const joinM = path.match(/^\/api\/chats\/([^/]+)\/(?:join|subscribe)$/);

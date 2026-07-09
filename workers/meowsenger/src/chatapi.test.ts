@@ -104,6 +104,19 @@ function fakeEnv(history: unknown[] = []): Env {
   return { CONVERSATION } as unknown as Env;
 }
 
+// Fake CONVERSATION namespace whose `dropUser` records its (chatId,userId,revoked)
+// so the member handlers' socket-revocation can be asserted.
+function memberEnv(): { env: Env; drops: Array<{ chatId: string; userId: string; revoked: boolean }> } {
+  const drops: Array<{ chatId: string; userId: string; revoked: boolean }> = [];
+  const CONVERSATION = {
+    idFromName: (name: string) => name,
+    get: (chatId: string) => ({
+      dropUser: async (userId: string, revoked: boolean) => { drops.push({ chatId, userId, revoked }); },
+    }),
+  };
+  return { env: { CONVERSATION } as unknown as Env, drops };
+}
+
 describe("callerId", () => {
   it("returns null with no cookie", async () => {
     const { db } = memDb();
@@ -659,26 +672,30 @@ describe("DELETE /api/chats/:id/members/:userId (remove)", () => {
       { chatId: "g1", userId: "mem", role: "member", joinedAt: 4 },
     ],
   });
-  it("admin removes a member → 200", async () => {
+  it("admin removes a member → 200 and revokes the removed member's sockets", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), db, now, "g1", "mem", cors);
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), env, db, now, "g1", "mem", cors);
     expect(res.status).toBe(200);
+    expect(drops).toEqual([{ chatId: "g1", userId: "mem", revoked: true }]);
   });
-  it("admin removing the OWNER → 403 cannot_remove_owner", async () => {
+  it("admin removing the OWNER → 403 cannot_remove_owner (no revoke)", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/own", "s1", { method: "DELETE" }), db, now, "g1", "own", cors);
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/own", "s1", { method: "DELETE" }), env, db, now, "g1", "own", cors);
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "cannot_remove_owner" });
+    expect(drops).toEqual([]); // a failed removal must not close anyone's socket
   });
   it("admin removing ANOTHER admin → 403 cannot_remove_admin", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/adm2", "s1", { method: "DELETE" }), db, now, "g1", "adm2", cors);
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/adm2", "s1", { method: "DELETE" }), memberEnv().env, db, now, "g1", "adm2", cors);
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "cannot_remove_admin" });
   });
   it("removing a non-member target → 404", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), db, now, "g1", "ghost", cors);
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), memberEnv().env, db, now, "g1", "ghost", cors);
     expect(res.status).toBe(404);
   });
 });
@@ -692,46 +709,52 @@ describe("POST /api/chats/:id/members/:userId/role (promote/demote)", () => {
       { chatId: "g1", userId: "mem", role: "member", joinedAt: 3 },
     ],
   });
-  it("owner promotes a member → 200", async () => {
+  it("owner promotes a member → 200 (no socket drop — promotion only ADDS power)", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "admin" }) }), db, now, "g1", "mem", cors);
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "admin" }) }), env, db, now, "g1", "mem", cors);
     expect(res.status).toBe(200);
+    expect(drops).toEqual([]);
   });
-  it("owner demotes an admin → 200", async () => {
+  it("owner demotes an admin → 200 and drops their sockets (reconnect as member)", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/adm/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), db, now, "g1", "adm", cors);
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/adm/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "adm", cors);
     expect(res.status).toBe(200);
+    expect(drops).toEqual([{ chatId: "g1", userId: "adm", revoked: false }]);
   });
   it("an admin (non-owner) promoting → 403 forbidden", async () => {
     const s = seed();
     const { db } = groupApiDb({ ...s, session: validSession("adm") });
-    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "admin" }) }), db, now, "g1", "mem", cors);
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "admin" }) }), memberEnv().env, db, now, "g1", "mem", cors);
     expect(res.status).toBe(403);
   });
   it("400 for a bad role value", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "king" }) }), db, now, "g1", "mem", cors);
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "king" }) }), memberEnv().env, db, now, "g1", "mem", cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_role" });
   });
 });
 
 describe("POST /api/chats/:id/leave", () => {
-  it("a member leaves → 200 ok", async () => {
+  it("a member leaves → 200 ok and their own sockets are revoked", async () => {
     const { db } = groupApiDb({ session: validSession("mem"), members: [{ chatId: "g1", userId: "own", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 2 }] });
-    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), db, now, "g1", cors);
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, deleted: false });
+    expect(drops).toEqual([{ chatId: "g1", userId: "mem", revoked: true }]);
   });
   it("owner leaves → 200 with transferredTo", async () => {
     const { db } = groupApiDb({ session: validSession("own"), members: [{ chatId: "g1", userId: "own", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "adm", role: "admin", joinedAt: 2 }] });
-    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), db, now, "g1", cors);
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), memberEnv().env, db, now, "g1", cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, transferredTo: "adm" });
   });
   it("a non-member leaving → 403 not_member", async () => {
     const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner") });
-    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), db, now, "g1", cors);
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), memberEnv().env, db, now, "g1", cors);
     expect(res.status).toBe(403);
   });
 });

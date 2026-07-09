@@ -402,9 +402,22 @@ export async function handleAddMember(
   return json({ ok: true, userId: targetId }, 200, cors, NS);
 }
 
+/**
+ * Drop a user's live sockets in a chat after a membership/role change (best-effort,
+ * off the response path). `revoked` (removed/left) → the client is told to drop the
+ * chat + stop reconnecting; otherwise (demoted) → the client reconnects and the
+ * router re-derives the now-lower role. Swallows errors — a failed socket drop must
+ * not fail the (already-committed) D1 mutation; the change self-heals on reconnect.
+ */
+function dropUserSockets(env: Env, chatId: string, userId: string, revoked: boolean): Promise<void> {
+  const ns = conversation(env);
+  return ns.get(ns.idFromName(chatId)).dropUser(userId, revoked).catch(() => {});
+}
+
 /** DELETE /api/chats/:id/members/:userId — owner/admin removes a member. */
 export async function handleRemoveMember(
   req: Request,
+  env: Env,
   db: DbClient,
   now: number,
   chatId: string,
@@ -415,12 +428,16 @@ export async function handleRemoveMember(
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await removeMember(db, chatId, me, targetUserId);
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Revoke the removed member's live sockets NOW (they'd keep receiving broadcasts +
+  // posting until they happened to reconnect otherwise).
+  await dropUserSockets(env, chatId, targetUserId, true);
   return json({ ok: true }, 200, cors, NS);
 }
 
 /** POST /api/chats/:id/members/:userId/role { role } — owner promotes/demotes. */
 export async function handleSetRole(
   req: Request,
+  env: Env,
   db: DbClient,
   now: number,
   chatId: string,
@@ -439,12 +456,17 @@ export async function handleSetRole(
   if (role !== "admin" && role !== "member") return json({ error: "bad_role" }, 400, cors, NS);
   const r = role === "admin" ? await promote(db, chatId, me, targetUserId) : await demote(db, chatId, me, targetUserId);
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // A DEMOTE must revoke the stale admin power immediately: drop their sockets so
+  // they reconnect as a plain member (a PROMOTE only ADDS power on reconnect — no
+  // security risk in the meantime, so it's left to heal naturally).
+  if (role === "member") await dropUserSockets(env, chatId, targetUserId, false);
   return json({ ok: true }, 200, cors, NS);
 }
 
 /** POST /api/chats/:id/leave — the caller leaves (owner-transfer / last-member-delete). */
 export async function handleLeave(
   req: Request,
+  env: Env,
   db: DbClient,
   now: number,
   chatId: string,
@@ -454,6 +476,9 @@ export async function handleLeave(
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await leave(db, chatId, me);
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Close the leaver's OTHER live sockets to this chat (a second tab would keep
+  // receiving otherwise). `deleted` chats have no sockets left; harmless either way.
+  await dropUserSockets(env, chatId, me, true);
   return json({ ok: true, transferredTo: r.transferredTo ?? null, deleted: r.deleted ?? false }, 200, cors, NS);
 }
 

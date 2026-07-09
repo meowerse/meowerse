@@ -116,6 +116,14 @@ export default function Chat({ base }: { base: string }) {
     setSelected((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
   }, []);
   const consumeReply = useCallback(() => setReplyingTo(null), []);
+  // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
+  // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
+  // a member). The socket already stopped reconnecting on the `revoked` frame.
+  const onRevoked = useCallback(() => {
+    showToast("you're no longer a member of this chat");
+    setActiveId(null);
+    void listChats(base).then(setChats);
+  }, [showToast, base]);
 
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
@@ -123,7 +131,7 @@ export default function Chat({ base }: { base: string }) {
     logRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, sendDelete, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
-  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onMessageDeleted, consumeReply });
+  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onMessageDeleted, consumeReply, onRevoked });
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.

@@ -214,10 +214,17 @@ export class Conversation extends DurableObject<Env> {
     return [...all].filter((u) => !active.has(u));
   }
 
+  /** Send a text frame to one socket, swallowing the synchronous "send after close"
+   *  TypeError workerd throws when a socket has closed underneath us (a broadcast can
+   *  race a peer's close — dropping the frame for a gone socket is correct). */
+  private safeSend(ws: WebSocket, text: string): void {
+    try { ws.send(text); } catch { /* socket closed/closing — drop the frame */ }
+  }
+
   /** Send a JSON frame to every live socket, optionally excluding one. */
   private broadcast(obj: unknown, except?: WebSocket): void {
     const text = JSON.stringify(obj);
-    for (const ws of this.ctx.getWebSockets()) if (ws !== except) ws.send(text);
+    for (const ws of this.ctx.getWebSockets()) if (ws !== except) this.safeSend(ws, text);
   }
 
   /** Hibernation handler: a frame arrived on a live socket. */
@@ -391,9 +398,9 @@ export class Conversation extends DurableObject<Env> {
     // Ack the sender's own socket if given (reconciles their optimistic bubble via
     // tempId), then fan out to every OTHER socket. With no ackTo (forward RPC),
     // the loop below reaches every socket in the room.
-    if (opts.ackTo) opts.ackTo.send(JSON.stringify({ type: "sent", tempId: opts.tempId, message }));
+    if (opts.ackTo) this.safeSend(opts.ackTo, JSON.stringify({ type: "sent", tempId: opts.tempId, message }));
     for (const peer of this.ctx.getWebSockets()) {
-      if (peer !== opts.ackTo) peer.send(JSON.stringify({ type: "message", message }));
+      if (peer !== opts.ackTo) this.safeSend(peer, JSON.stringify({ type: "message", message }));
     }
     // Off the critical path: mirror the preview + unread bump to D1 for the sidebar.
     // The message is already persisted + broadcast; a failed sidebar mirror is
@@ -462,6 +469,27 @@ export class Conversation extends DurableObject<Env> {
     times.push(now);
     this.appendTimes.set(userId, times);
     return false;
+  }
+
+  /**
+   * DO RPC: drop `userId`'s live sockets in this room after a membership/role change
+   * (Slice 9 hardening). The socket's `role`/`type` are cached at connect (the gated
+   * router reads them from D1 once) so the hot send/delete path never re-reads D1;
+   * the flip side is a demoted/removed user keeps their old power until they
+   * reconnect. Calling this from the REST member handlers fixes that WITHOUT a
+   * per-message D1 read: it forces the affected sockets to close so the client
+   * reconnects (and the router re-derives the fresh role) — or, when `revoked`
+   * (removed/left, not merely demoted), it first sends a `{revoked}` frame so the
+   * client drops the chat and STOPS reconnecting (the /ws gate would reject it now
+   * anyway). Closing runs the normal presence cleanup via webSocketClose.
+   */
+  async dropUser(userId: string, revoked: boolean): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attach | null;
+      if (a?.userId !== userId) continue;
+      if (revoked) this.safeSend(ws, JSON.stringify({ type: "revoked" }));
+      try { ws.close(4001, revoked ? "revoked" : "role_changed"); } catch { /* already closing */ }
+    }
   }
 
   /** Hibernation handler: a socket closed cleanly — clean up, then mirror the close back. */
