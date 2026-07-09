@@ -63,7 +63,11 @@ function memDb(users: Record<string, { username: string; displayName: string | n
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: "direct", name: null, created_by: p[1], created_at: p[2], last_activity: p[3], last_message: null, last_sender_id: null, direct_key: p[4] });
-      else if (sql.startsWith("INSERT INTO chat_members")) members.push({ chat_id: p[0], user_id: p[1], unread_count: 0, last_read_at: null, joined_at: p[2] });
+      else if (sql.startsWith("INSERT INTO chat_members")) {
+        // createOrGetDirect now inserts BOTH members in one multi-row INSERT; params
+        // are grouped as (chat_id, user_id, joined_at) per row.
+        for (let i = 0; i < p.length; i += 3) members.push({ chat_id: p[i], user_id: p[i + 1], unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
+      }
       else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
       // markRead: advance last_read_at monotonically for one (chat, user) — the guard
       // (last_read_at IS NULL OR < upTo) means a stale/duplicate read is a no-op.
@@ -239,6 +243,13 @@ function groupDb(users: Record<string, { username: string; displayName: string |
       if (sql.includes("SELECT visibility, slug FROM chats WHERE id")) {
         return chats.get(String(p[0]));
       }
+      // Folded member-count + caller's-role read (getPreviewBySlug/resolveChat):
+      // p[0] = caller (may be null), p[1] = chatId.
+      if (sql.includes("AS my_role")) {
+        const rows = members.filter((m) => m.chat_id === p[1]);
+        const mine = rows.find((m) => m.user_id === p[0]);
+        return { n: rows.length, my_role: mine ? mine.role : null };
+      }
       if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) {
         return { n: members.filter((m) => m.chat_id === p[0]).length };
       }
@@ -273,10 +284,14 @@ function groupDb(users: Record<string, { username: string; displayName: string |
           last_activity: p[5], direct_key: null, visibility: p[6], slug: p[7] ?? null,
         });
       } else if (sql.startsWith("INSERT INTO chat_members")) {
-        // createGroup inlines the role literal ('owner' | 'member'); params are
-        // (chat_id, user_id, joined_at).
-        const role = sql.includes("'owner'") ? "owner" : "member";
-        members.push({ chat_id: p[0], user_id: p[1], role, joined_at: p[2] });
+        // createGroup now inserts the creator ('owner') + every other member
+        // ('member') in ONE multi-row INSERT: the FIRST VALUES row is the owner,
+        // all following rows are members. joinPublic/approveRequest still insert a
+        // single 'member' row. Params are grouped (chat_id, user_id, joined_at).
+        for (let i = 0, first = true; i < p.length; i += 3, first = false) {
+          const role = first && sql.includes("'owner'") ? "owner" : "member";
+          members.push({ chat_id: p[i], user_id: p[i + 1], role, joined_at: p[i + 2] });
+        }
       } else if (sql.startsWith("UPDATE chats SET name")) {
         const c = chats.get(String(p[1])); if (c) c.name = p[0];
       } else if (sql.startsWith("UPDATE chats SET visibility")) {

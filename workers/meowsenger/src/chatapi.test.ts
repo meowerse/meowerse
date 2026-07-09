@@ -72,8 +72,12 @@ function memDb(opts: { session?: Row; usersByName?: Record<string, string>; memb
       if (sql.startsWith("INSERT INTO chats")) {
         chats.set(String(p[0]), { id: p[0], type: p[1], direct_key: p[4], last_activity: p[3] });
       } else if (sql.startsWith("INSERT INTO chat_members")) {
-        membersDelta.push({ chat_id: String(p[0]), user_id: String(p[1]) });
-        members.add(`${String(p[0])}::${String(p[1])}`);
+        // createOrGetDirect inserts both DM members in one multi-row INSERT; params
+        // are grouped (chat_id, user_id, joined_at) per row.
+        for (let i = 0; i < p.length; i += 3) {
+          membersDelta.push({ chat_id: String(p[i]), user_id: String(p[i + 1]) });
+          members.add(`${String(p[i])}::${String(p[i + 1])}`);
+        }
       }
     },
   };
@@ -450,6 +454,17 @@ function groupApiDb(opts: {
   const joinRequests = (opts.joinRequests ?? []).map((j) => ({ id: j.id, chat_id: j.chatId, user_id: j.userId, status: j.status, created_at: j.createdAt }));
   const db: DbClient = {
     async all(sql, p = []) {
+      // handleCreateGroup: resolve many usernames → ids in one IN (…) query.
+      if (sql.includes("FROM users WHERE username IN")) {
+        return p
+          .filter((name) => opts.usersByName?.[String(name)] != null)
+          .map((name) => ({ id: opts.usersByName![String(name)], username: String(name) }));
+      }
+      // getRoles: actor + target roles in ONE IN (…) read. p[0]=chatId, p[1..]=ids.
+      if (sql.includes("SELECT user_id, role FROM chat_members WHERE chat_id") && sql.includes("user_id IN")) {
+        const ids = p.slice(1);
+        return members.filter((m) => m.chat_id === p[0] && ids.includes(m.user_id));
+      }
       // Slice 7: owner/admin request inbox (pending only), oldest-first, w/ user.
       if (sql.includes("FROM join_requests j")) {
         return joinRequests
@@ -490,6 +505,13 @@ function groupApiDb(opts: {
       if (sql.includes("SELECT id, type, name, visibility")) return [...chats.values()].find((c) => c.slug === p[0]);
       if (sql.includes("SELECT visibility, slug FROM chats WHERE id")) return chats.get(String(p[0]));
       if (sql.includes("SELECT visibility FROM chats WHERE id")) return chats.get(String(p[0]));
+      // Folded member-count + caller's-role read (resolveChat/getPreviewBySlug):
+      // p[0]=caller (may be null), p[1]=chatId.
+      if (sql.includes("AS my_role")) {
+        const rows = members.filter((m) => m.chat_id === p[1]);
+        const mine = rows.find((m) => m.user_id === p[0]);
+        return { n: rows.length, my_role: mine ? mine.role : null };
+      }
       if (sql.includes("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id")) return { n: members.filter((m) => m.chat_id === p[0]).length };
       // Slice 7: invite lookups (by id → code/enabled; by code → id/type/name/enabled).
       if (sql.includes("SELECT invite_code, invite_enabled FROM chats WHERE id")) return chats.get(String(p[0]));
@@ -523,10 +545,14 @@ function groupApiDb(opts: {
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null, invite_code: null, invite_enabled: 1 });
       else if (sql.startsWith("INSERT INTO chat_members")) {
-        // createGroup inlines the role literal; addMember/approve insert a 'member'.
-        const role = sql.includes("'owner'") ? "owner" : "member";
-        // createGroup binds joined_at at p[2]; addMember/approve bind it at p[2] too.
-        members.push({ chat_id: p[0], user_id: p[1], role, joined_at: p[2] });
+        // createGroup now inserts creator ('owner') + others ('member') in ONE
+        // multi-row INSERT (first VALUES row = owner, rest = member). addMember/
+        // approve/joinPublic insert a single 'member' row. Params grouped
+        // (chat_id, user_id, joined_at) per row.
+        for (let i = 0, first = true; i < p.length; i += 3, first = false) {
+          const role = first && sql.includes("'owner'") ? "owner" : "member";
+          members.push({ chat_id: p[i], user_id: p[i + 1], role, joined_at: p[i + 2] });
+        }
       } else if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);
         if (i >= 0) members.splice(i, 1);

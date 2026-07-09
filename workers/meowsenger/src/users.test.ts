@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { upsertUser, getUser, getAllowAutoGroupAdd, setAllowAutoGroupAdd, touchLastSeen } from "./users";
+import { upsertUser, getUser, getAllowAutoGroupAdd, setAllowAutoGroupAdd, touchLastSeen, userIdsByNames } from "./users";
 import type { DbClient, Row } from "./types";
 
 function memDb() {
   const u = new Map<string, Row>();
   const db: DbClient = {
-    async all() { return [...u.values()]; },
+    async all(sql, p = []) {
+      // userIdsByNames: SELECT id, username FROM users WHERE username IN (?,…).
+      if (sql.includes("WHERE username IN")) {
+        return [...u.values()].filter((row) => p.includes(row.username));
+      }
+      return [...u.values()];
+    },
     async first(sql, p = []) { return sql.includes("FROM users") ? u.get(String(p[0])) : undefined; },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO users")) {
@@ -75,6 +81,23 @@ describe("getAllowAutoGroupAdd / setAllowAutoGroupAdd", () => {
     expect(await getAllowAutoGroupAdd(db, "u1")).toBe(false);
     await setAllowAutoGroupAdd(db, "u1", true);
     expect(await getAllowAutoGroupAdd(db, "u1")).toBe(true);
+  });
+});
+
+describe("userIdsByNames", () => {
+  it("maps many usernames → ids in one query, omitting unknowns", async () => {
+    const { db } = memDb();
+    await upsertUser(db, { sub: "u1", preferred_username: "alex" }, now);
+    await upsertUser(db, { sub: "u2", preferred_username: "bob" }, now);
+    const map = await userIdsByNames(db, ["alex", "bob", "ghost"]);
+    expect(map.get("alex")).toBe("u1");
+    expect(map.get("bob")).toBe("u2");
+    expect(map.has("ghost")).toBe(false);
+    expect(map.size).toBe(2);
+  });
+  it("returns an empty map for no names (skips the query)", async () => {
+    const { db } = memDb();
+    expect((await userIdsByNames(db, [])).size).toBe(0);
   });
 });
 

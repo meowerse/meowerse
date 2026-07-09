@@ -1,5 +1,5 @@
 import type { DbClient, Row } from "./types";
-import { getRole } from "./chats";
+import { getRole, getRoles } from "./chats";
 import { getAllowAutoGroupAdd } from "./users";
 import { getOrCreateInvite } from "./invites";
 
@@ -40,10 +40,12 @@ export async function addMember(
   targetUserId: string,
   now: number,
 ): Promise<Result<{ invited?: boolean; inviteCode?: string }>> {
-  const actorRole = await getRole(db, chatId, actorId);
+  // One read for both the actor's and the target's role.
+  const roles = await getRoles(db, chatId, [actorId, targetUserId]);
+  const actorRole = roles.get(actorId) ?? null;
   if (actorRole == null) return { ok: false, error: "not_member" };
   if (actorRole !== "owner" && actorRole !== "admin") return { ok: false, error: "forbidden" };
-  const existing = await getRole(db, chatId, targetUserId);
+  const existing = roles.get(targetUserId) ?? null;
   if (existing != null) return { ok: false, error: "already_member" };
   // Respect the target's opt-out: don't force-add — hand the actor an invite link.
   if (!(await getAllowAutoGroupAdd(db, targetUserId))) {
@@ -71,10 +73,12 @@ export async function removeMember(
   actorId: string,
   targetUserId: string,
 ): Promise<Result> {
-  const actorRole = await getRole(db, chatId, actorId);
+  // One read for both the actor's and the target's role.
+  const roles = await getRoles(db, chatId, [actorId, targetUserId]);
+  const actorRole = roles.get(actorId) ?? null;
   if (actorRole == null) return { ok: false, error: "not_member" };
   if (actorRole !== "owner" && actorRole !== "admin") return { ok: false, error: "forbidden" };
-  const targetRole = await getRole(db, chatId, targetUserId);
+  const targetRole = roles.get(targetUserId) ?? null;
   if (targetRole == null) return { ok: false, error: "target_not_member" };
   if (targetRole === "owner") return { ok: false, error: "cannot_remove_owner" };
   // Only the owner may remove an admin.
@@ -90,10 +94,12 @@ export async function promote(
   actorId: string,
   targetUserId: string,
 ): Promise<Result> {
-  const actorRole = await getRole(db, chatId, actorId);
+  // One read for both the actor's and the target's role.
+  const roles = await getRoles(db, chatId, [actorId, targetUserId]);
+  const actorRole = roles.get(actorId) ?? null;
   if (actorRole == null) return { ok: false, error: "not_member" };
   if (actorRole !== "owner") return { ok: false, error: "forbidden" };
-  const targetRole = await getRole(db, chatId, targetUserId);
+  const targetRole = roles.get(targetUserId) ?? null;
   if (targetRole == null) return { ok: false, error: "target_not_member" };
   if (targetRole !== "member") return { ok: false, error: "not_promotable" };
   await db.run("UPDATE chat_members SET role = 'admin' WHERE chat_id = ? AND user_id = ?", [chatId, targetUserId]);
@@ -107,10 +113,12 @@ export async function demote(
   actorId: string,
   targetUserId: string,
 ): Promise<Result> {
-  const actorRole = await getRole(db, chatId, actorId);
+  // One read for both the actor's and the target's role.
+  const roles = await getRoles(db, chatId, [actorId, targetUserId]);
+  const actorRole = roles.get(actorId) ?? null;
   if (actorRole == null) return { ok: false, error: "not_member" };
   if (actorRole !== "owner") return { ok: false, error: "forbidden" };
-  const targetRole = await getRole(db, chatId, targetUserId);
+  const targetRole = roles.get(targetUserId) ?? null;
   if (targetRole == null) return { ok: false, error: "target_not_member" };
   if (targetRole !== "admin") return { ok: false, error: "not_demotable" };
   await db.run("UPDATE chat_members SET role = 'member' WHERE chat_id = ? AND user_id = ?", [chatId, targetUserId]);

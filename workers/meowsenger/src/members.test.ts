@@ -28,6 +28,12 @@ function memDb(seed: {
   const metaFor = (id: string) => (meta[id] ??= { invite_code: null, invite_enabled: 1 });
   const db: DbClient = {
     async all(sql, p = []) {
+      // getRoles: actor + target roles resolved in ONE `IN (…)` read. p[0]=chatId,
+      // p[1..]=user ids.
+      if (sql.includes("SELECT user_id, role FROM chat_members WHERE chat_id") && sql.includes("user_id IN")) {
+        const ids = p.slice(1);
+        return members.filter((m) => m.chat_id === p[0] && ids.includes(m.user_id));
+      }
       // Owner-transfer: remaining members ordered oldest-first.
       if (sql.includes("SELECT user_id, role, joined_at FROM chat_members WHERE chat_id")) {
         return members

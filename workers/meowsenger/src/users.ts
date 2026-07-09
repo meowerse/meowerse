@@ -35,6 +35,23 @@ export async function upsertUser(db: DbClient, info: UserInfo, now: number): Pro
   );
 }
 
+/**
+ * Resolve MANY usernames → ids in ONE query (`WHERE username IN (…)`) instead of a
+ * per-name round-trip. Returns a Map keyed by the stored username; a requested name
+ * with no matching row is simply absent from the map, so the caller can detect the
+ * first missing name and surface the same `user_not_found` error as before. An
+ * empty `names` array skips the query. Names are matched verbatim (callers already
+ * trim), mirroring the single-name lookup.
+ */
+export async function userIdsByNames(db: DbClient, names: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (names.length === 0) return map;
+  const placeholders = names.map(() => "?").join(", ");
+  const rows = await db.all(`SELECT id, username FROM users WHERE username IN (${placeholders})`, names);
+  for (const r of rows) map.set(String(r.username), String(r.id));
+  return map;
+}
+
 export async function getUser(db: DbClient, id: string): Promise<User | null> {
   const row = await db.first(
     "SELECT id, username, display_name, avatar_url, verified FROM users WHERE id = ?",
