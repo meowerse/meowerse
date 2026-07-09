@@ -70,6 +70,10 @@ export default function Chat({ base }: { base: string }) {
   const [emojiFor, setEmojiFor] = useState<{ m: Bubble; x: number; y: number } | null>(null);
   // Slice 9 — the in-chat search panel: whether it's open (the panel owns its results).
   const [searchOpen, setSearchOpen] = useState(false);
+  // Mobile header overflow ("⋯") menu anchor — collapses the header actions on phones.
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
+  // Browser connectivity, for the header connection dot (offline=red vs reconnecting=amber).
+  const [netOnline, setNetOnline] = useState(true);
   // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for DMs.
   const [memberMap, setMemberMap] = useState<Map<string, SenderInfo>>(new Map());
 
@@ -216,6 +220,16 @@ export default function Chat({ base }: { base: string }) {
 
   // Clear the toast timer on unmount so it can't fire into a dead component.
   useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
+
+  // Track browser connectivity so the header connection dot distinguishes "offline"
+  // (red) from "reconnecting" (amber) — a compact, dev-visible health signal.
+  useEffect(() => {
+    const sync = () => setNetOnline(navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => { window.removeEventListener("online", sync); window.removeEventListener("offline", sync); };
+  }, []);
 
   // Reflect the count of chats with unread messages in the tab title (#14); restore
   // the plain title when the island unmounts.
@@ -540,49 +554,31 @@ export default function Chat({ base }: { base: string }) {
                 ‹
               </button>
               {isMembered ? (
-                <>
-                  <button
-                    className="mw-chat__grouphead"
-                    onClick={() => setDrawerOpen(true)}
-                    aria-label={isChannel ? "channel members" : "group members"}
-                  >
-                    <span className="mw-chat__headavatar">
-                      <span
-                        className={`mw-avatar mw-avatar--md mw-groupavatar${isChannel ? " mw-groupavatar--channel" : ""}`}
-                        aria-label={groupName}
-                      >
-                        <span aria-hidden="true" className="mono" data-case="preserve">{(groupName[0] ?? "#").toUpperCase()}</span>
-                      </span>
+                <button
+                  className="mw-chat__grouphead"
+                  onClick={() => setDrawerOpen(true)}
+                  aria-label={isChannel ? "channel members" : "group members"}
+                >
+                  <span className="mw-chat__headavatar">
+                    <span
+                      className={`mw-avatar mw-avatar--md mw-groupavatar${isChannel ? " mw-groupavatar--channel" : ""}`}
+                      aria-label={groupName}
+                    >
+                      <span aria-hidden="true" className="mono" data-case="preserve">{(groupName[0] ?? "#").toUpperCase()}</span>
                     </span>
-                    <span className="mw-chat__headcol">
-                      <span className="mw-chat__peer" data-case="preserve">
-                        {isChannel && <span className="mw-chat__glyph" aria-hidden="true">📡 </span>}
-                        {groupName}
-                      </span>
-                      <span className="mw-chat__presence">
-                        {isChannel ? "channel · " : ""}
-                        {memberCount} member{memberCount === 1 ? "" : "s"}
-                        {onlineCount > 0 ? ` · ${onlineCount} online` : ""}
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
-                    onClick={copyChatLink}
-                    aria-label="copy link to this chat"
-                    title="copy link"
-                  >🔗</button>
-                  <button
-                    className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
-                    onClick={() => setSearchOpen((v) => !v)}
-                    aria-label="search this chat"
-                    aria-pressed={searchOpen}
-                    title="search"
-                  >🔍</button>
-                  <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
-                    {connected ? "connected" : "connecting…"}
                   </span>
-                </>
+                  <span className="mw-chat__headcol">
+                    <span className="mw-chat__peer" data-case="preserve">
+                      {isChannel && <span className="mw-chat__glyph" aria-hidden="true">📡 </span>}
+                      {groupName}
+                    </span>
+                    <span className="mw-chat__presence">
+                      {isChannel ? "channel · " : ""}
+                      {memberCount} member{memberCount === 1 ? "" : "s"}
+                      {onlineCount > 0 ? ` · ${onlineCount} online` : ""}
+                    </span>
+                  </span>
+                </button>
               ) : (
                 <>
                   <span className="mw-chat__headavatar">
@@ -595,25 +591,57 @@ export default function Chat({ base }: { base: string }) {
                       ? <span className="mw-chat__typing">typing…</span>
                       : <span className="mw-chat__presence">{peerAway ? "away" : peerOnline ? "online" : lastSeenLabel(activeChat.peerLastSeenAt)}</span>}
                   </span>
-                  <button
-                    className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
-                    onClick={copyChatLink}
-                    aria-label="copy link to this chat"
-                    title="copy link"
-                  >🔗</button>
-                  <button
-                    className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
-                    onClick={() => setSearchOpen((v) => !v)}
-                    aria-label="search this chat"
-                    aria-pressed={searchOpen}
-                    title="search"
-                  >🔍</button>
-                  <span className={`mw-chat__status${connected ? " is-on" : ""}`}>
-                    {connected ? "connected" : "connecting…"}
-                  </span>
                 </>
               )}
+
+              {/* Shared right cluster (both branches). The name column flexes to fill
+                  the space these leave, so it's no longer squeezed on mobile. */}
+              <span
+                className="mw-chat__conn"
+                data-state={connected ? "on" : netOnline ? "wait" : "off"}
+                role="status"
+                title={connected ? "connected" : netOnline ? "reconnecting…" : "offline"}
+                aria-label={connected ? "connected" : netOnline ? "reconnecting" : "offline"}
+              />
+              {/* Inline actions on desktop; collapsed into the ⋯ menu on phones (CSS). */}
+              <div className="mw-chat__actions">
+                <button
+                  className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__linkbtn"
+                  onClick={copyChatLink}
+                  aria-label="copy link to this chat"
+                  title="copy link"
+                >🔗</button>
+                <button
+                  className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
+                  onClick={() => setSearchOpen((v) => !v)}
+                  aria-label="search this chat"
+                  aria-pressed={searchOpen}
+                  title="search"
+                >🔍</button>
+              </div>
+              <button
+                className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__more"
+                aria-label="more chat actions"
+                aria-haspopup="menu"
+                aria-expanded={moreMenu != null}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMoreMenu({ x: r.right - 168, y: r.bottom + 6 });
+                }}
+              >⋯</button>
             </header>
+
+            {moreMenu && (
+              <MessageMenu
+                x={moreMenu.x}
+                y={moreMenu.y}
+                items={[
+                  { label: "🔍 search", onClick: () => setSearchOpen((v) => !v) },
+                  { label: "🔗 copy link", onClick: copyChatLink },
+                ]}
+                onClose={() => setMoreMenu(null)}
+              />
+            )}
 
             {searchOpen && activeId && (
               <SearchPanel
