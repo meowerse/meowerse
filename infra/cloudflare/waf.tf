@@ -45,6 +45,9 @@ locals {
   # and the /avatar proxy. api.meow has no static assets → every path is a worker hit.
   waf_ratelimit_expression = join(" or ", [
     "(http.host eq \"api.meow.alxnko.eu.org\")",
+    # authbot: the Telegram account-link webhook worker, now in-zone (was *.workers.dev,
+    # which bypassed this rule). Pure worker (no assets) → every path is a worker hit.
+    "(http.host eq \"authbot.alxnko.eu.org\")",
     "(http.host eq \"auth.alxnko.eu.org\" and (starts_with(http.request.uri.path, \"/authorize\") or starts_with(http.request.uri.path, \"/login\") or starts_with(http.request.uri.path, \"/signup\") or starts_with(http.request.uri.path, \"/consent\") or starts_with(http.request.uri.path, \"/tg/\") or starts_with(http.request.uri.path, \"/api/\") or http.request.uri.path in {\"/logout\" \"/session/end\"}))",
     "(http.host eq \"meowsenger.alxnko.eu.org\" and (starts_with(http.request.uri.path, \"/api/\") or starts_with(http.request.uri.path, \"/auth/\") or http.request.uri.path in {\"/ws\" \"/health\"}))",
   ])
