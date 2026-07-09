@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
-import { listChats, openDirect, loadHistory, loadHistoryAround, loadHistoryAfter, resolveChat, wsUrl, getMembers, applyReaction, type ChatSummary, type Message, type Member } from "../lib/chat";
+import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member } from "../lib/chat";
+import { useConversation } from "../hooks/useConversation";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
@@ -15,40 +16,13 @@ import { Avatar } from "./Avatar";
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
 
-/** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
- *  edit/delete, spec §6). */
-type Frame =
-  | { type: "ready"; chatId: string; you: string }
-  | { type: "sent"; tempId: string; message: Message }
-  | { type: "message"; message: Message }
-  | { type: "presence_snapshot"; online: string[]; away?: string[] }
-  | { type: "presence"; userId: string; online: boolean; away?: boolean }
-  | { type: "typing"; userId: string; on: boolean }
-  | { type: "read_receipt"; userId: string; upTo: number }
-  | { type: "edited"; id: string; body: string; editedAt: number }
-  | { type: "deleted"; id: string }
-  // Slice 9 — a reaction was toggled on message `id`: `userId` added (on:true) or
-  // removed (on:false) `emoji`. Broadcast to ALL sockets (incl. the actor's tabs).
-  | { type: "reaction"; id: string; emoji: string; userId: string; on: boolean }
-  | { type: "error"; code: string };
-
 // Own-message action windows (UX gating only — the server enforces both, §7).
 const EDIT_WINDOW_MS = 3600_000; // 1h
 const DELETE_WINDOW_MS = 24 * 3600_000; // 24h
-// How long the ".is-flash" highlight lingers after a jump-to-original.
-const FLASH_MS = 1200;
-
-/** Human-readable copy for the transient error toast the server can send. */
-const ERROR_COPY: Record<string, string> = {
-  cannot_edit: "can't edit this message anymore",
-  cannot_delete: "can't delete this message anymore",
-  bad_body: "message couldn't be sent",
-  // Slice 6 — a plain member tried to post in a broadcast channel (DO-enforced).
-  read_only: "this is a broadcast channel — only admins can post",
-  // Slice 8 — the DO drops a flood of `send`s (>30/10s) with this code; the socket
-  // stays open + the Composer stays usable, we just nudge the user to slow down.
-  rate_limited: "you're sending too fast — slow down a moment",
-};
+// Background poll cadence to surface unread for non-active chats (v1 simplification).
+// 45s keeps D1 reads modest (each poll is one listChats read per open tab) while
+// still feeling live; a focused tab also refreshes on visibilitychange/focus.
+const SIDEBAR_POLL_MS = 45000;
 
 /** DM header sub-line when the peer is offline: "last seen 5m ago" (else "offline"). */
 function lastSeenLabel(ms: number | null | undefined): string {
@@ -62,50 +36,18 @@ function lastSeenLabel(ms: number | null | undefined): string {
 }
 
 /**
- * Fire a browser notification for an incoming message while the tab is backgrounded
- * (Slice 9). Deliberately conservative — it fires ONLY when: the Notification API
- * exists, the document is hidden, and the user has already GRANTED permission (we
- * never auto-request; that's an explicit Settings toggle). Any misconfiguration is
- * a silent no-op. No service worker / Web Push — the tab must be open.
+ * The chat view: a thin shell over `useConversation` (which owns the realtime
+ * message log, socket, history paging, presence, and send/edit/delete/react
+ * actions). This component keeps only view concerns — the sidebar list, the local
+ * UI state (menus, modals, selection, emoji picker, search, member drawer), the
+ * derivations for the header, and the JSX.
  */
-function maybeNotify(title: string, body: string) {
-  if (typeof Notification === "undefined") return;
-  if (typeof document !== "undefined" && !document.hidden) return;
-  if (Notification.permission !== "granted") return;
-  try {
-    // A blank body (e.g. a deleted echo) still yields a useful title-only ping.
-    new Notification(title, { body: body || "sent a message" });
-  } catch { /* some browsers throw off a non-SW context — ignore */ }
-}
-
-// A peer's "typing…" auto-clears if no fresh on:true arrives within this window
-// (covers a dropped on:false — e.g. the peer's tab closed mid-type).
-const TYPING_TTL_MS = 5000;
-// How close to the bottom (px) still counts as "at bottom" for read + autoscroll.
-const NEAR_BOTTOM_PX = 80;
-// Background poll cadence to surface unread for non-active chats (v1 simplification).
-// 45s keeps D1 reads modest (each poll is one listChats read per open tab) while
-// still feeling live; a focused tab also refreshes on visibilitychange/focus.
-const SIDEBAR_POLL_MS = 45000;
-
 export default function Chat({ base }: { base: string }) {
   const [me, setMe] = useState<SessionUser | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Bubble[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  // True from a chat-switch until its first history page resolves — drives the
-  // shimmer bubbles in the log (distinct from the "empty conversation" state).
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  // Presence roster (userIds with a live socket in this chat) + the peer's state.
-  const [online, setOnline] = useState<Set<string>>(new Set());
-  // Users who are online but with all tabs backgrounded → shown "away" not "online".
-  const [away, setAway] = useState<Set<string>>(new Set());
-  const [peerTyping, setPeerTyping] = useState(false);
-  // Newest createdAt the peer has read up to (for the "seen" tick on my messages).
-  const [peerLastReadAt, setPeerLastReadAt] = useState(0);
+
   // Slice 4 — message-actions UI state.
   const [replyingTo, setReplyingTo] = useState<Bubble | null>(null); // armed reply
   const [editingId, setEditingId] = useState<string | null>(null); // inline-editing this id
@@ -116,69 +58,16 @@ export default function Chat({ base }: { base: string }) {
   // Slice 5 — group UI state.
   const [newChatOpen, setNewChatOpen] = useState(false); // the Direct|Group modal
   const [drawerOpen, setDrawerOpen] = useState(false); // the member-management drawer
-  // Slice 8 — the forward modal + the message bodies queued for forwarding (from a
-  // single message's context menu or the multi-select bar). Non-null bodies ⇒ open.
+  // Slice 8 — the forward modal + the message bodies queued for forwarding. Non-null ⇒ open.
   const [forwardBodies, setForwardBodies] = useState<string[] | null>(null);
-  // Slice 9 — the emoji picker anchored over a message (non-null ⇒ open). `m` is the
-  // target message; `x`/`y` the viewport anchor point.
+  // Slice 9 — the emoji picker anchored over a message (non-null ⇒ open).
   const [emojiFor, setEmojiFor] = useState<{ m: Bubble; x: number; y: number } | null>(null);
-  // Slice 9 — the in-chat search panel: whether it's open + the current query. The
-  // panel itself owns its results/loading (it re-runs searchChat as the query changes).
+  // Slice 9 — the in-chat search panel: whether it's open (the panel owns its results).
   const [searchOpen, setSearchOpen] = useState(false);
-  // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for
-  // DMs (which use the peer shortcut). Fetched on opening a group + refreshed on
-  // membership changes.
+  // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for DMs.
   const [memberMap, setMemberMap] = useState<Map<string, SenderInfo>>(new Map());
 
-  const socketRef = useRef<WebSocket | null>(null);
-  // Live message-row elements by real id, for jump-to-original scroll + highlight.
-  const rowsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const toastTimerRef = useRef<number | null>(null);
-  const activeRef = useRef<string | null>(null);
-  const logRef = useRef<HTMLDivElement | null>(null);
-  // True while prepending older history — pauses the autoscroll-to-bottom effect
-  // so loading older messages doesn't yank the view down.
-  const prependingRef = useRef(false);
-  const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
-  const closingRef = useRef(false);
-  // Incoming-typing auto-clear timer (per the TTL above).
-  const typingTimerRef = useRef<number | null>(null);
-  // Outgoing-typing dedupe: the last on/off we told the server, so a steady typist
-  // doesn't re-emit on:true on every keystroke.
-  const sentTypingRef = useRef(false);
-  // Whether the log is currently pinned near the bottom (drives read-send + autoscroll).
-  const atBottomRef = useRef(true);
-  // Highest createdAt we've already sent a `read` for on the active chat — avoids
-  // re-sending the same receipt on every scroll tick / re-render.
-  const sentReadUpToRef = useRef(0);
-
-  // Ref mirrors of state read from stable callbacks / async paths (loadOlder,
-  // loadNewer, catchUpRead) where a captured-render closure would go stale.
-  const messagesRef = useRef<Bubble[]>([]);
-  const hasMoreRef = useRef(false);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
-  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
-
-  // "Detached" view: after jumping to an old message we render a window AROUND it
-  // (via historyAround), disconnected from the live tail. hasNewer ⇒ there are newer
-  // messages below the loaded window → we suppress autoscroll + live-append, show a
-  // "jump to latest" affordance, and let the user page DOWN (loadNewer) back to live.
-  const [hasNewer, setHasNewer] = useState(false);
-  const hasNewerRef = useRef(false);
-  useEffect(() => { hasNewerRef.current = hasNewer; }, [hasNewer]);
-  const loadingNewerRef = useRef(false);
-  // A ?m=<messageId> deep-link to consume once the chat's first history has loaded.
-  const pendingJumpRef = useRef<string | null>(null);
-
-  // Ref mirror of the current user id (Slice 9 — read inside the stable applyFrame
-  // to tell an incoming reaction/message apart from our own, without re-deriving it).
-  const meIdRef = useRef<string | null>(null);
-  useEffect(() => { meIdRef.current = me?.id ?? null; }, [me]);
-
-  // Slice 9 — resolve a sender id → a human name for the backgrounded notification
-  // title. A ref-backed function so the stable applyFrame reads the CURRENT roster
-  // /peer without depending on them. Set below once those derivations exist.
-  const resolveSenderNameRef = useRef<(senderId: string) => string>(() => "new message");
 
   const activeChat = chats.find((c) => c.id === activeId) ?? null;
   const peerId = activeChat?.peerId ?? null;
@@ -187,22 +76,57 @@ export default function Chat({ base }: { base: string }) {
   // sender identity). "membered" = has a roster; DMs use the peer shortcut instead.
   const isGroup = activeChat?.type === "group";
   const isMembered = isGroup || isChannel;
-  // The caller's own role in the active membered chat, derived from the roster map
-  // (owner | admin | member). Undefined for DMs / before the roster loads.
+  // The caller's own role in the active membered chat (owner|admin|member); undefined
+  // for DMs / before the roster loads.
   const myRole = me ? memberMap.get(me.id)?.role : undefined;
-  // Has the active channel's roster loaded yet? Until it has we can't know the
-  // caller's role, so we DON'T flash the Composer (a member would see it briefly
-  // before the read-only note replaces it) — the input area stays empty meanwhile.
+  // Has the active channel's roster loaded yet? Until it has we can't know the role,
+  // so we DON'T flash the Composer (a member would see it briefly before the read-
+  // only note replaces it) — the input area stays empty meanwhile.
   const channelRoleKnown = memberMap.size > 0;
-  // A channel is broadcast: only owner/admin post. A plain `member` on a channel
-  // sees a read-only note instead of the Composer (the DO also enforces this).
+  // A channel is broadcast: only owner/admin post. A plain member sees a read-only note.
   const channelReadOnly = isChannel && myRole === "member";
-  // Suppress the Composer on a channel until the role is known (avoids the flash);
-  // owner/admin then get it, `member` gets the read-only note.
+  // Suppress the Composer on a channel until the role is known (avoids the flash).
   const channelComposerPending = isChannel && !channelRoleKnown;
 
-  // Fetch + index the active group's roster into a userId→{name,avatar,role} map
-  // so MessageItem can render each sender's identity. No-op for DMs.
+  const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
+
+  // Resolve a sender id → a human name for the backgrounded-message notification: a
+  // group/channel uses the roster (falling back to the raw id), a DM uses the peer
+  // name (Slice 9). Fed into the hook, which mirrors it so its stable applyFrame reads
+  // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
+  const resolveSenderName = (senderId: string): string =>
+    isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
+
+  // Surface a small transient note (e.g. a server rejection). Non-blocking: it
+  // auto-dismisses after a few seconds and never interrupts typing.
+  const showToast = useCallback((text: string) => {
+    setToast(text);
+    if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3200);
+  }, []);
+
+  // Conversation-driven callbacks into the view (stable — the hook mirrors them):
+  //  - a read receipt was sent → zero the active chat's sidebar unread badge.
+  //  - a message was deleted    → drop it from any active selection (no bulk on a tombstone).
+  //  - the send was dispatched  → consume the armed reply (only on a real dispatch).
+  const onActiveRead = useCallback((chatId: string) => {
+    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, unreadCount: 0 } : c)));
+  }, []);
+  const onMessageDeleted = useCallback((id: string) => {
+    setSelected((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+  }, []);
+  const consumeReply = useCallback(() => setReplyingTo(null), []);
+
+  // The realtime engine for the active chat (socket + history + presence + actions).
+  const {
+    messages, connected, loadingHistory, hasNewer, online, away, peerTyping, peerLastReadAt,
+    logRef, onLogScroll, registerRow, activeRef,
+    send, sendEdit, sendDelete, sendReact, sendTyping,
+    jumpToMessage, jumpToLatest, armJump,
+  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onMessageDeleted, consumeReply });
+
+  // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
+  // MessageItem can render each sender's identity. No-op for DMs.
   const loadMembers = useCallback(async (chatId: string) => {
     const list: Member[] = await getMembers(base, chatId);
     if (activeRef.current !== chatId) return; // switched away mid-fetch
@@ -211,15 +135,12 @@ export default function Chat({ base }: { base: string }) {
       map.set(m.userId, { name: m.displayName || m.username, avatarUrl: m.avatarUrl, role: m.role });
     }
     setMemberMap(map);
-  }, [base]);
+  }, [base, activeRef]);
 
   // Load who-am-i + the sidebar list once, then honor a deep-link in the URL:
   //   /app?chat=<idOrSlug>[&m=<messageId>]
   // The URL is kept in sync with the open chat (see the sync effect below) so a
   // reload / shared link lands back in the same chat (+ jumps to the message).
-  //   - a chat the caller is a member of → open it, stash ?m for a post-load jump.
-  //   - not a member → resolveChat: a public/slug chat forwards to the /join preview;
-  //     otherwise a "no access" toast (never leaks a private chat's existence).
   useEffect(() => {
     getSession(base).then((s) => setMe(s.user ?? null));
     listChats(base).then((cs) => {
@@ -232,14 +153,14 @@ export default function Chat({ base }: { base: string }) {
       if (!wanted) return;
       const mine = cs.find((c) => c.id === wanted);
       if (mine) {
-        if (msg) pendingJumpRef.current = msg;
+        if (msg) armJump(msg);
         setActiveId(wanted);
         return;
       }
       // Not in the caller's list — could be a slug, or a chat they can join.
       void resolveChat(base, wanted).then((r) => {
         if (r.error || !r.id) { showToast("you don't have access to this chat"); return; }
-        if (r.isMember) { if (msg) pendingJumpRef.current = msg; setActiveId(r.id); return; }
+        if (r.isMember) { if (msg) armJump(msg); setActiveId(r.id); return; }
         if (r.slug) {
           const key = r.type === "channel" ? "c" : "g";
           window.location.assign(`/join?${key}=${encodeURIComponent(r.slug)}${msg ? `&m=${encodeURIComponent(msg)}` : ""}`);
@@ -248,7 +169,7 @@ export default function Chat({ base }: { base: string }) {
         }
       }).catch(() => showToast("you don't have access to this chat"));
     });
-  }, [base]);
+  }, [base, armJump, showToast]);
 
   // Keep the address bar in sync with the open chat, so a reload / copied link
   // returns here. replaceState (not push) — chat switches aren't history entries.
@@ -258,7 +179,6 @@ export default function Chat({ base }: { base: string }) {
     // Skip the FIRST run: on mount activeId is null and the deep-link (?chat/?m) is
     // still being read asynchronously (after listChats resolves). Stripping the params
     // here would clobber the link before it's consumed — the bug that broke deep-links.
-    // Sync only from the first real (de)selection onward.
     if (!urlSyncReadyRef.current) { urlSyncReadyRef.current = true; return; }
     const url = new URL(window.location.href);
     if (activeId) url.searchParams.set("chat", activeId);
@@ -270,328 +190,32 @@ export default function Chat({ base }: { base: string }) {
   // Clear the toast timer on unmount so it can't fire into a dead component.
   useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
 
-  // Send a `read` receipt for the newest message, if we haven't already and the
-  // socket is open. Optimistically zero the active chat's sidebar unread badge.
-  const sendRead = useCallback((msgs: Bubble[]) => {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || msgs.length === 0) return;
-    // Only mark seen when the tab is actually VISIBLE. A chat open in a background
-    // tab (or a hidden/minimized window) must not auto-ack — that would advance the
-    // peer's "seen" tick and wipe our own unread badge for messages no human saw.
-    // The visibilitychange/focus catch-up below re-acks once the tab is shown.
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    const newest = msgs[msgs.length - 1].createdAt;
-    if (newest <= sentReadUpToRef.current) return;
-    sentReadUpToRef.current = newest;
-    ws.send(JSON.stringify({ type: "read", upTo: newest }));
-    const chatId = activeRef.current;
-    if (chatId) setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, unreadCount: 0 } : c)));
-  }, []);
-
-  // Keep an autoscroll pinned to the newest message — unless we're prepending
-  // older history (then Composer/onScroll preserves the position instead).
+  // Reset per-chat VIEW UI state on every switch so nothing leaks across chats (the
+  // conversation engine resets its own message/presence state internally). Kept here
+  // — not in the hook — because these are all view-owned.
   useEffect(() => {
-    // Don't snap to the bottom while prepending older history, nor while viewing a
-    // detached window around a jumped-to old message (hasNewer) — either would yank
-    // the user away from what they're reading.
-    if (prependingRef.current || hasNewerRef.current) return;
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
-
-  // Infinite scroll: when the log is scrolled near the top and more history may
-  // exist, load an older page via the `before=<oldestId>` cursor and prepend it,
-  // preserving the visual scroll position.
-  const loadOlder = useCallback(async () => {
-    const el = logRef.current;
-    const chatId = activeRef.current;
-    // Read via refs so an awaited call in a loop (reply-jump) sees fresh values.
-    if (!el || !chatId || prependingRef.current || !hasMoreRef.current) return;
-    const oldest = messagesRef.current[0];
-    if (!oldest) return;
-    prependingRef.current = true;
-    const prevHeight = el.scrollHeight;
-    const older = await loadHistory(base, chatId, oldest.id);
-    if (activeRef.current !== chatId) { prependingRef.current = false; return; }
-    setHasMore(older.length >= 50);
-    setMessages((prev) => [...older.map((m) => ({ ...m })), ...prev]);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => {
-      const now = logRef.current;
-      if (now) now.scrollTop = now.scrollHeight - prevHeight; // keep the same message under the cursor
-      prependingRef.current = false;
-      resolve();
-    }));
-  }, [base]);
-
-  // Forward pagination — only meaningful in a detached window (hasNewer). Loads the
-  // next page of NEWER messages via after=<newestLoadedId> and appends; when a page
-  // comes back short the window has reconnected with the live tail → clear detached.
-  const loadNewer = useCallback(async () => {
-    const chatId = activeRef.current;
-    if (!chatId || loadingNewerRef.current || !hasNewerRef.current) return;
-    const newest = messagesRef.current[messagesRef.current.length - 1];
-    if (!newest) return;
-    loadingNewerRef.current = true;
-    try {
-      const rows = await loadHistoryAfter(base, chatId, newest.id);
-      if (activeRef.current !== chatId) return;
-      if (rows.length > 0) {
-        setMessages((prev) => {
-          const have = new Set(prev.map((b) => b.id));
-          return [...prev, ...rows.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
-        });
-      }
-      if (rows.length < 50) {
-        // Short page ⇒ we've reached the live tail → reattach (resume live-append).
-        hasNewerRef.current = false;
-        setHasNewer(false);
-        // Catch any message that landed AFTER the historyAfter query but was suppressed
-        // while detached: pull the newest page and merge (it overlaps the window's end).
-        const tail = await loadHistory(base, chatId);
-        if (activeRef.current === chatId && tail.length > 0) {
-          setMessages((prev) => {
-            const have = new Set(prev.map((b) => b.id));
-            return [...prev, ...tail.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
-          });
-        }
-      }
-    } finally {
-      loadingNewerRef.current = false;
-    }
-  }, [base]);
-
-  const onLogScroll = useCallback(() => {
-    const el = logRef.current;
-    if (!el) return;
-    if (el.scrollTop < 60) void loadOlder();
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    // Near the bottom of a DETACHED window → page forward toward the live tail.
-    if (dist < 120 && hasNewerRef.current) void loadNewer();
-    // Track bottom-ness for read-send + autoscroll; scrolling back to the real
-    // bottom (not a detached window's end) counts as "seen everything".
-    const atBottom = dist < NEAR_BOTTOM_PX;
-    atBottomRef.current = atBottom;
-    if (atBottom && !hasNewerRef.current) setMessages((prev) => { sendRead(prev); return prev; });
-  }, [loadOlder, loadNewer, sendRead]);
-
-  // Surface a small transient note (e.g. a server rejection). Non-blocking: it
-  // auto-dismisses after a few seconds and never interrupts typing.
-  const showToast = useCallback((text: string) => {
-    setToast(text);
-    if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 3200);
-  }, []);
-
-  const applyFrame = useCallback((frame: Frame) => {
-    if (frame.type === "sent") {
-      // Reconcile the optimistic bubble: swap tempId → the server message.
-      setMessages((prev) => prev.map((b) => (b.tempId && b.tempId === frame.tempId ? { ...frame.message } : b)));
-    } else if (frame.type === "message") {
-      // A live message belongs at the tail. If we're viewing a DETACHED window
-      // (jumped to an old message, hasNewer), the tail isn't loaded — appending it
-      // there would render it out of context, so skip the append; the sidebar unread
-      // + the "jump to latest" button surface it. Otherwise append (dedupe by id).
-      if (!hasNewerRef.current) {
-        setMessages((prev) => {
-          if (prev.some((b) => b.id === frame.message.id)) return prev;
-          const next = [...prev, { ...frame.message }];
-          // A new peer message while we're reading (log at bottom) is immediately
-          // "seen" → send a read receipt so their "seen" tick advances.
-          if (atBottomRef.current) sendRead(next);
-          return next;
-        });
-      }
-      // Slice 9 — a backgrounded notification for a message from someone else. The
-      // helper self-gates on document.hidden + granted permission (never prompts).
-      if (frame.message.senderId !== meIdRef.current) {
-        maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
-      }
-    } else if (frame.type === "presence_snapshot") {
-      setOnline(new Set(frame.online));
-      setAway(new Set(frame.away ?? []));
-    } else if (frame.type === "presence") {
-      setOnline((prev) => {
-        const next = new Set(prev);
-        if (frame.online) next.add(frame.userId); else next.delete(frame.userId);
-        return next;
-      });
-      setAway((prev) => {
-        const next = new Set(prev);
-        if (frame.online && frame.away) next.add(frame.userId); else next.delete(frame.userId);
-        return next;
-      });
-    } else if (frame.type === "typing") {
-      setPeerTyping(frame.on);
-      if (typingTimerRef.current != null) clearTimeout(typingTimerRef.current);
-      // Auto-clear a stale "typing…" if no fresh on:true lands within the TTL.
-      if (frame.on) typingTimerRef.current = window.setTimeout(() => setPeerTyping(false), TYPING_TTL_MS);
-    } else if (frame.type === "read_receipt") {
-      setPeerLastReadAt((prev) => Math.max(prev, frame.upTo));
-    } else if (frame.type === "edited") {
-      // In-place body + editedAt update (broadcast to ALL, incl. the editor's tabs).
-      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, body: frame.body, editedAt: frame.editedAt } : b)));
-    } else if (frame.type === "deleted") {
-      // Soft delete: blank the body + flag it → renders a "message deleted" placeholder.
-      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b)));
-      // Drop it from any active selection so a bulk action can't touch a tombstone.
-      setSelected((prev) => { if (!prev.has(frame.id)) return prev; const n = new Set(prev); n.delete(frame.id); return n; });
-    } else if (frame.type === "reaction") {
-      // Slice 9 — reconcile a reaction toggle (broadcast to ALL, incl. our own tabs).
-      // applyReaction dedupes by userId+emoji, so a broadcast that merely confirms our
-      // optimistic own-toggle is a no-op; a foreign user's toggle updates count/mine.
-      const isMine = frame.userId === meIdRef.current;
-      setMessages((prev) => prev.map((b) =>
-        b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b,
-      ));
-    } else if (frame.type === "error") {
-      showToast(ERROR_COPY[frame.code] ?? "something went wrong");
-    }
-  }, [sendRead, showToast]);
-
-  // Send a debounced typing signal from the Composer. Dedupe so a steady typist
-  // emits at most one on:true and one on:false per burst.
-  const sendTyping = useCallback((active: boolean) => {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (active === sentTypingRef.current) return;
-    sentTypingRef.current = active;
-    ws.send(JSON.stringify({ type: "typing", on: active }));
-  }, []);
-
-  // Tell the room this tab's visibility so peers see "away" (all tabs hidden) vs
-  // "online". Sent on visibilitychange + on (re)connect for the current state.
-  const sendAway = useCallback((awayNow: boolean) => {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "away", away: awayNow }));
-  }, []);
-  useEffect(() => {
-    function onVis() { sendAway(document.visibilityState !== "visible"); }
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [sendAway]);
-
-  // Open exactly ONE socket to the active chat; reload history on select.
-  useEffect(() => {
-    activeRef.current = activeId;
-    // Reset per-chat presence/typing/receipt state on every switch.
-    setOnline(new Set());
-    setAway(new Set());
-    setPeerTyping(false);
-    setPeerLastReadAt(0);
-    sentTypingRef.current = false;
-    sentReadUpToRef.current = 0;
-    atBottomRef.current = true;
-    // Reset per-chat message-actions state so nothing leaks across chats.
     setReplyingTo(null);
     setEditingId(null);
     setSelectMode(false);
     setSelected(new Set());
     setMenu(null);
-    // Reset group-scoped state so a prior group's roster/drawer never leaks.
     setDrawerOpen(false);
     setForwardBodies(null);
-    // Reset Slice-9 per-chat UI: close the emoji picker + search panel on a switch.
     setEmojiFor(null);
     setSearchOpen(false);
     setMemberMap(new Map());
-    rowsRef.current.clear();
-    if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
-    if (!activeId) return;
-    const chatId = activeId; // non-null capture for the closures below
-    // Grab (and clear) a pending ?m deep-link jump for THIS chat synchronously, so a
-    // fast switch away before history loads can't leak it into the next chat's load.
-    const pendingJump = pendingJumpRef.current;
-    pendingJumpRef.current = null;
-
-    let cancelled = false;
-    setMessages([]);
-    setConnected(false);
-    setHasMore(false);
-    setHasNewer(false); // never inherit a detached window across a chat switch
-    loadingNewerRef.current = false;
-    setLoadingHistory(true);
-    prependingRef.current = false;
-    loadHistory(base, chatId).then((hist) => {
-      if (cancelled) return;
-      setLoadingHistory(false);
-      setMessages(hist.map((m) => ({ ...m })));
-      setHasMore(hist.length >= 50); // a full page ⇒ there may be older messages
-      // Opening a chat with messages = reading it → send a read receipt (once the
-      // socket is up sendRead no-ops if closed; the onopen handler re-sends).
-      if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
-      // Consume the pending ?m deep-link jump captured above, now the first page is
-      // in — after a rAF so rows register (flashRow finds it if loaded, else it pulls
-      // a window).
-      if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
-    });
-
-    function clearReconnect() {
-      if (reconnectRef.current.timer != null) {
-        clearTimeout(reconnectRef.current.timer);
-        reconnectRef.current.timer = null;
-      }
-    }
-
-    function connect() {
-      if (cancelled || activeRef.current !== chatId) return;
-      closingRef.current = false;
-      const ws = new WebSocket(wsUrl(base, chatId));
-      socketRef.current = ws;
-      ws.onopen = () => {
-        if (cancelled) return;
-        reconnectRef.current.attempts = 0;
-        setConnected(true);
-        // Re-send read for whatever we already have loaded (covers open-before-connect
-        // and reconnects). Allow a re-send by clearing the dedupe high-water mark.
-        sentReadUpToRef.current = 0;
-        if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
-        // Report this tab's current visibility on connect (always — a fresh VISIBLE
-        // tab must clear a stale "away" if the user was away on another/older socket).
-        if (typeof document !== "undefined") sendAway(document.visibilityState !== "visible");
-      };
-      ws.onmessage = (ev) => {
-        if (cancelled) return;
-        try { applyFrame(JSON.parse(ev.data as string) as Frame); } catch { /* ignore junk */ }
-      };
-      ws.onclose = () => {
-        if (cancelled || closingRef.current || activeRef.current !== chatId) return;
-        setConnected(false);
-        sentTypingRef.current = false; // a dropped socket clears any outstanding typing
-        // Reconnect with a small capped backoff (0.5s → 5s).
-        const n = Math.min(reconnectRef.current.attempts++, 10);
-        const delay = Math.min(500 * 2 ** n, 5000);
-        clearReconnect();
-        reconnectRef.current.timer = window.setTimeout(connect, delay);
-      };
-    }
-
-    connect();
-
-    return () => {
-      cancelled = true;
-      closingRef.current = true;
-      clearReconnect();
-      reconnectRef.current.attempts = 0;
-      const ws = socketRef.current;
-      socketRef.current = null;
-      if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
-    };
-  }, [base, activeId, applyFrame, sendRead]);
+  }, [activeId]);
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
-  // map (channels need it too, both to render per-sender identity and to derive the
-  // caller's own role → the read-only gate). Keyed on activeId + isMembered so
-  // switching between membered chats refetches; DMs clear the map (the socket-switch
-  // effect already reset it).
+  // map (channels need it to render per-sender identity and derive the caller's role).
   useEffect(() => {
     if (activeId && isMembered) void loadMembers(activeId);
   }, [activeId, isMembered, loadMembers]);
 
-  // Live-ish sidebar: refresh listChats on window focus + a 15s interval while the
-  // tab is visible. Surfaces unread for background chats (no per-user inbox DO in
-  // v1). Merge so the active chat's optimistic unread=0 isn't clobbered by a stale
-  // poll — we force the active row's unread to 0 locally.
+  // Live-ish sidebar: refresh listChats on window focus + a 45s interval while the
+  // tab is visible. Surfaces unread for background chats. Merge so the active chat's
+  // optimistic unread=0 isn't clobbered by a stale poll. (The read catch-up on focus
+  // lives in the conversation hook — these listeners only refresh the list.)
   useEffect(() => {
     let cancelled = false;
     async function refresh() {
@@ -600,15 +224,8 @@ export default function Chat({ base }: { base: string }) {
       const act = activeRef.current;
       setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
     }
-    // On return to the tab, if the open chat is pinned to the bottom, ack whatever
-    // arrived while we were away (the read guard suppressed it live). Mirrors the
-    // "seen everything when at bottom" rule; a user scrolled up isn't auto-acked.
-    function catchUpRead() {
-      if (document.visibilityState !== "visible") return;
-      if (activeRef.current && atBottomRef.current) sendRead(messagesRef.current);
-    }
-    function onFocus() { void refresh(); catchUpRead(); }
-    function onVisible() { if (document.visibilityState === "visible") { void refresh(); catchUpRead(); } }
+    function onFocus() { void refresh(); }
+    function onVisible() { if (document.visibilityState === "visible") void refresh(); }
     const iv = window.setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, SIDEBAR_POLL_MS);
@@ -620,74 +237,15 @@ export default function Chat({ base }: { base: string }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [base]);
+  }, [base, activeRef]);
 
-  function send(body: string, replyToId?: string | null) {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeId || !me) return;
-    // Sending from a detached window (jumped to an old message): snap back to the
-    // live tail first so the optimistic bubble lands in context, then send — but only
-    // if we're still in the SAME chat (a switch during the reload must not redeliver
-    // this message into the newly-opened chat over its socket).
-    if (hasNewerRef.current) {
-      const at = activeRef.current;
-      void jumpToLatest().then(() => { if (activeRef.current === at) send(body, replyToId); });
-      return;
-    }
-    const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Build an optimistic reply snippet from the armed message so the quoted
-    // preview shows instantly; the `sent` frame replaces it with the server's.
-    const parent = replyToId ? messages.find((m) => m.id === replyToId && !m.isDeleted) : undefined;
-    const replyTo = parent ? { id: parent.id, senderId: parent.senderId, body: parent.body.slice(0, 120) } : null;
-    // Optimistic bubble: shown immediately, reconciled by the `sent` frame.
-    setMessages((prev) => [
-      ...prev,
-      { id: tempId, tempId, chatId: activeId, senderId: me.id, body, createdAt: Date.now(), pending: true, replyToId: replyToId ?? null, replyTo },
-    ]);
-    atBottomRef.current = true; // my own send scrolls me to the bottom
-    ws.send(JSON.stringify({ type: "send", tempId, body, ...(replyToId ? { replyToId } : {}) }));
-    setReplyingTo(null); // consume the armed reply
-  }
-
-  // Reply/edit/delete over the socket. Ownership + windows are UX gating only —
-  // the server re-checks and answers {error} if it disagrees (surfaced as a toast).
+  // Reply/edit/delete route through the hook; ownership + windows are UX gating only.
   function sendWith(body: string) {
     send(body, replyingTo?.id ?? null);
   }
-  function sendEdit(m: Bubble, body: string) {
-    const trimmed = body.trim();
+  function onSaveEdit(m: Bubble, body: string) {
     setEditingId(null);
-    if (!trimmed || trimmed === m.body) return; // no-op edit — nothing to send
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Optimistic in-place update; the `edited` broadcast confirms (or an `error` toast reverts nothing).
-    setMessages((prev) => prev.map((b) => (b.id === m.id ? { ...b, body: trimmed, editedAt: Date.now() } : b)));
-    ws.send(JSON.stringify({ type: "edit", id: m.id, body: trimmed }));
-  }
-  function sendDelete(m: Bubble) {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "delete", id: m.id }));
-  }
-
-  // Slice 9 — toggle MY reaction `emoji` on message `m`. Optimistic: flip the pill
-  // locally (add if I don't have it, remove if I do) keyed on the current `mine`
-  // state, then send `{type:"react", id, emoji}`. The server broadcasts a
-  // `reaction` frame back; applyReaction dedupes by userId+emoji so that confirming
-  // echo is a no-op (and a foreign toggle still reconciles). Optimistic pending
-  // bubbles (no real server id yet) can't be reacted to — skip them.
-  function sendReact(m: Bubble, emoji: string) {
-    if (m.pending || m.isDeleted) return;
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Derive the toggle direction from the FRESH state inside the updater (a
-    // broadcast may have landed since render), so we never double-add/-remove.
-    setMessages((prev) => prev.map((b) => {
-      if (b.id !== m.id) return b;
-      const mineNow = (b.reactions ?? []).find((r) => r.emoji === emoji)?.mine ?? false;
-      return { ...b, reactions: applyReaction(b.reactions, emoji, !mineNow, true) };
-    }));
-    ws.send(JSON.stringify({ type: "react", id: m.id, emoji }));
+    sendEdit(m, body);
   }
 
   // Can I still edit / delete this message? (own + within window, ignoring optimistic
@@ -707,8 +265,6 @@ export default function Chat({ base }: { base: string }) {
   function copyText(text: string) { copy(text, "copied"); }
 
   // Build + copy a shareable deep-link. Chat → /app?chat=<id>; message → +&m=<id>.
-  // A member opening it lands in the chat (and jumps to the message); a non-member is
-  // routed to the public /join preview when the chat has a slug (see the mount effect).
   function chatLink(chatId: string, msgId?: string): string {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     return `${origin}/app?chat=${encodeURIComponent(chatId)}${msgId ? `&m=${encodeURIComponent(msgId)}` : ""}`;
@@ -721,82 +277,9 @@ export default function Chat({ base }: { base: string }) {
   // switch to it and let the chat-switch effect consume the pending jump.
   function openSearchResult(chatId: string, msgId: string) {
     if (chatId === activeRef.current) { void jumpToMessage(msgId); return; }
-    pendingJumpRef.current = msgId;
+    armJump(msgId);
     setActiveId(chatId);
   }
-
-  // Register/unregister a message row element for jump-to-original.
-  const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
-    if (el) rowsRef.current.set(id, el);
-    else rowsRef.current.delete(id);
-  }, []);
-
-  // Scroll a loaded message into view and flash it — but start the flash only once
-  // the row is actually on screen. The smooth scroll is async (can take a while
-  // after loading pages), so adding the class immediately meant the 1.2s highlight
-  // finished before you arrived. An IntersectionObserver fires the flash on landing.
-  function flashRow(id: string): boolean {
-    const el = rowsRef.current.get(id);
-    if (!el) return false;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
-    let flashed = false;
-    const flash = () => {
-      if (flashed) return;
-      flashed = true;
-      el.classList.add("is-flash");
-      const done = () => { el.classList.remove("is-flash"); el.removeEventListener("animationend", done); };
-      el.addEventListener("animationend", done);
-      window.setTimeout(done, FLASH_MS + 500); // reduced-motion never fires animationend
-    };
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) { io.disconnect(); flash(); }
-    }, { root: logRef.current, threshold: 0.5 });
-    io.observe(el);
-    window.setTimeout(() => { io.disconnect(); flash(); }, 1500); // safety if IO never fires
-    return true;
-  }
-
-  // Jump to any message by id: if it's already loaded, scroll + flash. Otherwise
-  // fetch a window AROUND it from the server (historyAround) — O(1), works no matter
-  // how far back it is — replace the log with that window (detached from the live
-  // tail when hasNewer), then flash it once it renders. Toast if it can't be found.
-  async function jumpToMessage(id: string) {
-    if (flashRow(id)) return;
-    const chatId = activeRef.current;
-    if (!chatId) return;
-    let around;
-    try { around = await loadHistoryAround(base, chatId, id); }
-    catch { showToast("couldn't load that message"); return; }
-    if (activeRef.current !== chatId) return;
-    if (!around.found) { showToast("message not found"); return; }
-    prependingRef.current = true; // suppress the autoscroll-to-bottom on this replace
-    setMessages(around.messages.map((m) => ({ ...m })));
-    setHasMore(around.hasOlder);
-    setHasNewer(around.hasNewer);
-    // Flash after the new window has painted + its rows registered.
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
-    prependingRef.current = false;
-    flashRow(id);
-  }
-
-  // Snap back to the live tail from a detached window (the "jump to latest" button
-  // and the pre-send hook use this): reload the newest page + re-attach to live.
-  const jumpToLatest = useCallback(async () => {
-    const chatId = activeRef.current;
-    if (!chatId) return;
-    const hist = await loadHistory(base, chatId);
-    if (activeRef.current !== chatId) return;
-    hasNewerRef.current = false; // imperative so a re-entrant send() sees it at once
-    setHasNewer(false);
-    setMessages(hist.map((m) => ({ ...m })));
-    setHasMore(hist.length >= 50);
-    atBottomRef.current = true;
-    if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [base, sendRead]);
 
   // ---- selection / multi-select action bar ----
   function enterSelect(seed?: Bubble) {
@@ -832,9 +315,6 @@ export default function Chat({ base }: { base: string }) {
   }
 
   // ---- forwarding (Slice 8) ----
-  // Queue the selected (non-deleted, non-empty) message bodies for the forward
-  // modal, preserving their chronological order. Opens the modal; the select bar
-  // stays put behind it so a cancel returns to the selection intact.
   function forwardSelected() {
     const bodies = messages
       .filter((m) => selected.has(m.id) && !m.isDeleted && m.body.trim())
@@ -842,13 +322,10 @@ export default function Chat({ base }: { base: string }) {
     if (bodies.length === 0) return;
     setForwardBodies(bodies);
   }
-  // Forward a single message straight from its context menu (no select mode).
   function forwardOne(m: Bubble) {
     if (m.isDeleted || !m.body.trim()) return;
     setForwardBodies([m.body]);
   }
-  // After the modal reports its result: toast the outcome, close the modal, and
-  // (if we were selecting) exit select mode. Partial failures are surfaced honestly.
   function onForwardDone({ sent, failed }: { sent: number; failed: number }) {
     setForwardBodies(null);
     if (sent > 0 && failed > 0) showToast(`forwarded to ${sent} chat${sent === 1 ? "" : "s"} — ${failed} failed`);
@@ -857,16 +334,14 @@ export default function Chat({ base }: { base: string }) {
     if (selectMode) exitSelect();
   }
 
-  // Open the emoji picker over a message (Slice 9). Closes the context menu first
-  // so the two popovers never overlap.
+  // Open the emoji picker over a message (Slice 9). Closes the context menu first.
   function openEmoji(m: Bubble, x: number, y: number) {
     setMenu(null);
     if (m.pending || m.isDeleted) return;
     setEmojiFor({ m, x, y });
   }
 
-  // Build the per-message context-menu items (gated by ownership + window). The
-  // "react" item opens the emoji picker at the menu's own anchor (Slice 9).
+  // Build the per-message context-menu items (gated by ownership + window).
   function menuItems(m: Bubble, at: { x: number; y: number }): MenuItem[] {
     const items: MenuItem[] = [{ label: "react", onClick: () => openEmoji(m, at.x, at.y) }];
     items.push({ label: "reply", onClick: () => setReplyingTo(m) });
@@ -905,9 +380,7 @@ export default function Chat({ base }: { base: string }) {
   }
 
   // Refresh the sidebar list + (if the active chat is a group/channel) its roster
-  // after a member-drawer mutation, without disturbing the socket/messages. Read
-  // the type from the FRESH `cs` (not the stale `chats` closure) so a just-changed
-  // roster always reloads.
+  // after a member-drawer mutation, without disturbing the socket/messages.
   async function refreshAfterMemberChange() {
     const cs = await listChats(base);
     const act = activeRef.current;
@@ -926,13 +399,10 @@ export default function Chat({ base }: { base: string }) {
     void listChats(base).then(setChats);
   }
 
-  const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
   const peerOnline = peerId != null && online.has(peerId);
   // Online but all their tabs are backgrounded → "away".
   const peerAway = peerOnline && peerId != null && away.has(peerId);
-  // Membered-chat header derivations: the group/channel's own name, member count
-  // (from the live roster, falling back to the summary), and how many members are
-  // currently online.
+  // Membered-chat header derivations.
   const groupName = activeChat?.name || (isChannel ? "channel" : "group");
   const memberCount = memberMap.size || activeChat?.memberCount || 0;
   const onlineCount = isMembered ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
@@ -951,13 +421,6 @@ export default function Chat({ base }: { base: string }) {
         preview: replyingTo.body.slice(0, 120),
       }
     : null;
-
-  // Keep the notification name-resolver current: a group/channel uses the roster
-  // (falling back to the raw id), a DM uses the peer name (Slice 9).
-  useEffect(() => {
-    resolveSenderNameRef.current = (senderId: string) =>
-      isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
-  }, [isMembered, memberMap, peerName]);
 
   return (
     <div className="mw-chat" data-open={open ? "1" : "0"}>
@@ -1069,7 +532,7 @@ export default function Chat({ base }: { base: string }) {
                 key={activeId}
                 base={base}
                 chatId={activeId}
-                resolveName={(id) => resolveSenderNameRef.current(id)}
+                resolveName={(id) => resolveSenderName(id)}
                 meId={me?.id ?? null}
                 onJump={jumpToMessage}
                 onClose={() => setSearchOpen(false)}
@@ -1078,8 +541,6 @@ export default function Chat({ base }: { base: string }) {
 
             <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
               {loadingHistory && messages.length === 0 && (
-                // Shimmer bubbles while the first history page loads. Alternating
-                // sides mimic a real conversation; aria-hidden (purely decorative).
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (
                     <div key={i} className={`mw-skelbubble${i % 2 ? " mw-skelbubble--me" : ""}`}>
@@ -1098,8 +559,7 @@ export default function Chat({ base }: { base: string }) {
                 const mine = me != null && m.senderId === me.id;
                 const key = m.tempId ?? m.id;
                 // Group consecutive messages from the same sender (within 5 min) so
-                // the avatar + name render once per run, not on every bubble. A new
-                // sender, a >5min gap, or a tombstone between them starts a new run.
+                // the avatar + name render once per run, not on every bubble.
                 const prev = messages[i - 1];
                 const firstInRun =
                   !prev || prev.senderId !== m.senderId || prev.isDeleted || m.createdAt - prev.createdAt > 5 * 60_000;
@@ -1107,12 +567,10 @@ export default function Chat({ base }: { base: string }) {
                 // of a run. DMs never show them (the peer is named in the header).
                 const showSenderMeta = isMembered && !mine && firstInRun;
                 // "seen" only for DMs — in a group one member's read watermark
-                // isn't "everyone saw it", so we don't imply it. (§ audit #1)
+                // isn't "everyone saw it". (§ audit #1)
                 const seen = !isMembered && mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
-                // Resolve the sender's name + avatar. Groups + channels look up the
-                // member map (falling back to the raw sender id if unknown, e.g. a
-                // since-left member); DMs keep the peer shortcut. Same for the
-                // quoted-reply name.
+                // Resolve the sender's name + avatar (groups/channels look up the map,
+                // falling back to the raw id; DMs keep the peer shortcut).
                 const sender = isMembered
                   ? (memberMap.get(m.senderId) ?? { name: m.senderId, avatarUrl: null })
                   : { name: peerName, avatarUrl: activeChat.peerAvatarUrl };
@@ -1140,7 +598,7 @@ export default function Chat({ base }: { base: string }) {
                     onReply={setReplyingTo}
                     onStartEdit={(mm) => setEditingId(mm.id)}
                     onCancelEdit={() => setEditingId(null)}
-                    onSaveEdit={sendEdit}
+                    onSaveEdit={onSaveEdit}
                     onDelete={sendDelete}
                     onToggleSelect={toggleSelect}
                     onContextMenu={(mm, x, y) => setMenu({ m: mm, x, y })}
@@ -1186,9 +644,7 @@ export default function Chat({ base }: { base: string }) {
               // footprint (no flash of the input) until we know member vs admin.
               <div className="mw-readonly mw-readonly--pending" aria-hidden="true" />
             ) : channelReadOnly ? (
-              // Broadcast channel + the caller is a plain member → no Composer. The
-              // DO also rejects a member post ({error:"read_only"}), but hiding the
-              // input is the honest UX. Owner/admin fall through to the Composer.
+              // Broadcast channel + the caller is a plain member → no Composer.
               <div className="mw-readonly" role="note">
                 <span className="mw-readonly__glyph" aria-hidden="true">📡</span>
                 <span>subscribed — only admins post in a channel.</span>
