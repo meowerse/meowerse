@@ -1,9 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // meowerse AUTH-BOT — Telegram webhook worker for "Continue with Telegram"
-  // deep-links (spec §6). Mirrors workers/edge bot0: secret in the URL path +
-  // the Telegram secret-token header. Deploys to workers.dev (set the Telegram
-  // webhook to https://<this>.workers.dev/tg/<PATH_SECRET>).
+  // deep-links (spec §6). Secret in the URL path + the Telegram secret-token
+  // header. Served on an IN-ZONE custom domain (authbot.alxnko.eu.org) so it sits
+  // behind the zone WAF rate-limit rule — NOT on *.workers.dev, which bypasses the
+  // WAF yet still bills the shared account-wide 100k/day worker quota. The Telegram
+  // webhook points at https://authbot.alxnko.eu.org/tg/<PATH_SECRET>.
   //
   // SECRETS (never in this file):
   //   wrangler secret put TELEGRAM_BOT_TOKEN      (from @BotFather)
@@ -13,6 +15,12 @@
   "name": "meowerse-auth-bot",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  // In-zone custom domain (wrangler auto-provisions the DNS record + cert). Disabling
+  // workers_dev removes the WAF-bypassing *.workers.dev URL — flipped to false only
+  // AFTER the Telegram webhook is re-pointed to the custom domain (kept true during
+  // the cutover so the live webhook never hits a dead URL).
+  "workers_dev": false,
+  "routes": [{ "pattern": "authbot.alxnko.eu.org", "custom_domain": true }],
   "vars": {
     "AUTH_CONFIRM_URL": "https://auth.alxnko.eu.org/internal/tg/confirm",
     "BOT_USERNAME": "meowersebot"
