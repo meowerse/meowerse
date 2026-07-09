@@ -130,14 +130,14 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
                 onClick={disableNotifications}
                 disabled={notifBusy}
                 aria-label="turn off notifications"
-              >{notifBusy ? "…" : "on ✓ · turn off"}</button>
+              >{notifBusy ? "…" : "on"}</button>
             ) : (
               <button
                 type="button"
                 className="mw-btn mw-btn--secondary mw-btn--sm"
                 onClick={enableNotifications}
                 disabled={notifDenied || notifBusy}
-              >{notifBusy ? "…" : "enable"}</button>
+              >{notifBusy ? "…" : "off"}</button>
             )}
           </div>
         )}

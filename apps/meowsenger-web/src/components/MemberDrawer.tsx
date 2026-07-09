@@ -423,8 +423,8 @@ export function MemberDrawer({
                 onChange={(e) => setAddInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void doAdd(); } }}
               />
-              <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={doAdd} disabled={adding || !addInput.trim()}>
-                {adding ? "…" : "add"}
+              <button className="mw-btn mw-btn--primary mw-btn--sm" aria-label="add member" onClick={doAdd} disabled={adding || !addInput.trim()}>
+                {adding ? "…" : (<><span className="mw-tlabel">add</span><span className="mw-ticon" aria-hidden="true">+</span></>)}
               </button>
             </div>
             {inviteNote && (
@@ -465,8 +465,8 @@ export function MemberDrawer({
                   </button>
                 </div>
                 <div className="mw-invite__actions">
-                  <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={doRefreshInvite} disabled={inviteBusy}>refresh</button>
-                  <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" onClick={doRevokeInvite} disabled={inviteBusy}>revoke</button>
+                  <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="refresh" onClick={doRefreshInvite} disabled={inviteBusy}><span className="mw-tlabel">refresh</span><span className="mw-ticon" aria-hidden="true">🔄</span></button>
+                  <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" aria-label="revoke" onClick={doRevokeInvite} disabled={inviteBusy}><span className="mw-tlabel">revoke</span><span className="mw-ticon" aria-hidden="true">⊘</span></button>
                 </div>
                 <p className="mw-invite__hint mw-muted">anyone with this link can join directly.</p>
               </>
@@ -505,18 +505,18 @@ export function MemberDrawer({
                 {(canPromote || canDemote || canRemove) && (
                   <span className="mw-mrow__actions">
                     {canPromote && (
-                      <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={() => doRole(m, "admin")} disabled={rowBusy}>
-                        promote
+                      <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="promote" onClick={() => doRole(m, "admin")} disabled={rowBusy}>
+                        <span className="mw-tlabel">promote</span><span className="mw-ticon" aria-hidden="true">▲</span>
                       </button>
                     )}
                     {canDemote && (
-                      <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={() => doRole(m, "member")} disabled={rowBusy}>
-                        demote
+                      <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="demote" onClick={() => doRole(m, "member")} disabled={rowBusy}>
+                        <span className="mw-tlabel">demote</span><span className="mw-ticon" aria-hidden="true">▼</span>
                       </button>
                     )}
                     {canRemove && (
-                      <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" onClick={() => doRemove(m)} disabled={rowBusy}>
-                        remove
+                      <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" aria-label="remove" onClick={() => doRemove(m)} disabled={rowBusy}>
+                        <span className="mw-tlabel">remove</span><span className="mw-ticon" aria-hidden="true">✕</span>
                       </button>
                     )}
                   </span>
