@@ -49,6 +49,34 @@ test("unknown route → 404; thrown error → generic 500", async () => {
   await expect(handle(new Request("https://iss/authorize?client_id=x"), env, boom)).rejects.toThrow();
 });
 
+test("run_worker_first GET pages (/login,/signup,/consent) serve the real asset; unknown → styled 404", async () => {
+  const { env: base, deps } = await fixture();
+  // Stub the assets binding: real pages 200, the styled 404 doc exists, everything
+  // else 404. Mirrors prod, where /login|/signup|/consent run the worker FIRST
+  // (run_worker_first) so their GET page is reachable only via the fallback.
+  const ASSETS = {
+    fetch: async (input: Request | URL | string) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      const p = new URL(href).pathname;
+      if (p === "/login" || p === "/signup" || p === "/consent")
+        return new Response("<html>login page</html>", { status: 200, headers: { "Content-Type": "text/html" } });
+      if (p === "/404.html")
+        return new Response("<html>styled 404</html>", { status: 200, headers: { "Content-Type": "text/html" } });
+      return new Response("", { status: 404 });
+    },
+  };
+  const env = { ...base, ASSETS };
+  for (const p of ["/login", "/signup", "/consent"]) {
+    const r = await handle(new Request(`https://iss${p}`), env, deps);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toContain("login page");
+  }
+  // A genuinely-unknown GET renders the styled Astro 404 with a real 404 status.
+  const nf = await handle(new Request("https://iss/totally-unknown"), env, deps);
+  expect(nf.status).toBe(404);
+  expect(await nf.text()).toContain("styled 404");
+});
+
 test("authorize: unknown client is a FATAL on-site error (never a redirect)", async () => {
   const { env, deps } = await fixture();
   const r = await handle(new Request("https://iss/authorize?client_id=ghost&redirect_uri=https://x/cb&response_type=code&scope=openid&code_challenge=c&code_challenge_method=S256"), env, deps);
