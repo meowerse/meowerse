@@ -4,5 +4,5 @@ import DevelopersPage from "../components/DevelopersPage.tsx";
 const base = import.meta.env.PUBLIC_AUTH_API_URL ?? ""; // same-origin: relative fetches
 ---
 <Layout title="developers · meowerse" wide>
-  <DevelopersPage client:load base={base} />
+  <DevelopersPage client:idle base={base} />
 </Layout>
