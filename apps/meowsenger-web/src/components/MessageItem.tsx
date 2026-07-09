@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Message } from "../lib/chat";
+import { renderBody } from "../lib/messageText";
 import { Avatar } from "./Avatar";
 
 /** A rendered bubble: a real Message, plus a client-only tempId while optimistic. */
@@ -88,7 +89,12 @@ export function MessageItem({
   const key = m.tempId ?? m.id;
   const rowRef = useRef<HTMLDivElement | null>(null);
   const longPressRef = useRef<number | null>(null);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState(m.body);
+  // Roving-tabindex cursor for the hover action toolbar (#43): only ONE action is a
+  // tab stop; arrow keys move focus between the rest. Clamped at render since the
+  // edit/delete actions are conditional (the visible count varies per message).
+  const [actIndex, setActIndex] = useState(0);
 
   // Re-seed the draft whenever we (re-)enter edit mode for this message.
   useEffect(() => {
@@ -120,6 +126,48 @@ export function MessageItem({
       onContextMenu(m, clientX, clientY);
     }, 480);
   }
+
+  // Arrow/Home/End move focus within the action toolbar (roving tabindex, #43).
+  function onActionsKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const btns = Array.from(actionsRef.current?.querySelectorAll<HTMLButtonElement>("button.mw-msg__act") ?? []);
+    if (btns.length === 0) return;
+    const cur = btns.findIndex((b) => b === document.activeElement);
+    const from = cur < 0 ? 0 : cur;
+    let next = from;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (from + 1) % btns.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (from - 1 + btns.length) % btns.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = btns.length - 1;
+    e.preventDefault();
+    setActIndex(next);
+    btns[next]?.focus();
+  }
+
+  // The hover-action buttons, built as an array so the roving tabindex maps to the
+  // ACTUALLY-rendered set (edit/delete are conditional). react + more open popovers.
+  const actions: Array<{
+    key: string;
+    glyph: string;
+    title: string;
+    label: string;
+    haspopup?: boolean;
+    onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  }> = [
+    {
+      key: "react", glyph: "😀", title: "react", label: "react", haspopup: true,
+      onClick: (e) => { const r = e.currentTarget.getBoundingClientRect(); onReact(m, r.left + r.width / 2, r.bottom + 4); },
+    },
+    { key: "reply", glyph: "↩", title: "reply", label: "reply", onClick: () => onReply(m) },
+    ...(canEdit ? [{ key: "edit", glyph: "✎", title: "edit", label: "edit", onClick: () => onStartEdit(m) }] : []),
+    ...(canDelete ? [{ key: "delete", glyph: "🗑", title: "delete", label: "delete", onClick: () => onDelete(m) }] : []),
+    {
+      key: "more", glyph: "⋯", title: "more", label: "more actions", haspopup: true,
+      onClick: (e) => { const r = e.currentTarget.getBoundingClientRect(); onContextMenu(m, r.left, r.bottom); },
+    },
+  ];
+  // Keep the tab-stop index in range as the action count changes.
+  const tabStop = Math.min(actIndex, actions.length - 1);
 
   const deleted = !!m.isDeleted;
 
@@ -204,37 +252,31 @@ export function MessageItem({
                 </button>
               )}
               <span className="mw-bubble__row">
-                <span className="mw-bubble__body">{m.body}</span>
+                <span className="mw-bubble__body">{renderBody(m.body)}</span>
                 {m.editedAt ? <span className="mw-bubble__edited" title="edited">edited</span> : null}
-                <span className="mw-bubble__time">{fmtTime(m.createdAt)}</span>
+                <span className="mw-bubble__time" title={new Date(m.createdAt).toLocaleString()}>{fmtTime(m.createdAt)}</span>
               </span>
             </div>
 
             {!selectMode && (
-              <div className="mw-msg__actions" role="group" aria-label="message actions">
-                <button
-                  className="mw-msg__act"
-                  title="react"
-                  aria-label="react"
-                  aria-haspopup="menu"
-                  onClick={(e) => {
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    onReact(m, r.left + r.width / 2, r.bottom + 4);
-                  }}
-                >😀</button>
-                <button className="mw-msg__act" title="reply" aria-label="reply" onClick={() => onReply(m)}>↩</button>
-                {canEdit && <button className="mw-msg__act" title="edit" aria-label="edit" onClick={() => onStartEdit(m)}>✎</button>}
-                {canDelete && <button className="mw-msg__act" title="delete" aria-label="delete" onClick={() => onDelete(m)}>🗑</button>}
-                <button
-                  className="mw-msg__act"
-                  title="more"
-                  aria-label="more actions"
-                  aria-haspopup="menu"
-                  onClick={(e) => {
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    onContextMenu(m, r.left, r.bottom);
-                  }}
-                >⋯</button>
+              <div
+                ref={actionsRef}
+                className="mw-msg__actions"
+                role="toolbar"
+                aria-label="message actions"
+                onKeyDown={onActionsKeyDown}
+              >
+                {actions.map((a, i) => (
+                  <button
+                    key={a.key}
+                    className="mw-msg__act"
+                    title={a.title}
+                    aria-label={a.label}
+                    {...(a.haspopup ? { "aria-haspopup": "menu" as const } : {})}
+                    tabIndex={i === tabStop ? 0 : -1}
+                    onClick={a.onClick}
+                  >{a.glyph}</button>
+                ))}
               </div>
             )}
           </div>

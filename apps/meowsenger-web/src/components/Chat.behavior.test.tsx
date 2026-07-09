@@ -221,6 +221,122 @@ describe("Chat island — error frame", () => {
   });
 });
 
+describe("Chat island — day separators (#10/#12)", () => {
+  it("renders a separator before the first message of each calendar day", async () => {
+    // Two messages ~25h apart → two distinct calendar days → two separators.
+    H.history = {
+      c1: [
+        msg({ id: "d1", body: "first day", createdAt: 1000 }),
+        msg({ id: "d2", body: "next day", createdAt: 90_000_000 }),
+      ],
+    };
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("next day")).toBeTruthy());
+    expect(screen.getAllByRole("separator").length).toBe(2);
+  });
+
+  it("renders a single separator when all messages share a day", async () => {
+    H.history = {
+      c1: [
+        msg({ id: "s1", body: "one", createdAt: 1000 }),
+        msg({ id: "s2", body: "two", createdAt: 2000 }),
+      ],
+    };
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("two")).toBeTruthy());
+    expect(screen.getAllByRole("separator").length).toBe(1);
+  });
+});
+
+describe("Chat island — tab-title unread badge (#14)", () => {
+  it("reflects the count of chats with unread in document.title, and restores on unmount", async () => {
+    H.chats = [
+      dm({ unreadCount: 2 }),
+      dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", unreadCount: 1 }),
+    ];
+    setUrl("/app"); // no active chat → no read zeroes the counts
+    const { unmount } = render(<Chat base="" />);
+    await waitFor(() => expect(document.title).toBe("(2) meowsenger"));
+    unmount();
+    expect(document.title).toBe("meowsenger");
+  });
+});
+
+describe("Chat island — SR announce of new incoming messages (#7)", () => {
+  it("announces new incoming messages only — never the backlog or own sends", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const live = document.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(live).toBeTruthy();
+    // The initial backlog message must NOT be announced.
+    expect(live.textContent ?? "").not.toContain("hello there");
+    // A live incoming frame IS announced, naming the sender.
+    open(ws);
+    emit(ws, { type: "message", message: msg({ id: "m2", senderId: "u2", body: "a fresh line", createdAt: 2000 }) });
+    await waitFor(() => expect(live.textContent ?? "").toContain("a fresh line"));
+    expect(live.textContent ?? "").toContain("Bob");
+    // My own outgoing message is NOT announced.
+    const box = screen.getByLabelText("message") as HTMLTextAreaElement;
+    act(() => fireEvent.change(box, { target: { value: "my own line" } }));
+    act(() => fireEvent.click(screen.getByRole("button", { name: "send" })));
+    await waitFor(() => expect(screen.getByText("my own line")).toBeTruthy());
+    expect(live.textContent ?? "").not.toContain("my own line");
+  });
+});
+
+describe("Chat island — bulk-delete confirmation (#37)", () => {
+  it("confirms before deleting the eligible selection, then sends the delete frame", async () => {
+    H.history = { c1: [msg({ id: "mine1", senderId: "u1", body: "delete me", createdAt: Date.now() })] };
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(screen.getByText("delete me")).toBeTruthy());
+    // Enter select mode via the row context menu → "select".
+    act(() => fireEvent.contextMenu(screen.getByText("delete me")));
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "select" })).toBeTruthy());
+    act(() => fireEvent.click(screen.getByRole("menuitem", { name: "select" })));
+    // The select-bar delete opens a confirm dialog — no delete frame is sent yet.
+    act(() => fireEvent.click(screen.getByRole("button", { name: "delete" })));
+    await waitFor(() => expect(screen.getByText(/delete 1 message\?/)).toBeTruthy());
+    expect(ws.sentFrames().some((f) => f.type === "delete")).toBe(false);
+    // Confirming actually sends the delete.
+    const deletes = screen.getAllByRole("button", { name: "delete" });
+    act(() => fireEvent.click(deletes[deletes.length - 1]));
+    await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "delete" && f.id === "mine1")).toBe(true));
+  });
+});
+
+describe("Chat island — message actions toolbar (#43)", () => {
+  it("is a role=toolbar with a single tab stop; arrow keys rove focus", async () => {
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const toolbar = document.querySelector('[role="toolbar"][aria-label="message actions"]') as HTMLElement;
+    expect(toolbar).toBeTruthy();
+    const btns = Array.from(toolbar.querySelectorAll("button"));
+    expect(btns.filter((b) => b.getAttribute("tabindex") === "0").length).toBe(1);
+    expect(btns.filter((b) => b.getAttribute("tabindex") === "-1").length).toBe(btns.length - 1);
+    btns[0].focus();
+    act(() => fireEvent.keyDown(toolbar, { key: "ArrowRight" }));
+    expect(document.activeElement).toBe(btns[1]);
+  });
+});
+
+describe("Chat island — menu focus restore (#9)", () => {
+  it("returns focus to the ⋯ trigger when the menu closes", async () => {
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const toolbar = document.querySelector('[role="toolbar"][aria-label="message actions"]') as HTMLElement;
+    const moreBtn = Array.from(toolbar.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "more actions",
+    ) as HTMLElement;
+    moreBtn.focus();
+    act(() => fireEvent.click(moreBtn));
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    act(() => fireEvent.keyDown(window, { key: "Escape" }));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(moreBtn);
+  });
+});
+
 describe("Chat island — per-chat UI reset on switch (audit trap)", () => {
   it("closes the search panel when switching chats", async () => {
     H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
