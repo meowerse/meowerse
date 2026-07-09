@@ -27,11 +27,12 @@
   "assets": {
     "directory": "../../apps/auth-web/dist",
     "binding": "ASSETS",
-    "run_worker_first": ["/signup", "/login", "/consent"],
-    // Serve the built 404.html (with a 404 status) for any path that matches no
-    // asset — so env.ASSETS.fetch(req) on an unknown route renders the styled Astro
-    // 404 instead of a bare, browser-default "page can't be found".
-    "not_found_handling": "404-page"
+    "run_worker_first": ["/signup", "/login", "/consent"]
+    // NOTE: do NOT set "not_found_handling": "404-page" here. With a run_worker_first
+    // LIST, every path outside that list is treated asset-first, so 404-page would
+    // serve 404.html BEFORE the worker runs — shadowing /authorize, /token, /jwks,
+    // /api/*, … (breaks the whole IdP). The worker fallback serves the styled
+    // 404.html itself (see index.ts) so unknown paths still get a real 404 page.
   },
   // Smart Placement: this worker is DB-bound (every request round-trips to the
   // Turso primary in aws-eu-west-1). Let Cloudflare run the isolate NEAR Turso
