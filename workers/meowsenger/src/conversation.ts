@@ -397,10 +397,13 @@ export class Conversation extends DurableObject<Env> {
 
     // Ack the sender's own socket if given (reconciles their optimistic bubble via
     // tempId), then fan out to every OTHER socket. With no ackTo (forward RPC),
-    // the loop below reaches every socket in the room.
+    // the loop below reaches every socket in the room. Serialize the message frame
+    // ONCE (not per-recipient) — this is the hottest path in the app (every live
+    // send); the identical multi-KB Wire is broadcast to all peers verbatim.
     if (opts.ackTo) this.safeSend(opts.ackTo, JSON.stringify({ type: "sent", tempId: opts.tempId, message }));
+    const frame = JSON.stringify({ type: "message", message });
     for (const peer of this.ctx.getWebSockets()) {
-      if (peer !== opts.ackTo) this.safeSend(peer, JSON.stringify({ type: "message", message }));
+      if (peer !== opts.ackTo) this.safeSend(peer, frame);
     }
     // Off the critical path: mirror the preview + unread bump to D1 for the sidebar.
     // The message is already persisted + broadcast; a failed sidebar mirror is
