@@ -4,19 +4,19 @@
     "sha": "29dcdf7"
   },
   "auth": {
-    "at": "prod",
-    "sha": "83a525e"
+    "at": "local",
+    "sha": "5f40d1a"
   },
   "meowsenger": {
-    "at": "prod",
-    "sha": "ac4f1d4"
+    "at": "local",
+    "sha": "4ab7b3d"
   },
   "web": {
     "at": "local",
-    "sha": "5493401"
+    "sha": "53123fd"
   },
   "worker": {
     "at": "local",
-    "sha": "64f1b45"
+    "sha": "ed8add4"
   }
 }
