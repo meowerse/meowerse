@@ -61,12 +61,11 @@ export async function createOrGetDirect(
     "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
     [id, me, now, now, key],
   );
-  for (const uid of [me, other]) {
-    await db.run(
-      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
-      [id, uid, now],
-    );
-  }
+  // Both members in ONE multi-row INSERT (one D1 PRIMARY write instead of two).
+  await db.run(
+    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?), (?, ?, 'member', 0, NULL, ?)",
+    [id, me, now, id, other, now],
+  );
   return { id, created: true };
 }
 
@@ -142,13 +141,43 @@ export async function isMember(db: DbClient, chatId: string, userId: string): Pr
 
 // ---- Slice 5: groups, roles, member views, metadata ----
 
+/** Normalize a raw stored role value to a `Role`, or null when absent. An
+ *  unrecognized non-null role clamps to `member` (the least-privileged), so an
+ *  unexpected DB value can never grant elevated access. Shared by getRole/getRoles
+ *  and the folded membership reads so they all agree on the mapping. */
+function normalizeRole(raw: unknown): Role | null {
+  if (raw == null) return null;
+  const role = String(raw);
+  return role === "owner" || role === "admin" || role === "member" ? role : "member";
+}
+
 /** The caller's role in a chat, or null if not a member. Authoritative — every
  *  mutation gates on this, never on a client-sent role. */
 export async function getRole(db: DbClient, chatId: string, userId: string): Promise<Role | null> {
   const r = await db.first("SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
-  if (!r) return null;
-  const role = String(r.role);
-  return role === "owner" || role === "admin" || role === "member" ? role : "member";
+  return r ? normalizeRole(r.role) : null;
+}
+
+/**
+ * Resolve MULTIPLE users' roles in one chat with a SINGLE read (one `IN (…)`
+ * query instead of N `getRole` round-trips). Returns a Map keyed by user id;
+ * absent users (non-members) are simply not in the map, so `map.get(id) ?? null`
+ * is the exact getRole-equivalent for each. Same per-user normalization as
+ * getRole (unknown role → `member`). An empty `userIds` skips the query.
+ */
+export async function getRoles(db: DbClient, chatId: string, userIds: string[]): Promise<Map<string, Role>> {
+  const map = new Map<string, Role>();
+  if (userIds.length === 0) return map;
+  const placeholders = userIds.map(() => "?").join(", ");
+  const rows = await db.all(
+    `SELECT user_id, role FROM chat_members WHERE chat_id = ? AND user_id IN (${placeholders})`,
+    [chatId, ...userIds],
+  );
+  for (const r of rows) {
+    const role = normalizeRole(r.role);
+    if (role != null) map.set(String(r.user_id), role);
+  }
+  return map;
 }
 
 /** A chat's `type` ('direct'|'group'|'channel'), or null if the chat is unknown.
@@ -216,18 +245,20 @@ export async function createGroup(
     "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
     [id, type, name, input.creatorId, now, now, visibility, slug],
   );
-  await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'owner', 0, NULL, ?)",
-    [id, input.creatorId, now],
-  );
   // Distinct members other than the creator, added as plain members.
   const others = [...new Set(input.memberIds)].filter((uid) => uid !== input.creatorId);
+  // ONE multi-row INSERT: the creator as 'owner' plus every other member as
+  // 'member' (a single D1 PRIMARY write instead of 1 + N sequential writes).
+  const valueRows = ["(?, ?, 'owner', 0, NULL, ?)"];
+  const args: unknown[] = [id, input.creatorId, now];
   for (const uid of others) {
-    await db.run(
-      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
-      [id, uid, now],
-    );
+    valueRows.push("(?, ?, 'member', 0, NULL, ?)");
+    args.push(id, uid, now);
   }
+  await db.run(
+    `INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES ${valueRows.join(", ")}`,
+    args,
+  );
   return { id };
 }
 
@@ -336,11 +367,14 @@ export async function getPreviewBySlug(
   if (!row) return { error: "private" };
   const id = String(row.id);
   const visibility = String(row.visibility);
-  const isMember = callerId != null && (await getRole(db, id, callerId)) != null;
+  // ONE read for BOTH the member count and the caller's own role (folded via a
+  // conditional MAX) instead of a separate getRole + COUNT. `my_role` is NULL for a
+  // null caller (NULL never matches user_id) or a non-member → isMember false.
   const countRow = await db.first(
-    "SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?",
-    [id],
+    "SELECT COUNT(*) AS n, MAX(CASE WHEN user_id = ? THEN role END) AS my_role FROM chat_members WHERE chat_id = ?",
+    [callerId, id],
   );
+  const isMember = callerId != null && normalizeRole(countRow?.my_role) != null;
   const base: ChatPreview = {
     id,
     type: String(row.type),
@@ -380,9 +414,14 @@ export async function resolveChat(
   const id = String(row.id);
   const visibility = String(row.visibility);
   const slug = row.slug == null ? null : String(row.slug);
-  const role = await getRole(db, id, userId);
+  // ONE read for BOTH member count and the caller's role (folded conditional MAX)
+  // instead of getRole + a separate COUNT. Same null/normalization as getRole.
+  const countRow = await db.first(
+    "SELECT COUNT(*) AS n, MAX(CASE WHEN user_id = ? THEN role END) AS my_role FROM chat_members WHERE chat_id = ?",
+    [userId, id],
+  );
+  const role = normalizeRole(countRow?.my_role);
   const isMember = role != null;
-  const countRow = await db.first("SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?", [id]);
   const base = {
     id, type: String(row.type), name: row.name == null ? null : String(row.name),
     memberCount: Number(countRow?.n ?? 0), visibility, isMember, slug, role,

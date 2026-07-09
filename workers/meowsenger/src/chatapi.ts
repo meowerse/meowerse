@@ -26,7 +26,7 @@ import {
 } from "./chats";
 import { addMember, removeMember, promote, demote, leave } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
-import { getAllowAutoGroupAdd, setAllowAutoGroupAdd } from "./users";
+import { getAllowAutoGroupAdd, setAllowAutoGroupAdd, userIdsByNames } from "./users";
 import { savePushSubscription, deletePushSubscription, isAllowedPushEndpoint } from "./push";
 import { MAX_MESSAGE_BODY as MAX_BODY } from "@meowerse/ts-shared";
 
@@ -122,9 +122,13 @@ async function handleCreateGroup(
   // Bound the initial roster: each username costs a D1 lookup below, so cap the
   // fan-out (a group can still grow past this via addMember one at a time).
   if (usernames.length > 200) return json({ error: "too_many_members" }, 400, cors, { "Cache-Control": "no-store" });
+  // Resolve every roster username → id in ONE query (was an N+1 loop of per-name
+  // lookups). Preserve the old behavior exactly: iterate in order and fail on the
+  // FIRST username with no matching user, echoing that username in the error.
+  const idByName = await userIdsByNames(db, usernames);
   const memberIds: string[] = [];
   for (const uname of usernames) {
-    const uid = await userIdByName(db, uname);
+    const uid = idByName.get(uname);
     if (!uid) return json({ error: "user_not_found", username: uname }, 404, cors, { "Cache-Control": "no-store" });
     memberIds.push(uid);
   }
