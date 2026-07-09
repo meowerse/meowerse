@@ -21,7 +21,7 @@
   --surface-muted: #f0f0ee;
   --text-primary: #141414;
   --text-secondary: #52514e;
-  --text-muted: #8a8a85;
+  --text-muted: #6b6b66;
   --text-accent: #0a7a42;
   --border: #e6e6e3;
   --border-strong: #d4d4d0;
@@ -102,6 +102,7 @@ body {
   text-transform: lowercase;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
 }
 .mono, code, kbd, samp, pre, .cs, [data-case="preserve"] { text-transform: none; }
 
