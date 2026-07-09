@@ -44,13 +44,15 @@ export async function signup(db: DbClient, input: SignupInput, opts: SignupOpts 
   });
 
   const codes = genRecoveryCodes();
-  for (const code of codes) {
-    const codeHash = await hashPassword(normalizeRecoveryCode(code), opts.recoveryParams ?? CHEAP_PBKDF2);
-    await db.execute({
+  // Hashes are independent + known up front → hash all, then write in ONE batch
+  // (was 8 sequential INSERT round-trips).
+  const inserts = await Promise.all(
+    codes.map(async (code) => ({
       sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, ?)",
-      args: [accountId, codeHash],
-    });
-  }
+      args: [accountId, await hashPassword(normalizeRecoveryCode(code), opts.recoveryParams ?? CHEAP_PBKDF2)],
+    })),
+  );
+  await db.batch(inserts);
   return { ok: true, accountId, recoveryCodes: codes };
 }
 
@@ -195,12 +197,13 @@ export async function changePassword(
 export async function regenerateRecoveryCodes(db: DbClient, accountId: string, params?: Pbkdf2Params): Promise<string[]> {
   await db.execute({ sql: "DELETE FROM recovery_codes WHERE account_id = ?", args: [accountId] });
   const codes = genRecoveryCodes();
-  for (const code of codes) {
-    await db.execute({
+  const inserts = await Promise.all(
+    codes.map(async (code) => ({
       sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, ?)",
       args: [accountId, await hashPassword(normalizeRecoveryCode(code), params ?? CHEAP_PBKDF2)],
-    });
-  }
+    })),
+  );
+  await db.batch(inserts);
   return codes;
 }
 

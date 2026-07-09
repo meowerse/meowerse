@@ -16,8 +16,8 @@ import {
 import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
-import { createAuthCode, exchangeCode, mintTokens, recordAccessToken, revokeAccessToken, introspect } from "./token";
-import { createRefreshToken, rotateRefresh } from "./refresh";
+import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
+import { refreshTokenInsert, rotateRefresh } from "./refresh";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -163,7 +163,10 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
   const db = deps.getDb();
   const client = await getClient(db, request.clientId);
   if (!client || client.status !== "active") return { action: "done" };
-  const verified = await deriveVerified(db, accountId);
+  // `verified` only affects the decision when it can matter (verified-only client,
+  // or the `verified` scope is in play). Otherwise skip the standalone Turso hop.
+  const verified =
+    client.verifiedOnly || request.scope.includes("verified") ? await deriveVerified(db, accountId) : false;
   const consent = await getConsent(db, accountId, request.clientId);
   const decision = consentDecision({
     requested: request.scope,
@@ -185,7 +188,9 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
 
 // --- Route handlers ---------------------------------------------------------
 
-async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
+  // Cheap in-worker second line behind the edge WAF (same shape as /token).
+  if (!(await ipThrottle(req, deps, "authorize", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
   const url = new URL(req.url);
   const params = parseAuthorizeQuery(url);
   const db = deps.getDb();
@@ -199,11 +204,12 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
 
   const request = v.request;
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
   const promptNone = (request.prompt ?? "").split(/\s+/).includes("none");
 
   if (session) {
-    const verified = await deriveVerified(db, session.accountId);
+    const verified =
+      client!.verifiedOnly || request.scope.includes("verified") ? await deriveVerified(db, session.accountId) : false;
     const consent = await getConsent(db, session.accountId, request.clientId);
     const decision = consentDecision({
       requested: request.scope,
@@ -265,13 +271,17 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
 async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const db = deps.getDb();
-  const userHash = await sha256Hex((p.username ?? "") + "|login");
-  const rl = await checkRateLimit(db, `login:${userHash}`, { limit: 10, windowSec: 900, now: now(deps) });
-  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
-  // Bot gate (before the expensive PBKDF2). No-op unless TURNSTILE_SECRET_KEY is set.
+  // Bot gate FIRST, so a gated bot never reaches (or writes to) the rate_limits
+  // table. No-op unless TURNSTILE_SECRET_KEY is set.
   if (!(await turnstileGate(env, p, req.headers.get("CF-Connecting-IP"), deps.fetch))) {
     return json({ error: "turnstile_failed" }, 403, cors);
   }
+  // Key the limiter on the CLIENT IP, not sha256(username): a username-keyed bucket
+  // lets an attacker mint unbounded distinct rows (write amplification) and lock
+  // out victims by username; per-IP bounds the write surface and the abuser.
+  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|login");
+  const rl = await checkRateLimit(db, `login:${ipHash}`, { limit: 10, windowSec: 900, now: now(deps) });
+  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
   if (!res.ok) return json({ error: "invalid_credentials" }, 401, cors);
@@ -291,11 +301,11 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   });
 }
 
-async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   const p = await readParams(req);
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
   if (!session) return json({ error: "no_session" }, 401, cors);
   if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
 
@@ -312,7 +322,8 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
     return json({ redirect: loc }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": clearTkt });
   }
 
-  const verified = await deriveVerified(db, session.accountId);
+  // Only verified-only clients gate on `verified` here → skip the hop otherwise.
+  const verified = client.verifiedOnly ? await deriveVerified(db, session.accountId) : false;
   if (client.verifiedOnly && !verified) return json({ error: "verification_required" }, 403, cors);
   // Granular consent (R20): grant only the scopes the user checked. `openid` is
   // always kept; absent `scopes` means accept-all (backward compatible).
@@ -332,10 +343,10 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
 }
 
 /** GET the pending authorize request so the consent UI can render it on a fresh load. */
-async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
   if (!session) return json({ error: "no_session" }, 401, cors);
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
@@ -358,8 +369,11 @@ async function mintResponse(
   i: { accountId: string; clientId: string; scope: string[]; nonce: string | null; authTime: number; family: string; issueRefresh?: boolean; refreshToken?: string },
 ): Promise<Response> {
   const db = deps.getDb();
-  const verified = await deriveVerified(db, i.accountId);
+  // The id_token only carries `verified` when the `verified` scope was granted,
+  // so only then is the standalone live-verified hop needed.
+  const verified = i.scope.includes("verified") ? await deriveVerified(db, i.accountId) : false;
   const signing = await getSigning(env);
+  const t = now(deps);
   const tokens = await mintTokens({
     accountId: i.accountId,
     clientId: i.clientId,
@@ -372,14 +386,20 @@ async function mintResponse(
     signingKey: signing.active.key,
     kid: signing.active.kid,
     family: i.family,
-    now: now(deps),
+    now: t,
   });
-  await recordAccessToken(db, { jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
   const { jti: _jti, ...body } = tokens;
   void _jti;
+  const accessStmt = accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t });
   let refresh = i.refreshToken;
   if (i.issueRefresh && !refresh) {
-    refresh = await createRefreshToken(db, { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: now(deps) });
+    // Offline-token pair: the access jti + the new refresh row are both known up
+    // front (not a CAS) → one batch instead of two INSERT round-trips.
+    const { stmt: refreshStmt, token } = await refreshTokenInsert({ accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t });
+    refresh = token;
+    await db.batch([accessStmt, refreshStmt]);
+  } else {
+    await db.execute(accessStmt);
   }
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
@@ -453,7 +473,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 const TGOWN_COOKIE = "mw_tgown";
 
 /** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
-async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   if (!(await ipThrottle(req, deps, "tgstart", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
   const db = deps.getDb();
   const p = await readParams(req);
@@ -461,7 +481,7 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   const cookies = parseCookies(req.headers.get("Cookie"));
   let accountId: string | null = null;
   if (kind === "VERIFY_EXISTING") {
-    const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+    const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
     if (!session) return json({ error: "no_session" }, 401, cors);
     accountId = session.accountId;
   }
@@ -506,6 +526,8 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
 
 /** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
 async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  // Cheap in-worker second line for the poll endpoint (same shape as /token).
+  if (!(await ipThrottle(req, deps, "tgstatus", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
   const db = deps.getDb();
   const ticketId = new URL(req.url).searchParams.get("ticket") ?? "";
   const cookies = parseCookies(req.headers.get("Cookie"));
@@ -637,10 +659,10 @@ function asBool(v: string | undefined): boolean {
 }
 
 /** Developer dashboard API (session-authed, owner-scoped). Spec §8. */
-async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
   if (!session) return json({ error: "no_session" }, 401, cors);
 
   if (sub === "clients" && req.method === "GET") {
@@ -710,10 +732,10 @@ async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<st
 }
 
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
-async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string): Promise<Response> {
+async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
   if (!session) return json({ error: "no_session" }, 401, cors);
   const accountId = session.accountId;
 
@@ -777,6 +799,11 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
 }
 
 const CACHE_1H = { "Cache-Control": "public, max-age=3600" };
+// /jwks + /.well-known/openid-configuration are public documents fetched cross-origin
+// by every RP. Serve a PLAIN `Access-Control-Allow-Origin: *` (no credentials, no
+// Vary: Origin) instead of reflected-origin CORS, so an edge cache can hold ONE
+// copy for all origins without per-origin cache poisoning.
+const PUBLIC_CORS = { "Access-Control-Allow-Origin": "*" };
 
 /**
  * Thin DI router (mirrors workers/api). `deps` is injectable so tests pass a
@@ -790,11 +817,11 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   const m = req.method;
 
   if (m === "GET" && pathname === "/.well-known/openid-configuration") {
-    return json(discoveryDoc(env), 200, { ...cors, ...CACHE_1H });
+    return json(discoveryDoc(env), 200, { ...PUBLIC_CORS, ...CACHE_1H });
   }
   if (m === "GET" && (pathname === "/jwks" || pathname === "/.well-known/jwks.json")) {
     const signing = await getSigning(env);
-    return json(signing.jwks, 200, { ...cors, ...CACHE_1H });
+    return json(signing.jwks, 200, { ...PUBLIC_CORS, ...CACHE_1H });
   }
 
   // Everything below may touch the DB → ensure the schema once per isolate.
@@ -803,29 +830,35 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   // the flag unset so the schema + seed still run against the in-memory fake.
   if (env.SKIP_MIGRATIONS !== "1") await ensureSchema(deps);
 
-  if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, deps, cors);
-  if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, deps, cors);
+  if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, deps, cors, ctx);
+  if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, deps, cors, ctx);
   if (pathname === "/signup" && m === "POST") return handleSignup(req, env, deps, cors);
   if (pathname === "/login" && m === "POST") return handleLogin(req, env, deps, cors);
-  if (pathname === "/consent" && m === "POST") return handleConsent(req, env, deps, cors);
+  if (pathname === "/consent" && m === "POST") return handleConsent(req, env, deps, cors, ctx);
   if (pathname === "/token" && m === "POST") return handleToken(req, env, deps, cors);
   if (pathname === "/token/revoke" && m === "POST") return handleRevoke(req, env, deps, cors);
   if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, deps, cors);
-  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, deps, cors);
+  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, deps, cors, ctx);
   if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, deps, cors);
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
-  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length));
+  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length), ctx);
   if (pathname === "/api/session" && m === "GET") return handleSession(req, env, deps, cors, ctx);
   if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
-    return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length));
+    return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length), ctx);
   }
   if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
   if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
   // Public, unauthenticated avatar proxy: cross-origin <img> loads its current
   // Telegram photo. `ctx` is threaded through Deps so it can edge-cache the bytes.
-  const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]+)$/);
-  if (av && m === "GET") return handleAvatar(req, env, ctx ? { ...deps, ctx } : deps, av[1]!, cors);
+  // Cap the id length in the pattern itself (account ids are ~37 chars) so a huge
+  // path can't be used to bloat the cache key or the DB lookup.
+  const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]{1,64})$/);
+  if (av && m === "GET") {
+    // Per-IP second line in front of the Bot-API amplification (same shape as /token).
+    if (!(await ipThrottle(req, deps, "avatar", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+    return handleAvatar(req, env, ctx ? { ...deps, ctx } : deps, av[1]!, cors);
+  }
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
   // Matching static assets (the Astro UI: /login, /consent, /account, …) are

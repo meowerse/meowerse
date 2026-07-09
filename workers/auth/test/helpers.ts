@@ -12,17 +12,18 @@ export type Route = [RegExp, (args: unknown[]) => DbResult | void];
  * DB-dependent unit tests declarative without a real Turso.
  */
 export function routedDb(routes: Route[], log: { sql: string; args: unknown[] }[] = []): DbClient {
-  return {
-    execute: async (stmt) => {
-      const sql = typeof stmt === "string" ? stmt : stmt.sql;
-      const args = typeof stmt === "string" ? [] : stmt.args;
-      log.push({ sql, args });
-      for (const [re, fn] of routes) {
-        if (re.test(sql)) return fn(args) ?? { rows: [] };
-      }
-      return { rows: [] };
-    },
+  const execute: DbClient["execute"] = async (stmt) => {
+    const sql = typeof stmt === "string" ? stmt : stmt.sql;
+    const args = typeof stmt === "string" ? [] : stmt.args;
+    log.push({ sql, args });
+    for (const [re, fn] of routes) {
+      if (re.test(sql)) return fn(args) ?? { rows: [] };
+    }
+    return { rows: [] };
   };
+  // batch = sequential execute (each statement is still logged + routed), so
+  // tests that assert on the per-statement log keep working with batched writes.
+  return { execute, batch: async (stmts) => Promise.all(stmts.map((s) => execute(s))) };
 }
 
 /** Pull a cookie value out of a Set-Cookie header (test helper). */
@@ -55,8 +56,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     rate_limits: [],
     login_tickets: [],
   };
-  const db: DbClient = {
-    execute: async (stmt) => {
+  const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;
       const sql = raw.replace(/\s+/g, " ").trim();
@@ -402,22 +402,30 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
 
       // --- rate limits ---
-      if (/FROM rate_limits WHERE bucket/.test(sql))
-        return { rows: t.rate_limits.filter((r) => r.bucket === a[0]).map((r) => ({ count: r.count, window_start: r.window_start })) };
+      // Atomic upsert with RETURNING count. The `1` (count) in VALUES is a literal,
+      // so the bound args are:
+      //   [bucket, now, now,  now, windowSec,  now, windowSec, now,  now]
+      //    0=bkt   1    2     3    4=win        5    6=win      7     8
+      // new bucket → count 1; within window → count+1; window elapsed → reset to 1.
       if (/INSERT INTO rate_limits/.test(sql)) {
-        const existing = t.rate_limits.find((r) => r.bucket === a[0]);
-        if (existing) {
-          existing.count = a[1];
-          existing.window_start = a[2];
-        } else {
-          t.rate_limits.push({ bucket: a[0], count: a[1], window_start: a[2] });
+        const bucket = a[0];
+        const now = Number(a[3]);
+        const windowSec = Number(a[4]);
+        const existing = t.rate_limits.find((r) => r.bucket === bucket);
+        if (!existing) {
+          t.rate_limits.push({ bucket, count: 1, window_start: now, last_at: now });
+          return { rows: [{ count: 1 }] };
         }
-        return { rows: [] };
+        const inWindow = now - Number(existing.window_start) < windowSec;
+        existing.count = inWindow ? Number(existing.count) + 1 : 1;
+        existing.window_start = inWindow ? existing.window_start : now;
+        existing.last_at = now;
+        return { rows: [{ count: existing.count }] };
       }
 
       return { rows: [] };
-    },
   };
+  const db: DbClient = { execute: exec, batch: async (stmts) => Promise.all(stmts.map((s) => exec(s))) };
   return { db, tables: t };
 }
 

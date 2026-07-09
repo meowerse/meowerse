@@ -41,8 +41,18 @@ export interface SessionView {
 /**
  * Resolve a session cookie to its account. Returns null when the row is absent,
  * revoked, or past either expiry. On a hit, rolls the idle window forward.
+ *
+ * The idle-window roll is an idempotent, non-user-visible keep-alive write. When
+ * an `ExecutionContext` is threaded through (prod), it is fired off the response
+ * path via `ctx.waitUntil` so the read is the only blocking DB hop; without one
+ * (tests, or handlers that don't thread ctx) it is awaited inline as before.
  */
-export async function lookupSession(db: DbClient, rawId: string | undefined, now: number): Promise<SessionView | null> {
+export async function lookupSession(
+  db: DbClient,
+  rawId: string | undefined,
+  now: number,
+  ctx?: ExecutionContext,
+): Promise<SessionView | null> {
   if (!rawId) return null;
   const idHash = await sha256Hex(rawId);
   const res = await db.execute({
@@ -54,7 +64,8 @@ export async function lookupSession(db: DbClient, rawId: string | undefined, now
   if (!row) return null;
   if (row.revoked_at != null) return null;
   if (now > Number(row.idle_expires_at) || now > Number(row.absolute_expires_at)) return null;
-  await rollIdle(db, idHash, now);
+  if (ctx) ctx.waitUntil(rollIdle(db, idHash, now));
+  else await rollIdle(db, idHash, now);
   return {
     accountId: String(row.account_id),
     authTime: Number(row.auth_time),
@@ -127,11 +138,19 @@ export async function rotateSession(
 ): Promise<IssuedSession | null> {
   const view = await lookupSession(db, oldRawId, input.now);
   if (!view) return null;
-  await revokeSession(db, oldRawId);
-  return issueSession(db, {
-    accountId: view.accountId,
-    amr: view.amr ?? "pwd",
-    authTime: input.authTime ?? view.authTime,
-    now: input.now,
-  });
+  // The old-row revoke and the new-row insert are both known up front (no
+  // read-decide-write), so fire them as ONE batch instead of two round-trips.
+  const oldHash = await sha256Hex(oldRawId);
+  const rawId = randomId(32);
+  const idHash = await sha256Hex(rawId);
+  const csrf = randomId(24);
+  await db.batch([
+    { sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE id_hash = ?", args: [oldHash] },
+    {
+      sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [idHash, view.accountId, input.authTime ?? view.authTime, view.amr ?? "pwd", csrf, input.now + IDLE_TTL, input.now + ABSOLUTE_TTL],
+    },
+  ]);
+  return { rawId, csrf, idHash };
 }

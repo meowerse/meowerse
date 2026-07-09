@@ -46,7 +46,7 @@ function fakeFetch(opts: {
 
 const req = () => new Request(`https://iss/avatar/${ACCT}`);
 
-test("no TELEGRAM_BOT_TOKEN → 404 no_avatar, no-store, never touches the DB or network", async () => {
+test("no TELEGRAM_BOT_TOKEN → 404 no_avatar, negative-cacheable, never touches the DB or network", async () => {
   const urls: string[] = [];
   let dbCalled = false;
   const deps = {
@@ -58,7 +58,10 @@ test("no TELEGRAM_BOT_TOKEN → 404 no_avatar, no-store, never touches the DB or
   } as unknown as Deps;
   const res = await handleAvatar(req(), {} as Env, deps, ACCT, CORS);
   expect(res.status).toBe(404);
-  expect(res.headers.get("Cache-Control")).toBe("no-store");
+  // negative results are cacheable (public, 5 min) so a missing avatar doesn't
+  // keep re-hitting the worker / Bot API; ACAO:* keeps the cached copy origin-safe.
+  expect(res.headers.get("Cache-Control")).toBe("public, max-age=300");
+  expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
   expect(await res.json()).toEqual({ error: "no_avatar" });
   expect(dbCalled).toBe(false);
   expect(urls).toEqual([]);
@@ -262,6 +265,61 @@ test("edge cache hit is returned without touching DB or Bot API", async () => {
     expect(dbCalled).toBe(false);
     expect(urls).toEqual([]);
     expect(putCalled).toBe(false);
+  } finally {
+    g.caches = prev;
+  }
+});
+
+test("negative results (404) are put into the edge cache under the canonical key", async () => {
+  const g = globalThis as { caches?: unknown };
+  const prev = g.caches;
+  let putKey: Request | undefined;
+  g.caches = {
+    default: {
+      match: async () => undefined,
+      put: async (r: Request) => {
+        putKey = r;
+      },
+    },
+  };
+  try {
+    const waited: Promise<unknown>[] = [];
+    const deps = {
+      getDb: () => routedDb([linkRoute(null)]), // no telegram link → 404
+      fetch: fakeFetch({ photos: { ok: true }, urls: [] }),
+      ctx: { waitUntil: (p: Promise<unknown>) => waited.push(p) } as unknown as ExecutionContext,
+    } as unknown as Deps;
+    const res = await handleAvatar(new Request(`https://iss/avatar/${ACCT}`), { TELEGRAM_BOT_TOKEN: "T" } as Env, deps, ACCT, CORS);
+    expect(res.status).toBe(404);
+    expect(waited.length).toBe(1); // the 404 is deferred into the cache
+    await Promise.all(waited);
+    expect(new URL(putKey!.url).pathname).toBe(`/avatar/${ACCT}`);
+  } finally {
+    g.caches = prev;
+  }
+});
+
+test("cache key is CANONICAL — a ?x=rand query can't bust the cache", async () => {
+  const g = globalThis as { caches?: unknown };
+  const prev = g.caches;
+  let matchKey: Request | undefined;
+  const cached = new Response("CACHED", { status: 200 });
+  g.caches = {
+    default: {
+      match: async (r: Request) => {
+        matchKey = r;
+        return cached;
+      },
+      put: async () => {},
+    },
+  };
+  try {
+    const deps = { getDb: () => routedDb([]), fetch: fakeFetch({ photos: { ok: true }, urls: [] }) } as unknown as Deps;
+    // request carries a cache-busting query; the lookup must strip it.
+    const res = await handleAvatar(new Request(`https://iss/avatar/${ACCT}?x=rand`), { TELEGRAM_BOT_TOKEN: "T" } as Env, deps, ACCT, CORS);
+    expect(await res.text()).toBe("CACHED");
+    expect(new URL(matchKey!.url).search).toBe(""); // query stripped
+    expect(new URL(matchKey!.url).pathname).toBe(`/avatar/${ACCT}`);
   } finally {
     g.caches = prev;
   }

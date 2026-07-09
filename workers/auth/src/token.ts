@@ -165,16 +165,24 @@ export async function mintTokens(i: MintInput): Promise<MintedTokens> {
   return { id_token: id, access_token: access, token_type: "Bearer", expires_in: ACCESS_TTL, scope: i.scope.join(" "), jti };
 }
 
+/** The access_token-jti INSERT as a statement (so callers can batch it with the
+ *  refresh INSERT in the offline-token pair instead of two round-trips). */
+export function accessTokenInsert(
+  i: { jti: string; accountId: string; clientId: string; scope: string[]; family: string; now: number },
+): { sql: string; args: unknown[] } {
+  return {
+    sql: `INSERT INTO access_tokens (jti, account_id, client_id, scope, family_id, issued_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
+  };
+}
+
 /** Record the access_token jti for introspect/revoke. */
 export async function recordAccessToken(
   db: DbClient,
   i: { jti: string; accountId: string; clientId: string; scope: string[]; family: string; now: number },
 ): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO access_tokens (jti, account_id, client_id, scope, family_id, issued_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
-  });
+  await db.execute(accessTokenInsert(i));
 }
 
 /** RFC 7009 revoke by jti, scoped to the authenticated client (best-effort, 200). */
