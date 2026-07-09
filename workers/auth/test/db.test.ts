@@ -8,6 +8,7 @@ function fakeDb(calls: string[]): DbClient {
       calls.push(typeof s === "string" ? s : s.sql);
       return { rows: [] };
     },
+    batch: async () => [],
   };
 }
 
@@ -22,7 +23,7 @@ test("ensureSchema runs every statement once, memoized across concurrent calls",
 
 test("ensureSchema does not re-run after it resolves", async () => {
   let n = 0;
-  const deps: Deps = { getDb: () => ({ execute: async () => ((n++), { rows: [] }) }) };
+  const deps: Deps = { getDb: () => ({ execute: async () => ((n++), { rows: [] }), batch: async () => [] }) };
   await ensureSchema(deps);
   const after = n;
   await ensureSchema(deps);

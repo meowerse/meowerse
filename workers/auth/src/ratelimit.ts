@@ -20,21 +20,21 @@ export async function checkRateLimit(
   bucket: string,
   opts: { limit: number; windowSec: number; now: number },
 ): Promise<RateLimitResult> {
+  // ONE atomic upsert (was SELECT-then-INSERT, two round-trips). The window logic
+  // moves into the statement: still inside the window → increment; window elapsed
+  // → reset to 1 and re-stamp window_start. `RETURNING count` gives the post-write
+  // counter so `allowed = count <= limit` (equivalent to the old "prior < limit").
+  const { now, windowSec } = opts;
   const res = await db.execute({
-    sql: "SELECT count, window_start FROM rate_limits WHERE bucket = ?",
-    args: [bucket],
+    sql: `INSERT INTO rate_limits (bucket, count, window_start, last_at) VALUES (?, 1, ?, ?)
+          ON CONFLICT(bucket) DO UPDATE SET
+            count = CASE WHEN ? - window_start < ? THEN count + 1 ELSE 1 END,
+            window_start = CASE WHEN ? - window_start < ? THEN window_start ELSE ? END,
+            last_at = ?
+          RETURNING count`,
+    args: [bucket, now, now, now, windowSec, now, windowSec, now, now],
   });
-  const row = res.rows[0];
-  const inWindow = row != null && opts.now - Number(row.window_start) < opts.windowSec;
-  const count = inWindow ? Number(row!.count) : 0;
-  const windowStart = inWindow ? Number(row!.window_start) : opts.now;
-
-  if (count >= opts.limit) return { allowed: false, remaining: 0 };
-
-  await db.execute({
-    sql: `INSERT INTO rate_limits (bucket, count, window_start, last_at) VALUES (?, ?, ?, ?)
-          ON CONFLICT(bucket) DO UPDATE SET count = excluded.count, window_start = excluded.window_start, last_at = excluded.last_at`,
-    args: [bucket, count + 1, windowStart, opts.now],
-  });
-  return { allowed: true, remaining: opts.limit - count - 1 };
+  const count = Number(res.rows[0]?.count ?? 1);
+  const allowed = count <= opts.limit;
+  return { allowed, remaining: allowed ? opts.limit - count : 0 };
 }

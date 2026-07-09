@@ -25,19 +25,29 @@ export async function handleAvatar(
   accountId: string,
   cors: Record<string, string>,
 ): Promise<Response> {
+  // CANONICAL cache key: keyed on `/avatar/<id>` with the query STRIPPED, so
+  // `?x=rand` cache-busting can't force a worker round-trip / Bot-API hit — every
+  // variant collapses onto the same cached entry. Used for both match and put.
+  const cacheKey = new Request(new URL("/avatar/" + accountId, req.url).toString());
+  void cors; // avatars are public + uncredentialed: responses carry ACAO:* only, never reflected CORS.
+
   const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
   if (cache) {
-    const hit = await cache.match(req);
+    const hit = await cache.match(cacheKey);
     if (hit) return hit;
   }
 
-  // 404 helper — always no-store so a miss is never cached, and CORS-open so the
-  // browser can read the (empty) body / status from a cross-origin <img>/fetch.
-  const notFound = () =>
-    new Response(JSON.stringify({ error: "no_avatar" }), {
+  // 404 helper — NEGATIVE-cacheable (public, 5 min) so repeated loads of an avatar
+  // that doesn't exist don't keep re-hitting the worker + Bot API. Pure ACAO:* (no
+  // reflected CORS) keeps the single cached copy safe to serve to any origin.
+  const notFound = () => {
+    const res = new Response(JSON.stringify({ error: "no_avatar" }), {
       status: 404,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*", ...cors },
+      headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
     });
+    if (cache) deps.ctx?.waitUntil?.(cache.put(cacheKey, res.clone()));
+    return res;
+  };
 
   const token = env.TELEGRAM_BOT_TOKEN;
   if (!token) return notFound();
@@ -85,8 +95,8 @@ export async function handleAvatar(
       "Access-Control-Allow-Origin": "*",
     },
   });
-  // Explicit edge cache when an ExecutionContext is threaded; otherwise the
-  // Cache-Control header alone lets Cloudflare cache it.
-  if (cache) deps.ctx?.waitUntil?.(cache.put(req, response.clone()));
+  // Explicit edge cache (canonical key) when an ExecutionContext is threaded;
+  // otherwise the Cache-Control header alone lets Cloudflare cache it.
+  if (cache) deps.ctx?.waitUntil?.(cache.put(cacheKey, response.clone()));
   return response;
 }

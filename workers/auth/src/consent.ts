@@ -106,10 +106,13 @@ export async function listGrants(db: DbClient, accountId: string): Promise<Grant
 
 /** Revoke a user's grant to an app: drop consent + kill that app's live tokens for this user. */
 export async function revokeGrant(db: DbClient, accountId: string, clientId: string): Promise<void> {
-  await db.execute({ sql: "DELETE FROM consents WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] });
-  await db.execute({ sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] });
-  await db.execute({
-    sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE account_id = ? AND client_id = ? AND used_at IS NULL",
-    args: [accountId, clientId],
-  });
+  // Three independent writes known up front (not a CAS) → ONE batch round-trip.
+  await db.batch([
+    { sql: "DELETE FROM consents WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
+    { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
+    {
+      sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE account_id = ? AND client_id = ? AND used_at IS NULL",
+      args: [accountId, clientId],
+    },
+  ]);
 }

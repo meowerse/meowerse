@@ -77,6 +77,10 @@ export const SCHEMA: string[] = [
     scope TEXT NOT NULL, family_id TEXT NOT NULL,
     issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at TEXT
   )`,
+  // family revoke (replay/reuse) + per-user-per-client revoke (revokeGrant) both
+  // scan these columns; without an index they were full table scans.
+  `CREATE INDEX IF NOT EXISTS idx_access_family ON access_tokens(family_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_access_acct_client ON access_tokens(account_id, client_id)`,
   `CREATE TABLE IF NOT EXISTS refresh_tokens (
     token_hash TEXT PRIMARY KEY,
     family_id  TEXT NOT NULL, client_id TEXT NOT NULL, account_id TEXT NOT NULL, scope TEXT NOT NULL,
@@ -85,6 +89,7 @@ export const SCHEMA: string[] = [
     idle_expires_at INTEGER NOT NULL, absolute_expires_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_refresh_family ON refresh_tokens(family_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_refresh_acct_client ON refresh_tokens(account_id, client_id)`,
   // --- Clients / consent ---
   `CREATE TABLE IF NOT EXISTS oauth_clients (
     client_id    TEXT PRIMARY KEY,
@@ -111,6 +116,8 @@ export const SCHEMA: string[] = [
     secret_phc TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), not_after TEXT
   )`,
+  // authenticateClient looks secrets up by client_id on every confidential /token.
+  `CREATE INDEX IF NOT EXISTS idx_client_secrets_client ON oauth_client_secrets(client_id)`,
   `CREATE TABLE IF NOT EXISTS consents (
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     client_id  TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
@@ -134,6 +141,8 @@ export const SCHEMA: string[] = [
     created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tickets_status ON login_tickets(status, expires_at)`,
+  // findPendingTicketByNonce (the internal bot confirm) resolves a ticket by nonce_hash.
+  `CREATE INDEX IF NOT EXISTS idx_tickets_nonce ON login_tickets(nonce_hash)`,
   // --- Abuse counters / audit ---
   `CREATE TABLE IF NOT EXISTS rate_limits (
     bucket TEXT PRIMARY KEY,
@@ -193,6 +202,20 @@ export function prodDeps(env: Env): Deps {
     },
   };
 }
+
+/**
+ * PROD ONE-SHOT (indexes): production runs with SKIP_MIGRATIONS=1, so `ensureSchema`
+ * is skipped and the `CREATE INDEX IF NOT EXISTS` statements added above never run
+ * against the live Turso DB. Apply them once by hand (idempotent — safe to re-run):
+ *
+ *   turso db shell <db> "CREATE INDEX IF NOT EXISTS idx_access_family ON access_tokens(family_id);
+ *     CREATE INDEX IF NOT EXISTS idx_access_acct_client ON access_tokens(account_id, client_id);
+ *     CREATE INDEX IF NOT EXISTS idx_refresh_acct_client ON refresh_tokens(account_id, client_id);
+ *     CREATE INDEX IF NOT EXISTS idx_tickets_nonce ON login_tickets(nonce_hash);
+ *     CREATE INDEX IF NOT EXISTS idx_client_secrets_client ON oauth_client_secrets(client_id);"
+ *
+ * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
+ */
 
 /** Run every migration statement once per Deps object (once per isolate). */
 export function ensureSchema(deps: Deps): Promise<void> {

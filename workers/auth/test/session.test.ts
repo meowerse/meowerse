@@ -34,6 +34,18 @@ test("lookupSession returns view + rolls idle for a live session", async () => {
   expect(log.some((c) => c.sql.includes("UPDATE sessions SET last_seen"))).toBe(true);
 });
 
+test("lookupSession defers the idle roll via ctx.waitUntil when a ctx is threaded", async () => {
+  const log: { sql: string; args: unknown[] }[] = [];
+  const db = routedDb([[/SELECT account_id, auth_time/, () => ({ rows: [sessionRow()] })]], log);
+  const waited: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => waited.push(p) } as unknown as ExecutionContext;
+  const view = await lookupSession(db, "rawid", 2000, ctx);
+  expect(view).not.toBeNull();
+  expect(waited.length).toBe(1); // rollIdle deferred off the response path, not awaited inline
+  await Promise.all(waited);
+  expect(log.some((c) => c.sql.includes("UPDATE sessions SET last_seen"))).toBe(true);
+});
+
 test("lookupSession returns null when absent, revoked, or expired", async () => {
   expect(await lookupSession(routedDb([[/SELECT account_id/, () => ({ rows: [] })]]), "x", 1)).toBeNull();
   expect(

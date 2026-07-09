@@ -11,26 +11,38 @@ export const REFRESH_ABS_TTL = 30 * 24 * 3600;
  * SHA-256 is stored. `absExpires` carries the family's absolute deadline across
  * rotations so a refreshed token never extends the absolute window.
  */
+/** Build the refresh-token INSERT + return the raw token, WITHOUT executing. Lets
+ *  callers batch it with the access_token INSERT (offline-token pair). */
+export async function refreshTokenInsert(
+  i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
+): Promise<{ stmt: { sql: string; args: unknown[] }; token: string }> {
+  const token = "rt_" + randomId(32);
+  const tokenHash = await sha256Hex(token);
+  return {
+    token,
+    stmt: {
+      sql: `INSERT INTO refresh_tokens (token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        tokenHash,
+        i.family,
+        i.clientId,
+        i.accountId,
+        i.scope.join(" "),
+        i.prevId ?? null,
+        i.now + REFRESH_IDLE_TTL,
+        i.absExpires ?? i.now + REFRESH_ABS_TTL,
+      ],
+    },
+  };
+}
+
 export async function createRefreshToken(
   db: DbClient,
   i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
 ): Promise<string> {
-  const token = "rt_" + randomId(32);
-  const tokenHash = await sha256Hex(token);
-  await db.execute({
-    sql: `INSERT INTO refresh_tokens (token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [
-      tokenHash,
-      i.family,
-      i.clientId,
-      i.accountId,
-      i.scope.join(" "),
-      i.prevId ?? null,
-      i.now + REFRESH_IDLE_TTL,
-      i.absExpires ?? i.now + REFRESH_ABS_TTL,
-    ],
-  });
+  const { stmt, token } = await refreshTokenInsert(i);
+  await db.execute(stmt);
   return token;
 }
 
