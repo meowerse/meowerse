@@ -33,9 +33,15 @@ function fakeDb(): DbClient & { rows: Meow[]; calls: string[] } {
           created_at: "2026-01-01 00:00:00",
         };
         state.rows.unshift(row);
-        return { rows: [], lastInsertRowid: id };
+        // INSERT … RETURNING → the row comes back in rows (one round-trip, no SELECT).
+        return { rows: [row as unknown as Record<string, unknown>], lastInsertRowid: id };
       }
       return { rows: [] };
+    },
+    async batch(stmts: { sql: string; args: unknown[] }[]) {
+      const out: { rows: Record<string, unknown>[] }[] = [];
+      for (const s of stmts) out.push(await state.execute(s));
+      return out;
     },
   };
   return state;
@@ -136,7 +142,7 @@ describe("POST /api/batch", () => {
     expect(res.status).toBe(401);
   });
 
-  it("executes create ops sequentially and returns per-op status", async () => {
+  it("inserts create ops in one batch and returns per-op status", async () => {
     const res = await handle(
       req("POST", "/api/batch", { ops: [{ op: "create", text: "one" }, { op: "create", text: "two" }] }),
       env,
@@ -147,6 +153,19 @@ describe("POST /api/batch", () => {
     expect(body.results).toHaveLength(2);
     expect(body.results[0].status).toBe(201);
     expect(body.results[1].status).toBe(201);
+  });
+
+  it("maps a MIXED batch back in order (valid → 201 with its row, invalid → 400)", async () => {
+    const res = await handle(
+      req("POST", "/api/batch", { ops: [{ op: "create", text: "keep" }, { op: "bogus" }, { op: "create", text: "also" }] }),
+      env,
+      d,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: { status: number; meow?: { text: string }; error?: string }[] };
+    expect(body.results.map((r) => r.status)).toEqual([201, 400, 201]);
+    expect(body.results[0].meow?.text).toBe("keep");
+    expect(body.results[2].meow?.text).toBe("also"); // the invalid op didn't consume a batch row
   });
 
   it("reports per-op 400 for an invalid op without failing the batch", async () => {

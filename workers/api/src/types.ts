@@ -27,4 +27,9 @@ export interface DbClient {
   execute(
     stmt: string | { sql: string; args: unknown[] },
   ): Promise<{ rows: Record<string, unknown>[]; lastInsertRowid?: bigint | number }>;
+  /** Run many statements in ONE round-trip (libsql batch). Returns one result set
+   *  per statement, in order. Used to insert a whole /api/batch in a single hop. */
+  batch(
+    stmts: { sql: string; args: unknown[] }[],
+  ): Promise<{ rows: Record<string, unknown>[] }[]>;
 }

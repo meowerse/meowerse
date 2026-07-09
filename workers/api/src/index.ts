@@ -3,8 +3,9 @@ import { corsHeaders, requireAuth } from "./security";
 import { type Deps, ensureSchema, prodDeps } from "./db";
 import {
   createMeow,
+  createMeows,
   listMeows,
-  runBatchOp,
+  validateBatchOp,
   validateText,
   MAX_BATCH,
   type BatchOpResult,
@@ -68,7 +69,15 @@ async function handleList(req: Request, deps: Deps, cors: Record<string, string>
   const cacheKey = listCacheKey(req);
   if (cache) {
     const hit = await cache.match(cacheKey);
-    if (hit) return hit;
+    if (hit) {
+      // The cache key is origin-agnostic (query + Origin stripped), so re-apply the
+      // CURRENT requester's CORS over the cached response — otherwise the first
+      // caller's Access-Control-Allow-Origin is served to every allowlisted origin
+      // and a different origin's browser blocks it.
+      const headers = new Headers(hit.headers);
+      for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+      return new Response(hit.body, { status: hit.status, headers });
+    }
   }
   await ensureSchema(deps);
   const rows = await listMeows(deps.getDb());
@@ -102,8 +111,15 @@ async function handleBatch(req: Request, deps: Deps, cors: Record<string, string
   if (ops.length > MAX_BATCH) return json({ error: `at most ${MAX_BATCH} ops` }, 400, cors);
   await ensureSchema(deps);
   const db = deps.getDb();
-  const results: BatchOpResult[] = [];
-  for (const op of ops) results.push(await runBatchOp(db, op));
+  // Validate every op first (pure, no DB), then insert only the VALID ops in ONE
+  // round-trip via db.batch — instead of up to MAX_BATCH sequential INSERTs.
+  const validated = ops.map(validateBatchOp);
+  const insertable = validated.filter((v): v is { ok: true; text: string; slug: string } => v.ok);
+  const inserted = await createMeows(db, insertable.map((v) => ({ text: v.text, slug: v.slug })));
+  let k = 0;
+  const results: BatchOpResult[] = validated.map((v) =>
+    v.ok ? { status: 201, meow: inserted[k++] } : { status: v.status, error: v.error },
+  );
   // A batch may have created rows; purge the cached list (best-effort) so the
   // next reload reflects them.
   await purgeListCache(req);
