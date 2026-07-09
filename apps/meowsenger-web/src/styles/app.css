@@ -237,8 +237,13 @@ body:has(.mw-chat) main.mw-container {
   opacity: 0; pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease);
 }
-.mw-msg--me .mw-msg__actions { left: 6px; }
-.mw-msg:not(.mw-msg--me) .mw-msg__actions { right: 6px; }
+/* Anchor the (absolutely-positioned) hover-action pill to the bubble's OUTER edge
+   so it extends INWARD, never past the log edge: a right-aligned own message pins
+   the pill to its right, a left-aligned peer message to its left. Anchored the other
+   way, a narrow bubble's ~140px pill (even while opacity:0, it still counts toward
+   scrollWidth) stuck out past the log's edge → a phantom horizontal scrollbar. */
+.mw-msg--me .mw-msg__actions { right: 6px; }
+.mw-msg:not(.mw-msg--me) .mw-msg__actions { left: 6px; }
 .mw-bubble:hover .mw-msg__actions,
 .mw-msg__actions:focus-within { opacity: 1; pointer-events: auto; }
 .mw-msg__act {
