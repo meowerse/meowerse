@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@meowerse/ui";
 import { getSession, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member } from "../lib/chat";
+import { fmtDay } from "../lib/messageText";
 import { useConversation } from "../hooks/useConversation";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
@@ -55,6 +57,10 @@ export default function Chat({ base }: { base: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set()); // selected message ids
   const [menu, setMenu] = useState<{ m: Bubble; x: number; y: number } | null>(null); // context menu
   const [toast, setToast] = useState<string | null>(null); // transient non-blocking note
+  const [confirmBulk, setConfirmBulk] = useState(false); // bulk-delete confirmation dialog
+  // Screen-reader announcements for NEW incoming messages only (#7). Rendered as
+  // additive children in an aria-live region; capped so the DOM stays bounded.
+  const [announcements, setAnnouncements] = useState<Array<{ id: string; text: string }>>([]);
   // Slice 5 — group UI state.
   const [newChatOpen, setNewChatOpen] = useState(false); // the Direct|Group modal
   const [drawerOpen, setDrawerOpen] = useState(false); // the member-management drawer
@@ -68,6 +74,15 @@ export default function Chat({ base }: { base: string }) {
   const [memberMap, setMemberMap] = useState<Map<string, SenderInfo>>(new Map());
 
   const toastTimerRef = useRef<number | null>(null);
+
+  // SR-announce bookkeeping (#7): whether the initial history for the active chat has
+  // settled (so the backlog isn't announced), and a createdAt high-water mark so only
+  // genuinely-newer incoming tail messages announce (paged-in / jumped history never
+  // crosses it). Reset on every chat switch.
+  const announceSettledRef = useRef(false);
+  const announceHighWaterRef = useRef(-Infinity);
+  const resolveNameRef = useRef<(id: string) => string>(() => "");
+  const meIdRef = useRef<string | null>(null);
 
   const activeChat = chats.find((c) => c.id === activeId) ?? null;
   const peerId = activeChat?.peerId ?? null;
@@ -96,6 +111,10 @@ export default function Chat({ base }: { base: string }) {
   // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
   const resolveSenderName = (senderId: string): string =>
     isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
+  // Mirror into refs so the SR-announce effect reads the current resolver + user id
+  // without re-running every render (it depends only on messages + loadingHistory).
+  resolveNameRef.current = resolveSenderName;
+  meIdRef.current = me?.id ?? null;
 
   // Surface a small transient note (e.g. a server rejection). Non-blocking: it
   // auto-dismisses after a few seconds and never interrupts typing.
@@ -198,6 +217,15 @@ export default function Chat({ base }: { base: string }) {
   // Clear the toast timer on unmount so it can't fire into a dead component.
   useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
 
+  // Reflect the count of chats with unread messages in the tab title (#14); restore
+  // the plain title when the island unmounts.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const n = chats.filter((c) => c.unreadCount > 0).length;
+    document.title = n > 0 ? `(${n}) meowsenger` : "meowsenger";
+    return () => { document.title = "meowsenger"; };
+  }, [chats]);
+
   // Reset per-chat VIEW UI state on every switch so nothing leaks across chats (the
   // conversation engine resets its own message/presence state internally). Kept here
   // — not in the hook — because these are all view-owned.
@@ -212,7 +240,37 @@ export default function Chat({ base }: { base: string }) {
     setEmojiFor(null);
     setSearchOpen(false);
     setMemberMap(new Map());
+    setConfirmBulk(false);
+    // Re-arm the SR announcer so the next chat's backlog isn't read out (#7).
+    announceSettledRef.current = false;
+    announceHighWaterRef.current = -Infinity;
+    setAnnouncements([]);
   }, [activeId]);
+
+  // Announce ONLY new incoming messages (#7): once the initial history settles, a tail
+  // message whose timestamp beats the high-water mark and that isn't ours/deleted is
+  // pushed into the aria-live region. The backlog, paged-in older pages, and jumped
+  // windows never cross the water mark, so they stay silent.
+  useEffect(() => {
+    if (loadingHistory) return; // initial history still loading — not settled yet
+    if (!announceSettledRef.current) {
+      // Settle point: baseline the water mark at the newest loaded message (or leave it
+      // at -Infinity for an empty chat so its first live message announces).
+      announceSettledRef.current = true;
+      let hi = -Infinity;
+      for (const m of messages) if (m.createdAt > hi) hi = m.createdAt;
+      announceHighWaterRef.current = hi;
+      return;
+    }
+    const tail = messages[messages.length - 1];
+    if (!tail || tail.createdAt <= announceHighWaterRef.current) return;
+    announceHighWaterRef.current = tail.createdAt;
+    // Own sends bump the water mark but aren't announced; deleted/empty are skipped.
+    if (tail.senderId === meIdRef.current || tail.isDeleted || tail.pending) return;
+    const who = resolveNameRef.current(tail.senderId);
+    const body = tail.body.trim().slice(0, 120) || "sent a message";
+    setAnnouncements((prev) => [...prev, { id: tail.tempId ?? tail.id, text: `${who}: ${body}` }].slice(-3));
+  }, [messages, loadingHistory]);
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).
@@ -265,10 +323,12 @@ export default function Chat({ base }: { base: string }) {
     return !!me && m.senderId === me.id && !m.pending && !m.isDeleted && Date.now() - m.createdAt <= DELETE_WINDOW_MS;
   }
 
-  // Best-effort clipboard write with a toast on the outcome.
+  // Best-effort clipboard write with a toast on the outcome. Falls back to a toast
+  // when the Clipboard API is unavailable (insecure context / older browser).
   function copy(text: string, okMsg: string) {
     if (!text) return;
-    void navigator.clipboard?.writeText(text).then(() => showToast(okMsg), () => showToast("couldn't copy"));
+    if (!navigator.clipboard?.writeText) { showToast("couldn't copy"); return; }
+    void navigator.clipboard.writeText(text).then(() => showToast(okMsg), () => showToast("couldn't copy"));
   }
   function copyText(text: string) { copy(text, "copied"); }
 
@@ -314,11 +374,20 @@ export default function Chat({ base }: { base: string }) {
     copyText(text);
     exitSelect();
   }
-  function deleteSelected() {
+  // The still-deletable subset of the current selection (my own, within window).
+  const deletableSelected = messages.filter((m) => selected.has(m.id) && canDelete(m));
+  // Ask before a bulk delete (#37): open the shared ConfirmDialog if anything is
+  // eligible (nothing to confirm otherwise — just leave select mode).
+  function requestDeleteSelected() {
+    if (deletableSelected.length === 0) { exitSelect(); return; }
+    setConfirmBulk(true);
+  }
+  function confirmDeleteSelected() {
     // Bulk-delete only my own, still-deletable messages; silently skip the rest.
     for (const m of messages) {
       if (selected.has(m.id) && canDelete(m)) sendDelete(m);
     }
+    setConfirmBulk(false);
     exitSelect();
   }
 
@@ -371,8 +440,10 @@ export default function Chat({ base }: { base: string }) {
         user_not_found: "no user with that username",
         cannot_dm_self: "that's you — pick someone else",
         username_required: "enter a username",
+        network: "couldn't reach the server — try again",
       };
-      return copy[r.error ?? ""] ?? r.error ?? "could not start chat";
+      // Generic fallback so a raw server code never leaks into the UI.
+      return copy[r.error ?? ""] ?? "could not start chat";
     }
     const cs = await listChats(base);
     setChats(cs);
@@ -432,6 +503,15 @@ export default function Chat({ base }: { base: string }) {
 
   return (
     <div className="mw-chat" data-open={open ? "1" : "0"}>
+      {/* Anchors the document outline at h1 for the /app view (#34). */}
+      <h1 className="mw-sr-only">meowsenger</h1>
+      {/* Screen-reader announcer for NEW incoming messages only (#7). Additive,
+          polite; the whole log is NOT a live region. */}
+      <div className="mw-sr-only" aria-live="polite" aria-relevant="additions">
+        {announcements.map((a) => (
+          <p key={a.id}>{a.text}</p>
+        ))}
+      </div>
       <ChatSidebar
         chats={chats}
         activeId={activeId}
@@ -571,6 +651,8 @@ export default function Chat({ base }: { base: string }) {
                 const prev = messages[i - 1];
                 const firstInRun =
                   !prev || prev.senderId !== m.senderId || prev.isDeleted || m.createdAt - prev.createdAt > 5 * 60_000;
+                // A day separator precedes the first message of each calendar day (#10/#12).
+                const newDay = !prev || new Date(m.createdAt).toDateString() !== new Date(prev.createdAt).toDateString();
                 // Sender avatar + name are group/channel-only, and only on the first
                 // of a run. DMs never show them (the peer is named in the header).
                 const showSenderMeta = isMembered && !mine && firstInRun;
@@ -586,8 +668,13 @@ export default function Chat({ base }: { base: string }) {
                   ? (memberMap.get(m.replyTo.senderId)?.name ?? m.replyTo.senderId)
                   : peerName;
                 return (
-                  <MessageItem
-                    key={key}
+                  <Fragment key={key}>
+                    {newDay && (
+                      <div className="mw-daysep" role="separator">
+                        <span>{fmtDay(m.createdAt)}</span>
+                      </div>
+                    )}
+                    <MessageItem
                     m={m}
                     meId={me?.id ?? null}
                     mine={mine}
@@ -614,7 +701,8 @@ export default function Chat({ base }: { base: string }) {
                     onToggleReaction={sendReact}
                     onJumpToReply={jumpToMessage}
                     registerRef={registerRow}
-                  />
+                    />
+                  </Fragment>
                 );
               })}
             </div>
@@ -642,7 +730,7 @@ export default function Chat({ base }: { base: string }) {
                 >copy</button>
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm mw-selectbar__danger"
-                  onClick={deleteSelected}
+                  onClick={requestDeleteSelected}
                   disabled={selected.size === 0}
                 >delete</button>
                 <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={exitSelect}>cancel</button>
@@ -681,7 +769,18 @@ export default function Chat({ base }: { base: string }) {
           onClose={() => setEmojiFor(null)}
         />
       )}
-      {toast && <div className="mw-toast" role="status">{toast}</div>}
+      {toast && <div className="mw-apptoast" role="status">{toast}</div>}
+
+      <ConfirmDialog
+        open={confirmBulk}
+        title="delete messages"
+        description={`delete ${deletableSelected.length} message${deletableSelected.length === 1 ? "" : "s"}? this can't be undone.`}
+        confirmLabel="delete"
+        variant="danger"
+        onCancel={() => setConfirmBulk(false)}
+        onConfirm={confirmDeleteSelected}
+      />
+
 
       <NewChatModal
         base={base}
