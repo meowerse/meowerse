@@ -835,7 +835,14 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   // tests, where ASSETS is unbound). GET page paths never collide with a GET API
   // route (the UI has no /authorize|/userinfo|/jwks|/api/* page; /login|/consent|
   // /signup are POST-only in the API), so the API always matches first.
-  if (env.ASSETS) return env.ASSETS.fetch(req);
+  if (env.ASSETS) {
+    // Serve the styled 404 page (built to /404.html) with a real 404 status. We
+    // fetch it EXPLICITLY (not env.ASSETS.fetch(req)) so unknown paths render the
+    // Astro 404 instead of a bare 404 — WITHOUT assets.not_found_handling, which
+    // (given run_worker_first) would shadow every API route before the worker runs.
+    const page = await env.ASSETS.fetch(new URL("/404.html", req.url));
+    return new Response(page.body, { status: 404, headers: page.headers });
+  }
   return json({ error: "not_found" }, 404, cors);
 }
 

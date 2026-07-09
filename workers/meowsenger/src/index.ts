@@ -134,9 +134,14 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
 
   // Matching static assets are served by Cloudflare BEFORE the worker runs; a
   // request only reaches here if it's an API route (above) or a non-asset path.
-  // Hand unknown paths to the assets binding so Astro's 404 page renders (falls
-  // back to JSON 404 in tests, where ASSETS is unbound).
-  if (env.ASSETS) return env.ASSETS.fetch(req);
+  // Serve the styled 404 page (built to /404.html) with a real 404 status — fetched
+  // EXPLICITLY rather than via assets.not_found_handling, which can shadow API routes
+  // before the worker runs (see the auth worker + its wrangler note). Falls back to
+  // JSON 404 in tests, where ASSETS is unbound.
+  if (env.ASSETS) {
+    const page = await env.ASSETS.fetch(new URL("/404.html", req.url));
+    return new Response(page.body, { status: 404, headers: page.headers });
+  }
   return json({ error: "not found" }, 404, cors);
 }
 

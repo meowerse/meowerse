@@ -1,22 +1,30 @@
 # Edge flood protection for the API Workers.
 #
 # WHY THIS IS AT THE EDGE, NOT IN THE WORKER: the free plan caps Worker
-# invocations at 100k/day and returns 1015 past that. App-level rate limiting
-# inside the Worker does NOT help — the request already counted the moment the
-# Worker ran. Only a rate-limiting rule (evaluated at the edge, BEFORE the
-# Worker) blocks a flood without consuming the quota. This is the single most
-# important control against "a hacker exhausts my free tier".
+# invocations at 100k/day ACCOUNT-WIDE and returns 1015 past that. App-level rate
+# limiting inside the Worker does NOT help — the request already counted the moment
+# the Worker ran. Only a rate-limiting rule (evaluated at the edge, BEFORE the
+# Worker) blocks a flood without consuming the quota.
 #
-# WHY IT WON'T BREAK APPS THAT USE OUR AUTH: the threshold is per-IP and very
-# generous (100 req / 10s per IP per colo ≈ 10 req/s sustained). A browser never
-# approaches it; a busy relying-party BACKEND calling /token would need to
-# sustain >10 req/s from a single IP to be touched. The action is `block` (not a
-# challenge) so machine clients + SDKs are never asked to solve a CAPTCHA.
+# PATH-SCOPED (2026-07): the single free rule now matches only WORKER-INVOKING
+# paths, not whole hosts. Static assets (served pre-worker, they never touch the
+# quota) are excluded, so the per-IP budget can be tight (30/10s = 3 req/s) without
+# tripping on an asset-heavy page load. Server-to-server OIDC (/token, /userinfo,
+# /jwks, /.well-known/*) and the /avatar image proxy are ALSO excluded so relying-
+# party backends, login spikes, and legit avatar bursts are never blocked — those
+# are protected instead by confidential-client auth + edge caching + in-worker
+# throttles. 30/10s on worker paths only ≈ 259k/day/IP: a single IP still cannot
+# fully drain the account quota alone (a 10s free window can't bound that), but
+# combined with edge-cached GETs + the amplifier fixes it removes the cheap levers;
+# a distributed L7 flood needs paid Cloudflare (documented limitation).
 #
-# Free-tier note: the free plan allows ONE rate-limiting rule, per-IP counting,
-# and a FIXED 10s period + 10s mitigation timeout (a 60s period is rejected).
-# If a future apply still balks, tune waf_requests_per_10s or set
-# enable_waf = false to skip the rule.
+# WHY IT WON'T BREAK APPS THAT USE OUR AUTH: the action is `block` (not a
+# challenge) so machine clients + SDKs are never asked to solve a CAPTCHA, and the
+# token/jwks/userinfo endpoints the RPs actually call are excluded from the rule.
+#
+# Free-tier note: the free plan allows ONE rate-limiting rule, per-IP counting, and
+# a FIXED 10s period + 10s mitigation timeout. If a future apply balks, tune
+# waf_requests_per_10s or set enable_waf = false to skip the rule.
 
 variable "enable_waf" {
   type        = bool
@@ -24,21 +32,22 @@ variable "enable_waf" {
   description = "Create the edge rate-limiting rule that protects the free-tier request quota. Set false if the free-plan apply rejects the ruleset."
 }
 
-variable "waf_api_hosts" {
-  type        = list(string)
-  default     = ["auth.alxnko.eu.org", "api.meow.alxnko.eu.org", "meowsenger.alxnko.eu.org"]
-  description = "Worker-backed API hostnames to flood-protect. auth.alxnko.eu.org now serves the OIDC IdP worker (/authorize,/token,/api,…) alongside its static UI assets, so it IS protected (assets are served pre-worker; 100/10s per IP is generous for a page load) — same single-host model as meowsenger.alxnko.eu.org, which serves the BFF worker (/auth,/api) alongside its assets."
-}
-
-# The FREE plan only permits a 10-second rate-limit period and a mitigation
-# timeout equal to the period (confirmed at apply: "not entitled to use the
-# period 60, can only use a period among [10]"). 100 req / 10s ≈ 10 req/s
-# sustained per IP per colo — same effective rate a 600/min rule would give, and
-# a real browser or RP backend never approaches it; a flood does.
 variable "waf_requests_per_10s" {
   type        = number
-  default     = 100
-  description = "Per-IP request budget per 10s per colo before the edge blocks (free plan is fixed to a 10s window)."
+  default     = 30
+  description = "Per-IP request budget per 10s per colo (fixed 10s window on free) before the edge blocks, on WORKER paths only (assets + server-to-server OIDC excluded). 30 = 3 req/s: generous for a real browser/RP; a flood trips it."
+}
+
+locals {
+  # The rate-limit matches ONLY worker-invoking, browser/attacker-facing paths per
+  # host. Excluded (never rate-limited): all static assets (pre-worker), auth's
+  # server-to-server OIDC (/token*, /userinfo, /jwks, /.well-known/*, /mgmt, /internal)
+  # and the /avatar proxy. api.meow has no static assets → every path is a worker hit.
+  waf_ratelimit_expression = join(" or ", [
+    "(http.host eq \"api.meow.alxnko.eu.org\")",
+    "(http.host eq \"auth.alxnko.eu.org\" and (starts_with(http.request.uri.path, \"/authorize\") or starts_with(http.request.uri.path, \"/login\") or starts_with(http.request.uri.path, \"/signup\") or starts_with(http.request.uri.path, \"/consent\") or starts_with(http.request.uri.path, \"/tg/\") or starts_with(http.request.uri.path, \"/api/\") or http.request.uri.path in {\"/logout\" \"/session/end\"}))",
+    "(http.host eq \"meowsenger.alxnko.eu.org\" and (starts_with(http.request.uri.path, \"/api/\") or starts_with(http.request.uri.path, \"/auth/\") or http.request.uri.path in {\"/ws\" \"/health\"}))",
+  ])
 }
 
 resource "cloudflare_ruleset" "api_rate_limit" {
@@ -50,8 +59,8 @@ resource "cloudflare_ruleset" "api_rate_limit" {
 
   rules = [{
     ref         = "api_per_ip_flood"
-    description = "Per-IP flood block on the API Workers (protects the free-tier request quota)"
-    expression  = "(http.host in {${join(" ", [for h in var.waf_api_hosts : "\"${h}\""])}})"
+    description = "Per-IP flood block on worker paths (protects the free-tier request quota; assets + server-to-server OIDC excluded)"
+    expression  = local.waf_ratelimit_expression
     action      = "block"
     ratelimit = {
       characteristics     = ["ip.src", "cf.colo.id"]
