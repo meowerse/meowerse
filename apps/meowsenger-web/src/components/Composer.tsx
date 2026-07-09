@@ -125,10 +125,12 @@ export function Composer({
       />
       <button
         className="mw-btn mw-btn--primary mw-btn--md"
+        aria-label="send"
         onClick={send}
         disabled={disabled || !text.trim()}
       >
-        send
+        <span className="mw-tlabel">send</span>
+        <span className="mw-ticon" aria-hidden="true">➤</span>
       </button>
       </div>
     </div>

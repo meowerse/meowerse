@@ -74,8 +74,9 @@ export function ChatSidebar({
   return (
     <aside className="mw-chat__side">
       <div className="mw-chat__new">
-        <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" onClick={onNewChatClick}>
-          + new chat
+        <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" aria-label="new chat" onClick={onNewChatClick}>
+          <span className="mw-tlabel">+ new chat</span>
+          <span className="mw-ticon" aria-hidden="true">+</span>
         </button>
         <input
           type="search"

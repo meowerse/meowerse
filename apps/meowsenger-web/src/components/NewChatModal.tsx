@@ -262,7 +262,10 @@ export function NewChatModal({
                 onChange={(e) => setMemberInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addChip(); } }}
               />
-              <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={addChip} disabled={!memberInput.trim()}>add</button>
+              <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="add" onClick={addChip} disabled={!memberInput.trim()}>
+                <span className="mw-tlabel">add</span>
+                <span className="mw-ticon" aria-hidden="true">+</span>
+              </button>
             </div>
           </div>
 
