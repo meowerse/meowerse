@@ -861,18 +861,23 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   }
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
 
-  // Matching static assets (the Astro UI: /login, /consent, /account, …) are
-  // served by Cloudflare BEFORE the worker runs; a request only reaches here if
-  // it's an API route (matched above) or a non-asset path. Hand unmatched paths
-  // to the assets binding so Astro's 404 page renders (falls back to JSON 404 in
-  // tests, where ASSETS is unbound). GET page paths never collide with a GET API
-  // route (the UI has no /authorize|/userinfo|/jwks|/api/* page; /login|/consent|
-  // /signup are POST-only in the API), so the API always matches first.
+  // A request reaching here matched no API route above. Most UI pages (/account,
+  // /verify, …) are served by Cloudflare BEFORE the worker; but the three
+  // run_worker_first paths (/login, /signup, /consent) run the WORKER first, so
+  // their GET page is reachable ONLY here — and the OIDC flow itself redirects
+  // logged-out users to GET /login and consent to GET /consent. So a GET/HEAD must
+  // serve the real page asset when one exists; only genuinely-unknown paths fall
+  // through to the styled 404. (No collision: every GET API route matched above.)
   if (env.ASSETS) {
-    // Serve the styled 404 page (built to /404.html) with a real 404 status. We
-    // fetch it EXPLICITLY (not env.ASSETS.fetch(req)) so unknown paths render the
-    // Astro 404 instead of a bare 404 — WITHOUT assets.not_found_handling, which
-    // (given run_worker_first) would shadow every API route before the worker runs.
+    if (m === "GET" || m === "HEAD") {
+      const asset = await env.ASSETS.fetch(req);
+      if (asset.status !== 404) return asset; // real page (incl. /login, /signup, /consent)
+    }
+    // Unknown path (or a non-GET) → the styled 404 page (built to /404.html) with a
+    // real 404 status. Fetched EXPLICITLY (not env.ASSETS.fetch(req)) so unknown
+    // paths render the Astro 404 instead of a bare 404 — WITHOUT
+    // assets.not_found_handling, which (given run_worker_first) would shadow every
+    // API route before the worker runs.
     const page = await env.ASSETS.fetch(new URL("/404.html", req.url));
     return new Response(page.body, { status: 404, headers: page.headers });
   }
