@@ -88,8 +88,16 @@ export function setVisibility(v: DocumentVisibilityState): void {
 }
 
 // ---- install browser stubs happy-dom lacks ----
-class NoopIntersectionObserver {
-  observe(): void {}
+// Fires the callback immediately on observe() with isIntersecting:true, so the
+// jump-to-message flash path (which waits for the row to land on screen) runs.
+class ImmediateIntersectionObserver {
+  private cb: (entries: Array<{ isIntersecting: boolean; target: Element }>, obs: unknown) => void;
+  constructor(cb: (entries: Array<{ isIntersecting: boolean; target: Element }>, obs: unknown) => void) {
+    this.cb = cb;
+  }
+  observe(el: Element): void {
+    this.cb([{ isIntersecting: true, target: el }], this);
+  }
   unobserve(): void {}
   disconnect(): void {}
   takeRecords(): [] {
@@ -97,10 +105,23 @@ class NoopIntersectionObserver {
   }
 }
 
+/** A spyable Notification stub (granted). Tests read MockNotification.instances. */
+export class MockNotification {
+  static permission: NotificationPermission = "granted";
+  static instances: Array<{ title: string; body?: string }> = [];
+  static reset() {
+    MockNotification.instances = [];
+  }
+  constructor(title: string, opts?: { body?: string }) {
+    MockNotification.instances.push({ title, body: opts?.body });
+  }
+}
+
 /** Install the globals the island touches. Idempotent; called at import. */
 function installGlobals(): void {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = MockWebSocket;
-  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = NoopIntersectionObserver;
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = ImmediateIntersectionObserver;
+  (globalThis as unknown as { Notification: unknown }).Notification = MockNotification;
   if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = function scrollIntoView(): void {};
   }
@@ -111,5 +132,7 @@ installGlobals();
 afterEach(() => {
   cleanup();
   MockWebSocket.reset();
+  MockNotification.reset();
+  MockNotification.permission = "granted";
   _visibility = "visible";
 });
