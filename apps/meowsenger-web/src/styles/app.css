@@ -755,14 +755,16 @@ body:has(.mw-chat) main.mw-container {
 .mw-search__icon { flex: none; font-size: var(--text-sm); opacity: 0.7; }
 .mw-search__input {
   flex: 1; min-width: 0; padding: 6px 10px;
-  border: 0.5px solid var(--border); border-radius: var(--radius);
+  border: 0.5px solid var(--border-strong); border-radius: var(--radius);
   background: var(--surface-0); color: var(--text-primary);
   font-size: var(--text-sm); font-family: inherit;
 }
-/* Focus = the design-system halo (box-shadow, global) + the app's green border,
-   exactly like every other text input. No local `outline` — stacking one on the
-   halo is what produced the double green ring. */
-.mw-search__input:focus-visible { border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
+/* Standardize on the exact `.mw-input` focus recipe: `outline: none` on plain
+   `:focus` kills the native type=search UA ring (which the global halo's
+   focus-visible reset does NOT catch on mouse focus), leaving only the design-
+   system green halo + green border. This is what removes the double green ring —
+   the earlier focus-visible-only rule left the UA outline stacked on the halo. */
+.mw-search__input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-green) 55%, var(--border-strong)); }
 .mw-search__close { flex: none; padding: 4px 8px; }
 .mw-search__results {
   display: flex; flex-direction: column; gap: 2px;
