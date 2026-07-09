@@ -13,6 +13,10 @@ export interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_JWK?: string;
   VAPID_SUBJECT?: string;
+  // Cloudflare Workers Rate Limiting binding (wrangler.jsonc `ratelimits`). Edge-
+  // local + free — used to throttle the expensive D1-write POSTs per IP. Optional
+  // so tests (and any env without the binding) typecheck and no-op the throttle.
+  WRITE_LIMIT?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
 }
 
 export type Row = Record<string, unknown>;

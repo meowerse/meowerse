@@ -221,6 +221,30 @@ describe("GET /ws upgrade", () => {
   });
 });
 
+describe("per-IP write throttle (WRITE_LIMIT)", () => {
+  // Fake the Rate Limiting binding: limit() resolves { success } deterministically.
+  const throttleEnv = (success: boolean) =>
+    ({ ...env, WRITE_LIMIT: { async limit() { return { success }; } } }) as unknown as Env;
+  // No-session deps: an expensive write that passes the throttle falls through to its
+  // handler, which returns 401 (proving the throttle let it through, not that it ran).
+  const noSession = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+
+  it("returns 429 rate_limited when the limiter denies an expensive write POST", async () => {
+    const res = await handle(req("POST", "/api/chats"), throttleEnv(false), noSession);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "rate_limited" });
+  });
+  it("passes through to the handler when the limiter allows the write", async () => {
+    const res = await handle(req("POST", "/api/chats"), throttleEnv(true), noSession);
+    expect(res.status).toBe(401); // reached handleCreateChat (no session)
+  });
+  it("does NOT throttle non-expensive routes even when the limiter would deny", async () => {
+    // A GET read is never gated; it must reach its handler regardless of the limiter.
+    const res = await handle(req("GET", "/api/chats"), throttleEnv(false), noSession);
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("default fetch export", () => {
   it("routes /health through the default fetch handler → 200", async () => {
     const fetchEnv = { DB: {} as never, CORS_ORIGINS: "http://localhost:4321" } as Env;
