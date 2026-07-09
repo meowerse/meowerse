@@ -23,7 +23,7 @@ export default defineConfig({
       provider: "v8",
       thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
       include: ["src/**"],
-      exclude: ["src/types.ts", "src/conversation.ts"],
+      exclude: ["src/types.ts", "src/conversation.ts", "src/inbox.ts"],
     },
   },
 });

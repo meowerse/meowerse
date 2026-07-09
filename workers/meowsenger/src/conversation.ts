@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
-import { markRead, mirrorLastMessage } from "./chats";
+import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { pushTargetsForChat, sendPush, deletePushSubscription } from "./push";
 
@@ -409,10 +409,53 @@ export class Conversation extends DurableObject<Env> {
     // The message is already persisted + broadcast; a failed sidebar mirror is
     // non-critical, so swallow its error rather than surface an unhandled rejection.
     this.ctx.waitUntil(mirrorLastMessage(this.d1(), chatId, body, senderId, now).catch(() => {}));
+    // Realtime sidebar: push a compact delta to the UserInbox DO of every member NOT
+    // in this room (members WITH a socket here already got the message over the wire +
+    // update their sidebar client-side). Off the critical path; a failed ping is
+    // non-critical (the 45s sidebar poll + Web Push are the fallbacks).
+    this.ctx.waitUntil(this.inboxFanout(chatId, senderId, message).catch(() => {}));
     // Web Push: notify members with NO live socket in this room (offline, or busy in
     // another chat) — their service worker decides whether to show it. Off the path.
     this.ctx.waitUntil(this.pushOffline(chatId, senderId).catch(() => {}));
     return id;
+  }
+
+  /**
+   * Push a `{chatId, preview, at, senderId}` sidebar delta to the UserInbox DO of
+   * every member who has NO live socket in THIS room (== the pushOffline target set:
+   * members active in another chat/tab get a realtime sidebar update; fully-offline
+   * members' inbox DO has no socket so it's a no-op and Web Push alerts them instead).
+   * Member ids are cached ~5s per chat so a busy room doesn't read chat_members on
+   * every message; a just-joined member starts getting deltas within that window.
+   */
+  private inboxMembers = new Map<string, { ids: string[]; at: number }>();
+  private async inboxFanout(chatId: string, senderId: string, message: Wire): Promise<void> {
+    const ns = this.env.USER_INBOX;
+    if (!ns) return; // binding not configured (older deploy / tests)
+    const exclude = new Set<string>([senderId, ...this.onlineUsers()]);
+    const cached = this.inboxMembers.get(chatId);
+    const now = Date.now();
+    let ids: string[];
+    if (cached && now - cached.at < 5000) {
+      ids = cached.ids;
+    } else {
+      ids = await chatMemberIds(this.d1(), chatId);
+      this.inboxMembers.set(chatId, { ids, at: now });
+    }
+    const targets = ids.filter((id) => !exclude.has(id));
+    if (targets.length === 0) return;
+    const body = JSON.stringify({
+      chatId,
+      preview: message.body.slice(0, 140),
+      at: message.createdAt,
+      senderId,
+      forwarded: message.isForwarded,
+    });
+    await Promise.all(
+      targets.map((id) =>
+        ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {}),
+      ),
+    );
   }
 
   /**

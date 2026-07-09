@@ -2,6 +2,7 @@ import type { Env } from "./types";
 // Durable Object class must be exported from the worker entrypoint so wrangler
 // can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
 export { Conversation } from "./conversation";
+export { UserInbox } from "./inbox";
 import { corsHeaders, json } from "./security";
 import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
@@ -160,6 +161,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (chat && m === "PATCH") return handleUpdateChat(req, deps.getDb(), deps.now(), chat[1], cors);
 
   if (path === "/ws" && m === "GET") return handleWs(req, env, deps);
+  if (path === "/inbox/ws" && m === "GET") return handleInboxWs(req, env, deps);
 
   // Matching static assets are served by Cloudflare BEFORE the worker runs; a
   // request only reaches here if it's an API route (above) or a non-asset path.
@@ -204,6 +206,22 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
     req,
   );
   return stub.fetch(fwd);
+}
+
+/**
+ * Session-gated WebSocket upgrade to the caller's OWN UserInbox DO — the persistent
+ * "inbox" socket that carries realtime sidebar deltas for chats the user doesn't have
+ * open (see inbox.ts). No membership/role gate: the DO is addressed by the caller's
+ * own id (`inbox:<me>`), so a user can only ever open their own inbox.
+ */
+async function handleInboxWs(req: Request, env: Env, deps: Deps): Promise<Response> {
+  if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+  const me = await callerId(req, deps.getDb(), deps.now());
+  if (!me) return new Response("unauthorized", { status: 401 });
+  const ns = env.USER_INBOX;
+  if (!ns) return new Response("inbox unavailable", { status: 503 });
+  const stub = ns.get(ns.idFromName("inbox:" + me));
+  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}`, req));
 }
 
 export default {

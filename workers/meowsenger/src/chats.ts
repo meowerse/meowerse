@@ -86,6 +86,13 @@ export async function mirrorLastMessage(
   );
 }
 
+/** The user ids of every member of a chat — for the realtime-sidebar inbox fan-out
+ *  (ping each member's UserInbox DO). Indexed by chat_id. */
+export async function chatMemberIds(db: DbClient, chatId: string): Promise<string[]> {
+  const rows = await db.all("SELECT user_id FROM chat_members WHERE chat_id = ?", [chatId]);
+  return rows.map((r) => String(r.user_id));
+}
+
 /**
  * Mark a chat read up to a timestamp for one member by advancing `last_read_at`.
  * MONOTONIC + guarded: the WHERE only matches when this moves the cursor FORWARD

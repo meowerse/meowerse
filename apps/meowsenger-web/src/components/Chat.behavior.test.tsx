@@ -8,7 +8,7 @@
  * fails these.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act, fireEvent, MockWebSocket, setVisibility } from "../test/rtl";
+import { render, screen, waitFor, act, fireEvent, within, MockWebSocket, setVisibility } from "../test/rtl";
 import type { ChatSummary, Message, Member } from "../lib/chat";
 
 // Controlled fixtures + spies, referenced from the hoisted vi.mock factories.
@@ -60,13 +60,18 @@ function msg(over: Partial<Message> = {}): Message {
 function setUrl(path: string): void {
   window.history.replaceState({}, "", path);
 }
+/** Scope a query to the message LOG — a live message now also updates the sidebar
+ *  row's preview (realtime sidebar), so a whole-screen getByText would match twice. */
+function logEl(): HTMLElement {
+  return document.querySelector(".mw-chat__log") as HTMLElement;
+}
 
 /** Mount at ?chat=c1, wait for the socket to be created + first history to render. */
 async function mountOpen(): Promise<MockWebSocket> {
   setUrl("/app?chat=c1");
   render(<Chat base="" />);
-  await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-  return MockWebSocket.last;
+  await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+  return MockWebSocket.room;
 }
 /** Open the socket (connected) so sends/read/away frames flow. */
 function open(ws: MockWebSocket): void {
@@ -98,7 +103,7 @@ describe("Chat island — deep-link + connection", () => {
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     open(ws);
     emit(ws, { type: "message", message: msg({ id: "m2", senderId: "u2", body: "a new live line", createdAt: 2000 }) });
-    await waitFor(() => expect(screen.getByText("a new live line")).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("a new live line")).toBeTruthy());
   });
 });
 
@@ -129,15 +134,15 @@ describe("Chat island — detached-window suppression (audit)", () => {
     };
     setUrl("/app?chat=c1&m=mOld");
     render(<Chat base="" />);
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    const ws = MockWebSocket.last;
+    await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+    const ws = MockWebSocket.room;
     // The jump lands: the old message + a "jump to latest" affordance are shown.
     await waitFor(() => expect(screen.getByText("way back when")).toBeTruthy());
     await waitFor(() => expect(screen.getByLabelText("jump to latest messages")).toBeTruthy());
     // A live message must NOT append into the detached window.
     open(ws);
     emit(ws, { type: "message", message: msg({ id: "m99", body: "should be suppressed", createdAt: 6000 }) });
-    expect(screen.queryByText("should be suppressed")).toBeNull();
+    expect(within(logEl()).queryByText("should be suppressed")).toBeNull();
   });
 });
 
@@ -159,8 +164,8 @@ describe("Chat island — reconnect backoff", () => {
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     open(ws);
     act(() => ws.mockDrop()); // unexpected close → schedule a backoff reconnect
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2), { timeout: 2000 });
-    expect(MockWebSocket.last).not.toBe(ws);
+    // A fresh ROOM socket replaces the dropped one (the inbox socket is separate).
+    await waitFor(() => expect(MockWebSocket.room).not.toBe(ws), { timeout: 2000 });
   });
 });
 
@@ -179,7 +184,7 @@ describe("Chat island — optimistic send + reconcile", () => {
     expect(sendFrame!.body).toBe("outgoing hi");
     // Server ack reconciles the tempId → real message (no duplicate row).
     emit(ws, { type: "sent", tempId: sendFrame!.tempId, message: msg({ id: "srv1", senderId: "u1", body: "outgoing hi", createdAt: 3000 }) });
-    await waitFor(() => expect(screen.getAllByText("outgoing hi").length).toBe(1));
+    await waitFor(() => expect(within(logEl()).getAllByText("outgoing hi").length).toBe(1));
   });
 });
 
@@ -378,5 +383,55 @@ describe("Chat island — mobile header (connection dot + overflow menu)", () =>
     // Choosing "search" from the menu opens the in-chat search panel.
     act(() => fireEvent.click(screen.getByText("🔍 search")));
     await waitFor(() => expect(screen.getByLabelText("close search")).toBeTruthy());
+  });
+});
+
+describe("Chat island — realtime sidebar", () => {
+  it("a cross-chat inbox delta updates the preview + reorders the sidebar", async () => {
+    H.chats = [
+      dm(),
+      dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 }),
+    ];
+    H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
+    await mountOpen(); // opens the active room (c1) + the persistent inbox socket
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => {
+      const i = MockWebSocket.inbox;
+      if (!i) throw new Error("inbox socket not opened");
+      return i;
+    });
+    act(() => inbox.mockOpen());
+    // Someone messages c2 (which is NOT open) → the inbox DO relays a delta.
+    emit(inbox, { type: "chat_update", chatId: "c2", preview: "carol pinged you", at: 5000, senderId: "u3" });
+    await waitFor(() => expect(screen.getByText("carol pinged you")).toBeTruthy());
+    // c2 jumped to the top of the list.
+    const names = Array.from(document.querySelectorAll(".mw-chatrow__name")).map((n) => n.textContent);
+    expect(names[0]).toContain("Carol");
+  });
+
+  it("a live message in the OPEN chat refreshes that chat's sidebar preview (part A)", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    emit(ws, { type: "message", message: msg({ id: "m2", body: "fresh preview line", createdAt: 7000 }) });
+    await waitFor(() => expect(within(logEl()).getByText("fresh preview line")).toBeTruthy());
+    // The active chat's sidebar row preview reflects the new message.
+    const previews = Array.from(document.querySelectorAll(".mw-chatrow__preview")).map((p) => p.textContent);
+    expect(previews.some((t) => t?.includes("fresh preview line"))).toBe(true);
+  });
+
+  it("the inbox socket reconnects after an unexpected drop, and ignores non-delta frames", async () => {
+    await mountOpen();
+    const inbox = await waitFor(() => {
+      const i = MockWebSocket.inbox;
+      if (!i) throw new Error("inbox socket not opened");
+      return i;
+    });
+    act(() => inbox.mockOpen());
+    // A non-delta frame (e.g. the ready handshake) is a no-op — no throw, no sidebar change.
+    emit(inbox, { type: "inbox_ready" });
+    // An unexpected drop schedules a backoff reconnect → a fresh inbox socket appears.
+    act(() => inbox.mockDrop());
+    await waitFor(() => expect(MockWebSocket.inbox).not.toBe(inbox), { timeout: 2000 });
   });
 });
