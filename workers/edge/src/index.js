@@ -148,6 +148,10 @@ export default {
     if (!env?.PATH_SECRET) return new Response('misconfigured', { status: 500 });
     if (new URL(request.url).pathname !== `/${env.PATH_SECRET}`)
       return new Response('forbidden', { status: 403 });
+    // Defense in depth: verify Telegram's secret-token header when configured.
+    // No-op until TG_SECRET is set, so it can't break the live webhook before setWebhook is re-run.
+    if (env.TG_SECRET && request.headers.get('x-telegram-bot-api-secret-token') !== env.TG_SECRET)
+      return new Response('forbidden', { status: 403 });
 
     let update;
     try { update = await request.json(); }
@@ -174,6 +178,8 @@ async function matchAndBuild(msg, businessConnId, env) {
 
   const text = msg.text || msg.caption;
   if (!text) return null;
+  // Cap pathologically long messages before the ~40-regex classifier (ReDoS/CPU guard).
+  if ((text?.length ?? 0) > 512) return null;
 
   for (const rule of RULES) {
     let reply = null;
