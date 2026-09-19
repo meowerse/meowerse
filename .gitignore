@@ -16,3 +16,5 @@ workers/*/tmp/
 !.dev.vars.example
 .claude/worktrees/
 .worktrees/
+/.agents
+/.tmp-export-claude
