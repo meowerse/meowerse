@@ -2,19 +2,15 @@
 import "@meowerse/ui/tokens.css";
 import "../styles/app.css";
 import { THEME_INIT_SCRIPT, Footer } from "@meowerse/ui";
-import MeowsengerHeader from "../components/MeowsengerHeader.tsx";
 // `footer` defaults on for content pages; the full-height chat shell (/app) and
 // the centered join preview (/join) pass footer={false}.
 interface Props { title: string; bodyClass?: string; footer?: boolean; header?: boolean }
-const { title, bodyClass, footer = true, header = true } = Astro.props;
+const { title, bodyClass, footer = true, header = false } = Astro.props;
 const footerLinks = [
   { label: "about", href: "/about" },
   { label: "privacy", href: "/privacy" },
   { label: "terms", href: "/terms" },
 ];
-// Same-origin: the UI + BFF are one Worker on meowsenger, so API
-// calls use relative paths (base = "" → "/auth/login", "/api/session").
-const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
 <html lang="en">
   <head>
@@ -24,7 +20,13 @@ const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
     <script is:inline set:html={THEME_INIT_SCRIPT}></script>
   </head>
   <body class={bodyClass}>
-    {header && <MeowsengerHeader client:idle base={base} />}
+    {header && (
+      <header class="mw-row" style="padding: var(--space-3) var(--space-gutter); align-items: center;">
+        <a href="/" class="mono" style="font-family: var(--font-display); font-size: var(--text-lg); text-decoration: none;">
+          ‹ meowsenger
+        </a>
+      </header>
+    )}
     <main class="mw-container">
       <slot />
     </main>
