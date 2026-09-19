@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Icon } from "@meowerse/ui";
 
 export interface MenuItem {
   label: string;
+  icon?: string;
   onClick: () => void;
 }
 
@@ -74,7 +76,8 @@ export function MessageMenu({
           className="mw-menu__item"
           onClick={() => { it.onClick(); onClose(); }}
         >
-          {it.label}
+          {it.icon && <Icon name={it.icon} size={15} className="mw-menu__icon" />}
+          <span>{it.label}</span>
         </button>
       ))}
     </div>

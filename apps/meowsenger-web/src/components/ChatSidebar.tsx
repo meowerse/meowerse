@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { searchGlobal, type ChatSummary, type Message } from "../lib/chat";
 import { Avatar } from "./Avatar";
+import { Icon } from "@meowerse/ui";
 
 /** Short relative time for the sidebar (now / 5m / 3h / 2d, else a date). */
 function relTime(ms: number): string {
@@ -83,7 +84,7 @@ export function ChatSidebar({
       <div className="mw-chat__new">
         <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" aria-label="new chat" onClick={onNewChatClick}>
           <span className="mw-tlabel">+ new chat</span>
-          <span className="mw-ticon" aria-hidden="true">+</span>
+          <span className="mw-ticon" aria-hidden="true"><Icon name="plus" size={16} /></span>
         </button>
         <input
           type="search"
@@ -138,7 +139,7 @@ export function ChatSidebar({
         )}
         {!loading && chats.length === 0 && (
           <div className="mw-emptychats">
-            <span className="mw-emptychats__glyph" aria-hidden="true">💬</span>
+            <span className="mw-emptychats__glyph" aria-hidden="true"><Icon name="message" size={32} /></span>
             <p className="mw-emptychats__title">no chats yet</p>
             <p className="mw-emptychats__sub mw-muted">start one to get going.</p>
             <button className="mw-btn mw-btn--primary mw-btn--sm" onClick={onNewChatClick}>+ new chat</button>
@@ -167,8 +168,8 @@ export function ChatSidebar({
               <span className="mw-chatrow__body">
                 <span className="mw-chatrow__top">
                   <span className="mw-chatrow__name" data-case="preserve">
-                    {channel && <span className="mw-chatrow__glyph" aria-hidden="true">📡 </span>}
-                    {membered && !channel && <span className="mw-chatrow__glyph" aria-hidden="true">👥 </span>}
+                    {channel && <Icon name="broadcast" size={14} className="mw-chatrow__glyph" />}
+                    {membered && !channel && <Icon name="users" size={14} className="mw-chatrow__glyph" />}
                     {title}
                     {/* Chat type is otherwise conveyed only by the aria-hidden emoji —
                         give the row's accessible name a visually-hidden type word. */}
@@ -195,6 +196,7 @@ export function ChatSidebar({
         <footer className="mw-chat__account">
           <span className="mw-chatrow__avatar">
             <Avatar url={me.avatarUrl} name={me.displayName || me.username} size="sm" />
+            <span className="mw-dot mw-dot--on" aria-label="online" />
           </span>
           <div className="mw-chat__account-info">
             <span className="mw-chat__account-name" data-case="preserve">{me.displayName || me.username}</span>
@@ -208,7 +210,7 @@ export function ChatSidebar({
                 title="settings"
                 aria-label="settings"
               >
-                ⚙
+                <Icon name="settings" size={16} />
               </button>
             )}
             {onLogout && (
@@ -218,7 +220,7 @@ export function ChatSidebar({
                 title="log out"
                 aria-label="log out"
               >
-                ⎋
+                <Icon name="logout" size={16} />
               </button>
             )}
           </div>

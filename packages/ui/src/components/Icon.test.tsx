@@ -18,4 +18,11 @@ describe("Icon", () => {
     render(<Icon name="check" label="done" />);
     expect(screen.getByRole("img", { name: "done" })).toBeTruthy();
   });
+  it("renders newly added chat and navigation icons", () => {
+    const icons = ["settings", "search", "link", "dots", "plus", "trash", "edit", "message", "users", "user", "arrow-left", "send", "mood-smile", "broadcast", "reply", "forward", "refresh", "share"];
+    for (const name of icons) {
+      const { container } = render(<Icon name={name} />);
+      expect(container.querySelector(`svg[data-icon='${name}']`)).toBeTruthy();
+    }
+  });
 });

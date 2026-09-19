@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Modal } from "@meowerse/ui";
+import { Modal, Icon } from "@meowerse/ui";
 import { createGroup, createChannel, slugAvailable, slugify } from "../lib/chat";
 
 /** A chosen group member, held as a chip until the group is created. */
@@ -242,7 +242,9 @@ export function NewChatModal({
                       className="mw-chip__x"
                       aria-label={`remove ${m.username}`}
                       onClick={() => removeChip(m.username)}
-                    >✕</button>
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
                   </span>
                 ))}
               </div>
@@ -264,7 +266,7 @@ export function NewChatModal({
               />
               <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="add" onClick={addChip} disabled={!memberInput.trim()}>
                 <span className="mw-tlabel">add</span>
-                <span className="mw-ticon" aria-hidden="true">+</span>
+                <span className="mw-ticon" aria-hidden="true"><Icon name="plus" size={14} /></span>
               </button>
             </div>
           </div>

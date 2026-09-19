@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Avatar } from "./Avatar";
+import { Icon } from "@meowerse/ui";
 import {
   getMembers,
   addMember,
@@ -343,7 +344,9 @@ export function MemberDrawer({
       <aside className="mw-drawer__panel" ref={panelRef}>
         <header className="mw-drawer__head">
           <h2 className="mw-drawer__title" data-case="preserve">{chat.name ?? noun}</h2>
-          <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="close" onClick={onClose}>✕</button>
+          <button className="mw-btn mw-btn--ghost mw-btn--sm" aria-label="close" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
         </header>
 
         {/* Owner/admin get a Members | Requests switcher; the requests tab carries a
@@ -424,7 +427,7 @@ export function MemberDrawer({
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void doAdd(); } }}
               />
               <button className="mw-btn mw-btn--primary mw-btn--sm" aria-label="add member" onClick={doAdd} disabled={adding || !addInput.trim()}>
-                {adding ? "…" : (<><span className="mw-tlabel">add</span><span className="mw-ticon" aria-hidden="true">+</span></>)}
+                {adding ? "…" : (<><span className="mw-tlabel">add</span><span className="mw-ticon" aria-hidden="true"><Icon name="plus" size={14} /></span></>)}
               </button>
             </div>
             {inviteNote && (
@@ -516,7 +519,7 @@ export function MemberDrawer({
                     )}
                     {canRemove && (
                       <button className="mw-btn mw-btn--ghost mw-btn--sm mw-mrow__danger" aria-label="remove" onClick={() => doRemove(m)} disabled={rowBusy}>
-                        <span className="mw-tlabel">remove</span><span className="mw-ticon" aria-hidden="true">✕</span>
+                        <span className="mw-tlabel">remove</span><span className="mw-ticon" aria-hidden="true"><Icon name="x" size={14} /></span>
                       </button>
                     )}
                   </span>

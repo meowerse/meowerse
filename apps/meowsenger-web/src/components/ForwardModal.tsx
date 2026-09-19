@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Modal } from "@meowerse/ui";
+import { Modal, Icon } from "@meowerse/ui";
 import { forwardMessages, type ChatSummary } from "../lib/chat";
 import { Avatar } from "./Avatar";
 
@@ -138,12 +138,12 @@ export function ForwardModal({
                     : <Avatar url={c.peerAvatarUrl} name={title} size="md" />}
                 </span>
                 <span className="mw-forwardrow__name" data-case="preserve">
-                  {channel && <span className="mw-chatrow__glyph" aria-hidden="true">📡 </span>}
-                  {membered && !channel && <span className="mw-chatrow__glyph" aria-hidden="true">👥 </span>}
+                  {channel && <Icon name="broadcast" size={14} className="mw-chatrow__glyph" />}
+                  {membered && !channel && <Icon name="users" size={14} className="mw-chatrow__glyph" />}
                   {title}
                 </span>
                 <span className={`mw-forwardrow__check${isSel ? " is-on" : ""}`} aria-hidden="true">
-                  {isSel ? "✓" : ""}
+                  {isSel ? <Icon name="check" size={14} /> : ""}
                 </span>
               </button>
             );

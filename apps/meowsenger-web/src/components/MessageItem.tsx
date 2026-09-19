@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Message } from "../lib/chat";
 import { renderBody } from "../lib/messageText";
 import { Avatar } from "./Avatar";
+import { Icon } from "@meowerse/ui";
 
 /** A rendered bubble: a real Message, plus a client-only tempId while optimistic. */
 export interface Bubble extends Message {
@@ -148,21 +149,21 @@ export function MessageItem({
   // ACTUALLY-rendered set (edit/delete are conditional). react + more open popovers.
   const actions: Array<{
     key: string;
-    glyph: string;
+    icon: string;
     title: string;
     label: string;
     haspopup?: boolean;
     onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   }> = [
     {
-      key: "react", glyph: "😀", title: "react", label: "react", haspopup: true,
+      key: "react", icon: "mood-smile", title: "react", label: "react", haspopup: true,
       onClick: (e) => { const r = e.currentTarget.getBoundingClientRect(); onReact(m, r.left + r.width / 2, r.bottom + 4); },
     },
-    { key: "reply", glyph: "↩", title: "reply", label: "reply", onClick: () => onReply(m) },
-    ...(canEdit ? [{ key: "edit", glyph: "✎", title: "edit", label: "edit", onClick: () => onStartEdit(m) }] : []),
-    ...(canDelete ? [{ key: "delete", glyph: "🗑", title: "delete", label: "delete", onClick: () => onDelete(m) }] : []),
+    { key: "reply", icon: "reply", title: "reply", label: "reply", onClick: () => onReply(m) },
+    ...(canEdit ? [{ key: "edit", icon: "edit", title: "edit", label: "edit", onClick: () => onStartEdit(m) }] : []),
+    ...(canDelete ? [{ key: "delete", icon: "trash", title: "delete", label: "delete", onClick: () => onDelete(m) }] : []),
     {
-      key: "more", glyph: "⋯", title: "more", label: "more actions", haspopup: true,
+      key: "more", icon: "dots", title: "more", label: "more actions", haspopup: true,
       onClick: (e) => { const r = e.currentTarget.getBoundingClientRect(); onContextMenu(m, r.left, r.bottom); },
     },
   ];
@@ -235,7 +236,7 @@ export function MessageItem({
             <div className="mw-bubble__stack">
               {m.isForwarded && (
                 <span className="mw-bubble__forwarded" aria-label="forwarded message">
-                  <span aria-hidden="true">↪</span> forwarded
+                  <Icon name="forward" size={12} aria-hidden={true} /> forwarded
                 </span>
               )}
               {m.replyTo && (
@@ -275,7 +276,9 @@ export function MessageItem({
                     {...(a.haspopup ? { "aria-haspopup": "menu" as const } : {})}
                     tabIndex={i === tabStop ? 0 : -1}
                     onClick={a.onClick}
-                  >{a.glyph}</button>
+                  >
+                    <Icon name={a.icon} size={15} />
+                  </button>
                 ))}
               </div>
             )}
