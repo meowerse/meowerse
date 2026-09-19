@@ -23,7 +23,6 @@
       &nbsp;&nbsp;<span class="term-key">"handle"</span>: <span class="term-highlight">"alxnko"</span>,<br>
       &nbsp;&nbsp;<span class="term-key">"role"</span>: <span class="term-highlight">"software engineer & systems architect"</span>,<br>
       &nbsp;&nbsp;<span class="term-key">"location"</span>: <span class="term-highlight">"earth // remote"</span>,<br>
-      &nbsp;&nbsp;<span class="term-key">"focus"</span>: [<span class="term-highlight">"distributed edge systems"</span>, <span class="term-highlight">"realtime protocols"</span>, <span class="term-highlight">"modern web"</span>],<br>
       &nbsp;&nbsp;<span class="term-key">"status"</span>: <span class="term-highlight">"online & shipping code"</span><br>
       &#125;
     </div>
@@ -49,8 +48,6 @@
     <div class="term-chips">
       <span style="font-size: 0.75rem; color: var(--text-subtle); align-self: center; margin-right: 4px;">try:</span>
       <button type="button" class="term-chip" data-cmd="whoami">whoami</button>
-      <button type="button" class="term-chip" data-cmd="skills">skills</button>
-      <button type="button" class="term-chip" data-cmd="projects">projects</button>
       <button type="button" class="term-chip" data-cmd="contact">contact</button>
       <button type="button" class="term-chip" data-cmd="clear">clear</button>
     </div>
@@ -65,10 +62,8 @@
     var root = document.getElementById('terminal-root');
 
     var COMMANDS = {
-      help: 'available commands: whoami, skills, projects, contact, clear, socials, date',
-      whoami: 'alxnko — Alex Neko. Software engineer & systems architect building distributed edge software, real-time sync engines, and full-stack web platforms.',
-      skills: 'LANGUAGES: TypeScript, JavaScript, Rust, Go, SQL, Python\nEDGE & INFRA: Cloudflare Workers, Durable Objects, D1, Terraform, Docker, Linux\nFRONTEND: Astro, React, Tailwind CSS, Vite, HTML/CSS Web Standards',
-      projects: '• Meowerse: Federated social & identity platform (https://meow.alxnko.dev)\n• Meowsenger: Real-time encrypted messenger on Durable Objects (https://meowsenger.alxnko.dev)\n• Auth IdP: OIDC Authorization Code + PKCE identity provider (https://auth.alxnko.dev)',
+      help: 'available commands: whoami, contact, clear, socials, date',
+      whoami: 'alxnko — Alex Neko. Software engineer & systems architect building distributed edge software and modern web platforms.',
       contact: '• GitHub: https://github.com/alxnko (/gh)\n• Telegram: https://t.me/ALXNK0 (/tg)\n• LinkedIn: https://linkedin.com/in/alxnko (/li)\n• Instagram: https://instagram.com/alxnko (/in)\n• Email: mailto:aleksandrnyrko@gmail.com (/mail)',
       socials: 'Shortcuts: /gh (GitHub), /tg (Telegram), /li (LinkedIn), /in (Instagram), /mail (Email)',
       date: new Date().toISOString() + ' (system time)'

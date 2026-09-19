@@ -11,37 +11,6 @@ const socialLinks = [
   { name: "Instagram", path: "/in", url: "https://instagram.com/alxnko", icon: "instagram" as const, desc: "life & visuals" },
   { name: "Email", path: "/mail", url: "mailto:aleksandrnyrko@gmail.com", icon: "mail" as const, desc: "aleksandrnyrko@gmail.com" },
 ];
-
-const projects = [
-  {
-    name: "Meowerse",
-    badge: "Ecosystem",
-    desc: "A federated social media platform and real-time interaction hub built with modern edge architecture, featuring strict security and responsive web design.",
-    tech: ["Astro", "TypeScript", "Cloudflare", "Tailwind"],
-    url: "https://meow.alxnko.dev",
-  },
-  {
-    name: "Meowsenger",
-    badge: "Real-time Chat",
-    desc: "An edge-native encrypted instant messenger powered by Cloudflare Durable Objects Hibernation API, featuring live presence, inbox synchronization, and sub-second delivery.",
-    tech: ["Durable Objects", "WebSockets", "D1 SQLite", "React"],
-    url: "https://meowsenger.alxnko.dev",
-  },
-  {
-    name: "Meowerse Auth",
-    badge: "Identity Provider",
-    desc: "An RFC 6749 / 7519 compliant OpenID Connect identity provider with PKCE, single sign-on, session management, and Cloudflare Turnstile bot deterrence.",
-    tech: ["OIDC", "PKCE", "Cloudflare Workers", "Cryptographic Keys"],
-    url: "https://auth.alxnko.dev",
-  },
-];
-
-const skills = [
-  "TypeScript", "JavaScript", "Rust", "Go", "Python",
-  "Cloudflare Workers", "Durable Objects", "D1 / SQLite",
-  "Astro", "React", "Node.js / Bun", "Tailwind CSS",
-  "Docker", "Linux Systems", "Terraform", "Git & CI/CD"
-];
 ---
 
 <!DOCTYPE html>
@@ -115,50 +84,6 @@ const skills = [
     <section>
       <h2 class="section-title"><span class="hash">#</span> interactive_console</h2>
       <Terminal />
-    </section>
-
-    <!-- Featured Projects Section -->
-    <section>
-      <h2 class="section-title"><span class="hash">#</span> featured_projects</h2>
-      <div class="projects-grid">
-        {projects.map((proj) => (
-          <article class="project-card">
-            <div>
-              <span class="project-badge">{proj.badge}</span>
-              <h3 class="project-name">
-                <span>{proj.name}</span>
-                <a href={proj.url} target="_blank" rel="noopener noreferrer" class="project-link" aria-label={`Open ${proj.name}`}>
-                  <Icons name="external" size={15} />
-                </a>
-              </h3>
-              <p class="project-desc">{proj.desc}</p>
-            </div>
-            <div>
-              <div class="project-tech">
-                {proj.tech.map((t) => (
-                  <span class="tech-tag">{t}</span>
-                ))}
-              </div>
-              <a href={proj.url} target="_blank" rel="noopener noreferrer" class="project-link">
-                visit {proj.name.toLowerCase()} &rarr;
-              </a>
-            </div>
-          </article>
-        ))}
-      </div>
-    </section>
-
-    <!-- Skills / Toolchain Section -->
-    <section>
-      <h2 class="section-title"><span class="hash">#</span> stack_and_tools</h2>
-      <div class="skills-container">
-        {skills.map((skill) => (
-          <div class="skill-pill">
-            <span style="color: var(--green); font-size: 0.75rem;">&bull;</span>
-            <span>{skill}</span>
-          </div>
-        ))}
-      </div>
     </section>
   </main>
 
