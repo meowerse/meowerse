@@ -148,9 +148,9 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     return json({ error: "rate_limited" }, 429, cors);
   }
 
-  if (path === "/health" && m === "GET") return json({ ok: true }, 200, cors);
-  if (path === "/auth/login" && m === "GET") return handleLogin(deps.auth());
-  if (path === "/auth/callback" && m === "GET") return handleCallback(req, env, deps);
+  if (path === "/health" && (m === "GET" || m === "HEAD")) return json({ ok: true }, 200, cors);
+  if (path === "/auth/login" && (m === "GET" || m === "HEAD")) return handleLogin(deps.auth());
+  if (path === "/auth/callback" && (m === "GET" || m === "HEAD")) return handleCallback(req, env, deps);
   if (path === "/api/session" && m === "GET") return handleSession(req, deps.getDb(), deps.now(), cors);
   if (path === "/auth/logout" && m === "POST") return handleLogout(req, deps.getDb(), deps.now(), cors);
 

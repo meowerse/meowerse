@@ -120,4 +120,24 @@ describe("handleCallback", () => {
     expect(s.has("sess1")).toBe(true);
     expect(u.has("u1")).toBe(true);
   });
+  it("redirects browser to /auth/login?retry=1 when txn cookie is missing", async () => {
+    const { db } = memDb();
+    const req = new Request("https://meowsenger.alxnko.dev/auth/callback?code=abc&state=st", {
+      headers: { Accept: "text/html,application/xhtml+xml" },
+    });
+    const res = await handleCallback(req, env, deps(db, authOk()));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://meowsenger.alxnko.eu.org/auth/login?retry=1");
+  });
+  it("renders friendly HTML error page when retry already failed", async () => {
+    const { db } = memDb();
+    const req = new Request("https://meowsenger.alxnko.dev/auth/callback?code=abc&state=st&retry=1", {
+      headers: { Accept: "text/html,application/xhtml+xml" },
+    });
+    const res = await handleCallback(req, env, deps(db, authOk()));
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("Login session expired");
+  });
 });
