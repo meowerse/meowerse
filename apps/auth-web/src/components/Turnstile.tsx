@@ -19,10 +19,20 @@ const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render
  * `onToken` fires with the solved token, and with "" on expiry/error so the
  * form knows to wait for a fresh one.
  */
-export default function Turnstile({ siteKey, onToken }: { siteKey?: string; onToken: (t: string) => void }) {
+export default function Turnstile({
+  siteKey,
+  onToken,
+  onError,
+  onExpire,
+}: {
+  siteKey?: string;
+  onToken: (t: string) => void;
+  onError?: () => void;
+  onExpire?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const cb = useRef(onToken);
-  cb.current = onToken;
+  const cb = useRef({ onToken, onError, onExpire });
+  cb.current = { onToken, onError, onExpire };
 
   useEffect(() => {
     if (!siteKey || !ref.current) return;
@@ -42,9 +52,15 @@ export default function Turnstile({ siteKey, onToken }: { siteKey?: string; onTo
       if (!t || cancelled) return false;
       widgetId = t.render(el, {
         sitekey: siteKey,
-        callback: (token: string) => cb.current(token),
-        "expired-callback": () => cb.current(""),
-        "error-callback": () => cb.current(""),
+        callback: (token: string) => cb.current.onToken(token),
+        "expired-callback": () => {
+          cb.current.onToken("");
+          cb.current.onExpire?.();
+        },
+        "error-callback": () => {
+          cb.current.onToken("");
+          cb.current.onError?.();
+        },
       });
       return true;
     };

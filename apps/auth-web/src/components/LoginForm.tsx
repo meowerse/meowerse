@@ -10,9 +10,14 @@ export default function LoginForm({ base, turnstileSiteKey }: { base: string; tu
   const [busy, setBusy] = useState(false);
   const [token, setToken] = useState("");
 
+  const isWaitingVerification = Boolean(turnstileSiteKey && !token);
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (turnstileSiteKey && !token) { setError("just a moment — verifying you're human. try again."); return; }
+    if (isWaitingVerification) {
+      setError("just a moment — verifying you're human. try again.");
+      return;
+    }
     setError(""); setBusy(true);
     try {
       const res = await postLogin(base, username, password, token || undefined);
@@ -22,13 +27,33 @@ export default function LoginForm({ base, turnstileSiteKey }: { base: string; tu
     setBusy(false);
   }
 
+  function handleToken(t: string) {
+    setToken(t);
+    if (t && error.includes("verifying you're human")) {
+      setError("");
+    }
+  }
+
   return (
     <form onSubmit={onSubmit} className="mw-stack mw-narrow">
       <Field label="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
       <Field label="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-      <Turnstile siteKey={turnstileSiteKey} onToken={setToken} />
+      <Turnstile
+        siteKey={turnstileSiteKey}
+        onToken={handleToken}
+        onExpire={() => setError("verification expired — please solve the challenge again.")}
+        onError={() => setError("verification failed to load — please refresh.")}
+      />
       {error && <Alert variant="error">{error}</Alert>}
-      <Button variant="primary" type="submit" loading={busy}>sign in</Button>
+      <Button
+        variant="primary"
+        type="submit"
+        loading={busy}
+        disabled={isWaitingVerification}
+        title={isWaitingVerification ? "verifying you're human..." : undefined}
+      >
+        {isWaitingVerification ? "verifying..." : "sign in"}
+      </Button>
       <p className="mw-muted">new here? <a href="/signup">create an account</a></p>
     </form>
   );

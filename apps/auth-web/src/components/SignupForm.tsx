@@ -12,9 +12,14 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
   const [next, setNext] = useState<NextStep | undefined>(undefined);
   const [token, setToken] = useState("");
 
+  const isWaitingVerification = Boolean(turnstileSiteKey && !token);
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (turnstileSiteKey && !token) { setError("just a moment — verifying you're human. try again."); return; }
+    if (isWaitingVerification) {
+      setError("just a moment — verifying you're human. try again.");
+      return;
+    }
     setError(""); setBusy(true);
     try {
       const res = await postSignup(base, username, password, token || undefined);
@@ -22,6 +27,13 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
       else setError(errorText(res.error));
     } catch { setError("network error — please try again."); }
     setBusy(false);
+  }
+
+  function handleToken(t: string) {
+    setToken(t);
+    if (t && error.includes("verifying you're human")) {
+      setError("");
+    }
   }
 
   if (codes) {
@@ -40,9 +52,22 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
     <form onSubmit={onSubmit} className="mw-stack mw-narrow">
       <Field label="username" hint="3–32 letters, numbers, or underscores" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} />
       <Field label="password" hint="12–128 characters" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={12} />
-      <Turnstile siteKey={turnstileSiteKey} onToken={setToken} />
+      <Turnstile
+        siteKey={turnstileSiteKey}
+        onToken={handleToken}
+        onExpire={() => setError("verification expired — please solve the challenge again.")}
+        onError={() => setError("verification failed to load — please refresh.")}
+      />
       {error && <Alert variant="error">{error}</Alert>}
-      <Button variant="primary" type="submit" loading={busy}>create account</Button>
+      <Button
+        variant="primary"
+        type="submit"
+        loading={busy}
+        disabled={isWaitingVerification}
+        title={isWaitingVerification ? "verifying you're human..." : undefined}
+      >
+        {isWaitingVerification ? "verifying..." : "create account"}
+      </Button>
       <p className="mw-muted">already have one? <a href="/login">sign in</a></p>
     </form>
   );
