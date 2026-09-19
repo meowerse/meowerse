@@ -23,7 +23,12 @@
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
 
 # The app shell is session-bearing — never cache.
-/app*
+# Split rather than /app*: that also matched /apple-touch-icon.png, and since
+# Cloudflare MERGES same-name headers across rules, the icon was being served
+# "no-store, public, max-age=604800".
+/app
+  Cache-Control: no-store
+/app/*
   Cache-Control: no-store
 
 # Brand icons (packages/brand). Stable URLs but NOT content-hashed, so they get a

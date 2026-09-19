@@ -5,15 +5,15 @@
   },
   "auth": {
     "at": "local",
-    "sha": "59cedbb"
+    "sha": "c1a4ce4"
   },
   "meowsenger": {
     "at": "local",
-    "sha": "2e44102"
+    "sha": "c1a4ce4"
   },
   "web": {
     "at": "local",
-    "sha": "bec7f73"
+    "sha": "c1a4ce4"
   },
   "worker": {
     "at": "local",
