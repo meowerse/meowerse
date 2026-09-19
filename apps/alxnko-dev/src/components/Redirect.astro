@@ -13,6 +13,9 @@ const { target, title } = Astro.props;
   <title>{title} — alxnko</title>
   <meta http-equiv="refresh" content={`0; url=${target}`} />
   <link rel="canonical" href={target} />
+  <!-- Icons only: this page redirects immediately, so no manifest/touch-icon fetch. -->
+  <link rel="icon" href="/favicon.ico" sizes="32x32" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root { color-scheme: dark; }
     body {

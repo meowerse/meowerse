@@ -61,12 +61,18 @@
     var history = document.getElementById('term-history');
     var root = document.getElementById('terminal-root');
 
+    // 'cat profile.json' is the command shown in the pre-rendered history above,
+    // so it has to actually work when someone types it back.
+    var PROFILE = '{\n  "name": "Alex Neko",\n  "handle": "alxnko",\n  "role": "software engineer & systems architect",\n  "location": "earth // remote",\n  "status": "online & shipping code"\n}';
+
     var COMMANDS = {
-      help: 'available commands: whoami, contact, clear, socials, date',
+      help: 'available commands: whoami, contact, socials, cat profile.json, date, clear',
       whoami: 'alxnko — Alex Neko. Software engineer & systems architect building distributed edge software and modern web platforms.',
-      contact: '• GitHub: https://github.com/alxnko (/gh)\n• Telegram: https://t.me/ALXNK0 (/tg)\n• LinkedIn: https://linkedin.com/in/alxnko (/li)\n• Instagram: https://instagram.com/alxnko (/in)\n• Email: mailto:aleksandrnyrko@gmail.com (/mail)',
-      socials: 'Shortcuts: /gh (GitHub), /tg (Telegram), /li (LinkedIn), /in (Instagram), /mail (Email)',
-      date: new Date().toISOString() + ' (system time)'
+      contact: '• GitHub: https://github.com/alxnko (/gh)\n• Telegram: https://t.me/ALXNK0 (/tg)\n• LinkedIn: https://linkedin.com/in/alxnko (/in)\n• Instagram: https://instagram.com/alxnko (/ig)\n• Email: mailto:aleksandrnyrko@gmail.com (/mail)',
+      socials: 'Shortcuts: /gh (GitHub), /tg (Telegram), /in (LinkedIn), /ig (Instagram), /mail (Email)',
+      date: new Date().toISOString() + ' (system time)',
+      'cat profile.json': PROFILE,
+      'cat profile': PROFILE
     };
 
     function runCmd(rawCmd) {
