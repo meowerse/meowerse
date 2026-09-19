@@ -14,7 +14,7 @@ import {
 const LIST_CACHE_CONTROL = "public, max-age=10";
 
 const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
-Expires: 2027-12-31T23:59:59.000Z
+Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
 Canonical: https://alxnko.dev/.well-known/security.txt
 Policy: https://alxnko.dev/privacy
@@ -171,23 +171,23 @@ async function handleBatch(req: Request, deps: Deps, cors: Record<string, string
  */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
   const url = new URL(req.url);
+  const origin = req.headers.get("Origin");
+  const cors = corsHeaders(origin, env);
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+
   if (url.hostname.endsWith(".alxnko.eu.org")) {
     const newHost = url.hostname.replace(/\.alxnko\.eu\.org$/, ".alxnko.dev");
     const dest = new URL(url.pathname + url.search, `https://${newHost}`);
     return new Response(null, {
-      status: 301,
+      status: 308,
       headers: {
         Location: dest.toString(),
         "Cache-Control": "public, max-age=86400",
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
       },
     });
   }
-
-  const origin = req.headers.get("Origin");
-  const cors = corsHeaders(origin, env);
-
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
   const path = url.pathname;
 

@@ -52,9 +52,11 @@ This specification records the technical architecture, design decisions, bug fix
 
 ### Strategy
 - **Zero-Downtime Transition**: All workers (`auth`, `meowsenger`, `api`, `auth-bot`) bind both custom domains concurrently.
-- **Permanent Redirects**: Edge router handles incoming requests matching `*.alxnko.eu.org` with HTTP 301 Permanent Redirect to `*.alxnko.dev`, preserving URL pathname and query parameters.
+- **Edge Single Redirects (Cloudflare Ruleset)**: Cloudflare Anycast edge proxy (Pingora) intercepts `*.alxnko.eu.org` and immediately terminates requests with HTTP 301/308 redirects, consuming 0 Worker requests and providing sub-5ms response time.
+- **In-Worker Permanent Redirects (Defense-in-Depth)**: Worker routers handle incoming requests matching `*.alxnko.eu.org` with HTTP 308 Permanent Redirect (RFC 7538) to preserve HTTP request method and body on POST/PUT mutations, while emitting full CORS headers and preflight handling.
 - **HSTS Enforcement**: Redirect responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`.
 - **CORS & OIDC**: CORS origins accept both domains during the cutover window; default fallbacks and client redirect URIs updated to `alxnko.dev`.
+- **Domain Independence (Local & Test Environments)**: CORS handlers automatically accept any loopback/localhost (`localhost:*`, `127.0.0.1:*`, `*.local`) origin across any port, removing environment hardcoding. Default OIDC issuer derives dynamically from request origin when unset.
 
 ---
 

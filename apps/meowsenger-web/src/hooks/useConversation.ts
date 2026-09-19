@@ -443,6 +443,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
     const onWake = () => {
       if (cancelled || closingRef.current || revokedRef.current || activeRef.current !== chatId) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       const ws = socketRef.current;
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         clearReconnect();

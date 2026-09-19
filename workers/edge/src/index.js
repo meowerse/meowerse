@@ -143,7 +143,7 @@ function isSleepHour() {
 }
 
 const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
-Expires: 2027-12-31T23:59:59.000Z
+Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
 Canonical: https://alxnko.dev/.well-known/security.txt
 Policy: https://alxnko.dev/privacy

@@ -13,7 +13,7 @@ const base = import.meta.env.PUBLIC_AUTH_API_URL ?? ""; // same-origin: relative
     fetch("/api/session", { credentials: "include" })
       .then(function(r) { return r.json(); })
       .then(function(s) {
-        if (s && s.user) {
+        if (s && s.authenticated) {
           window.location.replace("/account");
         }
       })

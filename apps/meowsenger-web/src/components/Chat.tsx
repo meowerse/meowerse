@@ -159,15 +159,11 @@ export default function Chat({ base }: { base: string }) {
   // (onActiveMessage) and the cross-chat inbox socket (onInboxDelta).
   const applySidebarDelta = useCallback(
     (chatId: string, preview: string, at: number, senderId: string, isActive: boolean) => {
+      let isUnindexed = false;
       setChats((prev) => {
         const idx = prev.findIndex((c) => c.id === chatId);
         if (idx === -1) {
-          void listChats(base).then((cs) => {
-            setChats(cs);
-            if (!cs.some((c) => c.id === chatId)) {
-              window.setTimeout(() => { void listChats(base).then(setChats); }, 600);
-            }
-          });
+          isUnindexed = true;
           return prev;
         }
         const updated: ChatSummary = {
@@ -181,6 +177,14 @@ export default function Chat({ base }: { base: string }) {
         };
         return [updated, ...prev.filter((_, i) => i !== idx)];
       });
+      if (isUnindexed) {
+        void listChats(base).then((cs) => {
+          setChats(cs);
+          if (!cs.some((c) => c.id === chatId)) {
+            window.setTimeout(() => { void listChats(base).then(setChats); }, 600);
+          }
+        });
+      }
     },
     [base],
   );

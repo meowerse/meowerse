@@ -453,8 +453,10 @@ export class Conversation extends DurableObject<Env> {
       senderId,
       forwarded: message.isForwarded,
     });
+    // Cloudflare Workers enforce a 50 subrequest limit per invocation. Bound to 40 targets.
+    const bounded = targets.slice(0, 40);
     await Promise.all(
-      targets.map((id) =>
+      bounded.map((id) =>
         ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {}),
       ),
     );

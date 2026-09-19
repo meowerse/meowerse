@@ -56,6 +56,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
 
     const onWake = () => {
       if (cancelled || closing) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         attempts = 0;
         clearTimer();

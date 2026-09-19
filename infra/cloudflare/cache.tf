@@ -30,7 +30,7 @@ resource "cloudflare_ruleset" "edge_cache" {
   rules = [{
     ref         = "cache_public_gets"
     description = "Edge-cache public static/near-static GETs (jwks, discovery, push key, meows) so they don't invoke the worker"
-    expression  = "(http.request.method eq \"GET\") and ((http.host eq \"auth.alxnko.eu.org\" and http.request.uri.path in {\"/jwks\" \"/.well-known/openid-configuration\" \"/.well-known/jwks.json\"}) or (http.host eq \"meowsenger.alxnko.eu.org\" and http.request.uri.path eq \"/api/push/key\") or (http.host eq \"api.meow.alxnko.eu.org\" and http.request.uri.path eq \"/api/meows\"))"
+    expression  = "(http.request.method eq \"GET\") and (((http.host in {\"auth.alxnko.eu.org\" \"auth.alxnko.dev\"}) and http.request.uri.path in {\"/jwks\" \"/.well-known/openid-configuration\" \"/.well-known/jwks.json\"}) or ((http.host in {\"meowsenger.alxnko.eu.org\" \"meowsenger.alxnko.dev\"}) and http.request.uri.path eq \"/api/push/key\") or ((http.host in {\"api.meow.alxnko.eu.org\" \"api.meow.alxnko.dev\"}) and http.request.uri.path eq \"/api/meows\"))"
     action      = "set_cache_settings"
     action_parameters = {
       cache = true

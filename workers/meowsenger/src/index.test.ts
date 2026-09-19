@@ -8,11 +8,16 @@ const deps = { getDb: () => ({}) } as never;
 const req = (m: string, p: string) => new Request(`https://meowsenger-api.alxnko.dev${p}`, { method: m, headers: { Origin: ORIGIN } });
 
 describe("router", () => {
-  it("redirects *.alxnko.eu.org to *.alxnko.dev with 301 and HSTS", async () => {
+  it("redirects *.alxnko.eu.org to *.alxnko.dev with 308, CORS and HSTS", async () => {
     const r = await handle(new Request("https://meowsenger.alxnko.eu.org/health?x=1"), env, deps);
-    expect(r.status).toBe(301);
+    expect(r.status).toBe(308);
     expect(r.headers.get("Location")).toBe("https://meowsenger.alxnko.dev/health?x=1");
     expect(r.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+
+    // Preflight on .eu.org returns 204 with CORS for localhost
+    const pre = await handle(new Request("https://meowsenger.alxnko.eu.org/api/chats", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), env, deps);
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
   });
 
   it("serves security.txt and robots.txt", async () => {
