@@ -39,15 +39,11 @@ const socialLinks = [
   <header class="site-header">
     <div class="container header-inner">
       <a href="/" class="logo-link" aria-label="alxnko home">
-        <span class="prompt-sym">&gt;</span> <span class="logo-brand">alxnko</span><span class="prompt-sym">@dev:~$</span>
+        <span class="logo-prompt">&gt;</span>
+        <span class="logo-brand">alxnko</span><span class="logo-suffix">.dev</span>
       </a>
 
-      <div style="display: flex; align-items: center; gap: var(--space-3);">
-        <div class="status-badge" title="Operational status">
-          <span class="status-dot"></span>
-          <span>online</span>
-        </div>
-
+      <div>
         <button type="button" class="theme-btn" id="theme-toggle" aria-label="Toggle light or dark theme" title="Toggle theme">
           <span id="theme-icon-moon"><Icons name="moon" size={17} /></span>
           <span id="theme-icon-sun" style="display: none;"><Icons name="sun" size={17} /></span>
@@ -60,7 +56,10 @@ const socialLinks = [
     <!-- Hero Section -->
     <section class="hero">
       <div class="tagline">// software engineer & systems builder</div>
-      <h1 class="hero-title">Alex Neko <span class="accent brand-display">alxnko</span></h1>
+      <div class="hero-title-group">
+        <h1 class="hero-title">Alex Neko</h1>
+        <span class="hero-handle">alxnko</span>
+      </div>
       <p class="hero-desc">
         Specializing in high-performance distributed edge systems, real-time protocols, and craft-driven web platforms.
       </p>
@@ -82,7 +81,7 @@ const socialLinks = [
 
     <!-- Interactive Terminal Widget -->
     <section>
-      <h2 class="section-title"><span class="hash">#</span> <span class="brand-display" style="font-size: 1.25rem;">interactive_console</span></h2>
+      <h2 class="section-title"><span class="hash">#</span> interactive_console</h2>
       <Terminal />
     </section>
   </main>
@@ -90,8 +89,10 @@ const socialLinks = [
   <!-- Footer -->
   <footer class="site-footer">
     <div class="container footer-inner">
-      <div>
-        <span class="brand-display" style="color: var(--green); font-size: 1.05rem;">alxnko.dev</span> &bull; crafted with code &bull; 2026
+      <div class="footer-brand-row">
+        <span class="footer-brand">alxnko.dev</span>
+        <span class="footer-sep">&bull;</span>
+        <span class="footer-copy">crafted with code &bull; 2026</span>
       </div>
       <div class="footer-links">
         <a href="/gh">github</a>
