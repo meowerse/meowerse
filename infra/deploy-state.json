@@ -1,22 +1,22 @@
 {
   "api": {
     "at": "local",
-    "sha": "29dcdf7"
+    "sha": "bec7f73"
   },
   "auth": {
     "at": "local",
-    "sha": "91e2e25"
+    "sha": "bec7f73"
   },
   "meowsenger": {
     "at": "local",
-    "sha": "1dd9dee"
+    "sha": "ff37f42"
   },
   "web": {
     "at": "local",
-    "sha": "53123fd"
+    "sha": "bec7f73"
   },
   "worker": {
     "at": "local",
-    "sha": "ed8add4"
+    "sha": "bec7f73"
   }
 }
