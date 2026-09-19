@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "@meowerse/ui";
 
 const TYPING_IDLE_MS = 4000;
 
@@ -93,7 +94,7 @@ export function Composer({
             aria-label="cancel reply"
             onClick={() => { onCancelReply?.(); inputRef.current?.focus(); }}
           >
-            ✕
+            <Icon name="x" size={14} />
           </button>
         </div>
       )}
@@ -130,7 +131,7 @@ export function Composer({
         disabled={disabled || !text.trim()}
       >
         <span className="mw-tlabel">send</span>
-        <span className="mw-ticon" aria-hidden="true">➤</span>
+        <span className="mw-ticon" aria-hidden="true"><Icon name="send" size={16} /></span>
       </button>
       </div>
     </div>

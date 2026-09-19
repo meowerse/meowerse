@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { ConfirmDialog } from "@meowerse/ui";
+import { ConfirmDialog, Icon } from "@meowerse/ui";
 import { getSession, loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
@@ -490,14 +490,14 @@ export default function Chat({ base }: { base: string }) {
 
   // Build the per-message context-menu items (gated by ownership + window).
   function menuItems(m: Bubble, at: { x: number; y: number }): MenuItem[] {
-    const items: MenuItem[] = [{ label: "react", onClick: () => openEmoji(m, at.x, at.y) }];
-    items.push({ label: "reply", onClick: () => setReplyingTo(m) });
-    if (canEdit(m)) items.push({ label: "edit", onClick: () => setEditingId(m.id) });
-    if (canDelete(m)) items.push({ label: "delete", onClick: () => sendDelete(m) });
-    items.push({ label: "forward", onClick: () => forwardOne(m) });
-    items.push({ label: "copy", onClick: () => copyText(m.body) });
-    if (!m.pending) items.push({ label: "copy link", onClick: () => copyMessageLink(m) });
-    items.push({ label: "select", onClick: () => enterSelect(m) });
+    const items: MenuItem[] = [{ label: "react", icon: "mood-smile", onClick: () => openEmoji(m, at.x, at.y) }];
+    items.push({ label: "reply", icon: "reply", onClick: () => setReplyingTo(m) });
+    if (canEdit(m)) items.push({ label: "edit", icon: "edit", onClick: () => setEditingId(m.id) });
+    if (canDelete(m)) items.push({ label: "delete", icon: "trash", onClick: () => sendDelete(m) });
+    items.push({ label: "forward", icon: "forward", onClick: () => forwardOne(m) });
+    items.push({ label: "copy", icon: "copy", onClick: () => copyText(m.body) });
+    if (!m.pending) items.push({ label: "copy link", icon: "link", onClick: () => copyMessageLink(m) });
+    items.push({ label: "select", icon: "check", onClick: () => enterSelect(m) });
     return items;
   }
 
@@ -615,7 +615,7 @@ export default function Chat({ base }: { base: string }) {
                 onClick={() => setActiveId(null)}
                 aria-label="back to chats"
               >
-                ‹
+                <Icon name="arrow-left" size={18} />
               </button>
               {isMembered ? (
                 <button
@@ -633,7 +633,7 @@ export default function Chat({ base }: { base: string }) {
                   </span>
                   <span className="mw-chat__headcol">
                     <span className="mw-chat__peer" data-case="preserve">
-                      {isChannel && <span className="mw-chat__glyph" aria-hidden="true">📡 </span>}
+                      {isChannel && <Icon name="broadcast" size={16} className="mw-chat__glyph" />}
                       {groupName}
                     </span>
                     <span className="mw-chat__presence">
@@ -674,14 +674,18 @@ export default function Chat({ base }: { base: string }) {
                   onClick={copyChatLink}
                   aria-label="copy link to this chat"
                   title="copy link"
-                >🔗</button>
+                >
+                  <Icon name="link" size={16} />
+                </button>
                 <button
                   className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
                   onClick={() => setSearchOpen((v) => !v)}
                   aria-label="search this chat"
                   aria-pressed={searchOpen}
                   title="search"
-                >🔍</button>
+                >
+                  <Icon name="search" size={16} />
+                </button>
               </div>
               <button
                 className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__more"
@@ -692,7 +696,9 @@ export default function Chat({ base }: { base: string }) {
                   const r = e.currentTarget.getBoundingClientRect();
                   setMoreMenu({ x: r.right - 168, y: r.bottom + 6 });
                 }}
-              >⋯</button>
+              >
+                <Icon name="dots" size={18} />
+              </button>
             </header>
 
             {moreMenu && (
@@ -700,8 +706,8 @@ export default function Chat({ base }: { base: string }) {
                 x={moreMenu.x}
                 y={moreMenu.y}
                 items={[
-                  { label: "🔍 search", onClick: () => setSearchOpen((v) => !v) },
-                  { label: "🔗 copy link", onClick: copyChatLink },
+                  { label: "search", icon: "search", onClick: () => setSearchOpen((v) => !v) },
+                  { label: "copy link", icon: "link", onClick: copyChatLink },
                 ]}
                 onClose={() => setMoreMenu(null)}
               />
@@ -817,7 +823,7 @@ export default function Chat({ base }: { base: string }) {
                   aria-label="forward"
                 >
                   <span className="mw-tlabel">forward</span>
-                  <span className="mw-ticon" aria-hidden="true">↪</span>
+                  <span className="mw-ticon" aria-hidden="true"><Icon name="forward" size={14} /></span>
                 </button>
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm"
@@ -826,7 +832,7 @@ export default function Chat({ base }: { base: string }) {
                   aria-label="copy"
                 >
                   <span className="mw-tlabel">copy</span>
-                  <span className="mw-ticon" aria-hidden="true">⧉</span>
+                  <span className="mw-ticon" aria-hidden="true"><Icon name="copy" size={14} /></span>
                 </button>
                 <button
                   className="mw-btn mw-btn--ghost mw-btn--sm mw-selectbar__danger"
@@ -835,7 +841,7 @@ export default function Chat({ base }: { base: string }) {
                   aria-label="delete"
                 >
                   <span className="mw-tlabel">delete</span>
-                  <span className="mw-ticon" aria-hidden="true">🗑</span>
+                  <span className="mw-ticon" aria-hidden="true"><Icon name="trash" size={14} /></span>
                 </button>
                 <button
                   className="mw-btn mw-btn--primary mw-btn--sm"
@@ -843,7 +849,7 @@ export default function Chat({ base }: { base: string }) {
                   aria-label="cancel"
                 >
                   <span className="mw-tlabel">cancel</span>
-                  <span className="mw-ticon" aria-hidden="true">✕</span>
+                  <span className="mw-ticon" aria-hidden="true"><Icon name="x" size={14} /></span>
                 </button>
               </div>
             ) : channelComposerPending ? (
@@ -853,7 +859,7 @@ export default function Chat({ base }: { base: string }) {
             ) : channelReadOnly ? (
               // Broadcast channel + the caller is a plain member → no Composer.
               <div className="mw-readonly" role="note">
-                <span className="mw-readonly__glyph" aria-hidden="true">📡</span>
+                <Icon name="broadcast" size={18} className="mw-readonly__glyph" />
                 <span>subscribed — only admins post in a channel.</span>
               </div>
             ) : (

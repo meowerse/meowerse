@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Spinner } from "@meowerse/ui";
+import { Icon, Spinner } from "@meowerse/ui";
 import {
   getBySlug,
   joinChat,
@@ -185,7 +185,8 @@ export default function ChannelPreview({ base }: { base: string }) {
             <span className="mono" data-case="preserve">{(inv.name?.[0] ?? "#").toUpperCase()}</span>
           </span>
           <span className={`mw-typebadge mw-typebadge--${isChannel ? "channel" : "group"}`}>
-            {isChannel ? "📡 channel" : "👥 group"}
+            <Icon name={isChannel ? "broadcast" : "users"} size={13} />
+            <span>{isChannel ? "channel" : "group"}</span>
           </span>
           <h1 className="mw-discover__title" data-case="preserve">{inv.name ?? (isChannel ? "channel" : "group")}</h1>
           <p className="mw-muted">
@@ -225,7 +226,8 @@ export default function ChannelPreview({ base }: { base: string }) {
           <span className="mono" data-case="preserve">{(preview.name?.[0] ?? "#").toUpperCase()}</span>
         </span>
         <span className={`mw-typebadge mw-typebadge--${isChannel ? "channel" : "group"}`}>
-          {isChannel ? "📡 channel" : "👥 group"}
+          <Icon name={isChannel ? "broadcast" : "users"} size={13} />
+          <span>{isChannel ? "channel" : "group"}</span>
         </span>
         <h1 className="mw-discover__title" data-case="preserve">{preview.name ?? (isChannel ? "channel" : "group")}</h1>
         <p className="mw-muted">

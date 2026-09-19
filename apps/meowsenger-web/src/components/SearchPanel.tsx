@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { searchChat, type Message } from "../lib/chat";
 import { Avatar } from "./Avatar";
+import { Icon } from "@meowerse/ui";
 
 function fmtWhen(ms: number): string {
   const d = new Date(ms);
@@ -70,7 +71,7 @@ export function SearchPanel({
   return (
     <div className="mw-search" role="search">
       <div className="mw-search__bar">
-        <span className="mw-search__icon" aria-hidden="true">🔍</span>
+        <span className="mw-search__icon" aria-hidden="true"><Icon name="search" size={16} /></span>
         <input
           ref={inputRef}
           type="search"
@@ -94,7 +95,9 @@ export function SearchPanel({
           className="mw-search__close mw-btn mw-btn--ghost mw-btn--sm"
           onClick={onClose}
           aria-label="close search"
-        >✕</button>
+        >
+          <Icon name="x" size={16} />
+        </button>
       </div>
 
       {(loading || results !== null) && (

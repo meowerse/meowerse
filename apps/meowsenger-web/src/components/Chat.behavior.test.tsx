@@ -389,9 +389,9 @@ describe("Chat island — mobile header (connection dot + overflow menu)", () =>
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     act(() => fireEvent.click(screen.getByLabelText("more chat actions")));
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    expect(screen.getByText("🔗 copy link")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "copy link" })).toBeTruthy();
     // Choosing "search" from the menu opens the in-chat search panel.
-    act(() => fireEvent.click(screen.getByText("🔍 search")));
+    act(() => fireEvent.click(screen.getByRole("menuitem", { name: "search" })));
     await waitFor(() => expect(screen.getByLabelText("close search")).toBeTruthy());
   });
 });
