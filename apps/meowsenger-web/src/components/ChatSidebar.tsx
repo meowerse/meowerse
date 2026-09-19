@@ -34,10 +34,13 @@ export function ChatSidebar({
   activeId,
   online,
   meId,
+  me,
   base,
   onSelect,
   onOpenResult,
   onNewChatClick,
+  onSettingsClick,
+  onLogout,
   loading,
 }: {
   chats: ChatSummary[];
@@ -45,12 +48,16 @@ export function ChatSidebar({
   online: Set<string>;
   // The signed-in user's id — to prefix their own last message with "you:".
   meId?: string;
+  // The signed-in user object — for the account dock in the bottom of the sidebar.
+  me?: { username: string; displayName?: string | null; avatarUrl?: string | null } | null;
   base: string;
   onSelect: (id: string) => void;
   // Open a global-search hit: (chatId, messageId) → parent opens the chat + jumps.
   onOpenResult: (chatId: string, msgId: string) => void;
   // Open the new-chat modal (Direct | Group). The modal lives in Chat.tsx.
   onNewChatClick: () => void;
+  onSettingsClick?: () => void;
+  onLogout?: () => void;
   loading: boolean;
 }) {
   // Global cross-chat search: debounced query → server → results shown IN PLACE of
@@ -182,6 +189,40 @@ export function ChatSidebar({
           );
         })}
       </nav>
+      )}
+
+      {me && (
+        <footer className="mw-chat__account">
+          <span className="mw-chatrow__avatar">
+            <Avatar url={me.avatarUrl} name={me.displayName || me.username} size="sm" />
+          </span>
+          <div className="mw-chat__account-info">
+            <span className="mw-chat__account-name" data-case="preserve">{me.displayName || me.username}</span>
+            <span className="mw-chat__account-user" data-case="preserve">@{me.username}</span>
+          </div>
+          <div className="mw-chat__account-actions">
+            {onSettingsClick && (
+              <button
+                className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__acctbtn"
+                onClick={onSettingsClick}
+                title="settings"
+                aria-label="settings"
+              >
+                ⚙
+              </button>
+            )}
+            {onLogout && (
+              <button
+                className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__acctbtn"
+                onClick={onLogout}
+                title="log out"
+                aria-label="log out"
+              >
+                ⎋
+              </button>
+            )}
+          </div>
+        </footer>
       )}
     </aside>
   );

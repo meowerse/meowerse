@@ -167,6 +167,16 @@ describe("Chat island — reconnect backoff", () => {
     // A fresh ROOM socket replaces the dropped one (the inbox socket is separate).
     await waitFor(() => expect(MockWebSocket.room).not.toBe(ws), { timeout: 2000 });
   });
+
+  it("reconnects on online / visibilitychange wake", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    act(() => ws.mockDrop());
+    if (MockWebSocket.inbox) act(() => MockWebSocket.inbox!.mockDrop());
+    act(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => expect(MockWebSocket.room).not.toBe(ws));
+  });
 });
 
 describe("Chat island — optimistic send + reconcile", () => {
@@ -178,7 +188,7 @@ describe("Chat island — optimistic send + reconcile", () => {
     act(() => fireEvent.change(box, { target: { value: "outgoing hi" } }));
     act(() => fireEvent.click(screen.getByRole("button", { name: "send" })));
     // Optimistic bubble + a send frame carrying the tempId.
-    await waitFor(() => expect(screen.getByText("outgoing hi")).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("outgoing hi")).toBeTruthy());
     const sendFrame = ws.sentFrames().find((f) => f.type === "send");
     expect(sendFrame).toBeTruthy();
     expect(sendFrame!.body).toBe("outgoing hi");
@@ -284,7 +294,7 @@ describe("Chat island — SR announce of new incoming messages (#7)", () => {
     const box = screen.getByLabelText("message") as HTMLTextAreaElement;
     act(() => fireEvent.change(box, { target: { value: "my own line" } }));
     act(() => fireEvent.click(screen.getByRole("button", { name: "send" })));
-    await waitFor(() => expect(screen.getByText("my own line")).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("my own line")).toBeTruthy());
     expect(live.textContent ?? "").not.toContain("my own line");
   });
 });

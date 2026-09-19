@@ -405,15 +405,18 @@ export class Conversation extends DurableObject<Env> {
     for (const peer of this.ctx.getWebSockets()) {
       if (peer !== opts.ackTo) this.safeSend(peer, frame);
     }
-    // Off the critical path: mirror the preview + unread bump to D1 for the sidebar.
-    // The message is already persisted + broadcast; a failed sidebar mirror is
-    // non-critical, so swallow its error rather than surface an unhandled rejection.
-    this.ctx.waitUntil(mirrorLastMessage(this.d1(), chatId, body, senderId, now).catch(() => {}));
-    // Realtime sidebar: push a compact delta to the UserInbox DO of every member NOT
-    // in this room (members WITH a socket here already got the message over the wire +
-    // update their sidebar client-side). Off the critical path; a failed ping is
-    // non-critical (the 45s sidebar poll + Web Push are the fallbacks).
-    this.ctx.waitUntil(this.inboxFanout(chatId, senderId, message).catch(() => {}));
+    // Off the critical path: mirror the preview to D1 and notify all members' UserInbox DOs.
+    // Awaiting mirrorLastMessage ensures D1 is up-to-date if a client refetches on notification.
+    this.ctx.waitUntil(
+      (async () => {
+        try {
+          await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
+        } catch {}
+        try {
+          await this.inboxFanout(chatId, senderId, message);
+        } catch {}
+      })(),
+    );
     // Web Push: notify members with NO live socket in this room (offline, or busy in
     // another chat) — their service worker decides whether to show it. Off the path.
     this.ctx.waitUntil(this.pushOffline(chatId, senderId).catch(() => {}));
@@ -422,9 +425,9 @@ export class Conversation extends DurableObject<Env> {
 
   /**
    * Push a `{chatId, preview, at, senderId}` sidebar delta to the UserInbox DO of
-   * every member who has NO live socket in THIS room (== the pushOffline target set:
-   * members active in another chat/tab get a realtime sidebar update; fully-offline
-   * members' inbox DO has no socket so it's a no-op and Web Push alerts them instead).
+   * all chat members. An inbox DO with no open socket is an immediate 204 no-op,
+   * while any tab or window the user has open (including other devices) receives
+   * the real-time sidebar delta.
    * Member ids are cached ~5s per chat so a busy room doesn't read chat_members on
    * every message; a just-joined member starts getting deltas within that window.
    */
@@ -432,7 +435,6 @@ export class Conversation extends DurableObject<Env> {
   private async inboxFanout(chatId: string, senderId: string, message: Wire): Promise<void> {
     const ns = this.env.USER_INBOX;
     if (!ns) return; // binding not configured (older deploy / tests)
-    const exclude = new Set<string>([senderId, ...this.onlineUsers()]);
     const cached = this.inboxMembers.get(chatId);
     const now = Date.now();
     let ids: string[];
@@ -442,7 +444,7 @@ export class Conversation extends DurableObject<Env> {
       ids = await chatMemberIds(this.d1(), chatId);
       this.inboxMembers.set(chatId, { ids, at: now });
     }
-    const targets = ids.filter((id) => !exclude.has(id));
+    const targets = ids;
     if (targets.length === 0) return;
     const body = JSON.stringify({
       chatId,
@@ -451,8 +453,10 @@ export class Conversation extends DurableObject<Env> {
       senderId,
       forwarded: message.isForwarded,
     });
+    // Cloudflare Workers enforce a 50 subrequest limit per invocation. Bound to 40 targets.
+    const bounded = targets.slice(0, 40);
     await Promise.all(
-      targets.map((id) =>
+      bounded.map((id) =>
         ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {}),
       ),
     );

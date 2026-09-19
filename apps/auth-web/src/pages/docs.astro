@@ -10,7 +10,7 @@ const themes = { light: "github-light", dark: "github-dark" } as const;
 // Docs use `api` as DISPLAY text (the public issuer shown in code samples + the
 // discovery/userinfo URLs), not as a runtime fetch base — so it stays the real
 // absolute issuer URL even though the UI now calls the API same-origin.
-const api = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth.alxnko.eu.org";
+const api = import.meta.env.PUBLIC_AUTH_API_URL ?? "https://auth.alxnko.dev";
 const discovery = api + "/.well-known/openid-configuration";
 
 // Code samples live here (frontmatter is plain JS) so Astro doesn't parse the

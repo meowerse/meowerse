@@ -2,11 +2,25 @@ import { b64urlEncode, constantTimeEqual } from "@meowerse/auth-shared";
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset. Mirrors workers/api default shape. */
-export const DEFAULT_ORIGINS = "https://auth.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321";
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;
   return raw.split(",").map((o) => o.trim()).filter(Boolean);
+}
+
+export function isOriginAllowed(origin: string | null, env: Env): boolean {
+  if (!origin) return false;
+  if (allowlist(env).includes(origin)) return true;
+  try {
+    const u = new URL(origin);
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 /**
@@ -21,7 +35,7 @@ export function corsHeaders(origin: string | null, env: Env): Record<string, str
     "Access-Control-Allow-Headers": "Authorization,Content-Type",
     Vary: "Origin",
   };
-  if (origin && allowlist(env).includes(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  if (origin && isOriginAllowed(origin, env)) headers["Access-Control-Allow-Origin"] = origin;
   return headers;
 }
 
@@ -71,6 +85,7 @@ export function securityHeaders(extraCsp = ""): Record<string, string> {
     "Cache-Control": "no-store, no-cache, must-revalidate",
     Pragma: "no-cache",
     "X-Content-Type-Options": "nosniff",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
     "Content-Security-Policy": csp,
   };
 }

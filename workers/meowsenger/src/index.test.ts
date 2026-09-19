@@ -5,9 +5,32 @@ import type { Env } from "./types";
 const env = { CORS_ORIGINS: "http://localhost:4321" } as Env;
 const ORIGIN = "http://localhost:4321";
 const deps = { getDb: () => ({}) } as never;
-const req = (m: string, p: string) => new Request(`https://meowsenger-api.alxnko.eu.org${p}`, { method: m, headers: { Origin: ORIGIN } });
+const req = (m: string, p: string) => new Request(`https://meowsenger-api.alxnko.dev${p}`, { method: m, headers: { Origin: ORIGIN } });
 
 describe("router", () => {
+  it("redirects *.alxnko.eu.org to *.alxnko.dev with 308, CORS and HSTS", async () => {
+    const r = await handle(new Request("https://meowsenger.alxnko.eu.org/health?x=1"), env, deps);
+    expect(r.status).toBe(308);
+    expect(r.headers.get("Location")).toBe("https://meowsenger.alxnko.dev/health?x=1");
+    expect(r.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+
+    // Preflight on .eu.org returns 204 with CORS for localhost
+    const pre = await handle(new Request("https://meowsenger.alxnko.eu.org/api/chats", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), env, deps);
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
+  });
+
+  it("serves security.txt and robots.txt", async () => {
+    const s = await handle(new Request("https://meowsenger-api.alxnko.dev/.well-known/security.txt"), env, deps);
+    expect(s.status).toBe(200);
+    expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+    expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+
+    const rob = await handle(new Request("https://meowsenger-api.alxnko.dev/robots.txt"), env, deps);
+    expect(rob.status).toBe(200);
+    expect(await rob.text()).toContain("User-agent: GPTBot");
+  });
+
   it("answers OPTIONS with 204 + CORS", async () => {
     const res = await handle(req("OPTIONS", "/health"), env, deps);
     expect(res.status).toBe(204);
@@ -153,7 +176,7 @@ describe("router", () => {
 
 describe("GET /ws upgrade", () => {
   const wsReq = (opts: { upgrade?: boolean; chat?: string; cookie?: string } = {}) =>
-    new Request(`https://meowsenger-api.alxnko.eu.org/ws${opts.chat ? `?chat=${opts.chat}` : ""}`, {
+    new Request(`https://meowsenger-api.alxnko.dev/ws${opts.chat ? `?chat=${opts.chat}` : ""}`, {
       method: "GET",
       headers: {
         Origin: ORIGIN,
@@ -197,7 +220,7 @@ describe("GET /ws upgrade", () => {
   });
 
   const inboxReq = (opts: { upgrade?: boolean; cookie?: string } = {}) =>
-    new Request("https://meowsenger-api.alxnko.eu.org/inbox/ws", {
+    new Request("https://meowsenger-api.alxnko.dev/inbox/ws", {
       method: "GET",
       headers: { Origin: ORIGIN, ...(opts.upgrade ? { Upgrade: "websocket" } : {}), ...(opts.cookie ? { Cookie: opts.cookie } : {}) },
     });
@@ -264,7 +287,7 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
 describe("default fetch export", () => {
   it("routes /health through the default fetch handler → 200", async () => {
     const fetchEnv = { DB: {} as never, CORS_ORIGINS: "http://localhost:4321" } as Env;
-    const res = await worker.fetch(new Request("https://meowsenger-api.alxnko.eu.org/health"), fetchEnv);
+    const res = await worker.fetch(new Request("https://meowsenger-api.alxnko.dev/health"), fetchEnv);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });

@@ -1,7 +1,20 @@
 import type { Env } from "./types";
-export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321";
 function allowlist(env: Env): string[] {
   return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
+}
+function isOriginAllowed(origin: string | null, env: Env): boolean {
+  if (!origin) return false;
+  if (allowlist(env).includes(origin)) return true;
+  try {
+    const u = new URL(origin);
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 /**
@@ -21,11 +34,19 @@ export function corsHeaders(origin: string | null, env: Env): Record<string, str
     "Access-Control-Allow-Headers": "Content-Type",
     Vary: "Origin",
   };
-  if (origin && allowlist(env).includes(origin)) h["Access-Control-Allow-Origin"] = origin;
+  if (origin && isOriginAllowed(origin, env)) h["Access-Control-Allow-Origin"] = origin;
   return h;
 }
 export function json(body: unknown, status: number, cors: Record<string, string>, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors, ...extra } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      ...cors,
+      ...extra,
+    },
+  });
 }
 
 // Unambiguous alphabet for human-shareable codes: no 0/O/1/I/l to avoid misreads.

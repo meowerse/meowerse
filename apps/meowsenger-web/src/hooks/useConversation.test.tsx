@@ -561,4 +561,14 @@ describe("useConversation — lifecycle", () => {
     await new Promise((r) => setTimeout(r, 700)); // past the 500ms first backoff
     expect(MockWebSocket.instances.length).toBe(1);
   });
+
+  it("reconnects immediately on online/visibility wake when socket is closed", async () => {
+    const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+    act(() => ws.mockDrop());
+    expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(1));
+  });
 });

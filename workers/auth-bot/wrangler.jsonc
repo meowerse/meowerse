@@ -20,9 +20,12 @@
   // AFTER the Telegram webhook is re-pointed to the custom domain (kept true during
   // the cutover so the live webhook never hits a dead URL).
   "workers_dev": false,
-  "routes": [{ "pattern": "authbot.alxnko.eu.org", "custom_domain": true }],
+  "routes": [
+    { "pattern": "authbot.alxnko.dev", "custom_domain": true },
+    { "pattern": "authbot.alxnko.eu.org", "custom_domain": true }
+  ],
   "vars": {
-    "AUTH_CONFIRM_URL": "https://auth.alxnko.eu.org/internal/tg/confirm",
+    "AUTH_CONFIRM_URL": "https://auth.alxnko.dev/internal/tg/confirm",
     "BOT_USERNAME": "meowersebot"
   }
 }

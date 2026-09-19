@@ -18,11 +18,11 @@
   // and shadow API routes — the mistake that briefly broke the auth IdP).
   "assets": { "directory": "../../apps/meowsenger-web/dist", "binding": "ASSETS" },
   "vars": {
-    "OIDC_ISSUER": "https://auth.alxnko.eu.org",
+    "OIDC_ISSUER": "https://auth.alxnko.dev",
     "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
-    "OIDC_REDIRECT_URI": "https://meowsenger.alxnko.eu.org/auth/callback",
-    "WEB_ORIGIN": "https://meowsenger.alxnko.eu.org",
-    "CORS_ORIGINS": "https://meowsenger.alxnko.eu.org,http://localhost:4321,http://127.0.0.1:8787",
+    "OIDC_REDIRECT_URI": "https://meowsenger.alxnko.dev/auth/callback",
+    "WEB_ORIGIN": "https://meowsenger.alxnko.dev",
+    "CORS_ORIGINS": "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321,http://127.0.0.1:8787",
     // Web Push (VAPID). The PUBLIC key + subject are public; the PRIVATE key is a
     // secret set once via `wrangler secret put VAPID_PRIVATE_JWK`.
     "VAPID_PUBLIC_KEY": "BKUWUCdMbpAxBrJdzMMiCvHIokH8F8e-DA3bgIwz9tmFlxMDWQOx9LXhHnhXTc6F7mVviScV9Kcvc5SOzqAg4vo",
@@ -58,5 +58,8 @@
     { "tag": "v1", "new_sqlite_classes": ["Conversation"] },
     { "tag": "v2", "new_classes": ["UserInbox"] }
   ],
-  "routes": [{ "pattern": "meowsenger.alxnko.eu.org", "custom_domain": true }]
+  "routes": [
+    { "pattern": "meowsenger.alxnko.dev", "custom_domain": true },
+    { "pattern": "meowsenger.alxnko.eu.org", "custom_domain": true }
+  ]
 }

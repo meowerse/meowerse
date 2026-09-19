@@ -17,8 +17,11 @@
   // intra-region. CF only relocates when it measurably lowers latency.
   "placement": { "mode": "smart" },
   "vars": {
-    "CORS_ORIGINS": "https://meow.alxnko.eu.org,http://localhost:4321"
+    "CORS_ORIGINS": "https://meow.alxnko.dev,https://meow.alxnko.eu.org,http://localhost:4321"
   },
   // Custom domain — Cloudflare provisions the cert + DNS for this hostname.
-  "routes": [{ "pattern": "api.meow.alxnko.eu.org", "custom_domain": true }]
+  "routes": [
+    { "pattern": "api.meow.alxnko.dev", "custom_domain": true },
+    { "pattern": "api.meow.alxnko.eu.org", "custom_domain": true }
+  ]
 }

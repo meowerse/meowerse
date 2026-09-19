@@ -54,10 +54,28 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     }
     connect();
 
+    const onWake = () => {
+      if (cancelled || closing) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        attempts = 0;
+        clearTimer();
+        connect();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", onWake);
+      document.addEventListener("visibilitychange", onWake);
+    }
+
     return () => {
       cancelled = true;
       closing = true;
       clearTimer();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", onWake);
+        document.removeEventListener("visibilitychange", onWake);
+      }
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
   }, [base, enabled]);
