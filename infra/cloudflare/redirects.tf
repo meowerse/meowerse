@@ -7,7 +7,7 @@
 resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
   zone_id     = var.cloudflare_zone_id
   name        = "Redirect alxnko.eu.org to alxnko.dev"
-  description = "301 Permanent Redirect *.alxnko.eu.org to *.alxnko.dev preserving path and query"
+  description = "308 Permanent Redirect *.alxnko.eu.org to *.alxnko.dev preserving path and query (authbot excluded to preserve Telegram webhook)"
   kind        = "zone"
   phase       = "http_request_dynamic_redirect"
 
@@ -19,7 +19,7 @@ resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
       action      = "redirect"
       action_parameters = {
         from_value = {
-          status_code = 301
+          status_code = 308
           target_url = {
             expression = "concat(\"https://alxnko.dev\", http.request.uri.path)"
           }
@@ -35,7 +35,7 @@ resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
       action      = "redirect"
       action_parameters = {
         from_value = {
-          status_code = 301
+          status_code = 308
           target_url = {
             expression = "concat(\"https://auth.alxnko.dev\", http.request.uri.path)"
           }
@@ -51,7 +51,7 @@ resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
       action      = "redirect"
       action_parameters = {
         from_value = {
-          status_code = 301
+          status_code = 308
           target_url = {
             expression = "concat(\"https://meowsenger.alxnko.dev\", http.request.uri.path)"
           }
@@ -67,25 +67,9 @@ resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
       action      = "redirect"
       action_parameters = {
         from_value = {
-          status_code = 301
+          status_code = 308
           target_url = {
             expression = "concat(\"https://api.meow.alxnko.dev\", http.request.uri.path)"
-          }
-          preserve_query_string = true
-        }
-      }
-      enabled = true
-    },
-    {
-      ref         = "redirect_authbot_to_dev"
-      description = "Redirect authbot to authbot.alxnko.dev"
-      expression  = "http.host == \"authbot.alxnko.eu.org\""
-      action      = "redirect"
-      action_parameters = {
-        from_value = {
-          status_code = 301
-          target_url = {
-            expression = "concat(\"https://authbot.alxnko.dev\", http.request.uri.path)"
           }
           preserve_query_string = true
         }
