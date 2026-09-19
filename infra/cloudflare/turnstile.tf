@@ -20,7 +20,7 @@ resource "cloudflare_turnstile_widget" "auth" {
   count      = var.enable_turnstile ? 1 : 0
   account_id = var.cloudflare_account_id
   name       = "meowerse auth — login + signup"
-  domains    = ["auth.alxnko.eu.org"]
+  domains    = ["auth.alxnko.dev", "auth.alxnko.eu.org", "localhost", "127.0.0.1"]
   # invisible: no checkbox — the challenge runs in the background and a token is
   # produced on widget render (escalates to interactive only for suspicious
   # traffic). Turnstile.tsx captures that token via the callback.

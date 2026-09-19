@@ -65,11 +65,13 @@ export default function Turnstile({
       return true;
     };
     // the script loads async — poll until window.turnstile exists, then render once
-    if (!tryRender()) iv = setInterval(() => { if (tryRender() && iv) clearInterval(iv); }, 200);
+    if (!tryRender()) iv = setInterval(() => { if (tryRender() && iv) clearInterval(iv); }, 150);
     return () => {
       cancelled = true;
       if (iv) clearInterval(iv);
-      if (widgetId) window.turnstile?.remove(widgetId);
+      if (widgetId && window.turnstile) {
+        try { window.turnstile.remove(widgetId); } catch {}
+      }
     };
   }, [siteKey]);
 
