@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useState, useRef, type FormEvent } from "react";
 import { Button, Field, Alert, Card, RecoveryCodes, clearSessionCache } from "@meowerse/ui";
 import { postSignup, nextLocation, type NextStep } from "../lib/authApi";
-import Turnstile from "./Turnstile";
+import Turnstile, { type TurnstileRef } from "./Turnstile";
 
 export default function SignupForm({ base, turnstileSiteKey }: { base: string; turnstileSiteKey?: string }) {
   const [username, setUsername] = useState("");
@@ -11,30 +11,88 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
   const [codes, setCodes] = useState<string[] | null>(null);
   const [next, setNext] = useState<NextStep | undefined>(undefined);
   const [token, setToken] = useState("");
+  const [turnstileError, setTurnstileError] = useState(false);
 
-  const isWaitingVerification = Boolean(turnstileSiteKey && !token);
+  const turnstileRef = useRef<TurnstileRef>(null);
+  const pendingSubmitRef = useRef(false);
+  const waitTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  async function onSubmit(e: FormEvent) {
+  async function executeSubmit(activeToken: string) {
+    setError("");
+    setBusy(true);
+    try {
+      const res = await postSignup(base, username, password, activeToken || undefined);
+      if (res.ok) {
+        setCodes(res.recoveryCodes ?? []);
+        setNext(res.next);
+      } else {
+        setError(errorText(res.error));
+        // Single-use token was consumed by siteverify; reset for the next attempt
+        setToken("");
+        turnstileRef.current?.reset();
+      }
+    } catch {
+      setError("network error — please try again.");
+      setToken("");
+      turnstileRef.current?.reset();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (isWaitingVerification) {
-      setError("just a moment — verifying you're human. try again.");
+    if (busy) return;
+
+    if (turnstileSiteKey && !token && !turnstileError) {
+      setBusy(true);
+      pendingSubmitRef.current = true;
+      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
+      waitTimeoutRef.current = setTimeout(() => {
+        if (pendingSubmitRef.current) {
+          pendingSubmitRef.current = false;
+          setBusy(false);
+          setError("verification timed out — please try again or check ad blockers.");
+        }
+      }, 8000);
       return;
     }
-    setError(""); setBusy(true);
-    try {
-      const res = await postSignup(base, username, password, token || undefined);
-      if (res.ok) { setCodes(res.recoveryCodes ?? []); setNext(res.next); }
-      else setError(errorText(res.error));
-    } catch { setError("network error — please try again."); }
-    setBusy(false);
+
+    executeSubmit(token);
   }
 
   function handleToken(t: string) {
     setToken(t);
-    if (t && error.includes("verifying you're human")) {
-      setError("");
+    setTurnstileError(false);
+    if (t && pendingSubmitRef.current) {
+      pendingSubmitRef.current = false;
+      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
+      executeSubmit(t);
     }
   }
+
+  function handleExpire() {
+    setToken("");
+    if (pendingSubmitRef.current) {
+      pendingSubmitRef.current = false;
+      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
+      setBusy(false);
+      setError("verification challenge expired — please try again.");
+    }
+  }
+
+  function handleError() {
+    setToken("");
+    setTurnstileError(true);
+    if (pendingSubmitRef.current) {
+      pendingSubmitRef.current = false;
+      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
+      setBusy(false);
+      setError("human verification failed to load — please check ad blockers or refresh.");
+    }
+  }
+
+  const isVerifying = busy && pendingSubmitRef.current;
 
   if (codes) {
     return (
@@ -53,20 +111,19 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
       <Field label="username" hint="3–32 letters, numbers, or underscores" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} />
       <Field label="password" hint="12–128 characters" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={12} />
       <Turnstile
+        ref={turnstileRef}
         siteKey={turnstileSiteKey}
         onToken={handleToken}
-        onExpire={() => setError("verification expired — please solve the challenge again.")}
-        onError={() => setError("verification failed to load — please refresh.")}
+        onExpire={handleExpire}
+        onError={handleError}
       />
       {error && <Alert variant="error">{error}</Alert>}
       <Button
         variant="primary"
         type="submit"
         loading={busy}
-        disabled={isWaitingVerification}
-        title={isWaitingVerification ? "verifying you're human..." : undefined}
       >
-        {isWaitingVerification ? "verifying..." : "create account"}
+        {isVerifying ? "verifying..." : busy ? "creating account..." : "create account"}
       </Button>
       <p className="mw-muted">already have one? <a href="/login">sign in</a></p>
     </form>
