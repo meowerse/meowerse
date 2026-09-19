@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset, mirroring the Go api default. */
-export const DEFAULT_ORIGINS = "https://meow.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meow.alxnko.dev,https://meow.alxnko.eu.org,http://localhost:4321";
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;

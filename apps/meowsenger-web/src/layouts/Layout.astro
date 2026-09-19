@@ -5,14 +5,14 @@ import { THEME_INIT_SCRIPT, Footer } from "@meowerse/ui";
 import MeowsengerHeader from "../components/MeowsengerHeader.tsx";
 // `footer` defaults on for content pages; the full-height chat shell (/app) and
 // the centered join preview (/join) pass footer={false}.
-interface Props { title: string; bodyClass?: string; footer?: boolean }
-const { title, bodyClass, footer = true } = Astro.props;
+interface Props { title: string; bodyClass?: string; footer?: boolean; header?: boolean }
+const { title, bodyClass, footer = true, header = true } = Astro.props;
 const footerLinks = [
   { label: "about", href: "/about" },
   { label: "privacy", href: "/privacy" },
   { label: "terms", href: "/terms" },
 ];
-// Same-origin: the UI + BFF are one Worker on meowsenger.alxnko.eu.org, so API
+// Same-origin: the UI + BFF are one Worker on meowsenger, so API
 // calls use relative paths (base = "" → "/auth/login", "/api/session").
 const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
@@ -24,7 +24,7 @@ const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
     <script is:inline set:html={THEME_INIT_SCRIPT}></script>
   </head>
   <body class={bodyClass}>
-    <MeowsengerHeader client:idle base={base} />
+    {header && <MeowsengerHeader client:idle base={base} />}
     <main class="mw-container">
       <slot />
     </main>

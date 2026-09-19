@@ -142,11 +142,53 @@ function isSleepHour() {
   return h >= SLEEP_START && h < SLEEP_END;
 }
 
+const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, ru
+Canonical: https://alxnko.dev/.well-known/security.txt
+Policy: https://alxnko.dev/privacy
+`;
+const ROBOTS_TXT = `User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+`;
+
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === '/.well-known/security.txt' || url.pathname === '/security.txt') {
+      return new Response(SECURITY_TXT, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' },
+      });
+    }
+    if (url.pathname === '/robots.txt') {
+      return new Response(ROBOTS_TXT, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' },
+      });
+    }
     if (request.method !== 'POST') return new Response('ok');
     if (!env?.PATH_SECRET) return new Response('misconfigured', { status: 500 });
-    if (new URL(request.url).pathname !== `/${env.PATH_SECRET}`)
+    if (url.pathname !== `/${env.PATH_SECRET}`)
       return new Response('forbidden', { status: 403 });
     // Defense in depth: verify Telegram's secret-token header when configured.
     // No-op until TG_SECRET is set, so it can't break the live webhook before setWebhook is re-run.

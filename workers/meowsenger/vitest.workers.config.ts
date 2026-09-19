@@ -12,5 +12,6 @@ export default defineConfig({
   plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
   test: {
     include: ["src/**/*.workers.test.ts"],
+    testTimeout: 20000,
   },
 });

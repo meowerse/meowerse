@@ -441,11 +441,29 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
     connect();
 
+    const onWake = () => {
+      if (cancelled || closingRef.current || revokedRef.current || activeRef.current !== chatId) return;
+      const ws = socketRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        clearReconnect();
+        reconnectRef.current.attempts = 0;
+        connect();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", onWake);
+      document.addEventListener("visibilitychange", onWake);
+    }
+
     return () => {
       cancelled = true;
       closingRef.current = true;
       clearReconnect();
       reconnectRef.current.attempts = 0;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", onWake);
+        document.removeEventListener("visibilitychange", onWake);
+      }
       const ws = socketRef.current;
       socketRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
@@ -466,11 +484,20 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const parent = replyToId ? messages.find((m) => m.id === replyToId && !m.isDeleted) : undefined;
     const replyTo = parent ? { id: parent.id, senderId: parent.senderId, body: parent.body.slice(0, 120) } : null;
-    setMessages((prev) => [
-      ...prev,
-      { id: tempId, tempId, chatId: activeId, senderId: me.id, body, createdAt: Date.now(), pending: true, replyToId: replyToId ?? null, replyTo },
-    ]);
+    const optimistic: Bubble = {
+      id: tempId,
+      tempId,
+      chatId: activeId,
+      senderId: me.id,
+      body,
+      createdAt: Date.now(),
+      pending: true,
+      replyToId: replyToId ?? null,
+      replyTo,
+    };
+    setMessages((prev) => [...prev, optimistic]);
     atBottomRef.current = true;
+    onActiveMessageRef.current?.(optimistic);
     ws.send(JSON.stringify({ type: "send", tempId, body, ...(replyToId ? { replyToId } : {}) }));
     input.consumeReply();
   }

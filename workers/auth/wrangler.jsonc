@@ -40,17 +40,19 @@
   // reach Ireland once, then short intra-region hops — not N long RTTs.
   "placement": { "mode": "smart" },
   "vars": {
-    "CORS_ORIGINS": "https://auth.alxnko.eu.org,http://localhost:4321",
+    "CORS_ORIGINS": "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321",
     // Issuer = this same host: discovery, /jwks, /authorize, /token, /userinfo AND
     // the UI (login/consent/account …) are all same-origin on ONE worker. WEB_ORIGIN
     // is the user-facing UI the authorize flow redirects into — now the same host.
-    "ISSUER": "https://auth.alxnko.eu.org",
-    "WEB_ORIGIN": "https://auth.alxnko.eu.org",
-    "RESOURCE_AUD": "https://api.meow.alxnko.eu.org",
+    "ISSUER": "https://auth.alxnko.dev",
+    "WEB_ORIGIN": "https://auth.alxnko.dev",
+    "RESOURCE_AUD": "https://api.meow.alxnko.dev",
     "BOT_USERNAME": "meowersebot",
     "SKIP_MIGRATIONS": "1"
   },
-  // Custom domain — Cloudflare provisions cert + DNS. This is now the combined
-  // UI + OIDC host (auth-api.alxnko.eu.org is retired at the coordinated cutover).
-  "routes": [{ "pattern": "auth.alxnko.eu.org", "custom_domain": true }]
+  // Custom domain — Cloudflare provisions cert + DNS.
+  "routes": [
+    { "pattern": "auth.alxnko.dev", "custom_domain": true },
+    { "pattern": "auth.alxnko.eu.org", "custom_domain": true }
+  ]
 }

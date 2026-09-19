@@ -1,5 +1,5 @@
 import type { Env } from "./types";
-export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321";
 function allowlist(env: Env): string[] {
   return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
 }
@@ -25,7 +25,15 @@ export function corsHeaders(origin: string | null, env: Env): Record<string, str
   return h;
 }
 export function json(body: unknown, status: number, cors: Record<string, string>, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors, ...extra } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      ...cors,
+      ...extra,
+    },
+  });
 }
 
 // Unambiguous alphabet for human-shareable codes: no 0/O/1/I/l to avoid misreads.

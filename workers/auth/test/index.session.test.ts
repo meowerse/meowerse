@@ -221,7 +221,7 @@ test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/S
   const deps = { getDb: () => store.db, clock: () => 1000 };
 
   const r1 = await handle(new Request(authzUrl("mw_demo", REDIRECT, "openid profile")), env as never, deps as never);
-  expect(r1.headers.get("Location")).toBe("https://auth.alxnko.eu.org/login"); // default WEB_ORIGIN
+  expect(r1.headers.get("Location")).toBe("https://auth.alxnko.dev/login"); // default WEB_ORIGIN
   const tkt = cookieValue(r1.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
 
   const r2 = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tkt=${tkt}` }, body: JSON.stringify({ username: "neko_def", password: "abcdefghijkl" }) }), env as never, deps as never);

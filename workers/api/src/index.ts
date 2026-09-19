@@ -13,10 +13,47 @@ import {
 
 const LIST_CACHE_CONTROL = "public, max-age=10";
 
+const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, ru
+Canonical: https://alxnko.dev/.well-known/security.txt
+Policy: https://alxnko.dev/privacy
+`;
+
+const ROBOTS_TXT = `User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+`;
+
 function json(body: unknown, status: number, cors: Record<string, string>, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...cors, ...extra },
+    headers: {
+      "Content-Type": "application/json",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      ...cors,
+      ...extra,
+    },
   });
 }
 
@@ -133,12 +170,48 @@ async function handleBatch(req: Request, deps: Deps, cors: Record<string, string
  * inside Deps).
  */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
+  const url = new URL(req.url);
+  if (url.hostname.endsWith(".alxnko.eu.org")) {
+    const newHost = url.hostname.replace(/\.alxnko\.eu\.org$/, ".alxnko.dev");
+    const dest = new URL(url.pathname + url.search, `https://${newHost}`);
+    return new Response(null, {
+      status: 301,
+      headers: {
+        Location: dest.toString(),
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      },
+    });
+  }
+
   const origin = req.headers.get("Origin");
   const cors = corsHeaders(origin, env);
 
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
-  const path = new URL(req.url).pathname;
+  const path = url.pathname;
+
+  if (req.method === "GET" && (path === "/.well-known/security.txt" || path === "/security.txt")) {
+    return new Response(SECURITY_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
+
+  if (req.method === "GET" && path === "/robots.txt") {
+    return new Response(ROBOTS_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
 
   if (path === "/api/meows" && req.method === "GET") return handleList(req, deps, cors);
 

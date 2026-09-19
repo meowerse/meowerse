@@ -60,7 +60,7 @@ beforeEach(() => {
 });
 
 const req = (method: string, path: string, body?: unknown, auth = true) =>
-  new Request(`https://api.meow.alxnko.eu.org${path}`, {
+  new Request(`https://api.meow.alxnko.dev${path}`, {
     method,
     headers: {
       Origin: ORIGIN,
@@ -71,6 +71,24 @@ const req = (method: string, path: string, body?: unknown, auth = true) =>
   });
 
 describe("router basics", () => {
+  it("redirects *.alxnko.eu.org to *.alxnko.dev with 301 and HSTS", async () => {
+    const r = await handle(new Request("https://api.meow.alxnko.eu.org/api/meows?limit=10"), env, d);
+    expect(r.status).toBe(301);
+    expect(r.headers.get("Location")).toBe("https://api.meow.alxnko.dev/api/meows?limit=10");
+    expect(r.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+  });
+
+  it("serves security.txt and robots.txt", async () => {
+    const s = await handle(new Request("https://api.meow.alxnko.dev/.well-known/security.txt"), env, d);
+    expect(s.status).toBe(200);
+    expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+    expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+
+    const rob = await handle(new Request("https://api.meow.alxnko.dev/robots.txt"), env, d);
+    expect(rob.status).toBe(200);
+    expect(await rob.text()).toContain("User-agent: GPTBot");
+  });
+
   it("answers OPTIONS preflight with 204 and CORS headers", async () => {
     const res = await handle(req("OPTIONS", "/api/meows"), env, d);
     expect(res.status).toBe(204);

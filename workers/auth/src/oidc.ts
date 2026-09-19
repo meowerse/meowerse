@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 
-const DEFAULT_ISSUER = "https://auth.alxnko.eu.org";
-const DEFAULT_WEB_ORIGIN = "https://auth.alxnko.eu.org";
+const DEFAULT_ISSUER = "https://auth.alxnko.dev";
+const DEFAULT_WEB_ORIGIN = "https://auth.alxnko.dev";
 
 /**
  * OIDC discovery document (spec §3). Advertises exactly the implemented surface:

@@ -27,6 +27,26 @@ test("OPTIONS preflight → 204 with CORS", async () => {
   expect(r.headers.get("Access-Control-Allow-Origin")).toBe("https://web");
 });
 
+test("redirects *.alxnko.eu.org to *.alxnko.dev with 301 and HSTS", async () => {
+  const { env, deps } = await fixture();
+  const r = await handle(new Request("https://auth.alxnko.eu.org/authorize?client_id=foo"), env, deps);
+  expect(r.status).toBe(301);
+  expect(r.headers.get("Location")).toBe("https://auth.alxnko.dev/authorize?client_id=foo");
+  expect(r.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+});
+
+test("serves security.txt and robots.txt", async () => {
+  const { env, deps } = await fixture();
+  const s = await handle(new Request("https://iss/.well-known/security.txt"), env, deps);
+  expect(s.status).toBe(200);
+  expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+  expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
+
+  const rob = await handle(new Request("https://iss/robots.txt"), env, deps);
+  expect(rob.status).toBe(200);
+  expect(await rob.text()).toContain("User-agent: GPTBot");
+});
+
 test("discovery + jwks are served and cacheable", async () => {
   const { env, deps } = await fixture();
   const d = await handle(new Request("https://iss/.well-known/openid-configuration"), env, deps);

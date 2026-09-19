@@ -50,6 +50,38 @@ const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
 const SESS_COOKIE = "mw_sess";
 const TKT_COOKIE = "mw_tkt";
 
+const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, ru
+Canonical: https://auth.alxnko.dev/.well-known/security.txt
+Policy: https://auth.alxnko.dev/privacy
+`;
+
+const ROBOTS_TXT = `User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+`;
+
 function now(deps: Deps): number {
   return deps.clock ? deps.clock() : Math.floor(Date.now() / 1000);
 }
@@ -96,10 +128,10 @@ function appendParams(uri: string, params: Record<string, string | undefined>): 
 }
 
 function issuer(env: Env): string {
-  return env.ISSUER ?? "https://auth.alxnko.eu.org";
+  return env.ISSUER ?? "https://auth.alxnko.dev";
 }
 function webOrigin(env: Env): string {
-  return env.WEB_ORIGIN ?? "https://auth.alxnko.eu.org";
+  return env.WEB_ORIGIN ?? "https://auth.alxnko.dev";
 }
 function stateSecret(env: Env): string {
   return env.STATE_SECRET ?? env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
@@ -382,7 +414,7 @@ async function mintResponse(
     authTime: i.authTime,
     verified,
     issuer: issuer(env),
-    resourceAud: env.RESOURCE_AUD ?? "https://api.meow.alxnko.eu.org",
+    resourceAud: env.RESOURCE_AUD ?? "https://api.meow.alxnko.dev",
     signingKey: signing.active.key,
     kid: signing.active.kid,
     family: i.family,
@@ -568,7 +600,7 @@ async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<s
   const auth = req.headers.get("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token) return json({ error: "invalid_token" }, 401, { ...cors, ...noStore });
-  const resourceAud = env.RESOURCE_AUD ?? "https://api.meow.alxnko.eu.org";
+  const resourceAud = env.RESOURCE_AUD ?? "https://api.meow.alxnko.dev";
   try {
     const signing = await getSigning(env);
     const { header, payload } = await verifyJwt(token, signing.jwks, { iss: issuer(env), aud: resourceAud, now: now(deps) });
@@ -810,11 +842,46 @@ const PUBLIC_CORS = { "Access-Control-Allow-Origin": "*" };
  * fake db + fixed clock; production builds it from env once per request.
  */
 export async function handle(req: Request, env: Env, deps: Deps, ctx?: ExecutionContext): Promise<Response> {
+  const url = new URL(req.url);
+  if (url.hostname.endsWith(".alxnko.eu.org")) {
+    const newHost = url.hostname.replace(/\.alxnko\.eu\.org$/, ".alxnko.dev");
+    const dest = new URL(url.pathname + url.search, `https://${newHost}`);
+    return new Response(null, {
+      status: 301,
+      headers: {
+        Location: dest.toString(),
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      },
+    });
+  }
+
   const cors = corsHeaders(req.headers.get("Origin"), env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
-  const { pathname } = new URL(req.url);
+  const { pathname } = url;
   const m = req.method;
+
+  if (m === "GET" && (pathname === "/.well-known/security.txt" || pathname === "/security.txt")) {
+    return new Response(SECURITY_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
+  if (m === "GET" && pathname === "/robots.txt") {
+    return new Response(ROBOTS_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
 
   if (m === "GET" && pathname === "/.well-known/openid-configuration") {
     return json(discoveryDoc(env), 200, { ...PUBLIC_CORS, ...CACHE_1H });

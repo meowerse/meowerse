@@ -66,12 +66,80 @@ async function writeThrottle(env: Env, req: Request): Promise<boolean> {
   return success;
 }
 
+const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, ru
+Canonical: https://meowsenger.alxnko.dev/.well-known/security.txt
+Policy: https://meowsenger.alxnko.dev/privacy
+`;
+
+const ROBOTS_TXT = `User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+`;
+
 /** Thin hand-rolled router (no framework) to stay under the 10ms CPU budget. */
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
+  const url = new URL(req.url);
+  if (url.hostname.endsWith(".alxnko.eu.org")) {
+    const newHost = url.hostname.replace(/\.alxnko\.eu\.org$/, ".alxnko.dev");
+    const dest = new URL(url.pathname + url.search, `https://${newHost}`);
+    return new Response(null, {
+      status: 301,
+      headers: {
+        Location: dest.toString(),
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+      },
+    });
+  }
+
   const cors = corsHeaders(req.headers.get("Origin"), env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-  const path = new URL(req.url).pathname;
+  const path = url.pathname;
   const m = req.method;
+
+  if (m === "GET" && (path === "/.well-known/security.txt" || path === "/security.txt")) {
+    return new Response(SECURITY_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
+
+  if (m === "GET" && path === "/robots.txt") {
+    return new Response(ROBOTS_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        ...cors,
+      },
+    });
+  }
 
   // Guard the expensive write POSTs with the per-IP throttle before any dispatch.
   if (m === "POST" && EXPENSIVE_WRITE.test(path) && !(await writeThrottle(env, req))) {

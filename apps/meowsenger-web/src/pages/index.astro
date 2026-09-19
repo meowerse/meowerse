@@ -1,10 +1,8 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import AppShell from "../components/AppShell.tsx";
+const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
-<Layout title="meowsenger">
-  <section class="mw-stack">
-    <h1>meowsenger</h1>
-    <p class="mw-muted">fast, real-time chat for the meowerse. sign in with your meowerse account.</p>
-    <p><a class="mw-btn mw-btn--primary mw-btn--md" href="/app">open meowsenger</a></p>
-  </section>
+<Layout title="meowsenger" bodyClass="app-page" footer={false} header={false}>
+  <AppShell client:load base={base} />
 </Layout>

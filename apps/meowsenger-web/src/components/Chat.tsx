@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@meowerse/ui";
-import { getSession, type SessionUser } from "../lib/meowsengerApi";
+import { getSession, loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
 import { useConversation } from "../hooks/useConversation";
@@ -15,6 +15,7 @@ import { NewChatModal } from "./NewChatModal";
 import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
+import Settings from "./Settings";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -71,6 +72,8 @@ export default function Chat({ base }: { base: string }) {
   const [emojiFor, setEmojiFor] = useState<{ m: Bubble; x: number; y: number } | null>(null);
   // Slice 9 — the in-chat search panel: whether it's open (the panel owns its results).
   const [searchOpen, setSearchOpen] = useState(false);
+  // Settings modal state (docked in sidebar).
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Mobile header overflow ("⋯") menu anchor — collapses the header actions on phones.
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
   // Browser connectivity, for the header connection dot (offline=red vs reconnecting=amber).
@@ -158,7 +161,15 @@ export default function Chat({ base }: { base: string }) {
     (chatId: string, preview: string, at: number, senderId: string, isActive: boolean) => {
       setChats((prev) => {
         const idx = prev.findIndex((c) => c.id === chatId);
-        if (idx === -1) { void listChats(base).then(setChats); return prev; }
+        if (idx === -1) {
+          void listChats(base).then((cs) => {
+            setChats(cs);
+            if (!cs.some((c) => c.id === chatId)) {
+              window.setTimeout(() => { void listChats(base).then(setChats); }, 600);
+            }
+          });
+          return prev;
+        }
         const updated: ChatSummary = {
           ...prev[idx],
           lastMessage: preview,
@@ -533,6 +544,11 @@ export default function Chat({ base }: { base: string }) {
     void listChats(base).then(setChats);
   }
 
+  const onLogout = useCallback(async () => {
+    await fetch(logoutUrl(base), { method: "POST", credentials: "include" });
+    window.location.href = loginUrl(base);
+  }, [base]);
+
   const peerOnline = peerId != null && online.has(peerId);
   // Online but all their tabs are backgrounded → "away".
   const peerAway = peerOnline && peerId != null && away.has(peerId);
@@ -572,10 +588,13 @@ export default function Chat({ base }: { base: string }) {
         activeId={activeId}
         online={online}
         meId={me?.id}
+        me={me}
         base={base}
         onSelect={setActiveId}
         onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
+        onSettingsClick={() => setSettingsOpen(true)}
+        onLogout={onLogout}
         loading={loadingChats}
       />
 
@@ -899,6 +918,8 @@ export default function Chat({ base }: { base: string }) {
           onLeft={onLeftGroup}
         />
       )}
+
+      <Settings base={base} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { b64urlEncode, constantTimeEqual } from "@meowerse/auth-shared";
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset. Mirrors workers/api default shape. */
-export const DEFAULT_ORIGINS = "https://auth.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321";
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;
@@ -71,6 +71,7 @@ export function securityHeaders(extraCsp = ""): Record<string, string> {
     "Cache-Control": "no-store, no-cache, must-revalidate",
     Pragma: "no-cache",
     "X-Content-Type-Options": "nosniff",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
     "Content-Security-Policy": csp,
   };
 }
