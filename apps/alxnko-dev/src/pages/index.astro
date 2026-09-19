@@ -1,0 +1,224 @@
+---
+import "../styles/global.css";
+import ThemeScript from "../components/ThemeScript.astro";
+import Icons from "../components/Icons.astro";
+import Terminal from "../components/Terminal.astro";
+
+const socialLinks = [
+  { name: "GitHub", path: "/gh", url: "https://github.com/alxnko", icon: "github" as const, desc: "code & repositories" },
+  { name: "Telegram", path: "/tg", url: "https://t.me/ALXNK0", icon: "telegram" as const, desc: "direct messaging" },
+  { name: "LinkedIn", path: "/li", url: "https://linkedin.com/in/alxnko", icon: "linkedin" as const, desc: "professional network" },
+  { name: "Instagram", path: "/in", url: "https://instagram.com/alxnko", icon: "instagram" as const, desc: "life & visuals" },
+  { name: "Email", path: "/mail", url: "mailto:aleksandrnyrko@gmail.com", icon: "mail" as const, desc: "aleksandrnyrko@gmail.com" },
+];
+
+const projects = [
+  {
+    name: "Meowerse",
+    badge: "Ecosystem",
+    desc: "A federated social media platform and real-time interaction hub built with modern edge architecture, featuring strict security and responsive web design.",
+    tech: ["Astro", "TypeScript", "Cloudflare", "Tailwind"],
+    url: "https://meow.alxnko.dev",
+  },
+  {
+    name: "Meowsenger",
+    badge: "Real-time Chat",
+    desc: "An edge-native encrypted instant messenger powered by Cloudflare Durable Objects Hibernation API, featuring live presence, inbox synchronization, and sub-second delivery.",
+    tech: ["Durable Objects", "WebSockets", "D1 SQLite", "React"],
+    url: "https://meowsenger.alxnko.dev",
+  },
+  {
+    name: "Meowerse Auth",
+    badge: "Identity Provider",
+    desc: "An RFC 6749 / 7519 compliant OpenID Connect identity provider with PKCE, single sign-on, session management, and Cloudflare Turnstile bot deterrence.",
+    tech: ["OIDC", "PKCE", "Cloudflare Workers", "Cryptographic Keys"],
+    url: "https://auth.alxnko.dev",
+  },
+];
+
+const skills = [
+  "TypeScript", "JavaScript", "Rust", "Go", "Python",
+  "Cloudflare Workers", "Durable Objects", "D1 / SQLite",
+  "Astro", "React", "Node.js / Bun", "Tailwind CSS",
+  "Docker", "Linux Systems", "Terraform", "Git & CI/CD"
+];
+---
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>alxnko — software engineer & systems architect</title>
+  <meta name="description" content="Personal website and links hub of alxnko (Alex Neko) — building resilient distributed edge systems and modern web software." />
+  <link rel="canonical" href="https://alxnko.dev/" />
+  
+  <!-- OpenGraph / Social Meta -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://alxnko.dev/" />
+  <meta property="og:title" content="alxnko — software engineer & systems architect" />
+  <meta property="og:description" content="Personal portfolio and fast shortcuts of alxnko (Alex Neko). Explore code, projects, and connect." />
+  <meta property="twitter:card" content="summary_large_image" />
+  <meta property="twitter:title" content="alxnko — software engineer & systems architect" />
+  <meta property="twitter:description" content="Personal portfolio and fast shortcuts of alxnko (Alex Neko). Explore code, projects, and connect." />
+
+  <!-- Pre-render theme switcher to prevent FOUC -->
+  <ThemeScript />
+</head>
+<body>
+  <!-- Global Header -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="/" class="logo-link" aria-label="alxnko home">
+        <span class="prompt-sym">&gt;</span> alxnko<span class="prompt-sym">@dev:~$</span>
+      </a>
+
+      <div style="display: flex; align-items: center; gap: var(--space-3);">
+        <div class="status-badge" title="Operational status">
+          <span class="status-dot"></span>
+          <span>online</span>
+        </div>
+
+        <button type="button" class="theme-btn" id="theme-toggle" aria-label="Toggle light or dark theme" title="Toggle theme">
+          <span id="theme-icon-moon"><Icons name="moon" size={17} /></span>
+          <span id="theme-icon-sun" style="display: none;"><Icons name="sun" size={17} /></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="tagline">// software engineer & systems builder</div>
+      <h1 class="hero-title">Alex Neko <span class="accent">alxnko</span></h1>
+      <p class="hero-desc">
+        Specializing in high-performance distributed edge systems, real-time protocols, and craft-driven web platforms.
+      </p>
+
+      <!-- Fast Shortcuts / Link Hub -->
+      <div class="fast-links">
+        {socialLinks.map((item) => (
+          <a href={item.path} class="fast-card" title={`Go to ${item.name} (${item.path})`} target="_blank" rel="noopener noreferrer">
+            <div class="fast-card-header">
+              <Icons name={item.icon} class="fast-card-icon" size={19} />
+              <Icons name="external" class="fast-card-ext" size={12} />
+            </div>
+            <span class="fast-card-name">{item.name}</span>
+            <span class="fast-card-path">{item.path}</span>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <!-- Interactive Terminal Widget -->
+    <section>
+      <h2 class="section-title"><span class="hash">#</span> interactive_console</h2>
+      <Terminal />
+    </section>
+
+    <!-- Featured Projects Section -->
+    <section>
+      <h2 class="section-title"><span class="hash">#</span> featured_projects</h2>
+      <div class="projects-grid">
+        {projects.map((proj) => (
+          <article class="project-card">
+            <div>
+              <span class="project-badge">{proj.badge}</span>
+              <h3 class="project-name">
+                <span>{proj.name}</span>
+                <a href={proj.url} target="_blank" rel="noopener noreferrer" class="project-link" aria-label={`Open ${proj.name}`}>
+                  <Icons name="external" size={15} />
+                </a>
+              </h3>
+              <p class="project-desc">{proj.desc}</p>
+            </div>
+            <div>
+              <div class="project-tech">
+                {proj.tech.map((t) => (
+                  <span class="tech-tag">{t}</span>
+                ))}
+              </div>
+              <a href={proj.url} target="_blank" rel="noopener noreferrer" class="project-link">
+                visit {proj.name.toLowerCase()} &rarr;
+              </a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <!-- Skills / Toolchain Section -->
+    <section>
+      <h2 class="section-title"><span class="hash">#</span> stack_and_tools</h2>
+      <div class="skills-container">
+        {skills.map((skill) => (
+          <div class="skill-pill">
+            <span style="color: var(--green); font-size: 0.75rem;">&bull;</span>
+            <span>{skill}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        alxnko.dev &bull; crafted with code &bull; 2026
+      </div>
+      <div class="footer-links">
+        <a href="/gh">github</a>
+        <a href="/tg">telegram</a>
+        <a href="/li">linkedin</a>
+        <a href="/in">instagram</a>
+        <a href="/mail">email</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Theme toggle client logic -->
+  <script is:inline>
+    (function() {
+      var btn = document.getElementById('theme-toggle');
+      var moon = document.getElementById('theme-icon-moon');
+      var sun = document.getElementById('theme-icon-sun');
+
+      function updateIcons(theme) {
+        if (theme === 'light') {
+          moon.style.display = 'none';
+          sun.style.display = 'inline-flex';
+        } else {
+          moon.style.display = 'inline-flex';
+          sun.style.display = 'none';
+        }
+      }
+
+      var current = document.documentElement.getAttribute('data-theme') || 'dark';
+      updateIcons(current);
+
+      if (btn) {
+        btn.addEventListener('click', function() {
+          var now = document.documentElement.getAttribute('data-theme');
+          var next = now === 'light' ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', next);
+          try { localStorage.setItem('alxnko-theme', next); } catch(e) {}
+          updateIcons(next);
+        });
+      }
+
+      // Listen for system theme changes if user hasn't overridden
+      try {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
+          if (!localStorage.getItem('alxnko-theme')) {
+            var autoTheme = e.matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', autoTheme);
+            updateIcons(autoTheme);
+          }
+        });
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>
