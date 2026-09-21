@@ -45,30 +45,10 @@ SVG
 svg "$GREEN_DARK" "$TMP/flat-dark.svg"   # for the .ico, which cannot adapt
 svg "$GREEN"      "$TMP/flat-green.svg"  # for icons that sit on the dark surface
 
-# 2. favicon.ico (16/32/48) ---------------------------------------------------
-magick -background none "$TMP/flat-dark.svg" -resize 256x256 \
-       -define icon:auto-resize=48,32,16 "$OUT/favicon.ico"
+# 2. Raster and WebP icons from source ----------------------------------------
+python3 "$HERE/scripts/generate_favicons.py" "$SRC" "$OUT"
 
-# 3. Raster icons on the brand surface ----------------------------------------
-# iOS and Android composite transparent icons onto unpredictable plates, so these
-# carry the surface colour themselves. `pct` is the mark's share of the canvas.
-# -colors 64 palettises two flat tones plus their antialias ramp: ~4x smaller at
-# an RMSE of 0.0016 (invisible). These are opaque, so no alpha is lost -- unlike
-# the .ico frames, where palettising *does* wreck the edges, which is why
-# favicon.ico below stays truecolour.
-plate() { # plate <size> <pct> <file>
-  local size=$1 pct=$2 inner
-  inner=$(python3 -c "print(round($size*$pct))")
-  magick -background none "$TMP/flat-green.svg" -resize "${inner}x${inner}" \
-         -background "$SURFACE" -gravity center -extent "${size}x${size}" \
-         -strip -colors 64 -define png:compression-level=9 "$3"
-}
-plate 180 0.76 "$OUT/apple-touch-icon.png"     # iOS rounds the corners itself
-plate 192 0.76 "$OUT/icon-192.png"
-plate 512 0.76 "$OUT/icon-512.png"
-plate 512 0.60 "$OUT/icon-maskable-512.png"    # maskable safe zone = inner 80%
-
-# 4. Distribute ---------------------------------------------------------------
+# 3. Distribute ---------------------------------------------------------------
 # site.webmanifest is per-app (each needs its own name), so it is written by the
 # loop below rather than living in icons/.
 emit_manifest() { # emit_manifest <dir> <name> <short_name>
@@ -77,8 +57,11 @@ emit_manifest() { # emit_manifest <dir> <name> <short_name>
   "name": "$2",
   "short_name": "$3",
   "icons": [
+    { "src": "/icon-192.webp", "sizes": "192x192", "type": "image/webp" },
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.webp", "sizes": "512x512", "type": "image/webp" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.webp", "sizes": "512x512", "type": "image/webp", "purpose": "maskable" },
     { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "theme_color": "$SURFACE",
@@ -90,8 +73,13 @@ JSON
 distribute() { # distribute <app> <name> <short_name>
   local dir="$ROOT/apps/$1/public"
   [ -d "$dir" ] || { echo "!! missing $dir" >&2; return 1; }
-  cp "$OUT/favicon.svg" "$OUT/favicon.ico" "$OUT/apple-touch-icon.png" \
-     "$OUT/icon-192.png" "$OUT/icon-512.png" "$OUT/icon-maskable-512.png" "$dir/"
+  cp "$OUT/favicon.svg" "$OUT/favicon.ico" "$OUT/favicon.webp" "$OUT/favicon.png" \
+     "$OUT/favicon-16x16.png" "$OUT/favicon-16x16.webp" \
+     "$OUT/favicon-32x32.png" "$OUT/favicon-48x48.png" "$OUT/favicon-48x48.webp" \
+     "$OUT/apple-touch-icon.png" "$OUT/apple-touch-icon.webp" \
+     "$OUT/icon-192.png" "$OUT/icon-192.webp" \
+     "$OUT/icon-512.png" "$OUT/icon-512.webp" \
+     "$OUT/icon-maskable-512.png" "$OUT/icon-maskable-512.webp" "$dir/"
   emit_manifest "$dir" "$2" "$3"
   echo "  -> apps/$1/public"
 }
@@ -105,3 +93,4 @@ distribute meowsenger-web  "meowsenger"      "meowsenger"
 echo
 echo "generated:"
 ls -l "$OUT" | awk 'NR>1 {printf "  %-26s %6s bytes\n", $9, $5}'
+
