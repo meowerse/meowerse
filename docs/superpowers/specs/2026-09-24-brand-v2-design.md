@@ -83,8 +83,9 @@ never a code alone.
   - `Cat3D`: see §4.
 - **Components that apps re-implement** (e.g. meowsenger's `Avatar`) move into `@meowerse/ui` where
   they are the same thing. The list comes from the audit.
-- **Gallery:** a dev-only route in `apps/web` renders every component in every state, with phone and
-  desktop sizes and light and dark themes side by side. Playwright screenshot tests run against it.
+- **Gallery:** the public UI docs at meow.alxnko.dev/ui (§5.2) render every component in every state,
+  with phone and desktop sizes and light and dark themes side by side. Playwright screenshot tests run
+  against them.
 
 ## 4. Cat3D (B4)
 
@@ -107,6 +108,8 @@ never a code alone.
   - the wordmark and the cat;
   - an `ls ~/services` list of services with live status (`StatusLine`), each with a timeout and an
     "unknown" state rather than hanging.
+- See §5.1 and §5.2 for the project pages and the UI docs that also live on meow.alxnko.dev (B11,
+  B12). It is a full redesign, not a re-token (B12a).
 - **auth-web:**
   - every page is restyled;
   - OIDC, PKCE, Turnstile, Telegram and the password policy behave exactly as they do today, except
@@ -117,11 +120,52 @@ never a code alone.
   - the current performance is the floor.
 - **Cleanup:** remove `apps/alxnko-dev` using the checklist from the audit.
 
+### 5.1 Project pages (B11)
+
+- There is one page per project at `/p/<slug>`. Each page has:
+  - a one-line summary;
+  - "what it is" in plain words for non-technical readers;
+  - "how it works": a short technical section plus a small diagram (inline SVG, both themes);
+  - live status (`StatusLine`, with a timeout);
+  - an "open" link that opens in a new tab.
+- Content lives in typed content files (Astro content collections) and is validated at build time.
+- Public facts only: no secrets, internal hostnames, IPs or infra details beyond what is already
+  public.
+- The project list is decided in B13.
+
+### 5.2 UI docs (B12)
+
+meow.alxnko.dev/ui holds the public docs of `@meowerse/ui`, the system alxnko.dev is built from.
+
+- **Foundations:**
+  - every token with a swatch and its value in dark and light;
+  - the type scale, spacing, radii, motion (with live demos), z layers;
+  - voice and microcopy rules;
+  - contrast results.
+- **Components:** one page each, with:
+  - a live preview of every variant and state;
+  - a props table and a CSS custom property table, generated from the TypeScript types and the
+    token file so they can't drift;
+  - copyable usage snippets (React and plain HTML/CSS where it applies);
+  - accessibility notes (keyboard, ARIA);
+  - do and don't examples.
+- **Playground:** a panel that changes the theme, the props, and the token overrides (accent, radius
+  scale, density) live, and shows the resulting snippet. Overrides are scoped to the preview and kept
+  in the URL so they can be shared, never on the server.
+- **Patterns:**
+  - the tty/app "together" page (B10);
+  - forms;
+  - empty, loading and error states (B9);
+  - the chat composer.
+- **Cat3D:** a demo with its fallback.
+- The docs are static, prerendered, with lazy islands only for live previews and the playground, so
+  they stay within the same Lighthouse and CSP bar.
+
 Order, one PR per sub-project, each merged with a merge commit and deployed with `just deploy-*` then
 verified live:
 
 1. DS v2 plus Cat3D
-2. web
+2. web (redesign, project pages, UI docs)
 3. auth-web
 4. meowsenger-web
 5. cleanup
