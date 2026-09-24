@@ -63,3 +63,23 @@ a.mw-btn:hover { text-decoration: none; }
 .dg-title { fill: var(--c-fg); font-size: var(--fs-3); font-weight: 700; }
 .dg-note { fill: var(--c-fg-muted); font-size: var(--fs-1); }
 .dg-arrow { fill: none; stroke: var(--c-fg-subtle); stroke-width: 1.5; }
+
+/* ---- home ---- */
+.hero { display: grid; gap: var(--sp-5); align-items: center; padding-block: var(--sp-5) var(--sp-7); }
+@media (min-width: 760px) { .hero { grid-template-columns: minmax(0, 1fr) auto; } }
+.hero__text { display: grid; gap: var(--sp-4); justify-items: start; }
+.hero__title { margin: 0; line-height: 1; }
+.hero__title .mw-wordmark { font-size: var(--fs-7); }
+.hero__cat { justify-self: center; }
+.block { display: grid; gap: var(--sp-4); padding-block: var(--sp-6); border-top: 1px solid var(--c-line); }
+.services { display: grid; margin: 0; padding: 0; list-style: none; }
+.services li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); padding-block: var(--sp-1); border-bottom: 1px solid var(--c-line); }
+.services .probe { flex: 1 1 18rem; }
+.row-links { display: flex; gap: var(--sp-1); }
+.row-links a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); border-radius: var(--r-m); color: var(--c-fg-muted); font-size: var(--fs-2); }
+.row-links a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.cards { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); margin: 0; padding: 0; list-style: none; }
+.card-link { display: grid; gap: var(--sp-2); height: 100%; padding: var(--sp-4); background: var(--c-bg-elev); border: 1px solid var(--c-line); border-radius: var(--r-l); color: var(--c-fg); transition: border-color var(--d-fast) var(--ease); }
+.card-link:hover { border-color: var(--c-line-input); text-decoration: none; }
+.card-link__name { font-weight: 700; }
+.card-link__sum { font-size: var(--fs-2); color: var(--c-fg-muted); }

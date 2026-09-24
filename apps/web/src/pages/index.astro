@@ -1,8 +1,75 @@
 ---
+// Home (spec §5 web, B4, B12a, B16; W-04): hero (wordmark + Cat3D), ls ~/services (live status,
+// shared probe runner), ls ~/projects (the six project cards). No React ships from this page.
+import { getCollection } from "astro:content";
+import { StatusLine, Wordmark } from "@meowerse/ui";
+import { Cat3D } from "@meowerse/ui/cat3d";
 import BaseLayout from "../layouts/BaseLayout.astro";
-import { SITE } from "../lib/site";
+import { describeProbe } from "../lib/probe";
+import { isExternal, linkAttrs, SITE } from "../lib/site";
+
+const projects = (await getCollection("projects")).sort((a, b) => a.data.order - b.data.order);
+const services = projects.filter((p) => p.data.service);
+const meowsenger = "https://meowsenger.alxnko.dev/";
+const jsonLd = { "@context": "https://schema.org", "@type": "WebSite", name: SITE.name, url: SITE.url, description: SITE.description };
 ---
-<BaseLayout title={SITE.name} description={SITE.description}>
-  <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>meowerse</h1>
-  <p class="lede">{SITE.description}</p>
+<BaseLayout title={SITE.name} description={SITE.description} jsonLd={jsonLd}>
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero__text">
+      <h1 id="hero-title" class="hero__title"><span class="sr-only">meowerse</span><span aria-hidden="true"><Wordmark name="meowerse" /></span></h1>
+      <p class="lede">{SITE.description}</p>
+      <div class="btn-row">
+        <a class="mw-btn mw-btn--primary mw-btn--md" href={meowsenger} {...linkAttrs(meowsenger)}>open meowsenger<span class="ext-mark" aria-hidden="true"> ↗</span><span class="sr-only"> (opens in a new tab)</span></a>
+      </div>
+    </div>
+    <div class="hero__cat"><Cat3D size={220} /></div>
+  </section>
+
+  <section class="block" aria-labelledby="services-title">
+    <h2 id="services-title" class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› ls ~/</span>services</h2>
+    <ul class="services">
+      {services.map((p) => {
+        const status = p.data.status;
+        if (status.kind !== "probe") return null;
+        const wait = describeProbe(p.data.name, "pending");
+        const open = p.data.links[0]!.href;
+        return (
+          <li>
+            <div class="probe" data-probe data-name={p.data.name} data-url={status.url} data-method={status.method}>
+              <StatusLine state={wait.state} live children={wait.text} />
+            </div>
+            <span class="row-links">
+              <a href={`/p/${p.id}/`}>about<span class="sr-only"> {p.data.name}</span></a>
+              <a href={open} {...linkAttrs(open)}>open<span class="sr-only"> {p.data.name}</span>{isExternal(open) && <><span class="ext-mark" aria-hidden="true"> ↗</span><span class="sr-only"> (opens in a new tab)</span></>}</a>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+    <p><button type="button" class="mw-btn mw-btn--secondary mw-btn--md probe__retry" data-probe-retry hidden>check again</button></p>
+    <noscript><p class="mw-muted">live status needs JavaScript.</p></noscript>
+  </section>
+
+  <section id="projects" class="block" aria-labelledby="projects-title">
+    <h2 id="projects-title" class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› ls ~/</span>projects</h2>
+    <ul class="cards">
+      {projects.map((p) => (
+        <li><a class="card-link" href={`/p/${p.id}/`}><span class="card-link__name">{p.data.name}</span><span class="card-link__sum">{p.data.summary}</span></a></li>
+      ))}
+    </ul>
+  </section>
+
+  <script>
+    import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
+    import { runProbes } from "../lib/probe-runner";
+    void runProbes(document, { watch: true });
+    // decorative and lazy (spec §4): only after the page is idle, never competing with first paint.
+    // The idle callback alone can fire within a frame or two of navigation on an otherwise-quiet
+    // page (nothing else is competing for the main thread), so a small fixed grace period runs
+    // after it: real content and interaction get the whole first moment of the page to themselves
+    // before the decorative cat's own network fetch (renderer chunk + cat.bin) is allowed to start.
+    const start = () => setTimeout(() => attachAllCat3D(), 150);
+    if ("requestIdleCallback" in window) requestIdleCallback(start);
+    else setTimeout(start, 200);
+  </script>
 </BaseLayout>
