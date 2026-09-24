@@ -15,6 +15,19 @@ function View2({ base }: { base: string }) {
   return <div>guest</div>;
 }
 
+// Exposes retry() unconditionally (unlike View2, which only offers it from the
+// error state) so a test can call retry() while the first load is still pending.
+function View3({ base }: { base: string }) {
+  const s = useSession(base);
+  const label = s.loading ? "loading" : s.authenticated ? `hi ${s.username}` : s.error ? `error ${s.error}` : "guest";
+  return (
+    <div>
+      <div>{label}</div>
+      <button onClick={s.retry}>retry</button>
+    </div>
+  );
+}
+
 beforeEach(() => {
   sessionStorage.clear();
   clearSessionCache();
@@ -83,6 +96,38 @@ describe("useSession", () => {
     sessionStorage.setItem("mw-session", JSON.stringify({ at: Date.now(), data: { loading: false, authenticated: false } }));
     window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
     expect(sessionStorage.getItem("mw-session")).toBeNull();
+  });
+
+  it("a stale load resolving after a retry's newer load never broadcasts (race)", async () => {
+    // Control resolution order explicitly: the first (stale) request resolves
+    // with "guest" only after the second (fresh, retry-triggered) request has
+    // resolved with an authenticated user. If the identity check in `runLoad`
+    // is missing, the stale "guest" result broadcasts last and wins.
+    const resolvers: Array<(r: Response) => void> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () => new Promise((resolve) => resolvers.push(resolve as (r: Response) => void)));
+    render(
+      <>
+        <View3 base="https://api" />
+        <View3 base="https://api" />
+      </>,
+    );
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+
+    // Both islands share one in-flight load; retry from one clears it and starts
+    // a second, newer load before the first has resolved.
+    const retryButtons = screen.getAllByRole("button", { name: "retry" });
+    retryButtons[0]!.click();
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+
+    // Resolve the stale (first) request, then the fresh (second) one.
+    resolvers[0]!(new Response(JSON.stringify({ authenticated: false }), { status: 401 }));
+    resolvers[1]!(new Response(JSON.stringify({ authenticated: true, username: "alex", verified: true }), { status: 200 }));
+
+    const messages = await screen.findAllByText("hi alex");
+    expect(messages).toHaveLength(2);
+    // The stale "guest" result must never have been shown, even transiently.
+    expect(screen.queryAllByText("guest")).toHaveLength(0);
   });
 
   it("serves a cached session on the next mount without refetching", async () => {

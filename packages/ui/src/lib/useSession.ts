@@ -82,10 +82,15 @@ async function loadSession(base: string): Promise<Resolved> {
 /** Start (or join) the one shared load, and broadcast its result to every subscriber. */
 function runLoad(base: string): void {
   if (inflight) return; // a load is already in flight — its resolution will broadcast to us too
-  inflight = loadSession(base);
-  inflight
-    .then((data) => broadcast(data))
-    .finally(() => { inflight = null; });
+  const p = loadSession(base);
+  inflight = p;
+  // Identity-check `p` against `inflight` before acting: a retry started while `p`
+  // is still pending replaces `inflight` with a newer promise. Without this check,
+  // `p` resolving later (even after the newer load has already broadcast) would
+  // still broadcast its stale result and null out the newer `inflight`, breaking
+  // its own dedupe guard and letting a third load start early.
+  p.then((data) => { if (inflight === p) broadcast(data); })
+    .finally(() => { if (inflight === p) inflight = null; });
 }
 
 /**
