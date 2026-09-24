@@ -201,8 +201,11 @@ the IDs it closes.
 Cross-cutting root causes, fixed once in sub-project 1:
 
 1. **Global `text-transform: lowercase`** (M-14, A-18, U-31). Fixed by B14.
-2. **`useSession` treats every failure as signed-out and never times out** (U-01, U-02, A-07, M-06).
-   Fixed by B18.
+2. **`useSession` treats every failure as signed-out and never times out** (U-01, U-02, A-07).
+   Fixed by B18. (M-06 looked like the same defect, but meowsenger-web's session check
+   (`apps/meowsenger-web/src/lib/meowsengerApi.ts`'s `getSession`) is its own implementation, not
+   `@meowerse/ui`'s `useSession` — B18's shared layer never reached it, so M-06 is unchanged.
+   Rescoped from sub-project 1 to sub-project 4; see B27.)
 3. **No shared request layer: silent failures, no timeouts, false success** (A-03..A-08, M-05..M-09).
    Fixed by B18.
 4. **`Modal` focus trap leaks, and focus is stolen on re-render** (U-06, U-07, A-20).
@@ -222,6 +225,23 @@ App-specific highlights:
   before enforcement.
 - **B23:** Cloudflare-injected analytics is turned off, and "no analytics" stays true.
 - **B24:** `meow.alxnko.eu.org` redirects to meow.alxnko.dev.
+
+### 6.2 Sub-project 1 disposition
+
+Closed in sub-project 1: U-01, U-02, U-06, U-07, U-09, U-10, U-31, A-07 (ui; the auth-web
+`DevelopersPage` instance of the same defect — it never used `AuthGate`, so B18's fix didn't reach
+it — is fixed separately in sub-project 1's final review pass), A-18 (display), A-19, A-20, A-21,
+M-14, L-01, L-03, L-04, L-05.
+
+L-02 (old legacy Pages deployment history as a rollback hazard) is an owner/process note, not a
+code fix, and stays open.
+
+Deferred to a later sub-project:
+- MemberDrawer focus trap, meowsenger 0.5px borders and rgba scrim → sub-project 4.
+- Unused Cat3D assets left in `dist` and the cat colour tokens → sub-project 2.
+- `--shadow-*` aliases and the global session inflight/cache (keyed by a single module-level
+  singleton, not per `base`) → sub-project 5.
+- auth-web `LandingCta`'s optimistic guest CTA (A-16) → sub-project 3.
 
 ## 7. Terminal styling, per element (B8)
 

@@ -2411,7 +2411,8 @@ check:
 - that the B9 rules hold;
 - that no app lost behaviour;
 - the IDs claimed as fixed: U-01, U-02, U-06, U-07, U-09, U-10, U-31, A-07, A-18 (display part),
-  A-19, A-20, A-21, M-06, M-14, L-01..L-05.
+  A-19, A-20, A-21, M-14, L-01..L-05. (M-06 is not claimed here — meowsenger-web has its own
+  `getSession`, unrelated to this sub-project's `useSession`/B18 fix; see the log, B27.)
 
 Fix every confirmed finding in new commits.
 
@@ -2439,7 +2440,9 @@ Implements sub-project 1 of docs/superpowers/specs/2026-09-24-brand-v2-design.md
 - new: Wordmark, Cursor, Kbd, StatusLine, Prompt, Cat3D
 - deploy triggers include packages/ui + packages/brand
 
-Closes audit IDs: U-01 U-02 U-06 U-07 U-09 U-10 U-31 A-07 A-18(display) A-19 A-20 A-21 M-06 M-14 L-01..L-05.
+Closes audit IDs: U-01 U-02 U-06 U-07 U-09 U-10 U-31 A-07 A-18(display) A-19 A-20 A-21 M-14 L-01..L-05.
+(M-06 is not closed here — meowsenger-web has its own `getSession`, separate from this PR's
+`useSession`/B18 fix; rescoped to sub-project 4, see the decision log B27.)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
