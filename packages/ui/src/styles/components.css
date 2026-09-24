@@ -1,6 +1,6 @@
 /* mw component styles — v2 tokens only (spec §3, §7.1). Controls are 44px, lines 1px, radii 2/4/8. */
 
-.mw-spinner { display: inline-block; border-radius: 50%; border: 2px solid var(--c-line-strong); border-top-color: var(--c-accent-fill); animation: mw-spin .7s linear infinite; }
+.mw-spinner { display: inline-block; border-radius: 50%; border: 2px solid var(--c-line-input); border-top-color: var(--c-accent); animation: mw-spin .7s linear infinite; }
 .mw-spinner--sm { width: 14px; height: 14px; }
 .mw-spinner--md { width: 20px; height: 20px; }
 .mw-spinner--lg { width: 32px; height: 32px; border-width: 3px; }
@@ -12,9 +12,9 @@
 }
 .mw-btn:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
 .mw-btn--md { min-height: var(--control-height); padding: 0 var(--sp-4); }
-.mw-btn--sm { min-height: 36px; padding: 0 var(--sp-3); font-size: var(--fs-2); }
-/* a 36px-tall small button still gets a 44px hit area */
-.mw-btn--sm::after { content: ""; position: absolute; inset: -4px 0; }
+.mw-btn--sm { min-height: 36px; min-width: 36px; padding: 0 var(--sp-3); font-size: var(--fs-2); }
+/* a 36px small button still gets a 44x44 hit area */
+.mw-btn--sm::after { content: ""; position: absolute; inset: -4px; }
 .mw-btn--primary { background: var(--c-accent-fill); color: var(--c-on-accent); }
 .mw-btn--primary:not(:disabled):hover { background: color-mix(in srgb, var(--c-accent-fill) 88%, var(--c-fg)); }
 .mw-btn--secondary { background: transparent; color: var(--c-fg); border-color: var(--c-line-strong); }
@@ -28,29 +28,29 @@
 .mw-field > label { font-size: var(--fs-2); color: var(--c-fg-muted); }
 .mw-field__control { position: relative; display: flex; }
 .mw-field input { flex: 1; width: 100%; min-height: var(--control-height); padding: 0 var(--sp-3); font: inherit; font-size: var(--fs-4); color: var(--c-fg); background: var(--c-bg-elev); border: 1px solid var(--c-line-input); border-radius: var(--r-m); transition: border-color var(--d-fast) var(--ease); }
+.mw-field input:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
 .mw-field input:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
 .mw-field input::placeholder { color: var(--c-fg-subtle); }
 .mw-field--error input { border-color: var(--c-danger); }
 .mw-field__control:has(.mw-field__reveal) input { padding-right: 44px; }
-.mw-field__reveal { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0; background: none; border: none; border-radius: var(--r-m); color: var(--c-fg-subtle); cursor: pointer; }
+.mw-field__reveal { position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0; background: none; border: none; border-radius: var(--r-m); color: var(--c-fg-subtle); cursor: pointer; }
 .mw-field__reveal:hover { color: var(--c-fg); }
 .mw-field__hint { font-size: var(--fs-2); color: var(--c-fg-subtle); }
 .mw-field__error { font-size: var(--fs-2); color: var(--c-danger); }
 
 .mw-check { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); font-size: var(--fs-3); cursor: pointer; }
-.mw-check input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--c-accent-fill); cursor: pointer; }
+.mw-check input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--c-accent); cursor: pointer; }
 .mw-check:has(input:disabled) { opacity: var(--disabled-opacity); cursor: not-allowed; }
 
 .mw-radio { border: 1px solid var(--c-line); border-radius: var(--r-m); margin: 0; padding: var(--sp-2) var(--sp-3); display: flex; flex-direction: column; gap: 0; }
 .mw-radio legend { padding: 0 var(--sp-1); font-size: var(--fs-2); color: var(--c-fg-muted); }
 .mw-radio__opt { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); font-size: var(--fs-3); cursor: pointer; }
-.mw-radio__opt input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--c-accent-fill); cursor: pointer; }
+.mw-radio__opt input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--c-accent); cursor: pointer; }
 .mw-radio__hint { display: block; font-style: normal; font-size: var(--fs-1); color: var(--c-fg-subtle); }
 
 .mw-card { background: var(--c-bg-elev); border: 1px solid var(--c-line); border-radius: var(--r-l); padding: var(--sp-5); box-shadow: none; }
 .mw-card--sm { padding: var(--sp-4); }
 .mw-card--lg { padding: var(--sp-6); }
-.mw-card--flat { box-shadow: none; }
 .mw-card__title { font-size: var(--fs-4); font-weight: 700; margin: 0 0 var(--sp-4); }
 
 .mw-badge { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-1); line-height: var(--leading-tight); padding: 2px var(--sp-2); border-radius: var(--r-s); border: 1px solid currentColor; }
@@ -110,7 +110,7 @@
 .mw-footer__legal { font-size: var(--fs-1); color: var(--c-fg-subtle); margin: 0; }
 
 .mw-header { position: sticky; top: 0; z-index: var(--z-chrome); display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2) clamp(1rem, 4vw, 2rem); border-bottom: 1px solid var(--c-line); background: var(--c-bg); }
-.mw-header__brand { display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-height); font-family: var(--font-mark); font-size: 1.75rem; line-height: 1; text-decoration: none; white-space: nowrap; }
+.mw-header__brand { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); font-family: var(--font-mark); font-size: 1.75rem; line-height: 1; text-decoration: none; white-space: nowrap; }
 .mw-header__brand:hover { text-decoration: none; }
 .mw-brand-meow { color: var(--c-accent); }
 .mw-brand-auth { color: var(--c-fg); }
