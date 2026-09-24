@@ -4,21 +4,34 @@
 html { overflow-x: hidden; }
 main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
 
-/* Shiki dual-theme: swap to the dark palette wherever the site is dark.
-   Mirrors the data-theme / prefers-color-scheme logic in tokens.css. */
-:root[data-theme="dark"] .mw-prose .astro-code,
-:root[data-theme="dark"] .mw-prose .astro-code span {
+/* Shiki dual-theme. Dark is the site's default (mirrors tokens.gen.css: an
+   unconditional :root block for dark, an explicit override for light), so the
+   dark swap applies unconditionally here too — including when [data-theme="dark"]
+   is set explicitly — and the light palette applies only when the theme is
+   explicitly light, or the system prefers light and nothing overrides it to dark.
+   Without this, a no-preference system (matches neither prefers-color-scheme) and
+   no data-theme attribute yet (before ThemeScript runs) fell through both of the
+   old dark-only rules and kept Shiki's light-baked default color on the dark page. */
+.mw-prose .astro-code,
+.mw-prose .astro-code span {
   color: var(--shiki-dark) !important;
   background-color: var(--shiki-dark-bg) !important;
   font-style: var(--shiki-dark-font-style) !important;
   text-decoration: var(--shiki-dark-text-decoration) !important;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .mw-prose .astro-code,
-  :root:not([data-theme="light"]) .mw-prose .astro-code span {
-    color: var(--shiki-dark) !important;
-    background-color: var(--shiki-dark-bg) !important;
-    font-style: var(--shiki-dark-font-style) !important;
-    text-decoration: var(--shiki-dark-text-decoration) !important;
+:root[data-theme="light"] .mw-prose .astro-code,
+:root[data-theme="light"] .mw-prose .astro-code span {
+  color: var(--shiki-light) !important;
+  background-color: var(--shiki-light-bg) !important;
+  font-style: var(--shiki-light-font-style) !important;
+  text-decoration: var(--shiki-light-text-decoration) !important;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .mw-prose .astro-code,
+  :root:not([data-theme="dark"]) .mw-prose .astro-code span {
+    color: var(--shiki-light) !important;
+    background-color: var(--shiki-light-bg) !important;
+    font-style: var(--shiki-light-font-style) !important;
+    text-decoration: var(--shiki-light-text-decoration) !important;
   }
 }

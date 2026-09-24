@@ -8,10 +8,10 @@ const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
 
 <Layout title="Create account · Meowerse">
   <div class="mw-stack mw-narrow">
-    <h1>Create a Meowerse account</h1>
+    <h1>create a meowerse account</h1>
     <SignupForm client:load base={base} turnstileSiteKey={turnstileSiteKey} />
     <p class="mw-muted" style="text-align:center">— or —</p>
     <TelegramButton client:load base={base} />
-    <p class="mw-muted">Already have one? <a href="/login">Sign in</a>.</p>
+    <p class="mw-muted">already have one? <a href="/login">sign in</a>.</p>
   </div>
 </Layout>

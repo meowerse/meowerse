@@ -18,6 +18,13 @@ export { ContactLinks, DEFAULT_CONTACTS, type Contact } from "./components/Conta
 export { Footer } from "./components/Footer";
 export { AppHeader } from "./components/AppHeader";
 export { AuthGate } from "./components/AuthGate";
-export { useSession, clearSessionCache, type Session } from "./lib/useSession";
+export { Wordmark } from "./components/Wordmark";
+export { Cursor } from "./components/Cursor";
+export { Kbd } from "./components/Kbd";
+export { StatusLine, type StatusState } from "./components/StatusLine";
+export { Prompt, type PromptProps } from "./components/Prompt";
+export { useSession, clearSessionCache, SESSION_TIMEOUT_MS, type Session } from "./lib/useSession";
 export { THEME_INIT_SCRIPT, getTheme, resolvedTheme, applyTheme, toggleTheme, type Theme } from "./lib/theme";
 export { cx } from "./lib/cx";
+export { request, describeError, DEFAULT_TIMEOUT_MS, type RequestResult, type RequestError } from "./lib/request";
+export { Cat3D } from "./cat3d/Cat3D";

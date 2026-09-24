@@ -4,10 +4,12 @@ import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export function ThemeToggle({ className }: { className?: string }) {
-  const [dark, setDark] = useState(false);
+  // Start with dark (the server default and most common case). The effect corrects this
+  // after mount if the client prefers light, avoiding hydration mismatches.
+  const [dark, setDark] = useState(true);
   useEffect(() => { setDark(resolvedTheme() === "dark"); }, []);
   return (
-    <button type="button" className={cx("mw-themetoggle", className)} aria-label="toggle theme"
+    <button type="button" className={cx("mw-themetoggle", className)} aria-label={dark ? "switch to light theme" : "switch to dark theme"}
       onClick={() => { toggleTheme(); setDark(resolvedTheme() === "dark"); }}>
       <Icon name={dark ? "sun" : "moon"} size={18} />
     </button>

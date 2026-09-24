@@ -1,0 +1,33 @@
+/* Legacy variable names → v2 tokens. Apps migrate off these in sub-projects 2–4; removed in 5. */
+:root {
+  --mw-green: var(--c-accent-fill);
+  --mw-green-hover: color-mix(in srgb, var(--c-accent-fill) 88%, var(--c-fg));
+  --mw-on-green: var(--c-on-accent);
+  --surface-0: var(--c-bg); --surface-1: var(--c-bg-elev); --surface-2: var(--c-surface-raised);
+  --surface-muted: var(--c-surface);
+  --text-primary: var(--c-fg); --text-secondary: var(--c-fg-muted); --text-muted: var(--c-fg-subtle);
+  --text-accent: var(--c-accent);
+  --border: var(--c-line); --border-strong: var(--c-line-strong);
+  --danger: var(--c-danger); --on-danger: var(--c-on-danger); --text-danger: var(--c-danger);
+  --bg-danger: var(--c-danger-tint); --success: var(--c-ok); --warning: var(--c-warn);
+  --radius-sm: var(--r-s); --radius: var(--r-m); --radius-lg: var(--r-l); --radius-pill: var(--r-m);
+  --space-0: 0; --space-1: var(--sp-1); --space-2: var(--sp-2); --space-3: var(--sp-3); --space-4: var(--sp-4);
+  --space-5: var(--sp-5); --space-6: var(--sp-6); --space-7: var(--sp-7); --space-8: var(--sp-8);
+  --space-section: clamp(2.75rem, 7vw, 4.5rem); --space-gutter: clamp(1rem, 5vw, 2rem);
+  --gap-xs: var(--sp-1); --gap-sm: var(--sp-2); --gap-md: var(--sp-3);
+  --gap-lg: var(--sp-4); --gap-xl: var(--sp-5); --gap-2xl: var(--sp-6);
+  --mw-stack-gap: var(--sp-4);
+  /* --font-display used to point at the VT323 Mark subset, which only has the
+     glyphs ` _aeghimnorstuw` — any digit or punctuation (404, "‹") silently fell
+     back to --font-mono mid-string, rendering in two fonts at once. The mark is
+     for the wordmark only; components.css's .mw-wordmark / .mw-header__brand use
+     `var(--font-mark)` directly, not this alias. */
+  --font-sans: var(--font-mono); --font-display: var(--font-mono);
+  --text-xs: var(--fs-1); --text-sm: var(--fs-2); --text-base: var(--fs-4); --text-md: var(--fs-4);
+  --text-lg: var(--fs-5); --text-xl: clamp(var(--fs-5), 1rem + 1.6vw, var(--fs-6));
+  --text-2xl: clamp(var(--fs-6), 1.2rem + 2.6vw, var(--fs-7));
+  --leading-snug: 1.35;
+  --measure: 72ch;
+  --shadow-sm: none; --shadow-md: 0 8px 24px rgb(0 0 0 / 0.25); --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.35);
+  --dur-fast: var(--d-fast); --dur: var(--d-base);
+}

@@ -22,10 +22,23 @@ describe("AppHeader", () => {
     rerender(<AppHeader session={{ loading: false, authenticated: true, username: "alex", verified: true }} />);
     expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "/docs");
   });
-  it("while loading shows only brand + theme toggle (no nav flash)", () => {
+  it("while loading shows public nav but not log in / account (U-02: no vanishing nav)", () => {
     render(<AppHeader session={{ loading: true, authenticated: false }} />);
+    expect(screen.getByRole("link", { name: "docs" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
     expect(screen.queryByRole("link", { name: "account" })).toBeNull();
+  });
+  it("keeps public nav while loading and hides log in on error", () => {
+    const { rerender } = render(<AppHeader session={{ loading: true, authenticated: false }} />);
+    expect(screen.getByRole("link", { name: "docs" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
+    rerender(<AppHeader session={{ loading: false, authenticated: false, error: "network" }} />);
+    expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
+    expect(screen.getByRole("link", { name: "about" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "developers" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "docs" })).toBeInTheDocument();
+    rerender(<AppHeader session={{ loading: false, authenticated: false }} />);
+    expect(screen.getByRole("link", { name: "log in" })).toBeInTheDocument();
   });
   it("burger toggles the mobile nav open, and a nav click closes it", async () => {
     const user = userEvent.setup();
