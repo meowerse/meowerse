@@ -1,6 +1,6 @@
 # Brand v2 — meowerse on the alxnko.dev design system
 
-Status: approved decisions B1–B24; awaiting owner review of the written spec · Date: 2026-09-24 · Decisions: `docs/superpowers/decisions/2026-09-24-brand-v2-log.md`
+Status: approved by owner 2026-09-24 (B25) · Date: 2026-09-24 · Decisions: `docs/superpowers/decisions/2026-09-24-brand-v2-log.md`
 (B1–B10). Where this spec and the log disagree, the log wins and this spec is corrected.
 
 ## 1. Goal and scope
