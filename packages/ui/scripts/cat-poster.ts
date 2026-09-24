@@ -6,6 +6,7 @@ import { chromium } from "playwright";
 import { build } from "bun";
 import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import tokens from "../design/tokens.json";
 
 const here = import.meta.url;
 const WORK = "/var/tmp/brand-v2/cat-poster";
@@ -22,7 +23,7 @@ const bin = readFileSync(fileURLToPath(new URL("../src/cat3d/cat.bin", here))).t
 const html = `<!doctype html><body style="margin:0;background:transparent"><canvas id=c style="width:320px;height:320px"></canvas>
 <script>${js}
 const b=Uint8Array.from(atob("${bin}"),c=>c.charCodeAt(0)).buffer;
-window.api=Cat.mount(document.getElementById('c'),b,{color:'#14995a',light:'#63d396'});</script>`;
+window.api=Cat.mount(document.getElementById('c'),b,${JSON.stringify({ color: tokens.primitive.scene.cat, light: tokens.primitive.scene.catEdge })});</script>`;
 
 const swift = process.env.CAT_SWIFTSHADER === "1";
 const NV = { __EGL_VENDOR_LIBRARY_FILENAMES: "/usr/share/glvnd/egl_vendor.d/10_nvidia.json", __NV_PRIME_RENDER_OFFLOAD: "1", __GLX_VENDOR_LIBRARY_NAME: "nvidia" };

@@ -67,6 +67,8 @@
   --d-slow: 600ms;
   --font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-mark: "VT323 Mark", var(--font-mono);
+  --cat-color: #14995a;
+  --cat-edge: #63d396;
   color-scheme: dark;
 }
 :root[data-theme="light"] {

@@ -25,6 +25,7 @@ export function gen(t: Tokens): string {
     `  --d-fast: ${t.motion.fast}ms;\n  --d-base: ${t.motion.base}ms;\n  --d-slow: ${t.motion.slow}ms;`,
     `  --font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, "SFMono-Regular", Menlo, monospace;`,
     `  --font-mark: "VT323 Mark", var(--font-mono);`,
+    `  --cat-color: ${t.primitive.scene.cat};\n  --cat-edge: ${t.primitive.scene.catEdge};`,
     `  color-scheme: dark;`,
   ].join("\n");
   const light = `${block(t.semantic.light, "c-")}\n  color-scheme: light;`;

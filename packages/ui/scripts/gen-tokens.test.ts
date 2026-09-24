@@ -30,4 +30,9 @@ describe("tokens", () => {
   });
   it("puts the metric-matched fallback face second in --font-mono (no layout shift on swap)", () =>
     expect(gen(tokens)).toContain('--font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace'));
+  it("emits the cat's material colours from primitive.scene (Cat3D reads them)", () => {
+    const css = gen(tokens);
+    expect(css).toContain(`--cat-color: ${tokens.primitive.scene.cat};`);
+    expect(css).toContain(`--cat-edge: ${tokens.primitive.scene.catEdge};`);
+  });
 });

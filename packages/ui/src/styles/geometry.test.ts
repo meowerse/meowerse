@@ -14,9 +14,8 @@ const authored = readdirSync(__dirname)
   .filter((f) => f.endsWith(".css") && f !== "tokens.gen.css" && f !== "aliases.css")
   .map((f) => ({ f, src: readFileSync(join(__dirname, f), "utf8") }));
 
-/** Hard-coded colour literals, ignoring the allow-listed --cat-color declaration. */
-const colourLiterals = (src: string) =>
-  src.replace(/--cat-color\s*:[^;]*;/g, "").match(/#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\(/gi) ?? [];
+/** Hard-coded colour literals. There is no allow-list: the cat colours are tokens now. */
+const colourLiterals = (src: string) => src.match(/#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\(/gi) ?? [];
 
 /** Radius declarations (shorthand or longhand) with any value outside --r-s/m/l, 50%, 0. */
 const RADIUS_OK = new Set(["var(--r-s)", "var(--r-m)", "var(--r-l)", "50%", "0"]);
@@ -49,7 +48,7 @@ describe("B10 geometry: tty and app controls share one shape", () => {
     expect(colourLiterals("a { color: #fff; }")).toHaveLength(1);
     expect(colourLiterals("a { background: rgba(0,0,0,.5); }")).toHaveLength(1);
     expect(colourLiterals("a { color: hsl(0 0% 0%); }")).toHaveLength(1);
-    expect(colourLiterals("a { --cat-color: #00ff82; color: var(--c-fg); }")).toHaveLength(0);
+    expect(colourLiterals("a { --cat-color: #00ff82; color: var(--c-fg); }")).toHaveLength(1);
     expect(offScaleRadii("a { border-radius: 10px; }")).toHaveLength(1);
     expect(offScaleRadii("a { border-radius: 999px; }")).toHaveLength(1);
     expect(offScaleRadii("a { border-radius: 0 10px; }")).toHaveLength(1);
