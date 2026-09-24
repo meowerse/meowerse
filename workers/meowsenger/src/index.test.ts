@@ -41,6 +41,13 @@ describe("router", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
+  it("GET /health answers any origin without credentials and is never cached (meow.alxnko.dev probe)", async () => {
+    const res = await handle(new Request("https://meowsenger.alxnko.dev/health", { headers: { Origin: "https://meow.alxnko.dev" } }), env, deps);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
   it("unknown route → 404 JSON", async () => {
     const res = await handle(req("GET", "/nope"), env, deps);
     expect(res.status).toBe(404);

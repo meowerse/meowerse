@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import { cx } from "../lib/cx";
 export type StatusState = "ok" | "wait" | "fail" | "info";
-const TAG: Record<StatusState, string> = { ok: "[ ok ]", wait: "[wait]", fail: "[fail]", info: "[info]" };
+// Exported so DOM code that keeps a server-rendered StatusLine in sync without React
+// (apps/web/src/lib/status-dom.ts) imports this tag map instead of copying it.
+export const STATUS_TAGS: Record<StatusState, string> = { ok: "[ ok ]", wait: "[wait]", fail: "[fail]", info: "[info]" };
+const TAG = STATUS_TAGS;
 export function StatusLine({ state, children, live = false, action, className }:
   { state: StatusState; children: ReactNode; live?: boolean; action?: ReactNode; className?: string }) {
   const role = state === "fail" ? "alert" : live ? "status" : undefined;
