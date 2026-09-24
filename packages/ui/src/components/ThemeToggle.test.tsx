@@ -9,28 +9,27 @@ describe("ThemeToggle", () => {
   it("toggles the document theme on click", async () => {
     localStorage.setItem("mw-theme", "light");
     render(<ThemeToggle />);
-    await userEvent.click(screen.getByRole("button", { name: /theme/i }));
+    await userEvent.click(screen.getByRole("button", { name: "switch to dark theme" }));
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("mounts showing 'switch to light' state with no stored choice and non-light matchMedia", () => {
+  it("mounts showing 'switch to light theme' with no stored choice and non-light matchMedia", () => {
     localStorage.clear();
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
     render(<ThemeToggle />);
-    // When dark=true, shows sun icon (to switch to light)
-    expect(screen.getByRole("button")).toHaveClass("mw-themetoggle");
-    vi.unstubAllGlobals();
+    // Verify aria-label and icon indicate dark state (sun icon to switch to light)
+    expect(screen.getByRole("button", { name: "switch to light theme" })).toBeInTheDocument();
+    expect(screen.getByRole("button").querySelector('[data-icon="sun"]')).toBeInTheDocument();
   });
 
-  it("shows 'switch to dark' state after effect with light system preference", async () => {
+  it("shows 'switch to dark theme' after effect with light system preference", async () => {
     localStorage.clear();
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(prefers-color-scheme: light)", media: q }));
     render(<ThemeToggle />);
-    // Initially mounts with dark=true (sun), but effect corrects to light preference
-    // After effect runs, dark=false (moon icon shown to switch to dark)
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(screen.getByRole("button")).toHaveClass("mw-themetoggle");
-    vi.unstubAllGlobals();
+    // After effect runs, should show light state (moon icon to switch to dark)
+    const button = await screen.findByRole("button", { name: "switch to dark theme" });
+    expect(button).toBeInTheDocument();
+    expect(button.querySelector('[data-icon="moon"]')).toBeInTheDocument();
   });
 
   afterEach(() => {
