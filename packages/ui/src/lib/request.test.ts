@@ -48,6 +48,29 @@ describe("request", () => {
     ac.abort();
     await expect(request("https://x", { signal: ac.signal })).resolves.toEqual({ ok: false, error: { kind: "network" } });
   });
+  it("caller cannot override credentials to omit", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(json({ a: 1 }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(request("https://x", { credentials: "omit" } as any)).resolves.toEqual({ ok: true, status: 200, data: { a: 1 } });
+    expect(spy.mock.calls[0]?.[1]).toMatchObject({ credentials: "include" });
+  });
+  it("caller abort mid-flight is reported as network and removes listener", async () => {
+    const ac = new AbortController();
+    const removeEventListenerSpy = vi.spyOn(AbortSignal.prototype, "removeEventListener");
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      ac.abort();
+      return Promise.reject(new DOMException("aborted", "AbortError"));
+    });
+    await expect(request("https://x", { signal: ac.signal })).resolves.toEqual({ ok: false, error: { kind: "network" } });
+    expect(removeEventListenerSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+  it("describeError maps backend error codes via copy parameter", () => {
+    const copy = { username_taken: "that username is taken." };
+    expect(describeError({ kind: "http", status: 400, body: { error: "username_taken" } }, copy)).toBe("that username is taken.");
+  });
+  it("describeError returns generic message without copy parameter for backend error codes", () => {
+    expect(describeError({ kind: "http", status: 400, body: { error: "username_taken" } })).toBe("that didn't work. try again.");
+  });
   it("describeError is plain language for every kind", () => {
     expect(describeError({ kind: "timeout" })).toBe("the server took too long to answer. try again.");
     expect(describeError({ kind: "network" })).toBe("can't reach the server. check your connection and try again.");
