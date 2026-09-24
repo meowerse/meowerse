@@ -7,38 +7,37 @@
 
 h1, h2, h3, h4 {
   margin: 0;
-  font-weight: 600;
+  font-weight: 700;
   line-height: var(--leading-tight);
-  letter-spacing: -0.012em;
-  color: var(--text-primary);
+  color: var(--c-fg);
   text-wrap: balance;
 }
-h1 { font-size: var(--text-2xl); letter-spacing: -0.022em; }
-h2 { font-size: var(--text-xl); }
-h3 { font-size: var(--text-lg); }
-h4 { font-size: var(--text-md); }
+h1 { font-size: clamp(var(--fs-6), 1.2rem + 2.6vw, var(--fs-7)); }
+h2 { font-size: clamp(var(--fs-5), 1rem + 1.6vw, var(--fs-6)); }
+h3 { font-size: var(--fs-5); }
+h4 { font-size: var(--fs-4); }
 
 p { margin: 0; line-height: var(--leading-normal); }
-strong, b { font-weight: 600; }
-small { font-size: var(--text-sm); }
+strong, b { font-weight: 700; }
+small { font-size: var(--fs-2); }
 
-a { color: var(--text-accent); text-decoration: none; }
+a { color: var(--c-accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 ul, ol { margin: 0; padding-left: 1.3rem; }
 li { margin: 0; }
-li::marker { color: var(--text-muted); }
+li::marker { color: var(--c-fg-subtle); }
 
-hr { border: none; border-top: 1px solid var(--border); margin: 0; }
+hr { border: none; border-top: 1px solid var(--c-line); margin: 0; }
 img, svg, video { max-width: 100%; height: auto; }
 
 /* inline code — a subtle chip that never blends into prose */
 :not(pre) > code, kbd, samp {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-s);
   padding: 0.08em 0.36em;
   overflow-wrap: anywhere;
 }
@@ -48,12 +47,12 @@ img, svg, video { max-width: 100%; height: auto; }
 pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--fs-2);
   line-height: 1.65;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-4);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-m);
+  padding: var(--sp-4);
   overflow-x: auto;
   max-width: 100%;
 }
