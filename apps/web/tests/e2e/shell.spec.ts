@@ -1,20 +1,16 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./fixtures";
+import { isCurrent } from "../../src/lib/nav-match";
 
-// site.ts can't be imported here: it pulls in @meowerse/ui/tokens.json, which Vite/Vitest load
-// fine but Node's native ESM loader (Playwright's test runner) rejects without an import
-// attribute. NAV is parsed straight from the source instead — still grounded in site.ts, not a
-// hand-maintained copy — and isCurrent is site.ts's own one-line prefix match (also covered by
-// site.test.ts).
+// site.ts itself can't be imported here: it pulls in @meowerse/ui/tokens.json, which Vite/Vitest
+// load fine but Node's native ESM loader (Playwright's test runner) rejects without an import
+// attribute. nav.json holds the same NAV data site.ts exports (plain {label, href, match} entries,
+// no imports), so it's read directly with JSON.parse — a full, strict parse that can't silently
+// drop a malformed or reshaped entry the way a regex scan over source text could. nav-match.ts has
+// zero imports, so it's safe to import directly (it's the same isCurrent site.ts re-exports).
 type NavLink = { label: string; href: string; match: string };
-function readNav(): NavLink[] {
-  const src = readFileSync(join(process.cwd(), "src/lib/site.ts"), "utf8");
-  const body = /export const NAV:[^=]*=\s*\[([\s\S]*?)\];/.exec(src)?.[1] ?? "";
-  return [...body.matchAll(/\{\s*label:\s*"([^"]+)",\s*href:\s*"([^"]+)",\s*match:\s*"([^"]+)"\s*\}/g)]
-    .map((m) => ({ label: m[1]!, href: m[2]!, match: m[3]! }));
-}
-const isCurrent = (pathname: string, match: string): boolean => pathname.startsWith(match);
+const readNav = (): NavLink[] => JSON.parse(readFileSync(join(process.cwd(), "src/lib/nav.json"), "utf8"));
 
 test("skip link, main landmark, theme button that persists", async ({ page }) => {
   await page.goto("/");
@@ -47,7 +43,9 @@ test("nav marks the current section per site.ts NAV, and no other link", async (
   test.skip(info.project.name !== "desktop", "aria-current doesn't depend on the viewport");
   await page.goto("/");
   const NAV = readNav();
-  expect(NAV.length).toBeGreaterThan(0); // guards against this test silently checking nothing
+  // Pins the exact entries (not just "> 0"): a dropped, added, or reordered nav.json entry fails
+  // this line loudly instead of the loop below silently checking fewer links than site.ts renders.
+  expect(NAV.map((l) => l.label)).toEqual(["projects"]);
   for (const link of NAV) {
     const loc = page.locator(`.site-nav a[href="${link.href}"]`);
     if (isCurrent("/", link.match)) await expect(loc, link.label).toHaveAttribute("aria-current", "page");

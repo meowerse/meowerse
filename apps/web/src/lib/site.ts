@@ -1,4 +1,6 @@
 import tokens from "@meowerse/ui/tokens.json";
+import navData from "./nav.json";
+import { isCurrent } from "./nav-match";
 
 export const SITE = {
   url: "https://meow.alxnko.dev/",
@@ -12,16 +14,17 @@ export const SITE = {
 export type NavLink = { label: string; href: string; match: string };
 // C3 (pre-flight ruling): /ui/ doesn't exist as a page until T7 builds it, so its NAV entry is added
 // there, not here. The link checker stays strict, so no link to a page that doesn't exist yet ships.
-export const NAV: readonly NavLink[] = [
-  { label: "projects", href: "/#projects", match: "/p/" },
-];
+// NAV's data lives in ./nav.json (plain {label, href, match} entries, no imports) so
+// tests/e2e/shell.spec.ts can read it with JSON.parse and assert aria-current against the exact
+// same entries this exports — not a hand-maintained copy that could silently drift.
+export const NAV: readonly NavLink[] = navData as readonly NavLink[];
 
 // C3: same reasoning — "ui docs" (/ui/) and "playground" (/ui/playground/) are added by T7 and T10.
 export const FOOTER_LINKS = [
   { label: "projects", href: "/#projects" },
 ];
 
-export const isCurrent = (pathname: string, match: string): boolean => pathname.startsWith(match);
+export { isCurrent };
 
 /** Another origin (mailto: is not "external": it never gets a target). */
 export function isExternal(href: string): boolean {
