@@ -6,8 +6,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=src/assets/fonts
 pyftsubset node_modules/@fontsource/vt323/files/vt323-latin-400-normal.woff2 \
-  --text='meowrsngaui_' --flavor=woff2 --layout-features='' --no-hinting --desubroutinize \
+  --text='meowerse_ meowsenger_ auth_ ui_' --flavor=woff2 --layout-features='' --no-hinting --desubroutinize \
   --name-IDs='' --output-file=$OUT/vt323-marks.woff2
+# Record the glyphs actually present in the subsetted font's cmap, so a test can guard against a
+# future --text edit silently dropping a character the wordmarks need.
+python3 -c "
+from fontTools.ttLib import TTFont
+f = TTFont('$OUT/vt323-marks.woff2')
+chars = sorted(chr(c) for c in f.getBestCmap().keys())
+open('$OUT/vt323-marks.txt', 'w').write(''.join(chars))
+"
 SRC=${JBM_TTF:-/var/tmp/jbm/JetBrainsMono-Regular.ttf}
 if [ ! -f "$SRC" ]; then
   mkdir -p "$(dirname "$SRC")"
