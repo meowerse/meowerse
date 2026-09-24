@@ -29,24 +29,27 @@ export const projectSchema = z.strictObject({
 export type Project = z.infer<typeof projectSchema>;
 export type ProjectStatus = Project["status"];
 
-// B13: no network, Tailscale, IP or pairing details on any page; no real name or employer on alxnko.dev.
+// B13: no network, Tailscale, IP or pairing details on any page; the real name never surfaces on
+// any page (owner priority); the employer/company/tech-lead framing is barred only on alxnko-dev,
+// the one page personal enough to invite it in the first place.
 const EVERYWHERE: readonly RegExp[] = [
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/, /tailscale/i, /\bderp\b/i, /\bmtu\b/i, /\bpair(?:ing|ed|s)?\b/i,
   /\bport\s*\d+/i, /\blan\b/i, /\bvpn\b/i, /wireguard/i, /\baws\b|eu-west|ireland/i, /\.internal\b|\.local\b/i,
   /\bsecret\b|password=|token=/i,
 ];
-const ALXNKO_DEV: readonly RegExp[] = [
-  /neko|nyrko/i, /tech lead|company|employer|linkedin|kyrgyz/i,
-  // the real name transliterated back into Cyrillic must never surface either (owner priority)
-  /нырко/i, /александр/i,
+// The real name, Latin or Cyrillic, must never be visible on any project page, not only alxnko-dev.
+const REAL_NAME: readonly RegExp[] = [
+  /neko|nyrko/i, /aleksandr|alexander/i, /нырко/i, /александр/i,
 ];
+// Only alxnko-dev is personal enough to invite an employer/company framing in the first place.
+const ALXNKO_DEV_ONLY: readonly RegExp[] = [/tech lead|company|employer|linkedin|kyrgyz/i];
 
 const strings = (v: unknown): string[] =>
   typeof v === "string" ? [v] : Array.isArray(v) ? v.flatMap(strings) : v && typeof v === "object" ? Object.values(v).flatMap(strings) : [];
 
 /** Every forbidden pattern found in a project's copy, as "pattern in: text" lines. */
 export function publicFactProblems(slug: string, p: Project): string[] {
-  const rules = slug === "alxnko-dev" ? [...EVERYWHERE, ...ALXNKO_DEV] : EVERYWHERE;
+  const rules = slug === "alxnko-dev" ? [...EVERYWHERE, ...REAL_NAME, ...ALXNKO_DEV_ONLY] : [...EVERYWHERE, ...REAL_NAME];
   const text = strings(p);
   return rules.flatMap((re) => text.filter((t) => re.test(t)).map((t) => `${re} in: ${t}`));
 }

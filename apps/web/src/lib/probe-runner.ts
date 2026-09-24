@@ -1,5 +1,5 @@
 // Drives every [data-probe] row on a page (ProjectStatus.astro) and the [data-probe-retry] buttons:
-// a visible wait, a 5 s timeout, plain results, and a retry that is disabled with its reason while busy (B9).
+// a visible wait, a 5 s timeout, plain results, and a retry that reads busy while it runs (B9).
 import { describeProbe, probe, PROBE_TIMEOUT_MS } from "./probe";
 import { setStatus } from "./status-dom";
 
@@ -15,7 +15,12 @@ export function runProbes(doc: Document = document, opts: Opts = {}): Promise<vo
   const busy = (on: boolean) => {
     for (const b of retry) {
       b.hidden = false;
-      b.disabled = on;
+      // aria-disabled, not the disabled attribute: a real `disabled` would drop keyboard focus from
+      // a button the user just clicked, the moment the run starts. The click handler below still
+      // ignores clicks while busy (the `running` guard, not this attribute), so this only needs to
+      // announce and look disabled, not actually block input.
+      if (on) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
       b.textContent = on ? "checking…" : "check again";
       if (on) b.setAttribute("aria-busy", "true");
       else b.removeAttribute("aria-busy");

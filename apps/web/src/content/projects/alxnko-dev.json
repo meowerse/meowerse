@@ -11,7 +11,7 @@
   "how": [
     "Static Astro pages with vanilla TypeScript: the terminal and the contacts work with no 3D and no network.",
     "A small script decides before the first paint whether the device can take 3D; three.js then loads as its own chunk.",
-    "The desk is modelled and lit in Blender and shipped as one compressed glTF file.",
+    "The desk is a compressed glTF model with baked day/night lightmaps.",
     "A strict hash-based Content Security Policy with Trusted Types, and no third-party scripts."
   ],
   "diagram": {

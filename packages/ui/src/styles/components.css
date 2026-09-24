@@ -8,21 +8,26 @@
 
 .mw-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2); font: 500 var(--fs-3)/1 var(--font-mono); border-radius: var(--r-m); border: 1px solid transparent; cursor: pointer; transition: background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease); }
 @media (prefers-reduced-motion: no-preference) {
-  .mw-btn:not(:disabled):active { transform: scale(.98); }
+  .mw-btn:not(:disabled):not([aria-disabled="true"]):active { transform: scale(.98); }
 }
 .mw-btn:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
+/* [aria-disabled="true"] looks and behaves like :disabled (opacity, no hover/press feedback) but
+   stays focusable and keyboard-operable: a control that goes busy while it still holds focus (a
+   probe retry button, say) must not lose focus the way a real `disabled` attribute would (B9/B26).
+   Same technique as .mw-prompt__send[aria-disabled="true"] below. */
+.mw-btn[aria-disabled="true"] { opacity: var(--disabled-opacity); cursor: not-allowed; }
 .mw-btn--md { min-height: var(--control-height); padding: 0 var(--sp-4); }
 .mw-btn--sm { min-height: 36px; min-width: 36px; padding: 0 var(--sp-3); font-size: var(--fs-2); }
 /* a 36px small button still gets a 44x44 hit area */
 .mw-btn--sm::after { content: ""; position: absolute; inset: -4px; }
 .mw-btn--primary { background: var(--c-accent-fill); color: var(--c-on-accent); }
-.mw-btn--primary:not(:disabled):hover { background: color-mix(in srgb, var(--c-accent-fill) 88%, var(--c-fg)); }
+.mw-btn--primary:not(:disabled):not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--c-accent-fill) 88%, var(--c-fg)); }
 .mw-btn--secondary { background: transparent; color: var(--c-fg); border-color: var(--c-line-strong); }
-.mw-btn--secondary:not(:disabled):hover { background: var(--c-surface); }
+.mw-btn--secondary:not(:disabled):not([aria-disabled="true"]):hover { background: var(--c-surface); }
 .mw-btn--ghost { background: transparent; color: var(--c-fg-muted); }
-.mw-btn--ghost:not(:disabled):hover { background: var(--c-surface); color: var(--c-fg); }
+.mw-btn--ghost:not(:disabled):not([aria-disabled="true"]):hover { background: var(--c-surface); color: var(--c-fg); }
 .mw-btn--danger { background: var(--c-danger); color: var(--c-on-danger); }
-.mw-btn--danger:not(:disabled):hover { background: color-mix(in srgb, var(--c-danger) 88%, var(--c-fg)); }
+.mw-btn--danger:not(:disabled):not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--c-danger) 88%, var(--c-fg)); }
 
 .mw-field { display: flex; flex-direction: column; gap: var(--sp-1); }
 .mw-field > label { font-size: var(--fs-2); color: var(--c-fg-muted); }

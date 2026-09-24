@@ -1,5 +1,10 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* `display: inline-flex`/`flex` on .mw-btn and other components overrides the browser's default
+   [hidden] rule (its specificity is only a plain type selector), so a "hidden" control would still
+   show and do nothing before JS runs or with JS off (B9). One global rule wins over any component
+   class, whatever display value it sets. */
+[hidden] { display: none !important; }
 body {
   font-family: var(--font-mono);
   font-size: var(--fs-3);

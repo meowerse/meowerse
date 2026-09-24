@@ -32,4 +32,22 @@ describe("project content (B11, B13)", () => {
     const base = load("alxnko-dev.json");
     expect(publicFactProblems("alxnko-dev", { ...base, what: ["Александр — тот, кто это сделал."] })).toHaveLength(1);
   });
+  it("the guard catches the real first name in Latin — 'Alexander' and 'Aleksandr'", () => {
+    const base = load("alxnko-dev.json");
+    expect(publicFactProblems("alxnko-dev", { ...base, what: ["Built by Alexander in his spare time."] })).toHaveLength(1);
+    expect(publicFactProblems("alxnko-dev", { ...base, what: ["Built by Aleksandr in his spare time."] })).toHaveLength(1);
+  });
+  it("the real-name guard applies to every project page, not only alxnko-dev", () => {
+    for (const f of files) {
+      const slug = f.replace(/\.json$/, "");
+      const base = load(f);
+      // "tech lead"/"company"/etc. never appear, so exactly the one real-name pattern (/neko|nyrko/i)
+      // fires — on every page, including ones the employer-only rules don't reach.
+      expect(publicFactProblems(slug, { ...base, summary: "Built by Alex Neko in his spare time." })).toHaveLength(1);
+    }
+  });
+  it("the employer/company framing is barred only on alxnko-dev, not on every page", () => {
+    expect(publicFactProblems("alxnko-dev", { ...load("alxnko-dev.json"), summary: "Built at a company." })).toHaveLength(1);
+    expect(publicFactProblems("moonmeow", { ...load("moonmeow.json"), summary: "Built at a company." })).toEqual([]);
+  });
 });

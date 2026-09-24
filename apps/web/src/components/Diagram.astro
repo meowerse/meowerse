@@ -1,6 +1,14 @@
 ---
 // A small "how it works" diagram (spec §5.1): a vertical chain of boxes, drawn with token classes so it
 // reads in both themes; the steps are also a list for screen readers.
+//
+// Accessible name/description: the svg is the one AT-facing source for both the label (its <title>,
+// via aria-labelledby) and the per-step detail (the <ol> below, via aria-describedby). Per the
+// accessible name/description computation, an aria-labelledby/aria-describedby reference still
+// resolves into a hidden subtree — so the <ol> and the <figcaption> (which repeats the same label
+// text for sighted users) are both aria-hidden. That stops a screen reader from reading the label,
+// then the steps, a second time as ordinary page content right after the image — sighted users still
+// see the caption; aria-hidden only removes it from the accessibility tree, not from the screen.
 interface Props { id: string; label: string; steps: { title: string; note: string }[] }
 const { id, label, steps } = Astro.props;
 const W = 320, BOX = 56, GAP = 28, X = 16, cx = W / 2;
@@ -24,6 +32,6 @@ const H = steps.length * BOX + (steps.length - 1) * GAP + 2;
       );
     })}
   </svg>
-  <ol id={`${id}-steps`} class="sr-only">{steps.map((s) => <li>{s.title}: {s.note}</li>)}</ol>
-  <figcaption class="diagram__caption">{label}</figcaption>
+  <ol id={`${id}-steps`} class="sr-only" aria-hidden="true">{steps.map((s) => <li>{s.title}: {s.note}</li>)}</ol>
+  <figcaption class="diagram__caption" aria-hidden="true">{label}</figcaption>
 </figure>

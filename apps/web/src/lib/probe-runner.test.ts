@@ -33,14 +33,17 @@ describe("runProbes", () => {
     const done = runProbes(document, { fetchImpl: fetchImpl as unknown as typeof fetch });
     expect(p.text(0)).toBe("auth — checking…");
     expect(p.retry.hidden).toBe(false);
-    expect(p.retry.disabled).toBe(true);
+    // aria-disabled, not the disabled attribute: a real `disabled` would drop focus from a button
+    // the user just clicked, the moment it goes busy (B9/B26 — the control must stay operable).
+    expect(p.retry.disabled).toBe(false);
+    expect(p.retry.getAttribute("aria-disabled")).toBe("true");
     expect(p.retry.textContent).toBe("checking…");
     expect(p.retry.getAttribute("aria-busy")).toBe("true");
     release();
     await done;
     expect(p.text(0)).toMatch(/^auth — up · \d+ ms$/);
     expect(p.text(1)).toBe("chat — down · answered 500");
-    expect(p.retry.disabled).toBe(false);
+    expect(p.retry.hasAttribute("aria-disabled")).toBe(false);
     expect(p.retry.textContent).toBe("check again");
     expect(p.retry.hasAttribute("aria-busy")).toBe(false);
   });
@@ -50,8 +53,20 @@ describe("runProbes", () => {
     await runProbes(document, { fetchImpl: fetchImpl as unknown as typeof fetch });
     p.retry.click();
     p.retry.click();
-    await vi.waitFor(() => expect(p.retry.disabled).toBe(false));
+    await vi.waitFor(() => expect(p.retry.hasAttribute("aria-disabled")).toBe(false));
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+  it("a click during a run doesn't lose the button's native disabled state or its focusability", async () => {
+    const p = page();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fetchImpl = vi.fn(async () => { await gate; return { ok: true, status: 200, body: null } as unknown as Response; });
+    p.retry.focus();
+    const done = runProbes(document, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(p.retry.disabled).toBe(false); // never the real attribute — focus can't be dropped by it
+    expect(document.activeElement).toBe(p.retry);
+    release();
+    await done;
   });
   it("re-checks on a bfcache restore when watching", async () => {
     page();

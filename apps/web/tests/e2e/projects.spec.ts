@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, PROBED } from "./fixtures";
 
 const SLUGS = ["auth", "meowsenger", "ui", "moonmeow", "sunmeow", "alxnko-dev"];
 
@@ -18,36 +18,66 @@ test("six project pages: summary, what, how + diagram, facts, links, a resolved 
 
 // C6: the ruling adds this retry button — the brief's ProjectStatus.astro omitted it, but
 // probe-runner.ts (built in T4a) always assumes it exists to drive a retry.
-test("check again re-probes, and a second click while it's running is ignored", async ({ page }) => {
-  const calls: string[] = [];
-  page.on("request", (req) => { if (/^https:\/\/auth\.alxnko\.dev\//.test(req.url())) calls.push(req.url()); });
+test("check again re-probes, keeps keyboard focus while busy, and ignores a second click while running", async ({ page }) => {
   await page.goto("/p/auth/");
   await expect(page.locator(".mw-status__tag")).toHaveText("[ ok ]", { timeout: 8000 });
-  const afterLoad = calls.length;
   const retry = page.locator("[data-probe-retry]");
   await expect(retry).toBeVisible();
   await expect(retry).toHaveText("check again");
   const box = await retry.boundingBox();
   expect(box?.width, "retry button width").toBeGreaterThanOrEqual(44);
   expect(box?.height, "retry button height").toBeGreaterThanOrEqual(44);
-  // Two clicks fired back-to-back in the page (not through Playwright's actionability wait, which
-  // would itself wait for the button to re-enable): the runner must ignore the second one.
-  await page.evaluate(() => {
-    const btn = document.querySelector("[data-probe-retry]") as HTMLButtonElement;
-    btn.click();
-    btn.click();
+
+  // A slow route holds the busy state open long enough to observe it — the fast auto-stub from
+  // stubProbes would resolve before an assertion could ever catch the mid-flight state.
+  let requests = 0;
+  await page.route(PROBED, async (route) => {
+    requests++;
+    await new Promise((r) => setTimeout(r, 250));
+    await route.fulfill({ status: 200, body: "{}", headers: { "access-control-allow-origin": "*", "content-type": "application/json" } });
   });
-  await expect(retry).toBeEnabled({ timeout: 8000 });
+
+  // A real click (mouse-driven, through Playwright's actionability checks): it both starts the run
+  // and, like any real button click, leaves the button focused.
+  await retry.click();
+  // aria-disabled, not the disabled attribute: Important #1's fix means the button never becomes
+  // natively disabled, so clicking it while busy can't drop focus the way `disabled` would (B9/B26).
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await expect(retry).toBeFocused();
+  // A second, immediate click while busy: dispatched in-page (bypassing Playwright's own actionability
+  // wait — hover + frame-stability checks — which has enough real latency here that a second *real*
+  // Playwright click could land after the first run already finished, no longer testing anything).
+  // This mirrors the unit test's `retry.click(); retry.click();` and the user gesture it stands in for.
+  await page.evaluate(() => (document.querySelector("[data-probe-retry]") as HTMLButtonElement).click());
+  await expect(retry).toBeFocused(); // the programmatic click must not have moved focus away
+  await expect(retry).not.toHaveAttribute("aria-disabled", "true", { timeout: 8000 });
   await expect(retry).toHaveText("check again");
-  expect(calls.length, "exactly one extra probe from the two clicks").toBe(afterLoad + 1);
+  expect(requests, "exactly one extra probe from the two clicks").toBe(1);
 });
 
-test("the diagram keeps at least 3:1 contrast against its own background in both themes", async ({ page }) => {
+// Important #1: [hidden] didn't actually hide .mw-btn (its `display: inline-flex` won on specificity),
+// so an enabled, do-nothing button showed before JS ran and stayed that way entirely with JS off.
+test.describe("without JavaScript", () => {
+  test.use({ javaScriptEnabled: false });
+  test("the retry button stays hidden, and the noscript message explains why", async ({ page }) => {
+    await page.goto("/p/auth/");
+    await expect(page.locator(".mw-status__tag")).toHaveText("[wait]"); // the server-rendered state, untouched
+    await expect(page.locator("[data-probe-retry]")).toBeHidden();
+    await expect(page.locator(".probe .mw-muted")).toContainText("live status needs JavaScript");
+  });
+});
+
+test("the diagram keeps its contrast against its own background in both themes", async ({ page }) => {
   for (const theme of ["dark", "light"] as const) {
     await page.addInitScript((t) => localStorage.setItem("mw-theme", t), theme);
     await page.goto("/p/auth/");
+    // Minor #5: prove the theme actually took, so a silent fallback to one theme can't make this
+    // test pass in both loop iterations for the wrong reason.
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     const ratios = await page.locator(".dg-box").first().evaluate((box) => {
       const title = box.parentElement!.querySelector(".dg-title")!;
+      const note = box.parentElement!.querySelector(".dg-note")!;
+      const arrow = box.parentElement!.querySelector(".dg-arrow"); // the first step always has one (only the last step doesn't)
       const toRgb = (s: string) => (s.match(/[\d.]+/g) ?? ["0", "0", "0"]).slice(0, 3).map(Number);
       const linear = (c: number) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
       const luminance = ([r, g, b]: number[]) => 0.2126 * linear(r!) + 0.7152 * linear(g!) + 0.0722 * linear(b!);
@@ -57,12 +87,21 @@ test("the diagram keeps at least 3:1 contrast against its own background in both
       };
       const boxFill = toRgb(getComputedStyle(box).fill);
       const titleFill = toRgb(getComputedStyle(title).fill);
+      const noteFill = toRgb(getComputedStyle(note).fill);
       const stroke = toRgb(getComputedStyle(box).stroke);
       const bodyBg = toRgb(getComputedStyle(document.body).backgroundColor);
-      return { textOnBox: contrast(titleFill, boxFill), strokeOnPage: contrast(stroke, bodyBg) };
+      return {
+        titleOnBox: contrast(titleFill, boxFill),
+        noteOnBox: contrast(noteFill, boxFill),
+        strokeOnPage: contrast(stroke, bodyBg),
+        arrowOnPage: arrow ? contrast(toRgb(getComputedStyle(arrow).stroke), bodyBg) : null,
+      };
     });
-    expect(ratios.textOnBox, `${theme}: dg-title text vs its box background`).toBeGreaterThanOrEqual(3);
+    expect(ratios.titleOnBox, `${theme}: dg-title text vs its box background`).toBeGreaterThanOrEqual(3);
+    expect(ratios.noteOnBox, `${theme}: dg-note text vs its box background`).toBeGreaterThanOrEqual(4.5);
     expect(ratios.strokeOnPage, `${theme}: dg-box stroke vs the page background`).toBeGreaterThanOrEqual(3);
+    expect(ratios.arrowOnPage, `${theme}: dg-arrow vs the page background`).not.toBeNull();
+    expect(ratios.arrowOnPage!, `${theme}: dg-arrow vs the page background`).toBeGreaterThanOrEqual(3);
   }
 });
 
