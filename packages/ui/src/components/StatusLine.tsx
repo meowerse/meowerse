@@ -8,6 +8,7 @@ export function StatusLine({ state, children, live = false, action, className }:
   return (
     <p className={cx("mw-status", `mw-status--${state}`, className)} role={role}>
       <span className="mw-status__tag" aria-hidden="true">{TAG[state]}</span>
+      <span className="sr-only">{state === "ok" ? "ok" : state === "wait" ? "working" : state === "fail" ? "error" : "info"}: </span>
       <span className="mw-status__text">{children}</span>
       {action && <span className="mw-status__action">{action}</span>}
     </p>

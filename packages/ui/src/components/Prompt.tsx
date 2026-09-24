@@ -1,4 +1,4 @@
-import { forwardRef, useId, useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { forwardRef, useCallback, useId, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { cx } from "../lib/cx";
 import { Icon } from "./Icon";
 
@@ -21,7 +21,7 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
     if (!el) return;
     el.style.height = "auto";
     const lh = parseFloat(getComputedStyle(el).lineHeight) || 24;
-    el.style.height = `${Math.min(el.scrollHeight, lh * maxRows + 16)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, lh * maxRows + 20)}px`;
   }, [value, maxRows]);
 
   const send = () => { if (!empty) onSubmit(value.trim()); };
@@ -33,12 +33,18 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
     send();
   };
 
+  const setRefs = useCallback((el: HTMLTextAreaElement | null) => {
+    inner.current = el;
+    if (typeof ref === "function") ref(el);
+    else if (ref) ref.current = el;
+  }, [ref]);
+
   return (
     <div className={cx("mw-prompt", busy && "is-busy", className)}>
       <span className="mw-prompt__glyph" aria-hidden="true">›</span>
       <label htmlFor={id} className="sr-only">{label}</label>
       <textarea id={id} rows={1} value={value} placeholder={placeholder ?? label}
-        ref={(el) => { inner.current = el; if (typeof ref === "function") ref(el); else if (ref) ref.current = el; }}
+        ref={setRefs}
         onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown}
         enterKeyHint="send" autoComplete="off" aria-busy={busy || undefined} />
       <button type="button" className="mw-prompt__send" aria-label={sendLabel}

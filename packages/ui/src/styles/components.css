@@ -123,6 +123,7 @@
 
 /* ---- tty family: shares --control-height, --c-line-input, --r-m, focus, disabled with Field/Button ---- */
 .mw-wordmark { font-family: var(--font-mark); font-size: 1.75rem; line-height: 1; color: var(--c-fg); text-decoration: none; white-space: nowrap; display: inline-flex; align-items: center; }
+a.mw-wordmark { min-height: var(--control-height); align-items: center; }
 a.mw-wordmark:hover { color: var(--c-accent); text-decoration: none; }
 .mw-cursor { display: inline-block; width: .5em; height: .9em; margin-left: .06em; background: var(--c-accent-fill); vertical-align: -.08em; }
 .mw-cursor--blink { animation: mw-blink 1.06s steps(1) infinite; }
@@ -144,7 +145,5 @@ a.mw-wordmark:hover { color: var(--c-accent); text-decoration: none; }
 .mw-prompt:focus-within .mw-prompt__glyph { color: var(--c-accent); }
 .mw-prompt textarea { flex: 1; min-height: var(--control-height); resize: none; overflow-y: auto; font: inherit; font-size: var(--fs-4); line-height: 24px; padding: 9px 12px 9px 32px; color: var(--c-fg); background: var(--c-bg-elev); border: 1px solid var(--c-line-input); border-radius: var(--r-m); }
 .mw-prompt textarea::placeholder { color: var(--c-fg-subtle); }
-.mw-prompt textarea:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
 .mw-prompt__send { flex: none; width: var(--control-height); height: var(--control-height); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-m); border: 0; background: var(--c-accent-fill); color: var(--c-on-accent); cursor: pointer; }
 .mw-prompt__send[aria-disabled="true"] { opacity: var(--disabled-opacity); cursor: not-allowed; }
-.mw-prompt.is-busy .mw-prompt__send { opacity: .75; }

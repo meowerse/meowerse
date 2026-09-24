@@ -48,4 +48,47 @@ describe("Prompt", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox")).toHaveValue("a\nb");
   });
+
+  function stubMatchMedia(matches: boolean) {
+    return vi.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  it("enterSends=auto with a coarse pointer inserts a newline; the button still sends", async () => {
+    const onSubmit = vi.fn();
+    const original = window.matchMedia;
+    window.matchMedia = stubMatchMedia(true);
+    try {
+      render(<Harness onSubmit={onSubmit} enterSends="auto" />);
+      const box = screen.getByRole("textbox");
+      await userEvent.type(box, "a{Enter}b");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(box).toHaveValue("a\nb");
+      await userEvent.click(screen.getByRole("button", { name: "send" }));
+      expect(onSubmit).toHaveBeenCalledWith("a\nb");
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it("enterSends=auto with a fine pointer sends on Enter", async () => {
+    const onSubmit = vi.fn();
+    const original = window.matchMedia;
+    window.matchMedia = stubMatchMedia(false);
+    try {
+      render(<Harness onSubmit={onSubmit} enterSends="auto" />);
+      await userEvent.type(screen.getByRole("textbox"), "hi{Enter}");
+      expect(onSubmit).toHaveBeenCalledWith("hi");
+    } finally {
+      window.matchMedia = original;
+    }
+  });
 });

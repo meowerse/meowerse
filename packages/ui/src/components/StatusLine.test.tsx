@@ -19,4 +19,12 @@ describe("StatusLine", () => {
     render(<StatusLine state="fail" action={<button>retry</button>}>x</StatusLine>);
     expect(screen.getByRole("button", { name: "retry" })).toBeInTheDocument();
   });
+  it.each([["ok", "ok"], ["wait", "working"], ["fail", "error"], ["info", "info"]] as const)(
+    "%s exposes the state word ('%s') to assistive tech, not just the aria-hidden tag", (state, word) => {
+      const { container } = render(<StatusLine state={state}>connected</StatusLine>);
+      const srWord = container.querySelector(".mw-status > .sr-only");
+      expect(srWord).not.toBeNull();
+      expect(srWord).toHaveTextContent(`${word}:`);
+      expect(srWord).not.toHaveAttribute("aria-hidden");
+    });
 });
