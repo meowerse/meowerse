@@ -35,4 +35,13 @@ describe("ConfirmDialog", () => {
       title="delete app" description="d" confirmLabel="delete" confirmPhrase="meowsenger" />);
     expect(screen.getByRole("button", { name: "delete" })).toBeDisabled();
   });
+  it("shows the phrase exactly (case kept) and accepts it", async () => {
+    const onConfirm = vi.fn();
+    render(<ConfirmDialog open onCancel={() => {}} onConfirm={onConfirm} title="delete app"
+      description="d" confirmLabel="delete" confirmPhrase="MyApp" />);
+    expect(screen.getByText("MyApp", { selector: "code" })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox"), "MyApp");
+    await userEvent.click(screen.getByRole("button", { name: "delete" }));
+    expect(onConfirm).toHaveBeenCalled();
+  });
 });

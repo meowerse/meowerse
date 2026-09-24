@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import * as React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Modal } from "./Modal";
 
@@ -36,5 +37,34 @@ describe("Modal", () => {
     expect(first).toHaveFocus();
     await userEvent.tab({ shift: true });
     expect(last).toHaveFocus();
+  });
+  it("skips disabled controls when wrapping Tab (ConfirmDialog armed state)", async () => {
+    render(
+      <Modal open onClose={() => {}} title="t">
+        <input aria-label="phrase" />
+        <button>cancel</button>
+        <button disabled>delete</button>
+      </Modal>,
+    );
+    screen.getByRole("button", { name: "cancel" }).focus();
+    await userEvent.tab();
+    expect(screen.getByLabelText("phrase")).toHaveFocus();
+  });
+  it("a parent re-render with a new onClose does not steal focus from the field", async () => {
+    function Parent() {
+      const [v, setV] = React.useState("");
+      return (
+        <Modal open onClose={() => {}} title="t">
+          <button>first</button>
+          <input aria-label="name" value={v} onChange={(e) => setV(e.target.value)} />
+        </Modal>
+      );
+    }
+    render(<Parent />);
+    const input = screen.getByLabelText("name");
+    await userEvent.click(input);
+    await userEvent.type(input, "abc");
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("abc");
   });
 });
