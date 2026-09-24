@@ -28,7 +28,7 @@
     { "k": "package", "v": "@meowerse/ui, in the meowerse monorepo" },
     { "k": "components", "v": "React 19, typed with TypeScript" },
     { "k": "themes", "v": "dark (default) and light, following the system" },
-    { "k": "docs", "v": "meow.alxnko.dev/ui" }
+    { "k": "docs", "v": "meow.alxnko.dev/ui/" }
   ],
   "status": { "kind": "static", "state": "info", "text": "a library, not a service: it ships inside each app" },
   "links": [
