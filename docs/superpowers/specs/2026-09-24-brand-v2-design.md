@@ -34,6 +34,10 @@ compares the two (B5).
 | motion | ease `cubic-bezier(.16,1,.3,1)` · fast 120 · base 240 · slow 600 ms |
 | z | stage 0 · chrome 10 · dock 20 · sheet 30 · skip 100 |
 
+- Additions (B17): `ok`, `info`, `onDanger`, `dangerTint`, `surfaceRaised`, `lineInput` (≥ 3:1
+  against the background), `scrim`, `leading`, `controlHeight` 44, `disabledOpacity`, `z.toast`. They
+  are upstreamed to alxnko.dev `tokens.json` so the drift check stays green. ANSI colours are for dark
+  terminal glyphs only; `StatusLine` uses theme tokens.
 - The theme follows the system (dark by default), with a manual toggle stored per origin.
 - The current `--mw-*` / `--surface-*` / `--text-*` variables stay as aliases to the new tokens for
   one release, then are removed. The full mapping table comes from audit `web-and-ui` (§6).
@@ -119,7 +123,9 @@ never a code alone.
 - **meowsenger-web:**
   - a full restyle with the composer as a prompt (§7);
   - the current performance is the floor.
-- **Cleanup:** remove `apps/alxnko-dev` using the checklist from the audit.
+- **Legacy:** remove `apps/alxnko-dev` in sub-project 1 using the audit checklist (B15).
+- **web:** remove the token-in-page "add" demo. No write credential is ever shipped to a browser
+  (B16).
 
 ### 5.1 Project pages (B11)
 
@@ -173,11 +179,12 @@ meow.alxnko.dev/ui holds the public docs of `@meowerse/ui`, the system alxnko.de
 Order, one PR per sub-project, each merged with a merge commit and deployed with `just deploy-*` then
 verified live:
 
-1. DS v2 plus Cat3D
+1. DS v2 plus Cat3D, and retiring `apps/alxnko-dev` first, because its deploy script targets the
+   live alxnko.dev Pages project (B15)
 2. web (redesign, project pages, UI docs)
 3. auth-web
 4. meowsenger-web
-5. cleanup
+5. cleanup (leftover aliases, dead code)
 
 ## 6. Existing issues (B7)
 
