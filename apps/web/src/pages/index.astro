@@ -2,10 +2,10 @@
 // Home (spec §5 web, B4, B12a, B16; W-04): hero (wordmark + Cat3D), ls ~/services (live status,
 // shared probe runner), ls ~/projects (the six project cards). No React ships from this page.
 import { getCollection } from "astro:content";
-import { StatusLine, Wordmark } from "@meowerse/ui";
+import { Wordmark } from "@meowerse/ui";
 import { Cat3D } from "@meowerse/ui/cat3d";
 import BaseLayout from "../layouts/BaseLayout.astro";
-import { describeProbe } from "../lib/probe";
+import ProjectStatus from "../components/ProjectStatus.astro";
 import { isExternal, linkAttrs, SITE } from "../lib/site";
 
 const projects = (await getCollection("projects")).sort((a, b) => a.data.order - b.data.order);
@@ -29,15 +29,10 @@ const jsonLd = { "@context": "https://schema.org", "@type": "WebSite", name: SIT
     <h2 id="services-title" class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› ls ~/</span>services</h2>
     <ul class="services">
       {services.map((p) => {
-        const status = p.data.status;
-        if (status.kind !== "probe") return null;
-        const wait = describeProbe(p.data.name, "pending");
         const open = p.data.links[0]!.href;
         return (
           <li>
-            <div class="probe" data-probe data-name={p.data.name} data-url={status.url} data-method={status.method}>
-              <StatusLine state={wait.state} live children={wait.text} />
-            </div>
+            <ProjectStatus name={p.data.name} status={p.data.status} retry={false} />
             <span class="row-links">
               <a href={`/p/${p.id}/`}>about<span class="sr-only"> {p.data.name}</span></a>
               <a href={open} {...linkAttrs(open)}>open<span class="sr-only"> {p.data.name}</span>{isExternal(open) && <><span class="ext-mark" aria-hidden="true"> ↗</span><span class="sr-only"> (opens in a new tab)</span></>}</a>
@@ -63,13 +58,8 @@ const jsonLd = { "@context": "https://schema.org", "@type": "WebSite", name: SIT
     import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
     import { runProbes } from "../lib/probe-runner";
     void runProbes(document, { watch: true });
-    // decorative and lazy (spec §4): only after the page is idle, never competing with first paint.
-    // The idle callback alone can fire within a frame or two of navigation on an otherwise-quiet
-    // page (nothing else is competing for the main thread), so a small fixed grace period runs
-    // after it: real content and interaction get the whole first moment of the page to themselves
-    // before the decorative cat's own network fetch (renderer chunk + cat.bin) is allowed to start.
-    const start = () => setTimeout(() => attachAllCat3D(), 150);
-    if ("requestIdleCallback" in window) requestIdleCallback(start);
-    else setTimeout(start, 200);
+    // decorative and lazy (spec §4): only after the page is idle, never competing with first paint
+    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
+    else setTimeout(() => attachAllCat3D(), 200);
   </script>
 </BaseLayout>

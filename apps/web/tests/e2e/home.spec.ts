@@ -1,15 +1,26 @@
 import { test, expect, PROBED } from "./fixtures";
 
 test("hero: the wordmark is the heading, one green action, the cat's poster paints first", async ({ page }) => {
+  // Hold the lazy renderer's own network work (the renderer chunk + cat.bin) so the poster is
+  // deterministically still the only thing on screen while the assertions below run — no product
+  // code should ever carry a delay that exists only so a test can win a race (the fix this test
+  // replaces). Once released, both requests complete and the live canvas takes over.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  await page.route(/\/_astro\/(renderer\.[^/]+\.js|cat\.[^/]+\.bin)$/, async (route) => {
+    await gate;
+    await route.continue();
+  });
   await page.goto("/");
-  // Checked first, before anything else round-trips to the browser: the poster is what the very
-  // first paint shows (server-rendered <img>), and the lazy renderer only swaps it for the live
-  // canvas once idle — asserting this first is what "paints first" means, not an incidental order.
-  await expect(page.locator(".hero .mw-cat3d img")).toBeVisible();
-  await expect(page.locator(".hero .mw-cat3d")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator("h1")).toContainText("meowerse");
   await expect(page.locator("h1 .mw-wordmark")).toBeVisible();
   await expect(page.locator("main .mw-btn--primary")).toHaveCount(1);
+  await expect(page.locator(".hero .mw-cat3d img")).toBeVisible();
+  await expect(page.locator(".hero .mw-cat3d")).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator(".hero .mw-cat3d")).not.toHaveClass(/mw-cat3d--live/);
+  release();
+  await expect(page.locator(".hero .mw-cat3d")).toHaveClass(/mw-cat3d--live/);
+  await expect(page.locator(".hero .mw-cat3d canvas")).toBeVisible();
 });
 
 test("ls ~/services: both live services resolve; check again is busy while it runs", async ({ page }) => {
