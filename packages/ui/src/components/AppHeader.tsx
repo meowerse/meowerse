@@ -7,7 +7,8 @@ import { cx } from "../lib/cx";
 
 export function AppHeader({ session, className }: { session: Session; className?: string }) {
   const [open, setOpen] = useState(false);
-  const showNav = !session.loading;
+  const known = !session.loading && !("error" in session && session.error);
+  const showNav = true;
   return (
     <header className={cx("mw-header", className)}>
       <a className="mw-header__brand" href="/" aria-label="meowerse auth — home">
@@ -20,11 +21,15 @@ export function AppHeader({ session, className }: { session: Session; className?
               <a href="/about">about</a>
               <a href="/developers">developers</a>
               <a href="/docs">docs</a>
-              <a href="/login">log in</a>
-              <a href="/signup">sign up</a>
+              {known && (
+                <>
+                  <a href="/login">log in</a>
+                  <a href="/signup">sign up</a>
+                </>
+              )}
             </>
           )}
-          {showNav && session.authenticated && (
+          {!session.loading && session.authenticated && (
             <>
               <a href="/account">account</a>
               <a href="/developers">developers</a>
