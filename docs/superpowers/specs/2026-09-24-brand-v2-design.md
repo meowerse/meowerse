@@ -188,13 +188,45 @@ verified live:
 
 ## 6. Existing issues (B7)
 
-The audits live under `docs/superpowers/audits/2026-09-24-*.md`:
-- `auth-web` (A-xx)
-- `meowsenger-web` (M-xx)
-- `web-and-ui` (W-xx, U-xx, L-xx)
+Audits: `docs/superpowers/audits/2026-09-24-{auth-web,meowsenger-web,web-and-ui}.md`. Every finding ID
+is either fixed in the sub-project below or explicitly deferred in its PR with a reason. Each PR lists
+the IDs it closes.
 
-Every finding is either fixed in the sub-project named for it or explicitly deferred here with a
-reason. A per-finding table is added to this section once the audits are in.
+| Audit | Total | Critical/blocker | High | Medium | Low | Fixed in |
+|---|---|---|---|---|---|---|
+| web-and-ui (W, U, L) | 56 | 1 | 12 | 28 | 15 | U-xx, L-xx → 1 · W-xx → 2 |
+| auth-web (A) | 43 | 0 | 9 | 18 | 16 | 3 (except shared U-level causes → 1) |
+| meowsenger-web (M) | 49 | 5 | 12 | 22 | 10 | 4 (except shared causes → 1; server parts in `workers/meowsenger` are in the same PR) |
+
+Cross-cutting root causes, fixed once in sub-project 1:
+
+1. **Global `text-transform: lowercase`** (M-14, A-18, U-31). Fixed by B14.
+2. **`useSession` treats every failure as signed-out and never times out** (U-01, U-02, A-07, M-06).
+   Fixed by B18.
+3. **No shared request layer: silent failures, no timeouts, false success** (A-03..A-08, M-05..M-09).
+   Fixed by B18.
+4. **`Modal` focus trap leaks, and focus is stolen on re-render** (U-06, U-07, A-20).
+5. **Light focus ring at 1.29:1, danger button at 3.76:1, 15 px inputs** (U-09, U-10, A-19, A-21).
+   Fixed by the §2 tokens.
+
+App-specific highlights:
+- **meowsenger:** a client-id outbox with echo and idempotent sends, resend and history resync on
+  reconnect, and failed and retry states (M-01..M-04).
+- **auth:** Turnstile readiness (B19); buttons stay disabled through redirects; Telegram polling is
+  singleton and expires; `next=` is honoured (validated same-origin); consent shows the host (B20).
+- **web:** a read-only page (B16); legacy removal (B15); a CSP and Permissions-Policy.
+
+### 6.1 Owner decisions pending
+
+- **B21:** the username case policy.
+- **Cloudflare-injected scripts:**
+  - the privacy page says "no analytics" while Cloudflare Web Analytics is injected (and blocked by
+    the CSP, A-32);
+  - choose between turning the injection off in Cloudflare and keeping the copy, or allowing it and
+    updating the copy.
+  
+  Default: turn it off, so the copy stays true.
+- **`meow.alxnko.eu.org` redirect target.** Default: meow.alxnko.dev.
 
 ## 7. Terminal styling, per element (B8)
 
