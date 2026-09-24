@@ -28,6 +28,10 @@ lint-js:
 build:
     bun run build
 
+# Regenerate @meowerse/ui's tokens.gen.css from design/tokens.json.
+tokens:
+    bun run --filter @meowerse/ui tokens
+
 # Check @meowerse/ui tokens against the alxnko.dev repo (B5). Set ALXNKO_DEV_DIR if not a sibling checkout.
 tokens-drift:
     bun run --filter @meowerse/ui tokens:drift
