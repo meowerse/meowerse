@@ -15,11 +15,13 @@
     "tokens": "bun scripts/gen-tokens.ts",
     "tokens:check": "bun scripts/gen-tokens.ts --check"
   },
-  "peerDependencies": { "react": ">=19", "react-dom": ">=19" },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
   "dependencies": {
-    "@fontsource-variable/outfit": "^5.1.0",
-    "@fontsource/jetbrains-mono": "^5.1.0",
-    "@fontsource/bytesized": "^5.1.0"
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/vt323": "^5.3.0"
   },
   "devDependencies": {
     "@tabler/icons": "^3.24.0",

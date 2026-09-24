@@ -1,4 +1,14 @@
-@import "@fontsource-variable/outfit";
+/* JetBrains Mono 400/700: fontsource ships latin, latin-ext, cyrillic, greek… each with its own
+   unicode-range, so browsers download only what a page uses. */
 @import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
-@import "@fontsource/bytesized";
+@import "@fontsource/jetbrains-mono/700.css";
+/* arrows, maths, box drawing, blocks, shapes: not in the fontsource files */
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url("../assets/fonts/jetbrains-mono-symbols-400.woff2") format("woff2");
+  unicode-range: U+2190-21FF, U+2200-22FF, U+2500-259F, U+25A0-25FF;
+}
+@font-face {
+  font-family: "VT323 Mark"; font-style: normal; font-weight: 400; font-display: block;
+  src: url("../assets/fonts/vt323-marks.woff2") format("woff2");
+}
