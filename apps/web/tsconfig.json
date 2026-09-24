@@ -1,5 +1,9 @@
 {
   "extends": "astro/tsconfigs/strict",
-  "include": ["src", ".astro/types.d.ts", "astro.config.mjs", "vitest.config.ts"],
-  "exclude": ["dist", "coverage", "node_modules"]
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react"
+  },
+  "include": ["src", "scripts", "tests", ".astro/types.d.ts", "astro.config.mjs", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": ["dist", "coverage", "node_modules", "test-results"]
 }

@@ -15,13 +15,18 @@ export function ContactLinks({ contacts = DEFAULT_CONTACTS, className }:
   { contacts?: Contact[]; className?: string }) {
   return (
     <nav className={cx("mw-contacts", className)} aria-label="contact">
-      {contacts.map((c) => (
-        <a key={c.label} href={c.href} aria-label={c.label} className="mw-contacts__link"
-          target={c.href.startsWith("http") ? "_blank" : undefined}
-          rel={c.href.startsWith("http") ? "noreferrer noopener" : undefined}>
-          <Icon name={c.icon} size={19} />
-        </a>
-      ))}
+      {contacts.map((c) => {
+        const external = c.href.startsWith("http");
+        return (
+          <a key={c.label} href={c.href} className="mw-contacts__link"
+            target={external ? "_blank" : undefined}
+            rel={external ? "noreferrer noopener" : undefined}>
+            <Icon name={c.icon} size={19} />
+            {/* F9: an external contact link's accessible name says so, without adding visible text. */}
+            <span className="sr-only">{c.label}{external ? " (opens in a new tab)" : ""}</span>
+          </a>
+        );
+      })}
     </nav>
   );
 }

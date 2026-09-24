@@ -1,6 +1,10 @@
 {
   "name": "meowerse",
   "short_name": "meowerse",
+  "id": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "description": "Small, fast web apps by alxnko and the design system they share.",
   "icons": [
     { "src": "/icon-192.webp", "sizes": "192x192", "type": "image/webp" },
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
