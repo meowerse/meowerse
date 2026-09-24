@@ -19,7 +19,11 @@ export function AuthGate({ base, children, loginPath = "/login" }:
       <div className="mw-gate mw-gate--error">
         <p className="mw-status mw-status--fail" role="alert">
           <span className="mw-status__tag" aria-hidden="true">[fail]</span>
-          {s.error === "timeout" ? "the account service is taking too long." : "can't reach the account service."}
+          {s.error === "timeout"
+            ? "the account service is taking too long."
+            : s.error === "network"
+              ? "can't reach the account service."
+              : "the account service had a problem."}
         </p>
         <Button variant="secondary" onClick={s.retry}>try again</Button>
       </div>

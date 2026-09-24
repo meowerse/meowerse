@@ -34,6 +34,9 @@ describe("AppHeader", () => {
     expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
     rerender(<AppHeader session={{ loading: false, authenticated: false, error: "network" }} />);
     expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
+    expect(screen.getByRole("link", { name: "about" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "developers" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "docs" })).toBeInTheDocument();
     rerender(<AppHeader session={{ loading: false, authenticated: false }} />);
     expect(screen.getByRole("link", { name: "log in" })).toBeInTheDocument();
   });

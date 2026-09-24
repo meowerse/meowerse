@@ -14,7 +14,19 @@ type Known = Exclude<Resolved, { error: SessionError }>;
 const CACHE_KEY = "mw-session";
 const TTL = 15_000;
 export const SESSION_TIMEOUT_MS = 8_000;
+const LOADING: Session = { loading: true, authenticated: false };
+
 let inflight: Promise<Resolved> | null = null;
+// Every mounted useSession instance subscribes here (in its effect) and
+// unsubscribes on cleanup, so a resolved load — success, signed-out, error —
+// and a retry's loading state reach every island sharing the cache/inflight
+// fetch, not just the one that triggered it. Widened to `Session` (rather than
+// just `Resolved`) so the retry's loading broadcast rides the same channel.
+const subscribers = new Set<(d: Session) => void>();
+
+function broadcast(data: Session): void {
+  subscribers.forEach((fn) => fn(data));
+}
 
 function readCache(): Known | null {
   try {
@@ -43,7 +55,11 @@ export function clearSessionCache(): void {
 }
 
 // A back/forward-cache restore may show a page from before a sign-in or sign-out: re-check.
-if (typeof window !== "undefined") {
+// Guarded by a realm-level flag so re-evaluating this module (duplicate bundling, HMR) never
+// registers the listener twice.
+const realm = globalThis as typeof globalThis & { __mwSessionPageshow?: boolean };
+if (typeof window !== "undefined" && !realm.__mwSessionPageshow) {
+  realm.__mwSessionPageshow = true;
   window.addEventListener("pageshow", (e) => { if ((e as PageTransitionEvent).persisted) clearSessionCache(); });
 }
 
@@ -63,10 +79,22 @@ async function loadSession(base: string): Promise<Resolved> {
   return data;
 }
 
+/** Start (or join) the one shared load, and broadcast its result to every subscriber. */
+function runLoad(base: string): void {
+  if (inflight) return; // a load is already in flight — its resolution will broadcast to us too
+  inflight = loadSession(base);
+  inflight
+    .then((data) => broadcast(data))
+    .finally(() => { inflight = null; });
+}
+
 /**
  * Session for the header + guards. Reads a short-lived sessionStorage cache
  * synchronously (instant, no spinner on repeat navigations) and dedupes the
  * network call across every island on the page (one fetch, not one per island).
+ * Every mounted instance subscribes to the shared load, so a retry triggered by
+ * one island (e.g. AuthGate) heals every other island sharing the page (e.g. a
+ * header) too, instead of leaving them stuck on the stale error.
  */
 export function useSession(base: string): Session & { retry: () => void } {
   // ALWAYS start in `loading` so the server render and the first client render
@@ -76,18 +104,24 @@ export function useSession(base: string): Session & { retry: () => void } {
   // AuthGate loader div (`.mw-gate`, display:flex) for the gated content, laying
   // the account cards out in a ROW. Apply the cache in the effect instead (one
   // extra render tick — negligible, and still no network when cached).
-  const [s, setS] = useState<Session>({ loading: true, authenticated: false });
-  const [attempt, setAttempt] = useState(0);
-  const retry = useCallback(() => { clearSessionCache(); setS({ loading: true, authenticated: false }); setAttempt((n) => n + 1); }, []);
+  const [s, setS] = useState<Session>(LOADING);
 
   useEffect(() => {
+    subscribers.add(setS);
     const cached = readCache();
-    if (cached) { setS(cached); return; }
-    let live = true;
-    inflight ??= loadSession(base);
-    inflight.then((data) => { if (live) setS(data); }).finally(() => { inflight = null; });
-    return () => { live = false; };
-  }, [base, attempt]);
+    if (cached) {
+      setS(cached);
+    } else {
+      runLoad(base);
+    }
+    return () => { subscribers.delete(setS); };
+  }, [base]);
+
+  const retry = useCallback(() => {
+    clearSessionCache();
+    broadcast(LOADING); // siblings show loading too, not just this island
+    runLoad(base);
+  }, [base]);
 
   return Object.assign({}, s, { retry });
 }

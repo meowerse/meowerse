@@ -62,6 +62,23 @@ describe("useSession", () => {
     vi.useRealTimers();
   });
 
+  it("retry from one island broadcasts to every mounted useSession instance", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("down"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: true, username: "alex", verified: true }), { status: 200 }));
+    render(
+      <>
+        <View2 base="https://api" />
+        <View2 base="https://api" />
+      </>,
+    );
+    const buttons = await screen.findAllByRole("button", { name: "error network" });
+    expect(buttons).toHaveLength(2);
+    buttons[0]!.click();
+    const messages = await screen.findAllByText("hi alex");
+    expect(messages).toHaveLength(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
   it("a bfcache restore drops the cache", () => {
     sessionStorage.setItem("mw-session", JSON.stringify({ at: Date.now(), data: { loading: false, authenticated: false } }));
     window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));

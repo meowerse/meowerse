@@ -39,4 +39,18 @@ describe("AuthGate", () => {
     await userEvent.click(screen.getByRole("button", { name: "try again" }));
     expect(await screen.findByText("secret")).toBeInTheDocument();
   });
+  it("on a 5xx it shows the service-had-a-problem copy", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("x", { status: 502 }));
+    render(<AuthGate base="https://api"><p>secret</p></AuthGate>);
+    expect(await screen.findByRole("alert")).toHaveTextContent("the account service had a problem");
+  });
+  it("on a timeout it shows the too-slow copy", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) =>
+      new Promise((_, rej) => init!.signal!.addEventListener("abort", () => rej(new DOMException("a", "AbortError")))));
+    render(<AuthGate base="https://api"><p>secret</p></AuthGate>);
+    await vi.advanceTimersByTimeAsync(8_001);
+    expect(await screen.findByRole("alert")).toHaveTextContent("the account service is taking too long");
+    vi.useRealTimers();
+  });
 });
