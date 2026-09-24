@@ -1,28 +1,12 @@
 // design/tokens.json → src/styles/tokens.gen.css. `--check` fails on drift (CI via `bun run tokens:check`).
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { contrast } from "../src/lib/contrast";
+export { contrast };
 
 export type Tokens = typeof import("../design/tokens.json");
 
 const kebab = (s: string) => s.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
-
-function lum(hex: string): number {
-  const n = parseInt(hex.slice(1), 16);
-  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
-    const c = v / 255;
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-  });
-  // Non-null: `ch` is always the 3-element map of the literal 3-element array above
-  // (noUncheckedIndexedAccess can't see that through .map()).
-  return 0.2126 * ch[0]! + 0.7152 * ch[1]! + 0.0722 * ch[2]!;
-}
-
-/** WCAG 2.x contrast ratio between two #rrggbb colours. */
-export function contrast(a: string, b: string): number {
-  // Non-null: sorting a fixed 2-element array can't change its length.
-  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p) as [number, number];
-  return (x + 0.05) / (y + 0.05);
-}
 
 const block = (vars: Record<string, string>, prefix: string) =>
   Object.entries(vars).map(([k, v]) => `  --${prefix}${kebab(k)}: ${v};`).join("\n");
@@ -39,7 +23,7 @@ export function gen(t: Tokens): string {
     Object.entries(t.z).map(([k, v]) => `  --z-${k}: ${v};`).join("\n"),
     `  --ease: ${t.motion.ease};`,
     `  --d-fast: ${t.motion.fast}ms;\n  --d-base: ${t.motion.base}ms;\n  --d-slow: ${t.motion.slow}ms;`,
-    `  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;`,
+    `  --font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, "SFMono-Regular", Menlo, monospace;`,
     `  --font-mark: "VT323 Mark", var(--font-mono);`,
     `  color-scheme: dark;`,
   ].join("\n");
@@ -55,6 +39,14 @@ ${light}
   :root:not([data-theme="dark"]) {
 ${light.replace(/^/gm, "  ")}
   }
+}
+/* scoped themes: a subtree that always renders dark or light, whatever the page theme (docs previews) */
+.mw-theme--dark {
+${block(t.semantic.dark, "c-")}
+  color-scheme: dark;
+}
+.mw-theme--light {
+${light}
 }
 `;
 }

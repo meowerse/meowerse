@@ -12,4 +12,8 @@ describe("Avatar", () => {
     render(<Avatar name="ab" size="lg" />);
     expect(screen.getByLabelText("ab").className).toContain("mw-avatar--lg");
   });
+  it("is an image named by the person (a label on a generic span is prohibited, U-15)", () => {
+    render(<Avatar name="Cats & Co" />);
+    expect(screen.getByRole("img", { name: "Cats & Co" })).toHaveTextContent("C");
+  });
 });

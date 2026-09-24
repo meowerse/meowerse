@@ -1,5 +1,5 @@
 export { Spinner } from "./components/Spinner";
-export { Icon } from "./components/Icon";
+export { Icon, ICON_NAMES } from "./components/Icon";
 export { Button, type ButtonProps } from "./components/Button";
 export { Field, type FieldProps } from "./components/Field";
 export { Checkbox, type CheckboxProps } from "./components/Checkbox";
@@ -28,3 +28,4 @@ export { THEME_INIT_SCRIPT, getTheme, resolvedTheme, applyTheme, toggleTheme, ty
 export { cx } from "./lib/cx";
 export { request, describeError, DEFAULT_TIMEOUT_MS, type RequestResult, type RequestError } from "./lib/request";
 export { Cat3D } from "./cat3d/Cat3D";
+export { contrast, CONTRAST_PAIRS, type ContrastPair } from "./lib/contrast";

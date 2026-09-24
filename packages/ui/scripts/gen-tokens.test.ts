@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
 import tokens from "../design/tokens.json";
+import { CONTRAST_PAIRS as PAIRS } from "../src/lib/contrast";
 import { contrast, gen } from "./gen-tokens";
-
-type Pair = [fg: keyof typeof tokens.semantic.dark, bg: keyof typeof tokens.semantic.dark, min: number];
-// Text pairs the components actually use; min is WCAG AA (4.5 text, 3 UI/borders).
-const PAIRS: Pair[] = [
-  ["fg", "bg", 4.5], ["fg", "bgElev", 4.5], ["fg", "surface", 4.5], ["fg", "surfaceRaised", 4.5],
-  ["fgMuted", "bg", 4.5], ["fgMuted", "surface", 4.5], ["fgSubtle", "bg", 4.5], ["fgSubtle", "surface", 4.5],
-  ["accent", "bg", 4.5], ["accent", "surface", 4.5], ["onAccent", "accentFill", 4.5],
-  ["danger", "bg", 4.5], ["danger", "dangerTint", 4.5], ["onDanger", "danger", 4.5],
-  ["ok", "bg", 4.5], ["ok", "surface", 4.5], ["info", "bg", 4.5], ["warn", "bg", 4.5],
-  ["focus", "bg", 3], ["lineInput", "bg", 3], ["lineInput", "bgElev", 3],
-];
 
 describe("tokens", () => {
   for (const theme of ["dark", "light"] as const) {
@@ -33,4 +23,11 @@ describe("tokens", () => {
     for (const v of ["--control-height: 44px", "--disabled-opacity: 0.5", "--z-toast: 40", "--leading-normal: 1.5"])
       expect(css).toContain(v);
   });
+  it("offers scoped theme classes so one page can show both themes side by side", () => {
+    const css = gen(tokens);
+    expect(css).toMatch(/\.mw-theme--dark \{[^}]*--c-bg: #0a0a0b;[^}]*color-scheme: dark;/s);
+    expect(css).toMatch(/\.mw-theme--light \{[^}]*--c-bg: #e9e8e4;[^}]*color-scheme: light;/s);
+  });
+  it("puts the metric-matched fallback face second in --font-mono (no layout shift on swap)", () =>
+    expect(gen(tokens)).toContain('--font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace'));
 });

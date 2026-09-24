@@ -65,7 +65,7 @@
   --d-fast: 120ms;
   --d-base: 240ms;
   --d-slow: 600ms;
-  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-mark: "VT323 Mark", var(--font-mono);
   color-scheme: dark;
 }
@@ -118,4 +118,53 @@
     --c-scrim: rgba(20, 20, 22, 0.4);
     color-scheme: light;
   }
+}
+/* scoped themes: a subtree that always renders dark or light, whatever the page theme (docs previews) */
+.mw-theme--dark {
+  --c-bg: #0a0a0b;
+  --c-bg-elev: #111113;
+  --c-surface: #151517;
+  --c-surface-raised: #1a1a1d;
+  --c-line: #232326;
+  --c-line-strong: #404044;
+  --c-line-input: #6a6a70;
+  --c-fg: #ededeb;
+  --c-fg-muted: #b3b3af;
+  --c-fg-subtle: #8c8c88;
+  --c-accent: #00ff82;
+  --c-accent-fill: #00ff82;
+  --c-on-accent: #06170d;
+  --c-warn: #ffb454;
+  --c-danger: #ff6b63;
+  --c-on-danger: #1a0605;
+  --c-danger-tint: #2a1513;
+  --c-ok: #3ddc84;
+  --c-info: #7cc4ff;
+  --c-focus: #00ff82;
+  --c-scrim: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+.mw-theme--light {
+  --c-bg: #e9e8e4;
+  --c-bg-elev: #f1f0ec;
+  --c-surface: #dfded9;
+  --c-surface-raised: #f7f6f3;
+  --c-line: #cfcec8;
+  --c-line-strong: #a9a8a2;
+  --c-line-input: #7a7973;
+  --c-fg: #1a1a1c;
+  --c-fg-muted: #46464a;
+  --c-fg-subtle: #5e5e5b;
+  --c-accent: #0a6e3c;
+  --c-accent-fill: #00ff82;
+  --c-on-accent: #06170d;
+  --c-warn: #8a5200;
+  --c-danger: #b42318;
+  --c-on-danger: #ffffff;
+  --c-danger-tint: #f6dcd8;
+  --c-ok: #11652f;
+  --c-info: #1d5fa8;
+  --c-focus: #0a6e3c;
+  --c-scrim: rgba(20, 20, 22, 0.4);
+  color-scheme: light;
 }

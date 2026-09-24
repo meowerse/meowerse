@@ -6,9 +6,12 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./tokens.css": "./src/styles/tokens.css"
+    "./tokens.css": "./src/styles/tokens.css",
+    "./tokens.json": "./design/tokens.json",
+    "./theme": "./src/lib/theme.ts",
+    "./assets/fonts/*": "./src/assets/fonts/*"
   },
-  "files": ["src"],
+  "files": ["src", "design"],
   "scripts": {
     "lint": "bun run tokens:check && tsc --noEmit",
     "test": "vitest run --coverage",

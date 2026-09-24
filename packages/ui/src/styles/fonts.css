@@ -12,3 +12,12 @@
   font-family: "VT323 Mark"; font-style: normal; font-weight: 400; font-display: block;
   src: url("../assets/fonts/vt323-marks.woff2") format("woff2");
 }
+/* Metric-matched stand-in while JetBrains Mono loads, so the swap doesn't shift layout (U-29, G-12;
+   the same face alxnko.dev ships in base.css). */
+@font-face {
+  font-family: "JetBrains Mono Fallback";
+  src: local("DejaVu Sans Mono"), local("Menlo"), local("Consolas");
+  size-adjust: 100%;
+  ascent-override: 102%;
+  descent-override: 30%;
+}
