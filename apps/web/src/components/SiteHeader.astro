@@ -1,0 +1,15 @@
+---
+import { Wordmark } from "@meowerse/ui";
+import ThemeButton from "./ThemeButton.astro";
+import { isCurrent, NAV } from "../lib/site";
+const path = Astro.url.pathname;
+---
+<header class="mw-header">
+  <Wordmark name="meowerse" href="/" />
+  <div class="mw-header__actions">
+    <nav class="site-nav" aria-label="primary">
+      {NAV.map((l) => <a href={l.href} aria-current={isCurrent(path, l.match) ? "page" : undefined}>{l.label}</a>)}
+    </nav>
+    <ThemeButton />
+  </div>
+</header>

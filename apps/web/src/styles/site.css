@@ -1,0 +1,37 @@
+/* meow.alxnko.dev: the site's one stylesheet. BaseLayout imports it once and Astro inlines it on every
+   page (one CSP hash, no render-blocking request). Tokens only: no colour literals, radii 2/4/8, the
+   spacing and type scales (src/lib/site-css.test.ts). Each task appends its own "---- name ----" section. */
+@import "@meowerse/ui/tokens.css";
+
+/* ---- shell ---- */
+html { scroll-padding-top: calc(var(--control-height) + var(--sp-5)); }
+body { min-height: 100dvh; display: flex; flex-direction: column; }
+.site-main { flex: 1; display: block; width: 100%; max-width: 72rem; margin-inline: auto; padding: var(--sp-6) clamp(var(--sp-4), 5vw, var(--sp-6)) var(--sp-7); }
+.site-main:focus { outline: none; }
+.skip { position: absolute; left: var(--sp-2); top: calc(-1 * var(--sp-8)); z-index: var(--z-skip); display: inline-flex; align-items: center; min-height: var(--control-height); padding: 0 var(--sp-3); background: var(--c-surface-raised); color: var(--c-fg); border: 1px solid var(--c-line-strong); border-radius: var(--r-m); }
+.skip:focus { top: var(--sp-2); text-decoration: none; }
+.site-nav { display: flex; align-items: center; gap: var(--sp-1); }
+.site-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); border-radius: var(--r-m); color: var(--c-fg-muted); font-size: var(--fs-2); white-space: nowrap; }
+.site-nav a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.site-nav a[aria-current="page"] { color: var(--c-fg); box-shadow: inset 0 -2px 0 var(--c-accent); }
+.theme-button__sun, .theme-button__moon { display: inline-flex; }
+.theme-button__moon { display: none; }
+:root[data-theme="light"] .theme-button__sun { display: none; }
+:root[data-theme="light"] .theme-button__moon { display: inline-flex; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .theme-button__sun { display: none; }
+  :root:not([data-theme="dark"]) .theme-button__moon { display: inline-flex; }
+}
+.site-footer .mw-footer__legal { max-width: 60ch; }
+
+/* ---- shared text and actions ---- */
+.lede { font-size: var(--fs-4); color: var(--c-fg-muted); max-width: 60ch; }
+.prompt-title { font-size: var(--fs-5); }
+.prompt-title__glyph { color: var(--c-fg-subtle); font-weight: 400; }
+.ext-mark { color: var(--c-fg-subtle); }
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+a.mw-btn:hover { text-decoration: none; }
+
+/* ---- 404 ---- */
+.notfound { display: grid; gap: var(--sp-4); justify-items: start; padding-block: var(--sp-7); }
+.notfound__code { font-size: var(--fs-7); font-weight: 700; line-height: 1; color: var(--c-accent); }
