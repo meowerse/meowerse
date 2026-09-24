@@ -3,8 +3,22 @@ import { createPortal } from "react-dom";
 import { cx } from "../lib/cx";
 
 const FOCUSABLE = 'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])';
-const usable = (el: HTMLElement) =>
-  !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true" && el.tabIndex !== -1 && !el.closest("[inert]");
+
+// jsdom (used by this component's tests) never runs layout, so every element's
+// getClientRects() is permanently empty there — checking it unconditionally would
+// treat every focusable control as hidden and break the tests. Detect a real
+// layout engine once per check instead of guessing from the environment: a real
+// browser always gives <html> a non-empty rect.
+const hasLayout = () => document.documentElement.getClientRects().length > 0;
+
+const usable = (el: HTMLElement) => {
+  if (el.hasAttribute("disabled") || el.getAttribute("aria-hidden") === "true" || el.tabIndex === -1) return false;
+  if (el.closest("[inert]") || el.closest("[hidden]")) return false;
+  const style = getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (el.getClientRects && hasLayout() && el.getClientRects().length === 0) return false;
+  return true;
+};
 
 // Module-level stack of open modals' ids, most-recently-opened last. Only the topmost
 // modal should react to Tab/Escape, so nested modals (e.g. a ConfirmDialog over a Modal)
