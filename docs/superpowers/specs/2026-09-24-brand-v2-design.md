@@ -1,6 +1,6 @@
 # Brand v2 — meowerse on the alxnko.dev design system
 
-Status: draft for owner review · Date: 2026-09-24 · Decisions: `docs/superpowers/decisions/2026-09-24-brand-v2-log.md`
+Status: approved decisions B1–B24; awaiting owner review of the written spec · Date: 2026-09-24 · Decisions: `docs/superpowers/decisions/2026-09-24-brand-v2-log.md`
 (B1–B10). Where this spec and the log disagree, the log wins and this spec is corrected.
 
 ## 1. Goal and scope
@@ -216,17 +216,12 @@ App-specific highlights:
   singleton and expires; `next=` is honoured (validated same-origin); consent shows the host (B20).
 - **web:** a read-only page (B16); legacy removal (B15); a CSP and Permissions-Policy.
 
-### 6.1 Owner decisions pending
+### 6.1 Owner decisions (resolved 2026-09-24)
 
-- **B21:** the username case policy.
-- **Cloudflare-injected scripts:**
-  - the privacy page says "no analytics" while Cloudflare Web Analytics is injected (and blocked by
-    the CSP, A-32);
-  - choose between turning the injection off in Cloudflare and keeping the copy, or allowing it and
-    updating the copy.
-  
-  Default: turn it off, so the copy stays true.
-- **`meow.alxnko.eu.org` redirect target.** Default: meow.alxnko.dev.
+- **B22:** usernames are case-insensitive and unique, shown as registered. A collision report runs
+  before enforcement.
+- **B23:** Cloudflare-injected analytics is turned off, and "no analytics" stays true.
+- **B24:** `meow.alxnko.eu.org` redirects to meow.alxnko.dev.
 
 ## 7. Terminal styling, per element (B8)
 
