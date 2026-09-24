@@ -24,4 +24,12 @@ describe("project content (B11, B13)", () => {
     expect(publicFactProblems("moonmeow", { ...base, how: ["Streams over Tailscale to 100.64.0.1 after pairing."] })).toHaveLength(3);
     expect(publicFactProblems("alxnko-dev", { ...load("alxnko-dev.json"), what: ["Made by Alex Neko, tech lead."] })).toHaveLength(2);
   });
+  it("the guard catches the real surname in Cyrillic on the alxnko.dev page", () => {
+    const base = load("alxnko-dev.json");
+    expect(publicFactProblems("alxnko-dev", { ...base, what: ["Сделано под псевдонимом, но это Нырко."] })).toHaveLength(1);
+  });
+  it("the guard catches the real first name in Cyrillic on the alxnko.dev page", () => {
+    const base = load("alxnko-dev.json");
+    expect(publicFactProblems("alxnko-dev", { ...base, what: ["Александр — тот, кто это сделал."] })).toHaveLength(1);
+  });
 });

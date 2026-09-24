@@ -41,5 +41,18 @@ export function runProbes(doc: Document = document, opts: Opts = {}): Promise<vo
 
   for (const b of retry) b.addEventListener("click", () => void run());
   if (watch) addEventListener("pageshow", (e) => { if ((e as PageTransitionEvent).persisted) void run(); });
+
+  // A backgrounded tab shouldn't spend its probe budget (or show a stale timestamp) before anyone
+  // looks: wait for the tab to actually become visible before the first run.
+  if (doc.hidden) {
+    return new Promise<void>((resolve) => {
+      const onVisible = () => {
+        if (doc.hidden) return;
+        doc.removeEventListener("visibilitychange", onVisible);
+        run().then(resolve);
+      };
+      doc.addEventListener("visibilitychange", onVisible);
+    });
+  }
   return run();
 }

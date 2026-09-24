@@ -1,0 +1,24 @@
+---
+// A live status line: server-rendered [wait], then probe-runner.ts reads the endpoint (B9).
+// Static statuses say plainly why there is nothing to check.
+// C6: a probe row always ships a "check again" retry button — hidden until runProbes.ts reveals it,
+// ≥44px like every other control — because probe-runner.ts drives every [data-probe-retry] it finds.
+import { StatusLine } from "@meowerse/ui";
+import type { ProjectStatus } from "../lib/project-schema";
+import { describeProbe } from "../lib/probe";
+
+interface Props { name: string; status: ProjectStatus }
+const { name, status } = Astro.props;
+const wait = describeProbe(name, "pending");
+---
+{status.kind === "probe" ? (
+  <div class="probe" data-probe data-name={name} data-url={status.url} data-method={status.method}>
+    <StatusLine state={wait.state} live children={wait.text} />
+    <button type="button" class="mw-btn mw-btn--secondary mw-btn--md probe__retry" data-probe-retry hidden>check again</button>
+    <noscript><p class="mw-muted">live status needs JavaScript.</p></noscript>
+  </div>
+) : (
+  <div class="probe">
+    <StatusLine state={status.state} children={`${name} — ${status.text}`} />
+  </div>
+)}

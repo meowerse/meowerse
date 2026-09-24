@@ -35,7 +35,11 @@ const EVERYWHERE: readonly RegExp[] = [
   /\bport\s*\d+/i, /\blan\b/i, /\bvpn\b/i, /wireguard/i, /\baws\b|eu-west|ireland/i, /\.internal\b|\.local\b/i,
   /\bsecret\b|password=|token=/i,
 ];
-const ALXNKO_DEV: readonly RegExp[] = [/neko|nyrko/i, /tech lead|company|employer|linkedin|kyrgyz/i];
+const ALXNKO_DEV: readonly RegExp[] = [
+  /neko|nyrko/i, /tech lead|company|employer|linkedin|kyrgyz/i,
+  // the real name transliterated back into Cyrillic must never surface either (owner priority)
+  /нырко/i, /александр/i,
+];
 
 const strings = (v: unknown): string[] =>
   typeof v === "string" ? [v] : Array.isArray(v) ? v.flatMap(strings) : v && typeof v === "object" ? Object.values(v).flatMap(strings) : [];

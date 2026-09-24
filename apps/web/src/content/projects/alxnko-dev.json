@@ -1,0 +1,35 @@
+{
+  "name": "alxnko.dev",
+  "order": 6,
+  "service": false,
+  "summary": "A personal site that is a terminal first and, on capable devices, a 3D desk.",
+  "what": [
+    "A working terminal in the browser: try help, ls or meow.",
+    "On devices that can handle it, the page becomes an interactive 3D model of a desk, with the live terminal and the contacts on its screens.",
+    "The green cat on that desk is the one at the top of this site's home page."
+  ],
+  "how": [
+    "Static Astro pages with vanilla TypeScript: the terminal and the contacts work with no 3D and no network.",
+    "A small script decides before the first paint whether the device can take 3D; three.js then loads as its own chunk.",
+    "The desk is modelled and lit in Blender and shipped as one compressed glTF file.",
+    "A strict hash-based Content Security Policy with Trusted Types, and no third-party scripts."
+  ],
+  "diagram": {
+    "label": "Page first: the terminal works at once; capable devices then load three.js and the desk.",
+    "steps": [
+      { "title": "static page", "note": "terminal + contacts" },
+      { "title": "capability check", "note": "before the first paint" },
+      { "title": "three.js chunk", "note": "loads only if it fits" },
+      { "title": "3d desk", "note": "live terminal on its screens" }
+    ]
+  },
+  "facts": [
+    { "k": "built with", "v": "Astro, TypeScript, three.js, Blender" },
+    { "k": "security", "v": "hash-based CSP, Trusted Types, no third-party scripts" },
+    { "k": "hosting", "v": "Cloudflare Pages" }
+  ],
+  "status": { "kind": "probe", "url": "https://alxnko.dev/", "method": "HEAD" },
+  "links": [
+    { "label": "open alxnko.dev", "href": "https://alxnko.dev/" }
+  ]
+}

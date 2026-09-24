@@ -1,0 +1,37 @@
+{
+  "name": "ui library",
+  "order": 3,
+  "service": false,
+  "summary": "The design system every meowerse app is built with; it shares its tokens with alxnko.dev.",
+  "what": [
+    "One set of colours, type, spacing and motion, and the components built on them: buttons, fields, dialogs, status lines, the chat prompt and more.",
+    "Dark by default with a light \"day paper\" theme; every colour combination used for text is checked for WCAG AA contrast by a test.",
+    "Terminal touches (the › prompt, [ ok ] status lines, a blinking cursor on the wordmark) appear only where they keep an app easy to use.",
+    "Its documentation, with every component rendered live, will be published on this site."
+  ],
+  "how": [
+    "The tokens live in one tokens.json. A script generates the CSS custom properties, and CI fails when the generated file is out of date.",
+    "A drift check compares the tokens with alxnko.dev's copy, so both sites stay one system.",
+    "Components are React, styled only through the generated tokens. Astro renders them to static HTML and hydrates only the ones that need to be interactive.",
+    "JetBrains Mono sets all text and VT323 only the wordmarks, both served as small woff2 files."
+  ],
+  "diagram": {
+    "label": "From tokens to apps: tokens.json generates the CSS variables, the React components use them, and every meowerse app ships them.",
+    "steps": [
+      { "title": "tokens.json", "note": "one source of truth" },
+      { "title": "tokens.gen.css", "note": "generated, checked in ci" },
+      { "title": "@meowerse/ui", "note": "react components" },
+      { "title": "the apps", "note": "auth, meowsenger, this site" }
+    ]
+  },
+  "facts": [
+    { "k": "package", "v": "@meowerse/ui, in the meowerse monorepo" },
+    { "k": "components", "v": "React 19, typed with TypeScript" },
+    { "k": "themes", "v": "dark (default) and light, following the system" },
+    { "k": "docs", "v": "coming soon at meow.alxnko.dev" }
+  ],
+  "status": { "kind": "static", "state": "info", "text": "a library, not a service: it ships inside each app" },
+  "links": [
+    { "label": "source", "href": "https://github.com/meowerse/meowerse/tree/master/packages/ui" }
+  ]
+}

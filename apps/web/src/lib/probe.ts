@@ -1,4 +1,7 @@
 // Live service status (spec §5, B9): one CORS request with a timeout, and an honest reading of it.
+// Doesn't reuse @meowerse/ui's request(): that helper always sends credentials: "include", which a
+// public CORS endpoint answering Access-Control-Allow-Origin: "*" must reject (the fetch spec forbids
+// credentialed requests against a wildcard ACAO), so it would fail every probe outright.
 import type { StatusState } from "@meowerse/ui";
 
 export const PROBE_TIMEOUT_MS = 5000;
