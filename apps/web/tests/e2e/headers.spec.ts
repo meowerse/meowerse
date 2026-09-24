@@ -13,7 +13,9 @@ test("every response carries the strict security headers, 404s included", async 
     expect(h["strict-transport-security"], path).toBe("max-age=31536000; includeSubDomains; preload");
     expect(h["referrer-policy"], path).toBe("no-referrer");
     expect(h["x-content-type-options"], path).toBe("nosniff");
+    expect(h["x-frame-options"], path).toBe("DENY");
     expect(h["cross-origin-opener-policy"], path).toBe("same-origin");
+    expect(h["cross-origin-resource-policy"], path).toBe("same-origin");
     expect(h["permissions-policy"], path).toContain("camera=()");
   }
 });

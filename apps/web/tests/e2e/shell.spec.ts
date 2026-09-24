@@ -2,6 +2,20 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./fixtures";
 
+// site.ts can't be imported here: it pulls in @meowerse/ui/tokens.json, which Vite/Vitest load
+// fine but Node's native ESM loader (Playwright's test runner) rejects without an import
+// attribute. NAV is parsed straight from the source instead — still grounded in site.ts, not a
+// hand-maintained copy — and isCurrent is site.ts's own one-line prefix match (also covered by
+// site.test.ts).
+type NavLink = { label: string; href: string; match: string };
+function readNav(): NavLink[] {
+  const src = readFileSync(join(process.cwd(), "src/lib/site.ts"), "utf8");
+  const body = /export const NAV:[^=]*=\s*\[([\s\S]*?)\];/.exec(src)?.[1] ?? "";
+  return [...body.matchAll(/\{\s*label:\s*"([^"]+)",\s*href:\s*"([^"]+)",\s*match:\s*"([^"]+)"\s*\}/g)]
+    .map((m) => ({ label: m[1]!, href: m[2]!, match: m[3]! }));
+}
+const isCurrent = (pathname: string, match: string): boolean => pathname.startsWith(match);
+
 test("skip link, main landmark, theme button that persists", async ({ page }) => {
   await page.goto("/");
   await page.keyboard.press("Tab");
@@ -26,6 +40,18 @@ test("B16: no write demo, no input, no token anywhere in the build", async ({ pa
   for (const f of walk(join(process.cwd(), "dist")).filter((f) => /\.(html|js)$/.test(f))) {
     const src = readFileSync(f, "utf8");
     expect(src, f).not.toMatch(/PUBLIC_DEMO_TOKEN|Bearer |\/api\/meows/);
+  }
+});
+
+test("nav marks the current section per site.ts NAV, and no other link", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "aria-current doesn't depend on the viewport");
+  await page.goto("/");
+  const NAV = readNav();
+  expect(NAV.length).toBeGreaterThan(0); // guards against this test silently checking nothing
+  for (const link of NAV) {
+    const loc = page.locator(`.site-nav a[href="${link.href}"]`);
+    if (isCurrent("/", link.match)) await expect(loc, link.label).toHaveAttribute("aria-current", "page");
+    else await expect(loc, link.label).not.toHaveAttribute("aria-current");
   }
 });
 
