@@ -40,3 +40,10 @@ export function rotateYX(yaw: number, pitch: number, p: Vec3) {
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const norm = (a: Vec3): Vec3 => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+
+/** "#rrggbb" or "#rgb" → linear 0..1 triple; anything else → the cat green #14995a. */
+export function rgb(h: string): Vec3 {
+  let x = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(h)?.[1] ?? "14995a";
+  if (x.length === 3) x = x.replace(/./g, "$&$&");
+  return [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16) / 255) as Vec3;
+}

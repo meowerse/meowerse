@@ -162,5 +162,7 @@ a.mw-wordmark:hover { color: var(--c-accent); text-decoration: none; }
 .mw-prompt__send[aria-disabled="true"] { opacity: var(--disabled-opacity); cursor: not-allowed; }
 
 /* ---- Cat3D: decorative; --cat-color is the cat's material from the alxnko.dev scene (allow-listed) ---- */
-.mw-cat3d { position: relative; --cat-color: #14995a; }
-.mw-cat3d > img, .mw-cat3d > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* the in-flow poster <img width/height> sizes the box (no inline style); the canvas overlays it once live */
+.mw-cat3d { display: inline-block; position: relative; line-height: 0; --cat-color: #14995a; }
+.mw-cat3d > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mw-cat3d--live > img { visibility: hidden; }
