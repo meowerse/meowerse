@@ -17,7 +17,12 @@
   --gap-xs: var(--sp-1); --gap-sm: var(--sp-2); --gap-md: var(--sp-3);
   --gap-lg: var(--sp-4); --gap-xl: var(--sp-5); --gap-2xl: var(--sp-6);
   --mw-stack-gap: var(--sp-4);
-  --font-sans: var(--font-mono); --font-display: var(--font-mark);
+  /* --font-display used to point at the VT323 Mark subset, which only has the
+     glyphs ` _aeghimnorstuw` — any digit or punctuation (404, "‹") silently fell
+     back to --font-mono mid-string, rendering in two fonts at once. The mark is
+     for the wordmark only; components.css's .mw-wordmark / .mw-header__brand use
+     `var(--font-mark)` directly, not this alias. */
+  --font-sans: var(--font-mono); --font-display: var(--font-mono);
   --text-xs: var(--fs-1); --text-sm: var(--fs-2); --text-base: var(--fs-4); --text-md: var(--fs-4);
   --text-lg: var(--fs-5); --text-xl: clamp(var(--fs-5), 1rem + 1.6vw, var(--fs-6));
   --text-2xl: clamp(var(--fs-6), 1.2rem + 2.6vw, var(--fs-7));
