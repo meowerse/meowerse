@@ -11,6 +11,8 @@ describe("csp", () => {
   });
   it("counts style attributes and finds data: URLs", () => {
     expect(styleAttrs('<p style="color:red">x</p><div>ok</div>')).toBe(1);
+    // Fix round 1 (minor): the zero-style="" path — postbuild.ts's happy path — was untested.
+    expect(styleAttrs("<p>x</p><div>ok</div>")).toBe(0);
     expect(dataUrls('<img src="data:image/png;base64,AA"> a{background:url("data:image/svg+xml,x")}')).toHaveLength(2);
     expect(dataUrls('<img src="/cat.webp">')).toEqual([]);
   });
