@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
 import { Field } from "./Field";
+import { cx } from "../lib/cx";
 
 export type ConfirmResult = { password?: string };
 
@@ -29,8 +30,9 @@ export function ConfirmDialog({
           <p id={`${phraseId}-lbl`}>to confirm, type <code>{confirmPhrase}</code></p>
           <Field label={`type ${confirmPhrase} to confirm`} className="mw-confirm__field" value={typed}
             onChange={(e) => setTyped(e.target.value)} autoComplete="off" autoCapitalize="none"
-            autoCorrect="off" spellCheck={false} data-case="preserve" />
-          {typed && !phraseOk && <span className="mw-field__hint">doesn't match yet</span>}
+            autoCorrect="off" spellCheck={false} data-case="preserve"
+            aria-describedby={cx(`${phraseId}-lbl`, typed && !phraseOk && `${phraseId}-hint`)} />
+          {typed && !phraseOk && <span id={`${phraseId}-hint`} className="mw-field__hint">doesn't match yet</span>}
         </div>
       )}
       {requirePassword && (

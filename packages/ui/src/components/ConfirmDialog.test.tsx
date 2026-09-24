@@ -44,4 +44,12 @@ describe("ConfirmDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "delete" }));
     expect(onConfirm).toHaveBeenCalled();
   });
+  it("describes the phrase field to screen readers, adding the mismatch hint once typed wrong", async () => {
+    render(<ConfirmDialog open onCancel={() => {}} onConfirm={() => {}} title="delete app"
+      description="d" confirmLabel="delete" confirmPhrase="MyApp" />);
+    const input = screen.getByRole("textbox");
+    expect(input).toHaveAccessibleDescription(/to confirm, type MyApp/);
+    await userEvent.type(input, "wrong");
+    expect(input).toHaveAccessibleDescription(/doesn't match yet/);
+  });
 });

@@ -6,6 +6,11 @@ const FOCUSABLE = 'button,[href],input,select,textarea,[tabindex]:not([tabindex=
 const usable = (el: HTMLElement) =>
   !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true" && el.tabIndex !== -1 && !el.closest("[inert]");
 
+// Module-level stack of open modals' ids, most-recently-opened last. Only the topmost
+// modal should react to Tab/Escape, so nested modals (e.g. a ConfirmDialog over a Modal)
+// don't fight over keydown.
+const modalStack: string[] = [];
+
 export function Modal({ open, onClose, title, children, className }: {
   open: boolean; onClose: () => void; title: string; children: ReactNode; className?: string;
 }) {
@@ -16,12 +21,15 @@ export function Modal({ open, onClose, title, children, className }: {
 
   useEffect(() => {
     if (!open) return;
+    modalStack.push(id);
+    const isTop = () => modalStack[modalStack.length - 1] === id;
     const restore = document.activeElement as HTMLElement | null;
     const panel = panelRef.current!;
     const list = () => Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(usable);
     (panel.querySelector<HTMLElement>("[data-autofocus]") ?? list()[0] ?? panel).focus();
 
     function onKey(e: KeyboardEvent) {
+      if (!isTop()) return;
       if (e.key === "Escape") { e.preventDefault(); closeRef.current(); return; }
       if (e.key !== "Tab") return;
       const f = list();
@@ -31,8 +39,13 @@ export function Modal({ open, onClose, title, children, className }: {
       else if (!e.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
     }
     document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("keydown", onKey); restore?.focus?.(); };
-  }, [open]);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const idx = modalStack.lastIndexOf(id);
+      if (idx !== -1) modalStack.splice(idx, 1);
+      restore?.focus?.();
+    };
+  }, [open, id]);
 
   if (!open) return null;
   return createPortal(

@@ -67,4 +67,33 @@ describe("Modal", () => {
     expect(input).toHaveFocus();
     expect(input).toHaveValue("abc");
   });
+  it("only the topmost modal handles Tab and Escape when nested", async () => {
+    const outerClose = vi.fn();
+    const innerClose = vi.fn();
+    const { rerender } = render(
+      <Modal open onClose={outerClose} title="outer">
+        <button>outer button</button>
+      </Modal>,
+    );
+    rerender(
+      <Modal open onClose={outerClose} title="outer">
+        <button>outer button</button>
+        <Modal open onClose={innerClose} title="inner">
+          <button>one</button>
+          <button>two</button>
+          <button>three</button>
+        </Modal>
+      </Modal>,
+    );
+    screen.getByRole("button", { name: "one" }).focus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "two" })).toHaveFocus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "three" })).toHaveFocus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "one" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(innerClose).toHaveBeenCalledOnce();
+    expect(outerClose).not.toHaveBeenCalled();
+  });
 });
