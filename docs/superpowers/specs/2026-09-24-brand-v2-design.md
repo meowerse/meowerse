@@ -57,6 +57,7 @@ Lowercase, calm, short. tty flavour lives in small details:
 - a block cursor on the wordmark;
 - `[ ok ]` / `[fail]` status lines.
 
+Lowercase is written into our own copy, never applied with a global `text-transform`. User content is always shown exactly as typed (B14).
 Errors say what happened and what to do, in plain words ("wrong password — try again or reset it"),
 never a code alone.
 
@@ -131,7 +132,15 @@ never a code alone.
 - Content lives in typed content files (Astro content collections) and is validated at build time.
 - Public facts only: no secrets, internal hostnames, IPs or infra details beyond what is already
   public.
-- The project list is decided in B13.
+- Projects (B13):
+  - auth
+  - meowsenger
+  - the UI library
+  - moonmeow
+  - sunmeow
+  - alxnko.dev
+- The moonmeow and sunmeow pages carry no network, Tailscale, IP or pairing details.
+- The alxnko.dev page shows neither the real name nor the company.
 
 ### 5.2 UI docs (B12)
 
@@ -193,6 +202,25 @@ Terminal styling is used only where it keeps or improves usability.
 | Code, ids, keys | `Code` / `Kbd` | already monospace content |
 | Auth forms | normal labelled fields; only the page title carries the prompt style | forms must stay familiar for trust and autofill |
 | Buttons, menus, dialogs | normal app components in the shared tokens | tty-looking buttons hurt discoverability |
+
+Composer and chat geometry (from audit M, B10):
+- **Prompt field:**
+  - at least 44 px tall, 1 px `line` border, 4 px radius, 32 px left padding;
+  - the `›` glyph is 16 px, aligned to the first text line, `fgSubtle` at rest and `accent` on focus;
+  - the field is never disabled: sends queue in an outbox instead.
+- **Send button:** 44×44, 4 px radius, aligned to the bottom of the field.
+- **Bubbles:**
+  - 8 px radius, with a 2 px corner on the sender's side;
+  - 8/12 px padding, 12 px meta text;
+  - at most about 62 characters wide.
+- **Avatars:** rounded squares with a 4 px radius.
+- **Sidebar:** the active row gets a 2 px `accent` bar on its left; there's no `›` on rows or on the search box.
+- **Connection:** a `StatusLine` in the header, shown only while the connection isn't ok.
+- **Avoid:**
+  - a borderless command-line input;
+  - a blinking block cursor in the field;
+  - `[send]` bracket buttons;
+  - black terminal panels.
 
 The audit's verdicts can adjust rows. Every change is recorded here and in the log.
 
