@@ -1,0 +1,6 @@
+---
+// A colour chip drawn with an SVG fill attribute: exact token value, no style attribute (CSP).
+interface Props { value: string }
+const { value } = Astro.props;
+---
+<svg class="swatch" viewBox="0 0 32 32" aria-hidden="true"><rect class="swatch__rect" x="0.5" y="0.5" width="31" height="31" rx="2" fill={value} /></svg>

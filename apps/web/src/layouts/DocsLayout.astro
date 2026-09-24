@@ -1,0 +1,26 @@
+---
+// /ui shell: content first in the source (phones read it first, with a jump link to the menu), the
+// nav as a sticky sidebar from 960 px. No JS.
+import BaseLayout from "./BaseLayout.astro";
+import { docsNav } from "../lib/docs-nav";
+import { uiApi } from "../ui-docs/api";
+
+interface Props { title: string; description: string }
+const { title, description } = Astro.props;
+const groups = docsNav(uiApi().components.map((c) => c.name));
+const path = Astro.url.pathname;
+---
+<BaseLayout title={title} description={description}>
+  <div class="docs">
+    <a class="docs__jump" href="#docs-nav">docs menu<span aria-hidden="true"> ↓</span></a>
+    <div class="docs__content"><slot /></div>
+    <nav id="docs-nav" class="docs__nav" aria-label="ui docs">
+      {groups.map((g) => (
+        <div class="docs__group">
+          <p class="docs__group-label">{g.label}</p>
+          <ul>{g.items.map((it) => <li><a href={it.href} aria-current={path === it.href ? "page" : undefined}>{it.label}</a></li>)}</ul>
+        </div>
+      ))}
+    </nav>
+  </div>
+</BaseLayout>

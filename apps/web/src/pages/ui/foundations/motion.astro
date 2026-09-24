@@ -1,0 +1,37 @@
+---
+import tokens from "@meowerse/ui/tokens.json";
+import { Cursor } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+const durations = [["fast", tokens.motion.fast, "hover, press, colour changes"], ["base", tokens.motion.base, "panels, toasts, small movements"], ["slow", tokens.motion.slow, "large movements, rarely"]] as const;
+---
+<DocsLayout title="motion" description="Easing and durations of @meowerse/ui, with live demos, and how reduced motion is handled.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>motion</h1>
+    <p class="lede">One ease-out curve and three durations. Motion confirms an action or shows where something went; it never delays a reply. With reduced motion, every non-essential animation stops, the cursor stops blinking, and Cat3D stays a still image.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="ease-title">
+    <h2 id="ease-title">tokens</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="motion tokens">
+      <table class="table">
+        <thead><tr><th scope="col">token</th><th scope="col">value</th><th scope="col">for</th></tr></thead>
+        <tbody>
+          <tr><td><code>--ease</code></td><td><code>{tokens.motion.ease}</code></td><td>everything (expo-out)</td></tr>
+          {durations.map(([k, v, use]) => <tr><td><code>{`--d-${k}`}</code></td><td>{v}ms</td><td>{use}</td></tr>)}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="demo-title">
+    <h2 id="demo-title">try it</h2>
+    <div class="motion-demo" data-motion-demo>
+      {durations.map(([k]) => <div class="motion-demo__track"><span class={`motion-demo__dot d-${k}`} /></div>)}
+      <p class="motion-note">Your device asks for reduced motion, so the dots jump instead of sliding.</p>
+      <button type="button" class="mw-btn mw-btn--secondary mw-btn--md" data-motion-play aria-pressed="false">play</button>
+    </div>
+    <p>The wordmark cursor blinks at 1 Hz in steps: <Cursor /></p>
+  </section>
+  <script>
+    import { bindMotionDemos } from "../../../lib/motion-demo";
+    bindMotionDemos();
+  </script>
+</DocsLayout>

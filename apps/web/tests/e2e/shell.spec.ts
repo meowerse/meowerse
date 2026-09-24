@@ -45,7 +45,7 @@ test("nav marks the current section per site.ts NAV, and no other link", async (
   const NAV = readNav();
   // Pins the exact entries (not just "> 0"): a dropped, added, or reordered nav.json entry fails
   // this line loudly instead of the loop below silently checking fewer links than site.ts renders.
-  expect(NAV.map((l) => l.label)).toEqual(["projects"]);
+  expect(NAV.map((l) => l.label)).toEqual(["projects", "ui docs"]);
   for (const link of NAV) {
     const loc = page.locator(`.site-nav a[href="${link.href}"]`);
     if (isCurrent("/", link.match)) await expect(loc, link.label).toHaveAttribute("aria-current", "page");

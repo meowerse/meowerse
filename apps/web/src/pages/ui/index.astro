@@ -1,0 +1,37 @@
+---
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import CodeBlock from "../../components/docs/CodeBlock.astro";
+import { docsNav } from "../../lib/docs-nav";
+import { uiApi } from "../../ui-docs/api";
+
+const api = uiApi();
+const groups = docsNav(api.components.map((c) => c.name)).filter((g) => g.label !== "start");
+const usage = `// package.json of an app inside the meowerse monorepo
+"@meowerse/ui": "workspace:*"
+
+// once, in the app's layout: tokens, fonts, base styles, components
+import "@meowerse/ui/tokens.css";
+
+// then, anywhere
+import { Button, StatusLine } from "@meowerse/ui";`;
+---
+<DocsLayout title="ui docs" description="The public docs of @meowerse/ui: tokens, type, motion, voice, every component live, patterns and a playground.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>@meowerse/ui</h1>
+    <p class="lede">The design system every meowerse app is built with. It shares its tokens with alxnko.dev: one graphite palette, one green, JetBrains Mono everywhere, and terminal touches only where they keep an app easy to use.</p>
+    <p>{api.components.length} components, {api.functions.length} utilities, dark and light themes. Everything here is generated from the source, so it can't drift from what the apps ship.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="use-title">
+    <h2 id="use-title">use it</h2>
+    <CodeBlock id="use" lang="ts" code={usage} />
+  </section>
+  <section class="docs-section" aria-labelledby="map-title">
+    <h2 id="map-title">what's here</h2>
+    {groups.map((g) => (
+      <div class="docs-section">
+        <h3>{g.label}</h3>
+        <ul class="docs-list">{g.items.map((it) => <li><a href={it.href}>{it.label}</a></li>)}</ul>
+      </div>
+    ))}
+  </section>
+</DocsLayout>

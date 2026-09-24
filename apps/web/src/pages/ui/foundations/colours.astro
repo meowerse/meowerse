@@ -1,0 +1,67 @@
+---
+import tokens from "@meowerse/ui/tokens.json";
+import { CONTRAST_PAIRS, contrast, StatusLine } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+import Swatch from "../../../components/docs/Swatch.astro";
+
+const kebab = (s: string) => s.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+const semantic = Object.keys(tokens.semantic.dark) as (keyof typeof tokens.semantic.dark)[];
+const brand = { green: tokens.primitive.green, greenInk: tokens.primitive.greenInk, amber: tokens.primitive.amber, red: tokens.primitive.red, cat: tokens.primitive.scene.cat, catEdge: tokens.primitive.scene.catEdge };
+const pairs = CONTRAST_PAIRS.flatMap(([fg, bg, min]) => (["dark", "light"] as const).map((theme) => {
+  const t = tokens.semantic[theme];
+  const ratio = contrast(t[fg], t[bg]);
+  return { theme, fg, bg, min, ratio, ok: ratio >= min };
+}));
+---
+<DocsLayout title="colours" description="Every colour token of @meowerse/ui with its dark and light value, and the contrast of every text pair.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>colours</h1>
+    <p class="lede">Graphite surfaces and one green. Dark is the default and follows the system; light is "day paper". Green marks the one primary action, focus, and live/ok, and is never body text on light (use accent there).</p>
+  </header>
+  <section class="docs-section" aria-labelledby="sem-title">
+    <h2 id="sem-title">semantic tokens</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="semantic colour tokens">
+      <table class="table">
+        <thead><tr><th scope="col">token</th><th scope="col">css variable</th><th scope="col">dark</th><th scope="col">light</th></tr></thead>
+        <tbody>
+          {semantic.map((k) => (
+            <tr>
+              <td>{k}</td>
+              <td><code>{`--c-${kebab(k)}`}</code></td>
+              <td><Swatch value={tokens.semantic.dark[k]} /><code>{tokens.semantic.dark[k]}</code></td>
+              <td><Swatch value={tokens.semantic.light[k]} /><code>{tokens.semantic.light[k]}</code></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="contrast-title">
+    <h2 id="contrast-title">contrast</h2>
+    <p>Every pair the components put text or a boundary on, checked in both themes by the token test. AA needs 4.5:1 for text and 3:1 for the focus ring and input borders.</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="contrast results">
+      <table class="table">
+        <thead><tr><th scope="col">text</th><th scope="col">on</th><th scope="col">theme</th><th scope="col">ratio</th><th scope="col">needs</th></tr></thead>
+        <tbody>
+          {pairs.map((p) => (
+            <tr>
+              <td><code>{p.fg}</code></td><td><code>{p.bg}</code></td><td>{p.theme}</td>
+              <td><StatusLine state={p.ok ? "ok" : "fail"}>{`${p.ratio.toFixed(2)}:1`}</StatusLine></td>
+              <td>{p.min}:1</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="brand-title">
+    <h2 id="brand-title">brand primitives</h2>
+    <p>Raw colours behind the semantic tokens. Use the semantic tokens in components; these are listed for reference (the cat colours feed Cat3D).</p>
+    <ul class="docs-list">{Object.entries(brand).map(([k, v]) => <li><Swatch value={v} /><code>{k}</code> <code>{v}</code></li>)}</ul>
+  </section>
+  <section class="docs-section" aria-labelledby="ansi-title">
+    <h2 id="ansi-title">terminal (ansi) palette</h2>
+    <p>For glyphs inside dark code and terminal surfaces only. Several of these fail contrast on light backgrounds, so StatusLine and every other component use the theme tokens instead.</p>
+    <ul class="docs-list">{Object.entries(tokens.ansi).map(([k, v]) => <li><Swatch value={v} /><code>{`--ansi-${k}`}</code> <code>{v}</code></li>)}</ul>
+  </section>
+</DocsLayout>

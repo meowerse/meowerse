@@ -1,0 +1,33 @@
+---
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import { uiApi } from "../../ui-docs/api";
+const { functions, values, types } = uiApi();
+---
+<DocsLayout title="utilities" description="Hooks, helpers, constants and types exported by @meowerse/ui, generated from the source.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>utilities</h1>
+    <p class="lede">Everything @meowerse/ui exports besides components, read from the TypeScript source at build time.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="fn-title">
+    <h2 id="fn-title">functions and hooks</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="functions">
+      <table class="table">
+        <thead><tr><th scope="col">name</th><th scope="col">signature</th><th scope="col">notes</th></tr></thead>
+        <tbody>{functions.map((f) => <tr><td><code>{f.name}</code></td><td><code>{f.signature}</code></td><td>{f.description ?? ""} <span class="mw-muted">{f.file}</span></td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="val-title">
+    <h2 id="val-title">constants</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="constants">
+      <table class="table">
+        <thead><tr><th scope="col">name</th><th scope="col">type</th></tr></thead>
+        <tbody>{values.map((v) => <tr><td><code>{v.name}</code></td><td><code>{v.type}</code></td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="type-title">
+    <h2 id="type-title">types</h2>
+    <p>{types.map((t, i) => <><code>{t}</code>{i < types.length - 1 ? ", " : ""}</>)}</p>
+  </section>
+</DocsLayout>

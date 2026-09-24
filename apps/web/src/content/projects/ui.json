@@ -7,7 +7,7 @@
     "One set of colours, type, spacing and motion, and the components built on them: buttons, fields, dialogs, status lines, the chat prompt and more.",
     "Dark by default with a light \"day paper\" theme; every colour combination used for text is checked for WCAG AA contrast by a test.",
     "Terminal touches (the › prompt, [ ok ] status lines, a blinking cursor on the wordmark) appear only where they keep an app easy to use.",
-    "Its documentation, with every component rendered live, will be published on this site."
+    "Its documentation, with every component rendered live, is published on this site."
   ],
   "how": [
     "The tokens live in one tokens.json. A script generates the CSS custom properties, and CI fails when the generated file is out of date.",
@@ -28,10 +28,11 @@
     { "k": "package", "v": "@meowerse/ui, in the meowerse monorepo" },
     { "k": "components", "v": "React 19, typed with TypeScript" },
     { "k": "themes", "v": "dark (default) and light, following the system" },
-    { "k": "docs", "v": "coming soon at meow.alxnko.dev" }
+    { "k": "docs", "v": "meow.alxnko.dev/ui" }
   ],
   "status": { "kind": "static", "state": "info", "text": "a library, not a service: it ships inside each app" },
   "links": [
+    { "label": "read the docs", "href": "/ui/" },
     { "label": "source", "href": "https://github.com/meowerse/meowerse/tree/master/packages/ui" }
   ]
 }

@@ -12,16 +12,17 @@ export const SITE = {
 } as const;
 
 export type NavLink = { label: string; href: string; match: string };
-// C3 (pre-flight ruling): /ui/ doesn't exist as a page until T7 builds it, so its NAV entry is added
-// there, not here. The link checker stays strict, so no link to a page that doesn't exist yet ships.
+// C3 (pre-flight ruling): /ui/ is added to NAV now that T7 has built the page (it was withheld until
+// then so the strict link checker never had to point at a page that didn't exist yet).
 // NAV's data lives in ./nav.json (plain {label, href, match} entries, no imports) so
 // tests/e2e/shell.spec.ts can read it with JSON.parse and assert aria-current against the exact
 // same entries this exports — not a hand-maintained copy that could silently drift.
 export const NAV: readonly NavLink[] = navData as readonly NavLink[];
 
-// C3: same reasoning — "ui docs" (/ui/) and "playground" (/ui/playground/) are added by T7 and T10.
+// C3: "playground" (/ui/playground/) is added by T10, once that page exists.
 export const FOOTER_LINKS = [
   { label: "projects", href: "/#projects" },
+  { label: "ui docs", href: "/ui/" },
 ];
 
 export { isCurrent };

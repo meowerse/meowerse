@@ -13,10 +13,10 @@ describe("site", () => {
     expect(linkAttrs("mailto:x@example.com")).toEqual({});
     expect(isExternal("https://alxnko.dev/")).toBe(true);
   });
-  // C3 (pre-flight ruling): /ui/ doesn't exist yet — T7 adds it and its NAV entry. isCurrent stays
-  // generic so it needs no change when that entry returns.
+  // C3 (pre-flight ruling): T7 restores the /ui/ NAV entry now that the page exists. isCurrent stays
+  // generic, so no /ui/-specific assertion was needed here even before this entry existed.
   it("marks the nav entry for the current section", () => {
-    expect(NAV.map((l) => l.label)).toEqual(["projects"]);
+    expect(NAV.map((l) => l.label)).toEqual(["projects", "ui docs"]);
     expect(isCurrent("/p/auth/", "/p/")).toBe(true);
     expect(isCurrent("/ui/components/button/", "/ui/")).toBe(true);
     expect(isCurrent("/", "/ui/")).toBe(false);

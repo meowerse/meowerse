@@ -1,3 +1,4 @@
 [
-  { "label": "projects", "href": "/#projects", "match": "/p/" }
+  { "label": "projects", "href": "/#projects", "match": "/p/" },
+  { "label": "ui docs", "href": "/ui/", "match": "/ui/" }
 ]

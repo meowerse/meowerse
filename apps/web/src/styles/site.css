@@ -83,3 +83,74 @@ a.mw-btn:hover { text-decoration: none; }
 .card-link:hover { border-color: var(--c-line-input); text-decoration: none; }
 .card-link__name { font-weight: 700; }
 .card-link__sum { font-size: var(--fs-2); color: var(--c-fg-muted); }
+
+/* ---- docs ---- */
+.docs { display: grid; gap: var(--sp-5); }
+.docs__jump { display: inline-flex; align-items: center; justify-self: start; min-height: var(--control-height); color: var(--c-fg-muted); font-size: var(--fs-2); }
+.docs__content { display: grid; gap: var(--sp-6); align-content: start; min-width: 0; }
+.docs__nav { display: grid; gap: var(--sp-4); align-content: start; padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
+.docs__group-label { margin-bottom: var(--sp-1); font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.docs__nav ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.docs__nav a { display: flex; align-items: center; min-height: var(--control-height); padding: 0 var(--sp-3); border-left: 2px solid transparent; color: var(--c-fg-muted); font-size: var(--fs-2); }
+.docs__nav a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.docs__nav a[aria-current="page"] { color: var(--c-fg); border-left-color: var(--c-accent); }
+@media (min-width: 960px) {
+  .docs { grid-template-columns: 15rem minmax(0, 1fr); grid-template-areas: "nav content"; }
+  .docs__jump { display: none; }
+  .docs__content { grid-area: content; }
+  .docs__nav { grid-area: nav; position: sticky; top: calc(var(--control-height) + var(--sp-4)); max-height: calc(100dvh - var(--control-height) - var(--sp-6)); overflow-y: auto; padding-top: 0; border-top: 0; }
+}
+.docs-head { display: grid; gap: var(--sp-3); }
+.docs-section { display: grid; gap: var(--sp-3); min-width: 0; }
+.docs-section > h2 { font-size: var(--fs-5); }
+.docs-section h3 { font-size: var(--fs-4); }
+.docs-list { display: grid; gap: var(--sp-1); max-width: 70ch; margin: 0; padding-left: var(--sp-5); }
+/* C4: the /ui/ index links its groups' pages from .docs-list <li> — not inline prose, so the 44px
+   target rule applies. Scoped to <a> only: .docs-list also lists plain (non-link) rows elsewhere
+   (colours' brand/ansi swatches, voice's rules), which stay their natural text height. */
+.docs-list a { display: flex; align-items: center; min-height: var(--control-height); }
+.table-wrap { max-width: 100%; overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
+.table th, .table td { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--c-line); text-align: left; vertical-align: top; }
+.table th { color: var(--c-fg-muted); font-weight: 700; white-space: nowrap; }
+.table td code { white-space: nowrap; }
+.swatch { width: var(--sp-6); height: var(--sp-6); margin-right: var(--sp-2); vertical-align: middle; }
+.swatch__rect { stroke: var(--c-line-strong); stroke-width: 1; }
+.codeblock { min-width: 0; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+.codeblock__bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding-left: var(--sp-3); border-bottom: 1px solid var(--c-line); }
+.codeblock__lang { font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.codeblock__copy { min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-3); background: none; border: 0; border-radius: var(--r-m); color: var(--c-fg-muted); font: inherit; font-size: var(--fs-2); cursor: pointer; }
+.codeblock__copy:hover { color: var(--c-fg); background: var(--c-bg-elev); }
+.codeblock pre { margin: 0; border: 0; border-radius: 0; }
+.fs-1 { font-size: var(--fs-1); }
+.fs-2 { font-size: var(--fs-2); }
+.fs-3 { font-size: var(--fs-3); }
+.fs-4 { font-size: var(--fs-4); }
+.fs-5 { font-size: var(--fs-5); }
+.fs-6 { font-size: var(--fs-6); }
+.fs-7 { font-size: var(--fs-7); }
+.bold { font-weight: 700; }
+.sp-bar { display: block; height: var(--sp-3); background: var(--c-fg-subtle); }
+.sp-1 { width: var(--sp-1); }
+.sp-2 { width: var(--sp-2); }
+.sp-3 { width: var(--sp-3); }
+.sp-4 { width: var(--sp-4); }
+.sp-5 { width: var(--sp-5); }
+.sp-6 { width: var(--sp-6); }
+.sp-7 { width: var(--sp-7); }
+.sp-8 { width: var(--sp-8); }
+.r-box { width: var(--sp-8); height: var(--sp-8); background: var(--c-surface); border: 1px solid var(--c-line-input); }
+.r-s { border-radius: var(--r-s); }
+.r-m { border-radius: var(--r-m); }
+.r-l { border-radius: var(--r-l); }
+.demo-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+.demo-row > * { flex: 1 1 12rem; }
+.motion-demo { display: grid; gap: var(--sp-2); }
+.motion-demo__track { position: relative; height: var(--sp-6); border-bottom: 1px solid var(--c-line); }
+.motion-demo__dot { position: absolute; left: 0; top: var(--sp-2); width: var(--sp-4); height: var(--sp-4); border-radius: var(--r-s); background: var(--c-fg-muted); }
+.motion-demo__dot.d-fast { transition: transform var(--d-fast) var(--ease); }
+.motion-demo__dot.d-base { transition: transform var(--d-base) var(--ease); }
+.motion-demo__dot.d-slow { transition: transform var(--d-slow) var(--ease); }
+.motion-demo.is-playing .motion-demo__dot { transform: translateX(min(16rem, 60vw)); }
+.motion-note { display: none; }
+@media (prefers-reduced-motion: reduce) { .motion-note { display: block; } }
