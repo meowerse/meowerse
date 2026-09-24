@@ -1,5 +1,6 @@
-# Cloudflare Pages headers for meow.alxnko.dev. scripts/postbuild.ts replaces __CSP__ with the strict
-# hash-based policy it computes from the built pages: one policy for every page, the 404 included.
+# Cloudflare Pages headers for meow.alxnko.dev. scripts/postbuild.ts replaces the CSP placeholder
+# below with the strict hash-based policy it computes from the built pages: one policy for every
+# page, the 404 included.
 #
 # Cache-Control caveat: Cloudflare COMBINES same-name headers across every matching rule (a more
 # specific path does NOT override /*), so there is deliberately no Cache-Control under /*. Set
