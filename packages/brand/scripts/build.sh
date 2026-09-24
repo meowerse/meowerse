@@ -85,7 +85,6 @@ distribute() { # distribute <app> <name> <short_name>
 }
 
 echo "distributing:"
-distribute alxnko-dev      "alxnko.dev"      "alxnko"
 distribute web             "meowerse"        "meowerse"
 distribute auth-web        "meowerse auth"   "auth"
 distribute meowsenger-web  "meowsenger"      "meowsenger"
