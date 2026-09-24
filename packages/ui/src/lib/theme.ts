@@ -10,9 +10,7 @@ export function getTheme(): Theme {
 export function resolvedTheme(): "light" | "dark" {
   const t = getTheme();
   if (t !== "system") return t;
-  return typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
 export function applyTheme(theme: Theme): void {

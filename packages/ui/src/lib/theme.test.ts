@@ -39,9 +39,21 @@ describe("theme", () => {
   });
 
   it("resolvedTheme follows matchMedia when the stored theme is system", () => {
-    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(prefers-color-scheme: light)" }));
+    expect(resolvedTheme()).toBe("light");
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false }));
     expect(resolvedTheme()).toBe("dark");
-    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  });
+
+  it("resolves to dark when there is no stored choice and no system light preference", () => {
+    localStorage.clear();
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
+    expect(resolvedTheme()).toBe("dark");
+  });
+
+  it("resolves to light only when the system prefers light", () => {
+    localStorage.clear();
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(prefers-color-scheme: light)", media: q }));
     expect(resolvedTheme()).toBe("light");
   });
 
