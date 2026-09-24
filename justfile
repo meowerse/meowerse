@@ -28,6 +28,10 @@ lint-js:
 build:
     bun run build
 
+# Check @meowerse/ui tokens against the alxnko.dev repo (B5). Set ALXNKO_DEV_DIR if not a sibling checkout.
+tokens-drift:
+    bun run --filter @meowerse/ui tokens:drift
+
 # Show deploy status per service: deployed SHA vs source SHA (+ dirty flag).
 deploy-status:
     bash infra/deploy-status.sh
