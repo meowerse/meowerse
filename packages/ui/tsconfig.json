@@ -3,8 +3,9 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vitest/globals", "@testing-library/jest-dom"],
+    "types": ["bun-types", "vitest/globals", "@testing-library/jest-dom"],
+    "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts"]
 }

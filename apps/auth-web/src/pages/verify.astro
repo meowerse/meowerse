@@ -6,12 +6,12 @@ const base = import.meta.env.PUBLIC_AUTH_API_URL ?? ""; // same-origin: relative
 
 <Layout title="Verify with Telegram · Meowerse">
   <div class="mw-stack mw-narrow">
-    <h1>Verify your account</h1>
-    <p class="mw-muted">Link your Telegram to verify your Meowerse account. Some apps only accept
-      verified accounts; verifying also lets you sign in with Telegram.</p>
-    <TelegramButton client:load base={base} kind="VERIFY_EXISTING" label="Verify with Telegram" />
-    <p class="mw-muted">Open the bot, tap <strong>Start</strong>, and you’ll be verified
-      automatically. You’ll return here when it’s done.</p>
-    <p><a href="/account">Back to account</a></p>
+    <h1>verify your account</h1>
+    <p class="mw-muted">link your telegram to verify your meowerse account. some apps only accept
+      verified accounts; verifying also lets you sign in with telegram.</p>
+    <TelegramButton client:load base={base} kind="VERIFY_EXISTING" label="verify with telegram" />
+    <p class="mw-muted">open the bot, tap <strong>Start</strong>, and you’ll be verified
+      automatically. you’ll return here when it’s done.</p>
+    <p><a href="/account">back to account</a></p>
   </div>
 </Layout>
