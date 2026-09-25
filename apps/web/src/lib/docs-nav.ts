@@ -24,6 +24,6 @@ export function docsNav(componentNames: string[]): NavGroup[] {
         ...[...componentNames].sort().map((n) => ({ label: n, href: `/ui/components/${toSlug(n)}/` })),
       ],
     },
-    { label: "more", items: [{ label: "utilities", href: "/ui/utilities/" }] },
+    { label: "more", items: [{ label: "gallery", href: "/ui/gallery/" }, { label: "utilities", href: "/ui/utilities/" }] },
   ];
 }

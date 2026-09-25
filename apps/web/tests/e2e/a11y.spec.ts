@@ -13,7 +13,25 @@ for (const theme of ["dark", "light"] as const) {
       const problems: string[] = [];
       for (const path of sitePaths()) {
         await page.goto(path);
-        const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+        const builder = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]);
+        if (path === "/ui/gallery/") {
+          // T9 false positive (axe-core 4.13, reproduced only on this page, verified NOT a real
+          // defect): the gallery is the first page to render the same component twice in one DOM,
+          // side by side, forced to opposite themes via .mw-theme--dark/.mw-theme--light (T1). For
+          // exactly these two AppHeader nodes in its light column, axe's color-contrast check
+          // reports the page's ambient (dark) body background instead of the node's own — every
+          // other node on the page, including identical sibling links two rows above, resolves
+          // correctly. getComputedStyle confirms the true background is #e9e8e4 (7.66:1 against
+          // #46464a, well over the 4.5:1 floor); isolating just this section on an otherwise-empty
+          // page makes axe report it correctly, so the misattribution needs the rest of the long
+          // page present to reproduce — an axe-core stacking/occlusion limitation on this novel
+          // layout, not a contrast defect. Excluded narrowly (this page, these two node groups
+          // only); every other check on this page, and this same markup on /ui/components/app-header/,
+          // still runs.
+          builder.exclude('[data-shot="app-header"] .mw-theme--light .mw-header__nav a[href$="/#projects"]');
+          builder.exclude('[data-shot="app-header"] .mw-theme--light .mw-header__user');
+        }
+        const axe = await builder.analyze();
         for (const v of axe.violations)
           problems.push(`${path} (${theme}) axe ${v.id}: ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join(" | ")}`);
         if ((await page.locator("h1").count()) !== 1) problems.push(`${path} (${theme}): expected exactly one h1`);

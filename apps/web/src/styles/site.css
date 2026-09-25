@@ -171,3 +171,34 @@ a.mw-btn:hover { text-decoration: none; }
 .dd-tag--dont { color: var(--c-danger); }
 .icon-grid { display: grid; gap: var(--sp-2); grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); width: 100%; margin: 0; padding: 0; list-style: none; }
 .icon-grid li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2); }
+
+/* ---- demos and gallery ---- */
+.demo { display: grid; gap: var(--sp-3); justify-items: start; }
+.demo__out { font-size: var(--fs-2); color: var(--c-fg-muted); }
+.demo__frame { position: relative; width: 100%; border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.demo__frame .mw-header { position: static; }
+.demo-stage { padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.demo-source summary { display: flex; align-items: center; min-height: var(--control-height); cursor: pointer; color: var(--c-fg-muted); font-size: var(--fs-2); }
+.demo-modal { display: grid; gap: var(--sp-3); }
+.demo-modal__row { display: flex; align-items: flex-end; gap: var(--sp-2); }
+.demo-modal__row .mw-field { flex: 1; }
+.demo-modal__clear { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-height); height: var(--control-height); padding: 0; background: none; border: 1px solid var(--c-line); border-radius: var(--r-m); color: var(--c-fg-muted); cursor: pointer; }
+.demo-modal__more { padding-left: var(--sp-2); }
+.is-invisible { visibility: hidden; }
+.is-collapsed { display: none; }
+.chat { width: 100%; max-width: 36rem; justify-items: stretch; }
+.chat__log { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
+.bubble { align-self: flex-start; max-width: min(62ch, 85%); padding: var(--sp-2) var(--sp-3); background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-l) var(--r-l) var(--r-l) var(--r-s); overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble--own { align-self: flex-end; background: var(--c-bg-elev); border-color: var(--c-line-strong); border-radius: var(--r-l) var(--r-l) var(--r-s) var(--r-l); }
+.bubble__meta { display: block; margin-top: var(--sp-1); font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.bubble__quote { display: block; margin-bottom: var(--sp-1); padding-left: var(--sp-2); border-left: 2px solid var(--c-line-input); font-size: var(--fs-2); color: var(--c-fg-muted); }
+/* min-width (not just min-height) so short names ("Kbd", "Code") still clear the 44px target */
+.gallery-item h2 a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); margin: 0 calc(var(--sp-2) * -1); border-radius: var(--r-m); color: var(--c-fg); }
+.gallery-item h2 a:hover { background: var(--c-surface); text-decoration: none; }
+.gallery-pair { display: grid; gap: var(--sp-3); }
+@media (min-width: 960px) { .gallery-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.gallery-theme { display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.gallery-theme__label { font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.gallery-theme .previews { grid-template-columns: 1fr; }
+/* axe link-in-text-block: an inline link needs a non-color cue, not just the accent hue */
+.gallery-item p a { text-decoration: underline; text-underline-offset: 2px; }

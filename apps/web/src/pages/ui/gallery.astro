@@ -1,0 +1,24 @@
+---
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import Preview from "../../components/docs/Preview.astro";
+import { COMPONENT_PAGES } from "../../ui-docs/registry";
+---
+<DocsLayout title="gallery" description="Every @meowerse/ui component in every state, dark and light side by side.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>gallery</h1>
+    <p class="lede">Every component in every state, dark and light side by side, at whatever width you're reading on. The screenshot tests compare these sections at phone and desktop sizes.</p>
+  </header>
+  {COMPONENT_PAGES.map((p) => (
+    <section class="docs-section gallery-item" id={p.slug} data-shot={p.slug} aria-labelledby={`g-${p.slug}`}>
+      <h2 id={`g-${p.slug}`}><a href={`/ui/components/${p.slug}/`}>{p.name}</a></h2>
+      {p.interactiveOnly ? (
+        <p>Nothing to show without interaction: <a href={`/ui/components/${p.slug}/#demo-title`}>try it on its page</a>.</p>
+      ) : (
+        <div class="gallery-pair">
+          <div class="mw-theme--dark gallery-theme"><p class="gallery-theme__label">dark</p><Preview page={p} scope="dark" /></div>
+          <div class="mw-theme--light gallery-theme"><p class="gallery-theme__label">light</p><Preview page={p} scope="light" /></div>
+        </div>
+      )}
+    </section>
+  ))}
+</DocsLayout>

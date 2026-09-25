@@ -1,0 +1,25 @@
+---
+// Hydrated only when scrolled into view. Islands get no props and no children (Trusted Types).
+import ModalDemo from "../../ui-docs/demos/modal";
+import ConfirmDialogDemo from "../../ui-docs/demos/confirm-dialog";
+import ToastDemo from "../../ui-docs/demos/toast-provider";
+import PromptDemo from "../../ui-docs/demos/prompt";
+import CodeDemo from "../../ui-docs/demos/code";
+import RecoveryCodesDemo from "../../ui-docs/demos/recovery-codes";
+import ThemeToggleDemo from "../../ui-docs/demos/theme-toggle";
+import AppHeaderDemo from "../../ui-docs/demos/app-header";
+import AuthGateDemo from "../../ui-docs/demos/auth-gate";
+import RadioGroupDemo from "../../ui-docs/demos/radio-group";
+interface Props { slug: string }
+const { slug } = Astro.props;
+---
+{slug === "modal" && <ModalDemo client:visible />}
+{slug === "confirm-dialog" && <ConfirmDialogDemo client:visible />}
+{slug === "toast-provider" && <ToastDemo client:visible />}
+{slug === "prompt" && <PromptDemo client:visible />}
+{slug === "code" && <CodeDemo client:visible />}
+{slug === "recovery-codes" && <RecoveryCodesDemo client:visible />}
+{slug === "theme-toggle" && <ThemeToggleDemo client:visible />}
+{slug === "app-header" && <AppHeaderDemo client:visible />}
+{slug === "auth-gate" && <AuthGateDemo client:visible />}
+{slug === "radio-group" && <RadioGroupDemo client:visible />}

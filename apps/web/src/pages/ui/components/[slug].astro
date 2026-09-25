@@ -6,8 +6,10 @@ import CodeBlock from "../../../components/docs/CodeBlock.astro";
 import Preview from "../../../components/docs/Preview.astro";
 import PropsTable from "../../../components/docs/PropsTable.astro";
 import CssVarsTable from "../../../components/docs/CssVarsTable.astro";
+import Demo from "../../../components/docs/Demo.astro";
 import { COMPONENT_PAGES, nodeOf, type RegisteredPage } from "../../../ui-docs/registry";
 import { componentDoc, cssApi } from "../../../ui-docs/api";
+import { DEMO_SOURCES } from "../../../ui-docs/demos";
 import { toJsx } from "../../../lib/jsx";
 
 export function getStaticPaths() {
@@ -38,6 +40,17 @@ const usage = page.examples.map((ex, i) => {
     <section class="docs-section" aria-labelledby="preview-title">
       <h2 id="preview-title">variants and states</h2>
       <Preview page={page} scope="page" />
+    </section>
+  )}
+
+  {DEMO_SOURCES[page.slug] && (
+    <section class="docs-section" aria-labelledby="demo-title">
+      <h2 id="demo-title">try it</h2>
+      <div class="demo-stage" data-preview><Demo slug={page.slug} /></div>
+      <details class="demo-source">
+        <summary>demo source</summary>
+        <CodeBlock id="demo-src" lang="tsx" code={DEMO_SOURCES[page.slug]!} />
+      </details>
     </section>
   )}
 
