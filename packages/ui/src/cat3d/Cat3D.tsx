@@ -6,7 +6,13 @@ import { cx } from "../lib/cx";
 import poster from "./cat-poster.webp";
 import { attachCat3D } from "./attach";
 
-export function Cat3D({ size = 160, className }: { size?: number; className?: string }) {
+/** the low-poly green cat from the alxnko.dev desk: a still poster first, then a tiny WebGL2 renderer whose head follows the pointer. */
+export function Cat3D({ size = 160, className }: {
+  /** the poster's width and height, in pixels. */
+  size?: number;
+  /** extra class names to append. */
+  className?: string;
+}) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => attachCat3D(root.current!), []);
   return (

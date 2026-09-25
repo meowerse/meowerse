@@ -1,7 +1,13 @@
 import { Button } from "./Button";
 import { cx } from "../lib/cx";
 
-export function RecoveryCodes({ codes, className }: { codes: string[]; className?: string }) {
+/** a grid of one-time recovery codes with a "copy all" button. */
+export function RecoveryCodes({ codes, className }: {
+  /** the codes to show, exactly as issued. */
+  codes: string[];
+  /** extra class names to append. */
+  className?: string;
+}) {
   const joined = codes.join("\n");
   async function copyAll() { try { await navigator.clipboard.writeText(joined); } catch {} }
   return (

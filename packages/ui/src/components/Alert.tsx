@@ -4,8 +4,16 @@ import { cx } from "../lib/cx";
 
 const ICON = { error: "alert-triangle", success: "circle-check", info: "info-circle" } as const;
 
+/** a short message block for a success, an error or information, with an optional dismiss button. */
 export function Alert({ variant = "info", onDismiss, children, className }: {
-  variant?: "error" | "success" | "info"; onDismiss?: () => void; children: ReactNode; className?: string;
+  /** the tone of the message; error renders role="alert", the rest role="status". */
+  variant?: "error" | "success" | "info";
+  /** shows a dismiss button and calls this when it's pressed. */
+  onDismiss?: () => void;
+  /** the message itself. */
+  children: ReactNode;
+  /** extra class names to append. */
+  className?: string;
 }) {
   return (
     <div role={variant === "error" ? "alert" : "status"} className={cx("mw-alert", `mw-alert--${variant}`, className)}>

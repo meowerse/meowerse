@@ -5,7 +5,13 @@ import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
-export function AppHeader({ session, className }: { session: Session; className?: string }) {
+/** the header of meowerse accounts: brand, session-aware navigation, the theme toggle and a phone menu button. */
+export function AppHeader({ session, className }: {
+  /** the current session, from useSession(); its loading/authenticated state decides which links show. */
+  session: Session;
+  /** extra class names to append. */
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   const known = !session.loading && !("error" in session && session.error);
   return (

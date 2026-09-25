@@ -9,4 +9,13 @@ describe("docsNav", () => {
     for (const g of groups) for (const i of g.items) expect(i.href).toMatch(/^\/ui\/([a-z0-9-]+\/)*$/);
   });
   it("ends with utilities", () => expect(docsNav([]).at(-1)!.items.at(-1)).toEqual({ label: "utilities", href: "/ui/utilities/" }));
+  it("lists every component under components, after an index link", () => {
+    const comps = docsNav(["Button", "ConfirmDialog", "Alert"]).find((g) => g.label === "components")!;
+    expect(comps.items).toEqual([
+      { label: "all components", href: "/ui/components/" },
+      { label: "Alert", href: "/ui/components/alert/" },
+      { label: "Button", href: "/ui/components/button/" },
+      { label: "ConfirmDialog", href: "/ui/components/confirm-dialog/" },
+    ]);
+  });
 });

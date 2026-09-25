@@ -1,11 +1,23 @@
 import { useId } from "react";
 import { cx } from "../lib/cx";
 
+/** one choice in a RadioGroup. */
 export type RadioOption = { label: string; value: string; hint?: string };
 
+/** a labelled group of native radio buttons, each in a 44 px row, with optional hints. */
 export function RadioGroup({ name, legend, options, value, onChange, className }: {
-  name: string; legend: string; options: RadioOption[];
-  value: string; onChange: (v: string) => void; className?: string;
+  /** the shared name of the underlying radio inputs. */
+  name: string;
+  /** the group's fieldset legend. */
+  legend: string;
+  /** the choices to offer. */
+  options: RadioOption[];
+  /** the currently selected option's value. */
+  value: string;
+  /** called with the newly selected option's value. */
+  onChange: (v: string) => void;
+  /** extra class names to append. */
+  className?: string;
 }) {
   const gid = useId();
   return (

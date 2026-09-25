@@ -1,6 +1,7 @@
 import { ContactLinks } from "./ContactLinks";
 import { cx } from "../lib/cx";
 
+/** one link in a Footer's site navigation. */
 export interface FooterLink {
   label: string;
   href: string;
@@ -15,15 +16,17 @@ const DEFAULT_LINKS: FooterLink[] = [
 ];
 const DEFAULT_LEGAL = "meowerse accounts — a personal project by alxnko";
 
+/** the page footer: site links, contact links and a one-line legal note. */
 export function Footer({
   className,
   links = DEFAULT_LINKS,
   legal = DEFAULT_LEGAL,
 }: {
+  /** extra class names to append. */
   className?: string;
-  // Nav links; defaults to the auth app's set. Apps like meowsenger pass their own.
+  /** nav links; defaults to the auth app's set. Apps like meowsenger pass their own. */
   links?: FooterLink[];
-  // Legal/attribution line; defaults to the auth app's.
+  /** the legal/attribution line; defaults to the auth app's. */
   legal?: string;
 }) {
   return (

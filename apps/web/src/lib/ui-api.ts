@@ -7,7 +7,12 @@ import { join, relative } from "node:path";
 export type PropDoc = {
   name: string; type: string; values?: string[]; required: boolean; default?: string; description?: string; inherited?: boolean;
 };
-export type ComponentDoc = { name: string; file: string; description?: string; props: PropDoc[]; inherits: string[] };
+// `inherits` keeps the full @types/react ancestor chain (e.g. Button's AriaAttributes, Attributes,
+// ButtonHTMLAttributes, DOMAttributes, HTMLAttributes, RefAttributes); `primaryInherit` narrows that
+// to the one interface worth showing in a docs table (e.g. "ButtonHTMLAttributes<HTMLButtonElement>"),
+// dropping forwardRef/memo's own wrapper interfaces (RefAttributes, Attributes) and the component's
+// own named props type (e.g. Prompt's PromptProps isn't "inherited").
+export type ComponentDoc = { name: string; file: string; description?: string; props: PropDoc[]; inherits: string[]; primaryInherit?: string };
 export type FunctionDoc = { name: string; file: string; signature: string; description?: string };
 export type ValueDoc = { name: string; file: string; type: string; description?: string };
 export type UiApi = { components: ComponentDoc[]; functions: FunctionDoc[]; values: ValueDoc[]; types: string[] };
@@ -22,9 +27,43 @@ export function uiDirFrom(cwd: string): string {
 }
 
 /** The function whose first parameter carries the props: the declaration itself, or the first function
- *  inside it, e.g. forwardRef(function X(…) {}) or const X = (…) => …. */
-function fnOf(decl: ts.Node): ts.SignatureDeclaration | undefined {
+ *  inside it, e.g. forwardRef(function X(…) {}) or const X = (…) => ….
+ *  It's a depth-first search that stops at the FIRST function-like node it finds (pinned by
+ *  ui-api.test.ts), so a callback argument placed before the component function in the same
+ *  expression (e.g. `withLogger(() => {}, function X(props) {…})`) would be misread as the
+ *  component: none of the 26 real components are shaped that way today. */
+export function fnOf(decl: ts.Node): ts.SignatureDeclaration | undefined {
   return ts.isFunctionLike(decl) ? decl : ts.forEachChild(decl, fnOf);
+}
+
+/** The most specific interface a component's props type inherits from, for a docs table that should
+ *  show only e.g. "ButtonHTMLAttributes<HTMLButtonElement>", not the whole @types/react ancestor
+ *  chain (AriaAttributes, DOMAttributes, HTMLAttributes, …) and not forwardRef/memo's own wrapper
+ *  interfaces (RefAttributes, Attributes — every ref-forwarding component picks these up, and they
+ *  carry `ref`/`key`, not meaningful component props). Reads the props type's own intersection
+ *  members in source order (e.g. `ButtonHTMLAttributes<HTMLButtonElement> & { … }`, or
+ *  `Omit<InputHTMLAttributes<HTMLInputElement>, "id"> & { … }`, unwrapping Omit/Pick to the
+ *  interface underneath) and returns the first one that isn't the component's own props object or
+ *  named type, and isn't a wrapper interface. */
+function primaryInheritOf(propsType: ts.Type, checker: ts.TypeChecker, isOwn: (d: ts.Node) => boolean): string | undefined {
+  if (!propsType.isIntersection()) return undefined;
+  const WRAPPERS = new Set(["RefAttributes", "Attributes", "ClassAttributes"]);
+  for (const t of propsType.types) {
+    const alias = (t as ts.Type & { aliasSymbol?: ts.Symbol; aliasTypeArguments?: readonly ts.Type[] }).aliasSymbol;
+    if (alias) {
+      const aliasDecl = alias.declarations?.[0];
+      if (aliasDecl && isOwn(aliasDecl)) continue; // the component's own named props type (e.g. PromptProps)
+      if (alias.getName() === "Omit" || alias.getName() === "Pick") {
+        const inner = (t as ts.Type & { aliasTypeArguments?: readonly ts.Type[] }).aliasTypeArguments?.[0];
+        if (inner) return checker.typeToString(inner, undefined, FMT);
+      }
+      continue;
+    }
+    const symName = t.symbol?.getName?.();
+    if (!symName || symName === "__type" || WRAPPERS.has(symName)) continue; // inline object literal, or wrapper noise
+    return checker.typeToString(t, undefined, FMT);
+  }
+  return undefined;
 }
 
 function defaultsOf(decl: ts.Node): Record<string, string> {
@@ -94,7 +133,8 @@ export function extractUiApi(uiDir: string, entries = ["src/index.ts", "src/cat3
           default: defaults[pname], description: doc(p),
         });
       }
-      out.components.push({ name, file, description: doc(sym), props, inherits: [...inherits].sort() });
+      const primaryInherit = propsType ? primaryInheritOf(propsType, checker, own) : undefined;
+      out.components.push({ name, file, description: doc(sym), props, inherits: [...inherits].sort(), primaryInherit });
     }
   }
   const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name);

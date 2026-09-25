@@ -3,8 +3,15 @@ import { useSession } from "../lib/useSession";
 import { Spinner } from "./Spinner";
 import { Button } from "./Button";
 
-export function AuthGate({ base, children, loginPath = "/login" }:
-  { base: string; children: ReactNode; loginPath?: string }) {
+/** shows its children only to a signed-in user; waits visibly, offers a retry on failure, and redirects only on a real signed-out answer. */
+export function AuthGate({ base, children, loginPath = "/login" }: {
+  /** the origin of the account service to check the session against. */
+  base: string;
+  /** shown once the session is confirmed signed in. */
+  children: ReactNode;
+  /** where to send a signed-out visitor; the current path is appended as next=. */
+  loginPath?: string;
+}) {
   const s = useSession(base);
   const signedOut = !s.loading && !s.authenticated && !s.error;
   useEffect(() => {

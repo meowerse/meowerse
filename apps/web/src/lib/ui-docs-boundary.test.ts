@@ -27,7 +27,7 @@
 //
 // The e2e counterpart (ui-foundations.spec.ts) is the build-output backstop: it greps the actual
 // dist/_astro/*.js for a string that only the `typescript` package's source contains.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -177,6 +177,44 @@ describe("ui-docs/api and the TypeScript compiler stay out of client code (P29)"
       expect(reached.has("also-unreachable")).toBe(false);
       // "sensitive" is reachable from "unreachable-script", which this call never started from —
       // exactly the situation this test would need to catch if the real scan ever missed an entry.
+    });
+  });
+
+  // T8a ruling: `edgesOf` silently drops any relative specifier `resolveLocal` can't match to a real
+  // file (`.filter((f): f is string => !!f)`, above) — that's correct for a bare/package specifier
+  // ("@meowerse/ui", "typescript", …), which this graph was never meant to follow, but WRONG for a
+  // relative specifier that should have resolved and didn't: a typo'd path, a moved file, or a
+  // resolveLocal candidate list that's missing an extension a new file type needs. Any of those would
+  // silently shrink check 2's reachability graph instead of failing — a sensitive file could become
+  // "unreachable" only because the edge that would have found it was dropped, not because it's
+  // actually safe. This asserts every relative specifier this scan finds resolves to a real file, so
+  // that failure mode is loud instead of silent.
+  describe("check 3: every relative import specifier resolves to a real file (no silently dropped edge)", () => {
+    // Checks the real filesystem, not membership in `allFiles` (the .astro/.ts/.tsx walk): a
+    // relative import can legitimately target a non-source asset resolveLocal was never meant to
+    // follow into the graph (e.g. `lib/site.ts`'s `import ... from "./nav.json"`), and that's fine —
+    // what must never happen is a relative specifier that resolves to NOTHING, source or asset alike.
+    function existsAsFile(fromFile: string, spec: string): boolean {
+      const base = normalize(join(dirname(fromFile), spec));
+      if (/\.[a-zA-Z0-9]+$/.test(spec)) return existsSync(base); // already has its own extension (.json, .css, …)
+      return [base, `${base}.ts`, `${base}.tsx`, `${base}.astro`, join(base, "index.ts"), join(base, "index.astro")].some(existsSync);
+    }
+
+    const cases = allFiles.flatMap((f) => {
+      const src = readFileSync(f, "utf8");
+      const body = clientBodyOf(f, src);
+      const specs = [...parseImports(body).filter((e) => !e.typeOnly).map((e) => e.spec), ...clientDirectiveSpecs(src)]
+        .filter((s) => s.startsWith("."));
+      return specs.map((spec) => [`${rel(f)} imports "${spec}"`, f, spec] as const);
+    });
+
+    it.each(cases)("%s", (_label, f, spec) => {
+      expect(existsAsFile(f, spec), `${rel(f)}: "${spec}" doesn't resolve to any real file on disk`).toBe(true);
+    });
+
+    it("sanity: an import of a file that doesn't exist is caught, not silently ignored", () => {
+      expect(existsAsFile(join(SRC, "lib/does-not-exist.ts"), "./nope-really")).toBe(false);
+      expect(existsAsFile(join(SRC, "lib/does-not-exist.ts"), "./nope-really.json")).toBe(false);
     });
   });
 });

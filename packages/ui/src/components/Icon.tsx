@@ -46,8 +46,17 @@ const ICONS: Record<string, readonly string[]> = {
 /** Every icon name `<Icon>` can draw. */
 export const ICON_NAMES: readonly string[] = Object.keys(ICONS);
 
-export function Icon({ name, size = 18, className, label }:
-  { name: string; size?: number; className?: string; label?: string }) {
+/** a curated set of Tabler outline icons, drawn as inline SVG paths in the current text colour. */
+export function Icon({ name, size = 18, className, label }: {
+  /** the icon to draw; an unknown name renders nothing. */
+  name: string;
+  /** the icon's width and height, in pixels. */
+  size?: number;
+  /** extra class names to append. */
+  className?: string;
+  /** gives the icon a name, making it an image instead of decorative. */
+  label?: string;
+}) {
   const paths = ICONS[name];
   if (!paths) return null;
   return (

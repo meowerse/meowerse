@@ -2,8 +2,15 @@ import { useState } from "react";
 import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
-export function Code({ value, copy = false, className }:
-  { value: string; copy?: boolean; className?: string }) {
+/** an inline code value, shown exactly as it is, with an optional copy button. */
+export function Code({ value, copy = false, className }: {
+  /** the value to show, kept in its original case. */
+  value: string;
+  /** shows a copy button next to the value. */
+  copy?: boolean;
+  /** extra class names to append. */
+  className?: string;
+}) {
   const [done, setDone] = useState(false);
   async function onCopy() {
     try { await navigator.clipboard.writeText(value); setDone(true); setTimeout(() => setDone(false), 1500); } catch {}
