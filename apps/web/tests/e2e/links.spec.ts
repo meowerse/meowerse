@@ -7,16 +7,9 @@ test("external links open safely in a new tab, mailto never does, internal links
   const internal = new Set<string>();
   for (const path of sitePaths()) {
     await page.goto(path);
-    // Component previews ([data-preview]) render the real @meowerse/ui components, some of which
-    // (AppHeader, Footer) hardcode root-relative hrefs meant for the app that actually uses them
-    // (auth-web's own /about, /login, …) — not navigation on this docs site. Those are covered by
-    // the component's own unit tests, not this page's link check, the same way [data-preview] is
-    // already exempt from the 44px target scan (fixtures.ts).
-    const links = await page.locator("a[href]").evaluateAll((as) => as
-      .filter((a) => !a.closest("[data-preview]"))
-      .map((a) => ({
-        raw: a.getAttribute("href")!, abs: (a as HTMLAnchorElement).href, target: a.getAttribute("target"), rel: a.getAttribute("rel") ?? "",
-      })));
+    const links = await page.locator("a[href]").evaluateAll((as) => as.map((a) => ({
+      raw: a.getAttribute("href")!, abs: (a as HTMLAnchorElement).href, target: a.getAttribute("target"), rel: a.getAttribute("rel") ?? "",
+    })));
     for (const l of links) {
       if (l.raw.startsWith("mailto:")) { if (l.target) bad.push(`${path}: mailto with a target`); continue; }
       const u = new URL(l.abs);
