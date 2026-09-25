@@ -1,0 +1,87 @@
+---
+import { renderToStaticMarkup } from "react-dom/server";
+import { Kbd } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+import CodeBlock from "../../../components/docs/CodeBlock.astro";
+import Preview from "../../../components/docs/Preview.astro";
+import PropsTable from "../../../components/docs/PropsTable.astro";
+import CssVarsTable from "../../../components/docs/CssVarsTable.astro";
+import { COMPONENT_PAGES, nodeOf, type RegisteredPage } from "../../../ui-docs/registry";
+import { componentDoc, cssApi } from "../../../ui-docs/api";
+import { toJsx } from "../../../lib/jsx";
+
+export function getStaticPaths() {
+  return COMPONENT_PAGES.map((page) => ({ params: { slug: page.slug }, props: { page } }));
+}
+interface Props { page: RegisteredPage }
+const { page } = Astro.props;
+const doc = componentDoc(page.name);
+const css = cssApi(page.name);
+const importLine = `import { ${page.name} } from "${page.from ?? "@meowerse/ui"}";`;
+const usage = page.examples.map((ex, i) => {
+  const node = nodeOf(ex, "snippet");
+  return {
+    i, title: ex.title,
+    jsx: ex.snippet === false ? null : `${importLine}\n\n${toJsx(node)}`,
+    html: ex.html ? renderToStaticMarkup(node) : null,
+  };
+}).filter((u) => u.jsx);
+---
+<DocsLayout title={page.name} description={`${page.name}: ${page.summary}`}>
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>{page.name}</h1>
+    <p class="lede">{page.summary}</p>
+    <p class="mw-muted"><code>{importLine}</code> · source <code>{`packages/ui/${doc.file}`}</code></p>
+  </header>
+
+  {page.examples.length > 0 && (
+    <section class="docs-section" aria-labelledby="preview-title">
+      <h2 id="preview-title">variants and states</h2>
+      <Preview page={page} scope="page" />
+    </section>
+  )}
+
+  <section class="docs-section" aria-labelledby="props-title">
+    <h2 id="props-title">props</h2>
+    <PropsTable doc={doc} />
+  </section>
+
+  <section class="docs-section" aria-labelledby="css-title">
+    <h2 id="css-title">css custom properties</h2>
+    <CssVarsTable name={page.name} api={css} />
+  </section>
+
+  {usage.length > 0 && (
+    <section class="docs-section" aria-labelledby="usage-title">
+      <h2 id="usage-title">usage</h2>
+      {usage.map((u) => (
+        <div class="docs-section">
+          <h3>{u.title}</h3>
+          <CodeBlock id={`ex-${u.i}-jsx`} lang="tsx" code={u.jsx!} />
+          {u.html && <CodeBlock id={`ex-${u.i}-html`} lang="html (needs @meowerse/ui/tokens.css)" code={u.html} />}
+        </div>
+      ))}
+    </section>
+  )}
+
+  <section class="docs-section" aria-labelledby="a11y-title">
+    <h2 id="a11y-title">accessibility</h2>
+    <ul class="docs-list">{page.a11y.map((t) => <li>{t}</li>)}</ul>
+    {page.keys && (
+      <div class="table-wrap" tabindex="0" role="region" aria-label={`${page.name} keyboard`}>
+        <table class="table">
+          <thead><tr><th scope="col">key</th><th scope="col">does</th></tr></thead>
+          <tbody>{page.keys.map(([k, d]) => <tr><td><Kbd>{k}</Kbd></td><td>{d}</td></tr>)}</tbody>
+        </table>
+      </div>
+    )}
+  </section>
+
+  <section class="docs-section" aria-labelledby="dodont-title">
+    <h2 id="dodont-title">do and don't</h2>
+    <div class="dodont">
+      <div class="docs-section"><h3><span class="dd-tag dd-tag--do" aria-hidden="true">[ ok ] </span>do</h3><ul class="docs-list">{page.dos.map((t) => <li>{t}</li>)}</ul></div>
+      <div class="docs-section"><h3><span class="dd-tag dd-tag--dont" aria-hidden="true">[fail] </span>don't</h3><ul class="docs-list">{page.donts.map((t) => <li>{t}</li>)}</ul></div>
+    </div>
+  </section>
+</DocsLayout>

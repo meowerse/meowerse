@@ -1,0 +1,26 @@
+---
+// Prop name, type, default, required and the JSDoc description. Inherited HTML attributes are
+// summarised as one line naming only the most specific interface (ComponentDoc.primaryInherit),
+// never the whole @types/react ancestor chain (task 8b ruling).
+import type { ComponentDoc } from "../../lib/ui-api";
+interface Props { doc: ComponentDoc }
+const { doc } = Astro.props;
+---
+{doc.props.length === 0 ? <p>No props of its own.</p> : (
+  <div class="table-wrap" tabindex="0" role="region" aria-label={`${doc.name} props`}>
+    <table class="table">
+      <thead><tr><th scope="col">prop</th><th scope="col">type</th><th scope="col">default</th><th scope="col">required</th></tr></thead>
+      <tbody>
+        {doc.props.map((p) => (
+          <tr>
+            <td><code>{p.name}</code>{p.inherited && <span class="mw-muted"> (html)</span>}</td>
+            <td><code>{p.type}</code>{p.description && <span class="mw-muted"> {p.description}</span>}</td>
+            <td>{p.default ? <code>{p.default}</code> : "—"}</td>
+            <td>{p.required ? "yes" : "no"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+)}
+{doc.primaryInherit && <p class="mw-muted">…plus all <code>{doc.primaryInherit}</code>.</p>}

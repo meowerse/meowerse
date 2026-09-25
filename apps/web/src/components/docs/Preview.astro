@@ -1,0 +1,16 @@
+---
+// Every example of a component page, each in its own stage. [data-preview] marks library output
+// (the site's 44 px target check skips it: ui's own geometry tests cover it).
+import ReactNodeView from "./ReactNodeView";
+import { nodeOf, type RegisteredPage } from "../../ui-docs/registry";
+interface Props { page: RegisteredPage; scope: string }
+const { page, scope } = Astro.props;
+---
+<div class="previews">
+  {page.examples.map((ex) => (
+    <figure class:list={["preview", (ex.wide || ex.snippet === false) && "preview--wide"]}>
+      <div class="preview__stage" data-preview><ReactNodeView node={nodeOf(ex, scope)} /></div>
+      <figcaption class="preview__title">{ex.title}{ex.note && <span class="mw-muted"> — {ex.note}</span>}</figcaption>
+    </figure>
+  ))}
+</div>

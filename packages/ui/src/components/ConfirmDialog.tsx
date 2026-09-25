@@ -55,7 +55,8 @@ export function ConfirmDialog({
         </div>
       )}
       {requirePassword && (
-        <Field label="your password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <Field label="your password" type="password" value={pw} onChange={(e) => setPw(e.target.value)}
+          hint={pw.length === 0 ? "enter your password to confirm" : undefined} />
       )}
       <div className="mw-confirm__actions">
         <Button variant="secondary" onClick={onCancel}>cancel</Button>

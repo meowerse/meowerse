@@ -70,6 +70,9 @@ describe("extractUiApi (TypeScript compiler API over @meowerse/ui)", () => {
       expect(comp("Prompt").inherits).toEqual(expect.arrayContaining(["RefAttributes"]));
       expect(comp("Prompt").primaryInherit).toBeUndefined();
     });
+    it("Checkbox: the input attributes, unwrapped from the Omit<> that drops \"type\" and \"id\"", () => {
+      expect(comp("Checkbox").primaryInherit).toBe("InputHTMLAttributes<HTMLInputElement>");
+    });
   });
 
   // Every component and every own (non-inherited) prop must carry a description, so the docs tables

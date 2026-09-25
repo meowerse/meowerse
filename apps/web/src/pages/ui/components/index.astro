@@ -1,0 +1,15 @@
+---
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+import { COMPONENT_PAGES } from "../../../ui-docs/registry";
+---
+<DocsLayout title="components" description="Every @meowerse/ui component, each with live variants, props, CSS variables, snippets and accessibility notes.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>components</h1>
+    <p class="lede">{COMPONENT_PAGES.length} components. Each page renders every variant and state with the real component.</p>
+  </header>
+  <ul class="cards component-list">
+    {COMPONENT_PAGES.map((p) => (
+      <li><a class="card-link" href={`/ui/components/${p.slug}/`}><span class="card-link__name">{p.name}</span><span class="card-link__sum">{p.summary}</span></a></li>
+    ))}
+  </ul>
+</DocsLayout>
