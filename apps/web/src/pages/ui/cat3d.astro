@@ -1,0 +1,46 @@
+---
+import { Cat3D } from "@meowerse/ui/cat3d";
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import CodeBlock from "../../components/docs/CodeBlock.astro";
+const usage = `---
+// in an .astro page: server-rendered markup, no React shipped
+import { Cat3D } from "@meowerse/ui/cat3d";
+---
+<Cat3D size={220} />
+<script>
+  import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
+  requestIdleCallback(() => attachAllCat3D());
+</script>`;
+---
+<DocsLayout title="Cat3D" description="The tiny interactive low-poly cat: a custom WebGL2 renderer, lazy, with a still fallback.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>cat3d</h1>
+    <p class="lede">The low-poly green cat from the alxnko.dev desk, drawn by a dependency-free WebGL2 renderer with flat shading and one light. Its head eases toward your pointer, or your finger on touch screens.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="live-title">
+    <h2 id="live-title">live</h2>
+    <Cat3D size={240} />
+  </section>
+  <section class="docs-section" aria-labelledby="still-title">
+    <h2 id="still-title">the still fallback</h2>
+    <Cat3D size={240} className="mw-cat3d--static" />
+    <p>The same pose as a still image. You get it when WebGL2 isn't available, when motion is reduced, when the browser asks to save data, or when loading fails. The cat is decorative (aria-hidden), so the fallback costs nothing.</p>
+  </section>
+  <section class="docs-section" aria-labelledby="cost-title">
+    <h2 id="cost-title">what it costs</h2>
+    <ul class="docs-list">
+      <li>The renderer is about 2 KB gzipped (budget 3 KB), and the mesh is 7.8 KB (budget 10 KB). The poster is a 5 KB webp (budget 6 KB).</li>
+      <li>Nothing loads before the page is idle and the cat is near the screen; nothing redraws while the head is still.</li>
+      <li>No three.js: one small shader, and the mesh quantised to 16-bit positions.</li>
+    </ul>
+  </section>
+  <section class="docs-section" aria-labelledby="use-title">
+    <h2 id="use-title">use it</h2>
+    <CodeBlock id="cat-use" lang="astro" code={usage} />
+  </section>
+  <script>
+    import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
+    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
+    else setTimeout(() => attachAllCat3D(), 200);
+  </script>
+</DocsLayout>

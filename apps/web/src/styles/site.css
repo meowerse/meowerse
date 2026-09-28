@@ -233,3 +233,34 @@ a.mw-btn:hover { text-decoration: none; }
    everything after the island below the fold for the swap — one viewport height covers that on any
    device, without guessing at a fixed pixel number. */
 .pg-shell { min-height: 100svh; }
+
+/* ---- patterns ---- */
+.specimen { display: grid; gap: var(--sp-3); justify-items: start; max-width: 36rem; padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.specimen > .mw-field, .specimen > .mw-alert, .specimen > .mw-status { justify-self: stretch; }
+.pairing { display: grid; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
+.pairing > h2 { font-size: var(--fs-4); }
+.pairing__body { display: grid; gap: var(--sp-3); min-width: 0; padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+/* Same fix as review9's .preview__stage .mw-header: a narrow pairing panel (phone width) can be
+   narrower than the header's natural row width — wrap onto a second line instead of shrinking any
+   child below its own min-content (which squeezed the icon-only ghost buttons under 44px) or
+   overflowing the panel. */
+.pairing .mw-header { position: static; flex-wrap: wrap; row-gap: var(--sp-2); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+.pairing .mw-header__actions { flex-wrap: wrap; row-gap: var(--sp-2); justify-content: flex-end; }
+.together-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+.together-row > .mw-field, .together-row > .mw-prompt { flex: 1 1 14rem; }
+.grid-overlay { background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) var(--sp-1)); }
+.composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-1); }
+/* The icon-only ghost buttons keep their natural (44px-plus) size; the prompt is the one thing here
+   that can shrink, so it — not the buttons — absorbs a narrow phone width (min-width: 0 lets a flex
+   item shrink past its content size, the same overflow fix as review9). */
+.composer-row > .mw-btn { flex: none; }
+.composer-row .mw-prompt { flex: 1 1 14rem; min-width: 0; }
+.together-split { display: grid; gap: var(--sp-4); }
+@media (min-width: 760px) { .together-split { grid-template-columns: 14rem minmax(0, 1fr); } }
+.together-list { display: grid; align-content: start; margin: 0; padding: 0; list-style: none; border-right: 1px solid var(--c-line); }
+.together-list li { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); padding: 0 var(--sp-2); }
+.empty { display: grid; gap: var(--sp-3); justify-items: start; align-content: center; min-height: calc(var(--sp-8) * 2); }
+.empty__line { color: var(--c-fg-muted); }
+.together-hero { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-5); }
+.together-hero .services { min-width: 16rem; }
+.rules-table td:first-child { font-weight: 700; white-space: nowrap; }

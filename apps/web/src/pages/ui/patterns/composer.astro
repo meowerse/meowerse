@@ -1,0 +1,33 @@
+---
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+import PromptDemo from "../../../ui-docs/demos/prompt";
+const rows = [
+  ["field", "At least 44 px tall, a 1 px line border, a 4 px radius and 32 px of left padding. The › glyph is 16 px, on the first text line, subtle at rest and accent on focus. The field is never disabled: sends queue in an outbox."],
+  ["send", "A 44×44 button with a 4 px radius, aligned to the bottom of the field."],
+  ["keys", "Enter sends and Shift+Enter adds a line; on phones Enter adds a line and the button sends; nothing is sent while an input method is composing."],
+  ["bubbles", "An 8 px radius with a 2 px corner on the sender's side, 8/12 px padding, 12 px meta text, and at most about 62 characters wide."],
+  ["avatars", "Rounded squares with a 4 px radius."],
+  ["sidebar", "The active row gets a 2 px accent bar on its left; no › on rows or on the search box."],
+  ["connection", "A StatusLine in the header, shown only while the connection isn't ok."],
+  ["avoid", "A borderless command-line input, a blinking block cursor in the field, [send] bracket buttons, black terminal panels."],
+];
+---
+<DocsLayout title="chat composer" description="The chat composer pattern: a prompt that stays a normal, discoverable input.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>chat composer</h1>
+    <p class="lede">The composer reads as a prompt and still behaves like the input everyone knows (spec §7).</p>
+  </header>
+  <section class="docs-section" aria-labelledby="try-title">
+    <h2 id="try-title">try it</h2>
+    <div class="demo-stage" data-preview><PromptDemo client:visible /></div>
+  </section>
+  <section class="docs-section" aria-labelledby="geo-title">
+    <h2 id="geo-title">geometry and behaviour</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="composer rules">
+      <table class="table rules-table">
+        <thead><tr><th scope="col">part</th><th scope="col">rule</th></tr></thead>
+        <tbody>{rows.map(([k, v]) => <tr><td>{k}</td><td>{v}</td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+</DocsLayout>

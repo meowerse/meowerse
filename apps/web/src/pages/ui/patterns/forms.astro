@@ -1,0 +1,33 @@
+---
+import { Alert, Button, Checkbox, Field, StatusLine } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+const rules = [
+  "Labels are always visible, above the field; a placeholder is never the label.",
+  "Inputs are 16 px so phones don't zoom. Usernames use autocapitalize=\"none\", autocorrect=\"off\" and spellcheck=\"false\".",
+  "An error sits under the field that caused it, in plain words; with several, an alert at the top says how many.",
+  "Submit is either ready, or disabled with a visible reason such as \"checking you're human…\". It is never enabled only to refuse.",
+  "A form can't be sent twice: the button shows its loading state until the answer comes.",
+  "Every wait has a timeout and ends in a plain error with a way to try again.",
+];
+---
+<DocsLayout title="forms" description="How meowerse forms behave: visible labels, plain errors, honest waiting.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>forms</h1>
+    <p class="lede">Forms stay familiar, for trust and for autofill: normal labelled fields; only the page title carries the prompt style.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="rules-title">
+    <h2 id="rules-title">rules</h2>
+    <ul class="docs-list">{rules.map((r) => <li>{r}</li>)}</ul>
+  </section>
+  <section class="docs-section" aria-labelledby="spec-title">
+    <h2 id="spec-title">specimen</h2>
+    <div class="specimen">
+      <Alert variant="error">2 things need fixing before you can sign up.</Alert>
+      <Field label="username" defaultValue="meow cat" error="use letters, digits and _ only" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+      <Field label="password" type="password" hint="at least 12 characters" error="too short — use at least 12 characters" />
+      <Checkbox label="I accept the terms" />
+      <StatusLine state="ok">you're human — thanks</StatusLine>
+      <div class="btn-row"><Button variant="primary" loading>creating your account</Button><Button variant="ghost">cancel</Button></div>
+    </div>
+  </section>
+</DocsLayout>

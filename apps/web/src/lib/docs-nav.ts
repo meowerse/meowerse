@@ -13,6 +13,13 @@ export const FOUNDATIONS: NavItem[] = [
   { label: "voice", href: "/ui/foundations/voice/" },
 ];
 
+export const PATTERNS: NavItem[] = [
+  { label: "tty and app together", href: "/ui/patterns/together/" },
+  { label: "forms", href: "/ui/patterns/forms/" },
+  { label: "empty, loading, error", href: "/ui/patterns/states/" },
+  { label: "chat composer", href: "/ui/patterns/composer/" },
+];
+
 export function docsNav(componentNames: string[]): NavGroup[] {
   return [
     { label: "start", items: [{ label: "overview", href: "/ui/" }] },
@@ -24,6 +31,15 @@ export function docsNav(componentNames: string[]): NavGroup[] {
         ...[...componentNames].sort().map((n) => ({ label: n, href: `/ui/components/${toSlug(n)}/` })),
       ],
     },
-    { label: "more", items: [{ label: "playground", href: "/ui/playground/" }, { label: "gallery", href: "/ui/gallery/" }, { label: "utilities", href: "/ui/utilities/" }] },
+    { label: "patterns", items: PATTERNS },
+    {
+      label: "more",
+      items: [
+        { label: "playground", href: "/ui/playground/" },
+        { label: "gallery", href: "/ui/gallery/" },
+        { label: "cat3d", href: "/ui/cat3d/" },
+        { label: "utilities", href: "/ui/utilities/" },
+      ],
+    },
   ];
 }
