@@ -884,6 +884,21 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
     });
   }
 
+  if (m === "GET" && pathname === "/") {
+    const cookies = parseCookies(req.headers.get("Cookie"));
+    const sid = cookies[`__Host-${SESS_COOKIE}`];
+    if (sid) {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: `${webOrigin(env)}/account`,
+          "Cache-Control": "private, no-store",
+          ...cors,
+        },
+      });
+    }
+  }
+
   if (m === "GET" && pathname === "/.well-known/openid-configuration") {
     return json(discoveryDoc(env), 200, { ...PUBLIC_CORS, ...CACHE_1H });
   }

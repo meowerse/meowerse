@@ -411,6 +411,7 @@ export class Conversation extends DurableObject<Env> {
       (async () => {
         try {
           await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
+          await markRead(this.d1(), chatId, senderId, now);
         } catch {}
         try {
           await this.inboxFanout(chatId, senderId, message);

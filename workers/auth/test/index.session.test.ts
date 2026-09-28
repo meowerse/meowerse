@@ -291,3 +291,11 @@ test("SKIP_MIGRATIONS=1 skips the schema migration on the request path", async (
   expect(r.status).toBe(200);
   expect(await r.json()).toMatchObject({ authenticated: false });
 });
+
+test("GET / with active session cookie 302 redirects to /account", async () => {
+  const { env, deps, sess } = await login("sess_root");
+  const r = await handle(new Request("https://iss/", { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
+  expect(r.status).toBe(302);
+  expect(r.headers.get("Location")).toBe("https://auth.alxnko.dev/account");
+});
+

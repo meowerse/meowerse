@@ -166,14 +166,14 @@ export default function Chat({ base }: { base: string }) {
           isUnindexed = true;
           return prev;
         }
+        const isMine = meIdRef.current != null && senderId === meIdRef.current;
         const updated: ChatSummary = {
           ...prev[idx],
           lastMessage: preview,
           lastSenderId: senderId,
           lastActivity: at,
-          // Active chat: leave unread to the read-receipt path (onActiveRead) — a
-          // message while scrolled up is genuinely unread. Cross-chat: a has-unread dot.
-          unreadCount: isActive ? prev[idx].unreadCount : 1,
+          // Active chat or user's own message: no unread badge. Cross-chat from peer: unread dot.
+          unreadCount: (isActive || isMine) ? 0 : 1,
         };
         return [updated, ...prev.filter((_, i) => i !== idx)];
       });

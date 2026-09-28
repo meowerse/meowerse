@@ -114,7 +114,11 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
   // renders groups by their own name), so the join is scoped to type = 'direct'.
   const rows = await db.all(
     `SELECT c.id, c.type, c.name, c.slug, c.visibility, c.last_message, c.last_sender_id, c.last_activity,
-            CASE WHEN c.last_activity > COALESCE(m.last_read_at, m.joined_at) THEN 1 ELSE 0 END AS unread_count,
+            CASE
+              WHEN c.last_sender_id = m.user_id THEN 0
+              WHEN c.last_activity > COALESCE(m.last_read_at, m.joined_at) THEN 1
+              ELSE 0
+            END AS unread_count,
             om.user_id AS peer_id,
             pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url,
             pu.last_seen_at AS peer_last_seen_at

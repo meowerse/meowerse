@@ -42,9 +42,9 @@ function memDb(users: Record<string, { username: string; displayName: string | n
               ? members.find((o) => o.chat_id === m.chat_id && o.user_id !== me)
               : undefined;
             const pu = peer ? users[String(peer.user_id)] : undefined;
-            // Model the lazy has-unread derivation: last_activity > COALESCE(last_read_at, joined_at).
+            // Model the lazy has-unread derivation: last_sender_id === me -> 0, else last_activity > COALESCE(last_read_at, joined_at).
             const lastRead = m.last_read_at ?? m.joined_at ?? 0;
-            const unread = Number(c.last_activity) > Number(lastRead) ? 1 : 0;
+            const unread = c.last_sender_id === me ? 0 : Number(c.last_activity) > Number(lastRead) ? 1 : 0;
             return {
               ...c, role: "member", unread_count: unread, last_read_at: m.last_read_at ?? null,
               peer_id: peer?.user_id ?? null,
@@ -139,6 +139,15 @@ describe("unread (derived, no per-member counter)", () => {
     await markRead(db, a.id, "u2", 3000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
     await mirrorLastMessage(db, a.id, "again", "u1", 4000);
+    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
+  });
+  it("sender's own message does not mark unread for the sender", async () => {
+    const { db } = memDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1000);
+    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    // u1 was the sender: unreadCount MUST be 0 for u1!
+    expect((await listChats(db, "u1"))[0].unreadCount).toBe(0);
+    // u2 was the recipient: unreadCount is 1 for u2
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
   });
 });
