@@ -13,7 +13,8 @@ export default function AppShell({ base }: { base: string }) {
     if (session && !session.authenticated) window.location.replace(loginUrl(base));
   }, [session, base]);
 
-  if (session === null) return <div className="mw-gate">loading…</div>;
-  if (!session.authenticated) return <div className="mw-gate">redirecting to login…</div>;
+  if (session === null || !session.authenticated) {
+    return <div className="mw-gate">authenticating…</div>;
+  }
   return <Chat base={base} />;
 }

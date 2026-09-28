@@ -419,6 +419,28 @@ describe("Chat island — realtime sidebar", () => {
     expect(names[0]).toContain("Carol");
   });
 
+  it("an inbox delta for a message sent by the caller themselves does NOT mark the chat as unread", async () => {
+    H.chats = [
+      dm(),
+      dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 }),
+    ];
+    H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => {
+      const i = MockWebSocket.inbox;
+      if (!i) throw new Error("inbox socket not opened");
+      return i;
+    });
+    act(() => inbox.mockOpen());
+    // Caller sends to c2 from another device (senderId is me: "u1")
+    emit(inbox, { type: "chat_update", chatId: "c2", preview: "i sent this from phone", at: 6000, senderId: "u1" });
+    await waitFor(() => expect(screen.getByText("i sent this from phone")).toBeTruthy());
+    const carolRow = screen.getByText("Carol").closest(".mw-chatrow");
+    expect(carolRow?.classList.contains("has-unread")).toBe(false);
+    expect(carolRow?.querySelector(".mw-chatrow__unread")).toBeNull();
+  });
+
   it("a live message in the OPEN chat refreshes that chat's sidebar preview (part A)", async () => {
     const ws = await mountOpen();
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
