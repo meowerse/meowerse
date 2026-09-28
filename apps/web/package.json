@@ -8,7 +8,9 @@
     "lint": "astro check",
     "test": "vitest run --coverage",
     "e2e": "playwright test",
-    "shots": "playwright test --config=playwright.screenshots.config.ts"
+    "shots": "playwright test --config=playwright.screenshots.config.ts",
+    "budget": "bun scripts/budget.ts",
+    "lighthouse": "bun scripts/lighthouse.ts"
   },
   "dependencies": {
     "@astrojs/react": "^6.0.0",
