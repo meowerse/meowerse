@@ -57,6 +57,9 @@ test("ls ~/projects: six cards, each to its page", async ({ page }) => {
 
 test("Cat3D: poster only under reduced motion; otherwise the renderer loads lazily", async ({ browser }, info) => {
   test.skip(info.project.name !== "desktop", "one pass is enough");
+  // Raw browser.newContext() pages don't inherit the fixture's baseURL, so read it from the
+  // project config instead of hardcoding a port (T9 note: any port must work, not just 4371).
+  const baseURL = info.project.use.baseURL!;
   const stub = { status: 200, body: "{}", headers: { "access-control-allow-origin": "*" } };
 
   const reduced = await browser.newContext({ reducedMotion: "reduce", colorScheme: "dark" });
@@ -64,7 +67,7 @@ test("Cat3D: poster only under reduced motion; otherwise the renderer loads lazi
   const rp = await reduced.newPage();
   const rUrls: string[] = [];
   rp.on("request", (r) => rUrls.push(r.url()));
-  await rp.goto("http://127.0.0.1:4371/");
+  await rp.goto(baseURL);
   await rp.waitForTimeout(1500);
   expect(rUrls.some((u) => /\/_astro\/(renderer\.[^/]+\.js|cat\.[^/]+\.bin)$/.test(u))).toBe(false);
   await expect(rp.locator(".mw-cat3d canvas")).toBeHidden();
@@ -75,7 +78,7 @@ test("Cat3D: poster only under reduced motion; otherwise the renderer loads lazi
   const np = await normal.newPage();
   const nUrls: string[] = [];
   np.on("request", (r) => nUrls.push(r.url()));
-  await np.goto("http://127.0.0.1:4371/");
+  await np.goto(baseURL);
   await expect.poll(() => nUrls.some((u) => /\/_astro\/cat\.[^/]+\.bin$/.test(u)), { timeout: 10_000 }).toBe(true);
   await expect(np.locator(".mw-cat3d")).toHaveClass(/mw-cat3d--live/, { timeout: 10_000 });
   await normal.close();

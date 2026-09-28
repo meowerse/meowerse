@@ -4,6 +4,9 @@ import { defineConfig } from "@playwright/test";
 // Phone is 390×844 at DPR 1 (spec audit §5b size; DPR 1 keeps screenshot files small).
 export default defineConfig({
   testDir: "tests/e2e",
+  // Screenshot baselines are local-only (runner fonts differ in CI, like tokens:drift, B28):
+  // `bun run e2e` never picks them up. `bun run shots` (playwright.screenshots.config.ts) does.
+  testIgnore: "**/screenshots.spec.ts",
   timeout: 45_000,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
