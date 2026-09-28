@@ -7,7 +7,7 @@ import { Button, Checkbox, Field, RadioGroup, contrast } from "@meowerse/ui";
 import tokens from "@meowerse/ui/tokens.json";
 import { toJsx } from "../../lib/jsx";
 import {
-  ACCENTS, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, themeClass,
+  ACCENTS, clampNumber, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, themeClass,
   type Accent, type Density, type Overrides, type PlayComponent, type PlayState, type Scalar, type Theme,
 } from "../../lib/playground-state";
 import { PLAYABLE } from "./playable";
@@ -28,15 +28,25 @@ export default function Playground({ components }: { components: PlayComponent[]
   }, [state.o]);
   useEffect(() => { stage.current?.closest("[data-playground]")?.setAttribute("data-ready", ""); }, []);
 
+  // A short, discrete `role=status` message for a whole-panel change (switching components,
+  // resetting tokens, copying a link) — not a per-keystroke prop edit, and not `aria-live` on the
+  // whole stage (that re-announced every keystroke, nested inside components' own status regions,
+  // and still said nothing about a token change). Cleared first, on its own commit, so a second
+  // identical message (e.g. "link copied" twice in a row) still mutates the region and gets
+  // re-announced — same text set twice in one render never would.
+  const announce = (msg: string) => { setNote(""); requestAnimationFrame(() => setNote(msg)); };
+
   const setProp = (name: string, v: Scalar) => setState((s) => ({ ...s, props: { ...s.props, [name]: v } }));
   const setO = <K extends keyof Overrides>(k: K, v: Overrides[K]) => setState((s) => ({ ...s, o: { ...s.o, [k]: v } }));
   const pick = (name: string) => {
     const next = components.find((c) => c.name === name)!;
     setState((s) => ({ c: name, props: Object.fromEntries(next.props.map((p) => [p.name, p.default])), o: s.o }));
+    announce(`showing ${name}`);
   };
+  const resetTokens = () => { setState((s) => ({ ...s, o: DEFAULT_OVERRIDES })); announce("tokens reset"); };
   const copyLink = async () => {
-    try { await navigator.clipboard.writeText(location.href); setNote("link copied"); }
-    catch { setNote("couldn't copy — copy the address bar instead"); }
+    try { await navigator.clipboard.writeText(location.href); announce("link copied"); }
+    catch { announce("couldn't copy — copy the address bar instead"); }
   };
 
   const element = createElement(play.component, { ...elementProps(comp, state), ...play.fixed });
@@ -67,7 +77,8 @@ export default function Playground({ components }: { components: PlayComponent[]
             <Checkbox key={p.name} label={p.name} checked={state.props[p.name] === true} onChange={(e) => setProp(p.name, e.target.checked)} />
           ) : (
             <Field key={p.name} label={p.name} type={p.kind === "number" ? "number" : "text"} value={String(state.props[p.name] ?? "")}
-              onChange={(e) => setProp(p.name, p.kind === "number" ? Number(e.target.value) : e.target.value)} />
+              min={p.kind === "number" ? p.min : undefined} max={p.kind === "number" ? p.max : undefined}
+              onChange={(e) => setProp(p.name, p.kind === "number" ? clampNumber(p, Number(e.target.value)) : e.target.value)} />
           ))}
         </fieldset>
         <fieldset className="pg__group">
@@ -80,13 +91,11 @@ export default function Playground({ components }: { components: PlayComponent[]
             options={[{ label: "sharp (×0)", value: "0" }, { label: "default (×1)", value: "1" }, { label: "round (×2)", value: "2" }]} />
           <RadioGroup name="pg-density" legend="density" value={state.o.density} onChange={(v) => setO("density", v as Density)}
             options={[{ label: "compact", value: "compact" }, { label: "normal", value: "normal" }, { label: "comfy", value: "comfy" }]} />
-          <Button onClick={() => setState((s) => ({ ...s, o: DEFAULT_OVERRIDES }))}>reset tokens</Button>
+          <Button onClick={resetTokens}>reset tokens</Button>
         </fieldset>
       </div>
       <div className="pg__out">
-        {/* B9/a11y ruling: changes to the preview (a prop, the component, or a token) are announced politely,
-            not just shown — a screen-reader user gets the same "it changed" signal a sighted one sees. */}
-        <div ref={stage} className={["pg__stage", themeClass(state.o.theme)].filter(Boolean).join(" ")} data-preview aria-live="polite">{element}</div>
+        <div ref={stage} className={["pg__stage", themeClass(state.o.theme)].filter(Boolean).join(" ")} data-preview>{element}</div>
         <p className="mw-muted">Overrides apply to this preview only and live in the address, never on a server.</p>
         <pre className="pg__code" tabIndex={0}><code>{snippet}</code></pre>
         <div className="btn-row">

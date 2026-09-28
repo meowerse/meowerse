@@ -226,9 +226,10 @@ a.mw-btn:hover { text-decoration: none; }
 .pg__code { max-height: 24rem; overflow: auto; }
 .pg-fallback { padding: var(--sp-5); border: 1px dashed var(--c-line-input); border-radius: var(--r-l); }
 /* client:only ships no server-rendered markup, only this fallback, so hydration always replaces a
-   small box with the full control panel; without a reserved size that swap is a huge layout shift
-   (the docs nav sits right after it in the single-column mobile layout). Reserves roughly the
-   hydrated height of the tallest playable component (Prompt has the most controls), measured per
-   breakpoint, so the swap doesn't move the rest of the page (CLS). */
-.pg-shell { min-height: 118rem; }
-@media (min-width: 1100px) { .pg-shell { min-height: 95rem; } }
+   small box with the full control panel — a layout shift into whatever sits below it (the docs nav,
+   in the single-column mobile layout). The reservation doesn't need to match the panel's real height
+   (which varies per component and would need re-measuring whenever one is added or changed): CLS only
+   counts an element that was visible in the viewport before or after it moved, so it's enough to push
+   everything after the island below the fold for the swap — one viewport height covers that on any
+   device, without guessing at a fixed pixel number. */
+.pg-shell { min-height: 100svh; }

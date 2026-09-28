@@ -4,7 +4,7 @@ import tokens from "@meowerse/ui/tokens.json";
 import type { ComponentDoc } from "./ui-api";
 
 export type Scalar = string | boolean | number;
-export type PropSpec = { name: string; kind: "enum" | "boolean" | "text" | "number"; values?: string[]; default: Scalar; required: boolean };
+export type PropSpec = { name: string; kind: "enum" | "boolean" | "text" | "number"; values?: string[]; default: Scalar; required: boolean; min?: number; max?: number };
 export type PlayComponent = { name: string; props: PropSpec[] };
 export type Theme = "system" | "dark" | "light";
 export type Accent = "green" | "blue" | "amber";
@@ -26,6 +26,29 @@ export const OVERRIDABLE: readonly string[] = [
   ...tokens.space.slice(1).map((_, i) => `--sp-${i + 1}`),
 ];
 
+/** A URL-valued prop is never playable: a shared link must never be able to turn the site's own
+ *  markup into a link to an attacker's page (e.g. `?c=wordmark&p.href=https://evil.example/`). This
+ *  is checked by name alone, for every component, not just the one real case (Wordmark.href) — the
+ *  next component with a navigable prop gets the same protection for free. */
+const URL_PROPS = new Set(["href", "src", "action", "formAction"]);
+
+/** Known safe ranges for a number control, keyed by prop name; anything else gets a generous but
+ *  bounded default so a URL can't push a numeric prop (or a future one) to an absurd value. */
+const NUMBER_RANGE: Record<string, { min: number; max: number }> = { maxRows: { min: 1, max: 20 } };
+const DEFAULT_NUMBER_RANGE = { min: 0, max: 999 };
+
+/** Rounds to an integer and clamps to the spec's range; NaN and ±Infinity fall back to the range's
+ *  minimum rather than poisoning the result (`Math.max`/`min` both return NaN if either side is NaN).
+ *  `coerce()` calls this for a URL value (already checked finite, but the fallback costs nothing);
+ *  the island calls it too, so typing a number directly in the control can't exceed the same bounds
+ *  or land on NaN mid-edit. */
+export function clampNumber(spec: PropSpec, n: number): number {
+  const min = spec.min ?? DEFAULT_NUMBER_RANGE.min;
+  const max = spec.max ?? DEFAULT_NUMBER_RANGE.max;
+  const safe = Number.isFinite(n) ? n : min;
+  return Math.min(max, Math.max(min, Math.round(safe)));
+}
+
 function parseDefault(raw: string | undefined, kind: PropSpec["kind"]): Scalar | undefined {
   if (raw === undefined) return undefined;
   if (kind === "boolean") return raw === "true";
@@ -38,17 +61,21 @@ function parseDefault(raw: string | undefined, kind: PropSpec["kind"]): Scalar |
 export function specsFromDoc(doc: ComponentDoc, seed: Record<string, Scalar>): PropSpec[] {
   const out: PropSpec[] = [];
   for (const p of doc.props) {
-    if (p.inherited || p.name === "className") continue;
+    if (p.inherited || p.name === "className" || URL_PROPS.has(p.name)) continue;
     const kind: PropSpec["kind"] | null = p.values ? "enum"
       : p.type === "boolean" ? "boolean"
         : p.type === "number" ? "number"
           : p.type === "string" || p.type === "ReactNode" ? "text" : null;
     if (!kind) continue;
     const fallback: Scalar = kind === "enum" ? p.values![0]! : kind === "boolean" ? false : kind === "number" ? 0 : "";
-    out.push({ name: p.name, kind, values: p.values, default: seed[p.name] ?? parseDefault(p.default, kind) ?? fallback, required: p.required });
+    const range = kind === "number" ? (NUMBER_RANGE[p.name] ?? DEFAULT_NUMBER_RANGE) : undefined;
+    out.push({
+      name: p.name, kind, values: p.values, default: seed[p.name] ?? parseDefault(p.default, kind) ?? fallback, required: p.required,
+      ...(range && { min: range.min, max: range.max }),
+    });
   }
   for (const [name, v] of Object.entries(seed))
-    if (!out.some((s) => s.name === name)) out.push({ name, kind: "text", default: v, required: true });
+    if (!URL_PROPS.has(name) && !out.some((s) => s.name === name)) out.push({ name, kind: "text", default: v, required: true });
   return out;
 }
 
@@ -56,7 +83,7 @@ function coerce(spec: PropSpec, raw: string): Scalar | undefined {
   switch (spec.kind) {
     case "enum": return spec.values!.includes(raw) ? raw : undefined;
     case "boolean": return raw === "1" ? true : raw === "0" ? false : undefined;
-    case "number": { const n = Number(raw); return raw !== "" && Number.isFinite(n) ? n : undefined; }
+    case "number": { const n = Number(raw); return raw !== "" && Number.isFinite(n) ? clampNumber(spec, n) : undefined; }
     case "text": return raw.slice(0, 200);
   }
 }

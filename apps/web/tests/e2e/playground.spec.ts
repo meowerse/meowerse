@@ -29,3 +29,33 @@ test("bad URL values fall back to defaults, and switching components keeps the t
   await expect(page).toHaveURL(/density=comfy/);
   await expect(page.locator(".pg__stage .mw-status")).toContainText("connecting…");
 });
+
+test("a URL-valued prop is never playable: a shared link can't turn the site's own wordmark into a link to an attacker's page", async ({ page }) => {
+  await page.goto("/ui/playground/?c=wordmark&p.href=https://evil.example/login");
+  const link = page.locator(".pg__stage .mw-wordmark");
+  await expect(link).toHaveAttribute("href", "/");
+  // No p.href control was ever built for it, so there's nothing to write back either.
+  await expect(page).not.toHaveURL(/p\.href/);
+  await expect(page).not.toHaveURL(/evil\.example/);
+  // Clicking it stays on this site (same-origin navigation, not evil.example).
+  await link.click();
+  await expect(page).toHaveURL(/^https?:\/\/[^/]+\/$/);
+});
+
+test("announcements: switching a component, resetting tokens, and copying a link are each announced once, concisely", async ({ page, context }, info) => {
+  test.skip(info.project.name !== "desktop", "clipboard permissions are desktop-only in this setup");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/ui/playground/");
+  const note = page.locator(".btn-row [role=status]");
+  await expect(note).toHaveText("");
+  await page.getByLabel("component").selectOption("StatusLine");
+  await expect(note).toHaveText("showing StatusLine");
+  await page.getByRole("radio", { name: /round/ }).check();
+  await page.getByRole("button", { name: "reset tokens" }).click();
+  await expect(note).toHaveText("tokens reset");
+  await page.getByRole("button", { name: "copy a link to this setup" }).click();
+  await expect(note).toHaveText("link copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("/ui/playground/");
+  // The whole preview stage never carries aria-live any more — it re-announced on every keystroke.
+  await expect(page.locator(".pg__stage")).not.toHaveAttribute("aria-live");
+});

@@ -10,6 +10,9 @@ export const PLAYABLE: Record<string, Playable> = {
   Button: { component: Button }, Badge: { component: Badge }, Alert: { component: Alert },
   StatusLine: { component: StatusLine }, Field: { component: Field }, Checkbox: { component: Checkbox },
   Card: { component: Card }, Avatar: { component: Avatar }, Spinner: { component: Spinner }, Kbd: { component: Kbd },
-  Wordmark: { component: Wordmark }, Code: { component: Code },
+  // href is a URL-valued prop (playground-state.ts's URL_PROPS), so it's never a control — fixed to
+  // "/" here so Wordmark still renders as a link (its real usage) without ever taking a destination
+  // from the query string.
+  Wordmark: { component: Wordmark, fixed: { href: "/" } }, Code: { component: Code },
   Prompt: { component: Prompt, fixed: { onChange: noop, onSubmit: noop } },
 };

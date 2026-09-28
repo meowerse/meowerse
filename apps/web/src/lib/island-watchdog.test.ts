@@ -22,6 +22,29 @@ describe("watchIsland (B9: a lazy chunk that never arrives)", () => {
     expect(r.querySelector(".mw-status")).toHaveProperty("className", "mw-status mw-status--fail");
     expect(r.querySelector(".mw-status__text")!.textContent).toBe("the playground didn't load. reload the page to try again.");
   });
+  it("adds a real reload control next to the message, that actually reloads the page (B9: a recovery path, not just wording)", () => {
+    vi.useFakeTimers();
+    const r = root();
+    const reload = vi.fn();
+    watchIsland(r, 100, reload);
+    vi.advanceTimersByTime(100);
+    const btn = r.querySelector<HTMLButtonElement>(".mw-status__action button");
+    expect(btn).not.toBeNull();
+    expect(btn!.type).toBe("button");
+    expect(btn!.textContent).toBe("reload");
+    expect(reload).not.toHaveBeenCalled();
+    btn!.click();
+    expect(reload).toHaveBeenCalledTimes(1);
+    btn!.click();
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+  it("defaults the reload control to the real location.reload (not injected in production use)", () => {
+    vi.useFakeTimers();
+    const r = root();
+    watchIsland(r, 100); // no injected reload — exercises the real default parameter
+    vi.advanceTimersByTime(100);
+    expect(r.querySelector<HTMLButtonElement>(".mw-status__action button")).not.toBeNull();
+  });
   it("stays quiet once the island says it's ready, or when cancelled", () => {
     vi.useFakeTimers();
     const r = root();
