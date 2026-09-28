@@ -94,6 +94,16 @@ describe("B10 geometry: tty and app controls share one shape", () => {
       expect(body).toMatch(/border-color:\s*var\(--c-line\)/);
     });
 
+  // T11 review: an icon-only button in a flex row (a composer's icon row, a header's actions)
+  // shrank below 44px because .mw-btn had no flex-none/min-width floor of its own — two page-local
+  // CSS patches worked around it by wrapping or shrinking a neighbour instead. Fixed once here, for
+  // every button in every flex row, rather than per call site.
+  it(".mw-btn never shrinks in a flex row (flex: none)", () => expect(rule(".mw-btn")).toMatch(/flex:\s*none/));
+  it(".mw-btn--md never narrows below the 44px target (min-width, not just min-height)", () => {
+    expect(rule(".mw-btn--md")).toMatch(/min-height:\s*var\(--control-height\)/);
+    expect(rule(".mw-btn--md")).toMatch(/min-width:\s*var\(--control-height\)/);
+  });
+
   it("the :active press scale only runs without reduced motion", () => {
     expect(activeTransformOutsideNoPref(css)).toBe(false);
     expect(css.match(NO_PREF)?.join("")).toMatch(/\.mw-btn[^{]*:active\s*\{[^}]*transform:\s*scale/);

@@ -161,13 +161,15 @@ a.mw-btn:hover { text-decoration: none; }
 .preview--wide { grid-column: 1 / -1; }
 .preview__stage { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-width: 0; min-height: var(--sp-8); padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .preview__stage > * { max-width: 100%; }
-/* A stage can be narrower than the header/footer's natural width (a gallery column, say): let their
-   own internal rows wrap onto a second line instead of overflowing the stage's border (review9) —
-   never clip with `overflow`, which would just hide the same focusable controls instead of fixing
-   their layout. */
-.preview__stage .mw-header { position: static; flex: 1 1 100%; flex-wrap: wrap; row-gap: var(--sp-2); }
-.preview__stage .mw-header__actions { flex-wrap: wrap; row-gap: var(--sp-2); justify-content: flex-end; }
-.preview__stage .mw-header__nav { flex-wrap: wrap; row-gap: var(--sp-1); }
+/* A stage can be narrower than the header/footer's natural width (a gallery column, say), so the
+   header/footer take the stage's full width (review9) instead of sitting inline at their own
+   content width. (The row-wrapping this comment used to describe — .mw-header__actions and
+   .mw-header__nav wrapping onto a second line — turned out to be dead weight once checked against
+   the T11 fix: AppHeader's own <640px breakpoint already collapses .mw-header__nav behind the
+   burger button, and its .mw-header__actions is two fixed-size 44px controls (ThemeToggle, the
+   burger) that were never the ones overflowing — verified with no overflow at 390/1024/1440 with
+   those two rules removed, across every /ui/components/app-header/ and /ui/gallery/ preview.) */
+.preview__stage .mw-header { position: static; flex: 1 1 100%; }
 .preview__stage .mw-footer { flex: 1 1 100%; margin-top: 0; }
 .preview__title { font-size: var(--fs-2); color: var(--c-fg-muted); }
 .dodont { display: grid; gap: var(--sp-4); }
@@ -240,21 +242,21 @@ a.mw-btn:hover { text-decoration: none; }
 .pairing { display: grid; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
 .pairing > h2 { font-size: var(--fs-4); }
 .pairing__body { display: grid; gap: var(--sp-3); min-width: 0; padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
-/* Same fix as review9's .preview__stage .mw-header: a narrow pairing panel (phone width) can be
-   narrower than the header's natural row width — wrap onto a second line instead of shrinking any
-   child below its own min-content (which squeezed the icon-only ghost buttons under 44px) or
-   overflowing the panel. */
+/* A narrow pairing panel (phone width) can be narrower than the header's natural row width — wrap
+   onto a second line rather than overflow the panel (review9's .preview__stage .mw-header). Every
+   child here (Avatar, the ghost menu button, ThemeButton) is a fixed, non-shrinking size on its own
+   (T11 review: @meowerse/ui's .mw-btn itself now never shrinks either), so wrapping is the only
+   thing left to do when they don't all fit one row — nothing here compensates for shrinking. */
 .pairing .mw-header { position: static; flex-wrap: wrap; row-gap: var(--sp-2); border: 1px solid var(--c-line); border-radius: var(--r-m); }
 .pairing .mw-header__actions { flex-wrap: wrap; row-gap: var(--sp-2); justify-content: flex-end; }
 .together-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
 .together-row > .mw-field, .together-row > .mw-prompt { flex: 1 1 14rem; }
 .grid-overlay { background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) var(--sp-1)); }
+/* The icon-only ghost buttons no longer need a local `flex: none` (T11 review: @meowerse/ui's
+   .mw-btn has it now, for every button); wrapping is still this row's own job when the buttons'
+   fixed size plus the prompt don't fit one line at phone width. */
 .composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-1); }
-/* The icon-only ghost buttons keep their natural (44px-plus) size; the prompt is the one thing here
-   that can shrink, so it — not the buttons — absorbs a narrow phone width (min-width: 0 lets a flex
-   item shrink past its content size, the same overflow fix as review9). */
-.composer-row > .mw-btn { flex: none; }
-.composer-row .mw-prompt { flex: 1 1 14rem; min-width: 0; }
+.composer-row .mw-prompt { flex: 1 1 14rem; }
 .together-split { display: grid; gap: var(--sp-4); }
 @media (min-width: 760px) { .together-split { grid-template-columns: 14rem minmax(0, 1fr); } }
 .together-list { display: grid; align-content: start; margin: 0; padding: 0; list-style: none; border-right: 1px solid var(--c-line); }

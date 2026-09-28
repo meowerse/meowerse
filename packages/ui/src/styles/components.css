@@ -6,7 +6,12 @@
 .mw-spinner--lg { width: 32px; height: 32px; border-width: 3px; }
 @keyframes mw-spin { to { transform: rotate(360deg); } }
 
-.mw-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2); font: 500 var(--fs-3)/1 var(--font-mono); border-radius: var(--r-m); border: 1px solid transparent; cursor: pointer; transition: background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease); }
+/* flex: none (root-cause fix, T11 review): a button dropped into any flex row — a composer's icon
+   row, a header's actions — must never be treated as the flexible thing that shrinks to make room.
+   Two call sites (T9's .preview__stage .mw-header*, T11's .composer-row/.pairing .mw-header) had
+   worked around this locally by wrapping or shrinking their neighbour instead; this is the one
+   place that actually fixes it, for every button everywhere. */
+.mw-btn { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; gap: var(--sp-2); font: 500 var(--fs-3)/1 var(--font-mono); border-radius: var(--r-m); border: 1px solid transparent; cursor: pointer; transition: background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease); }
 @media (prefers-reduced-motion: no-preference) {
   .mw-btn:not(:disabled):not([aria-disabled="true"]):active { transform: scale(.98); }
 }
@@ -16,7 +21,10 @@
    probe retry button, say) must not lose focus the way a real `disabled` attribute would (B9/B26).
    Same technique as .mw-prompt__send[aria-disabled="true"] below. */
 .mw-btn[aria-disabled="true"] { opacity: var(--disabled-opacity); cursor: not-allowed; }
-.mw-btn--md { min-height: var(--control-height); padding: 0 var(--sp-4); }
+/* min-width, not just min-height: an icon-only button (no text child) is otherwise only as wide as
+   its icon plus padding, which for a small icon can land under 44px — this pins the whole box, not
+   just its hit area (unlike .mw-btn--sm's ::after technique below, which keeps a small *drawn* size). */
+.mw-btn--md { min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-4); }
 .mw-btn--sm { min-height: 36px; min-width: 36px; padding: 0 var(--sp-3); font-size: var(--fs-2); }
 /* a 36px small button still gets a 44x44 hit area */
 .mw-btn--sm::after { content: ""; position: absolute; inset: -4px; }
