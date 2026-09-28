@@ -19,10 +19,11 @@ export type NavLink = { label: string; href: string; match: string };
 // same entries this exports — not a hand-maintained copy that could silently drift.
 export const NAV: readonly NavLink[] = navData as readonly NavLink[];
 
-// C3: "playground" (/ui/playground/) is added by T10, once that page exists.
+// C3: "playground" (/ui/playground/) was added by T10, once that page existed.
 export const FOOTER_LINKS = [
   { label: "projects", href: "/#projects" },
   { label: "ui docs", href: "/ui/" },
+  { label: "playground", href: "/ui/playground/" },
 ];
 
 export { isCurrent };

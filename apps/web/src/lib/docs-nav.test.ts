@@ -8,8 +8,8 @@ describe("docsNav", () => {
     expect(groups.find((g) => g.label === "foundations")!.items.map((i) => i.label)).toEqual(["colours", "type", "space, radii, layers", "motion", "voice"]);
     for (const g of groups) for (const i of g.items) expect(i.href).toMatch(/^\/ui\/([a-z0-9-]+\/)*$/);
   });
-  it("ends with the gallery, then utilities", () =>
-    expect(docsNav([]).at(-1)!.items).toEqual([{ label: "gallery", href: "/ui/gallery/" }, { label: "utilities", href: "/ui/utilities/" }]));
+  it("ends with the playground, the gallery, then utilities", () =>
+    expect(docsNav([]).at(-1)!.items.map((i) => i.href)).toEqual(["/ui/playground/", "/ui/gallery/", "/ui/utilities/"]));
   it("lists every component under components, after an index link", () => {
     const comps = docsNav(["Button", "ConfirmDialog", "Alert"]).find((g) => g.label === "components")!;
     expect(comps.items).toEqual([
