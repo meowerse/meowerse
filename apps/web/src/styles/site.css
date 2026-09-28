@@ -53,6 +53,9 @@ a.mw-btn:hover { text-decoration: none; }
 .facts dd { margin: 0; }
 .project__pager { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
 .probe { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); min-height: var(--control-height); }
+/* B26: a row with its own retry keeps the button's line reserved (a grid track stays when the button is
+   [hidden] before JS), and the button never shares the status line, whose length changes with the result. */
+.probe--retry { display: grid; grid-template-rows: auto var(--control-height); justify-items: start; }
 /* C7 (T3b ruling): the ↗ glyph inherits its button's text colour wherever .ext-mark sits inside .mw-btn
    — a subtle colour on a filled primary button fails AA, and a link's own colour already carries it. */
 .mw-btn .ext-mark { color: inherit; }

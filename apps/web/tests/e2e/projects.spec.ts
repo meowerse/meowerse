@@ -55,6 +55,36 @@ test("check again re-probes, keeps keyboard focus while busy, and ignores a seco
   expect(requests, "exactly one extra probe from the two clicks").toBe(1);
 });
 
+// B26 (Lighthouse, T13): the status row sits above the fold on a phone. The probe's result text and the
+// retry button that appears with JS must not move the content below it: CLS 0.17 here cost /p/ its 95.
+test("the live status never shifts the page below it", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __cls: number };
+    w.__cls = 0;
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries() as unknown as { value: number; hadRecentInput: boolean }[])
+        if (!e.hadRecentInput) w.__cls += e.value;
+    }).observe({ type: "layout-shift", buffered: true });
+  });
+  // On a slow phone the page's JS and the service's answer both land after the first paint; locally they'd
+  // land before it, and a change before the first paint isn't a shift. So hold both back.
+  await page.route("**/_astro/*.js", async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
+    await route.continue();
+  });
+  await page.route(PROBED, async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
+    await route.fulfill({ status: 200, body: "{}", headers: { "access-control-allow-origin": "*", "content-type": "application/json" } });
+  });
+  for (const slug of ["meowsenger", "auth"]) {
+    await page.goto(`/p/${slug}/`);
+    await expect(page.locator(".mw-status__tag")).not.toHaveText("[wait]", { timeout: 8000 });
+    await expect(page.locator("[data-probe-retry]")).toHaveText("check again");
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    expect(await page.evaluate(() => (window as unknown as { __cls: number }).__cls), `/p/${slug}/ CLS`).toBeLessThan(0.01);
+  }
+});
+
 // Important #1: [hidden] didn't actually hide .mw-btn (its `display: inline-flex` won on specificity),
 // so an enabled, do-nothing button showed before JS ran and stayed that way entirely with JS off.
 test.describe("without JavaScript", () => {

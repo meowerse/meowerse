@@ -8,6 +8,8 @@
 // row and renders its own single shared button + noscript instead, so the page never ships more
 // than one [data-probe-retry] — probe-runner.ts re-runs every [data-probe] row no matter which
 // button triggered it, so one shared control is functionally identical to one per row.
+// B26: with its own retry the row is two fixed lines (status, then the button's control-height line),
+// reserved before JS reveals the button, so neither the reveal nor a longer result text moves the page.
 import { StatusLine } from "@meowerse/ui";
 import type { ProjectStatus } from "../lib/project-schema";
 import { describeProbe } from "../lib/probe";
@@ -17,7 +19,7 @@ const { name, status, retry = true } = Astro.props;
 const wait = describeProbe(name, "pending");
 ---
 {status.kind === "probe" ? (
-  <div class="probe" data-probe data-name={name} data-url={status.url} data-method={status.method}>
+  <div class:list={["probe", { "probe--retry": retry }]} data-probe data-name={name} data-url={status.url} data-method={status.method}>
     <StatusLine state={wait.state} live children={wait.text} />
     {retry && <>
       <button type="button" class="mw-btn mw-btn--secondary mw-btn--md probe__retry" data-probe-retry hidden>check again</button>
