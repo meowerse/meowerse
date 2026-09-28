@@ -292,10 +292,15 @@ test("SKIP_MIGRATIONS=1 skips the schema migration on the request path", async (
   expect(await r.json()).toMatchObject({ authenticated: false });
 });
 
-test("GET / with active session cookie 302 redirects to /account", async () => {
-  const { env, deps, sess } = await login("sess_root");
-  const r = await handle(new Request("https://iss/", { headers: { Cookie: `__Host-mw_sess=${sess}` } }), env as never, deps as never);
-  expect(r.status).toBe(302);
-  expect(r.headers.get("Location")).toBe("https://auth.alxnko.dev/account");
+test("GET /api/session with an invalid/expired session cookie clears the cookie", async () => {
+  const store = memStore();
+  const deps = { getDb: () => store.db, clock: () => 1000 };
+  const env = { CORS_ORIGINS: "https://web", SKIP_MIGRATIONS: "1" };
+  const r = await handle(new Request("https://iss/api/session", { headers: { Cookie: "__Host-mw_sess=deadbeef" } }), env as never, deps as never);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ authenticated: false });
+  expect(r.headers.get("Set-Cookie")).toContain("__Host-mw_sess=");
+  expect(r.headers.get("Set-Cookie")).toContain("Max-Age=0");
 });
+
 

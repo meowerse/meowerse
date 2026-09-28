@@ -753,8 +753,13 @@ function defer(ctx: ExecutionContext | undefined, p: Promise<unknown>): void {
 async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const t = now(deps);
-  const who = await whoami(db, parseCookies(req.headers.get("Cookie"))[`__Host-${SESS_COOKIE}`], t);
-  if (!who) return json({ authenticated: false }, 200, { ...cors, ...securityHeaders() });
+  const rawCookie = parseCookies(req.headers.get("Cookie"))[`__Host-${SESS_COOKIE}`];
+  const who = await whoami(db, rawCookie, t);
+  if (!who) {
+    const headers: Record<string, string> = { ...cors, ...securityHeaders() };
+    if (rawCookie) headers["Set-Cookie"] = clearHostCookie(SESS_COOKIE);
+    return json({ authenticated: false }, 200, headers);
+  }
   defer(ctx, rollIdle(db, who.idHash, t)); // keep-alive write, off the critical path
   return json(
     { authenticated: true, username: who.username ?? who.displayName ?? "you", verified: who.verified },
@@ -882,21 +887,6 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
         ...cors,
       },
     });
-  }
-
-  if (m === "GET" && pathname === "/") {
-    const cookies = parseCookies(req.headers.get("Cookie"));
-    const sid = cookies[`__Host-${SESS_COOKIE}`];
-    if (sid) {
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: `${webOrigin(env)}/account`,
-          "Cache-Control": "private, no-store",
-          ...cors,
-        },
-      });
-    }
   }
 
   if (m === "GET" && pathname === "/.well-known/openid-configuration") {

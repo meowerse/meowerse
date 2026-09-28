@@ -5,7 +5,7 @@ import { clearSessionCache } from "@meowerse/ui";
 import LandingCta from "./LandingCta";
 
 beforeEach(() => {
-  sessionStorage.clear();
+  try { sessionStorage.clear(); } catch {}
   clearSessionCache();
 });
 

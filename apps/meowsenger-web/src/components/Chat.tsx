@@ -171,9 +171,9 @@ export default function Chat({ base }: { base: string }) {
           ...prev[idx],
           lastMessage: preview,
           lastSenderId: senderId,
-          lastActivity: at,
-          // Active chat or user's own message: no unread badge. Cross-chat from peer: unread dot.
-          unreadCount: (isActive || isMine) ? 0 : 1,
+          // User's own message: never unread. Active chat: preserve scroll-aware state (onActiveRead zeroes it).
+          // Cross-chat from a peer: show has-unread dot (1).
+          unreadCount: isMine ? 0 : (isActive ? prev[idx].unreadCount : 1),
         };
         return [updated, ...prev.filter((_, i) => i !== idx)];
       });
