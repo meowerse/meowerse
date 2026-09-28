@@ -11,6 +11,7 @@ describe("package.json exports", () => {
   it("offers the React-free subpaths the static site needs", () => {
     expect(pkg.exports).toMatchObject({
       "./theme": "./src/lib/theme.ts",
+      "./status": "./src/lib/status.ts",
       "./tokens.json": "./design/tokens.json",
       "./assets/fonts/*": "./src/assets/fonts/*",
     });

@@ -1,10 +1,7 @@
 import type { ReactNode } from "react";
 import { cx } from "../lib/cx";
-/** the state a StatusLine shows: ok, wait, fail or info. */
-export type StatusState = "ok" | "wait" | "fail" | "info";
-/** exported so DOM code that keeps a server-rendered StatusLine in sync without React
- *  (apps/web/src/lib/status-dom.ts) imports this tag map instead of copying it. */
-export const STATUS_TAGS: Record<StatusState, string> = { ok: "[ ok ]", wait: "[wait]", fail: "[fail]", info: "[info]" };
+import { STATUS_TAGS, type StatusState } from "../lib/status";
+export { STATUS_TAGS, type StatusState };
 const TAG = STATUS_TAGS;
 /** one line of state with a glyph and a word: [ ok ], [wait], [fail] or [info]. */
 export function StatusLine({ state, children, live = false, action, className }: {

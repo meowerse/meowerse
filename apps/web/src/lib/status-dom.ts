@@ -1,6 +1,6 @@
 // Updates a server-rendered <StatusLine live> in place without React. The status-dom test compares the
 // result with StatusLine's own markup for every state, so the two can't drift apart.
-import { STATUS_TAGS, type StatusState } from "@meowerse/ui";
+import { STATUS_TAGS, type StatusState } from "@meowerse/ui/status";
 
 const WORD: Record<StatusState, string> = { ok: "ok", wait: "working", fail: "error", info: "info" };
 
