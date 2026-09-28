@@ -22,6 +22,19 @@ export function sitePaths(): string[] {
 }
 
 /**
+ * Waits for every `client:visible` island under `selector` to hydrate. Centers the target instead of
+ * `scrollIntoViewIfNeeded()`: that only guarantees the target's own edge is in view, and `astro-island`
+ * is `display:contents` (an all-zero `getBoundingClientRect()`), so a heading right at the viewport's
+ * bottom edge can leave the demo content just below it a few px past the fold — never intersecting,
+ * so `client:visible` never fires (reproduced deterministically for the AppHeader demo). Centering
+ * leaves headroom below the target so the island is actually in view.
+ */
+export async function hydrated(page: Page, selector: string): Promise<void> {
+  await page.locator(selector).evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await expect(page.locator("astro-island[ssr]")).toHaveCount(0, { timeout: 15_000 });
+}
+
+/**
  * Visible interactive elements under 44×44 CSS px. Exempt: inline links in running text (WCAG 2.5.8),
  * `.mw-btn--sm` (36 px drawn, 44 px hit area through ::after), native checkboxes/radios inside a ≥44 px
  * label, and component previews in the /ui docs ([data-preview]: ui's own geometry tests cover those).

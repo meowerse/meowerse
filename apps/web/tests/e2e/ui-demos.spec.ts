@@ -1,12 +1,4 @@
-import { test, expect } from "./fixtures";
-
-async function hydrated(page: import("@playwright/test").Page, selector: string) {
-  // Center it: scrollIntoViewIfNeeded only guarantees the heading's own edge is in view, which can
-  // leave a short page's astro-island (right below the heading, display:contents) a few px past the
-  // fold — never intersecting, so client:visible never fires. Centering leaves headroom below it.
-  await page.locator(selector).evaluate((el) => el.scrollIntoView({ block: "center" }));
-  await expect(page.locator("astro-island[ssr]")).toHaveCount(0, { timeout: 15_000 });
-}
+import { test, expect, hydrated } from "./fixtures";
 
 test("ConfirmDialog: the phrase must match exactly, and the reason shows until it does", async ({ page }) => {
   await page.goto("/ui/components/confirm-dialog/");

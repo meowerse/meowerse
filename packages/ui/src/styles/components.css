@@ -22,6 +22,11 @@
 .mw-btn--sm::after { content: ""; position: absolute; inset: -4px; }
 .mw-btn--primary { background: var(--c-accent-fill); color: var(--c-on-accent); }
 .mw-btn--primary:not(:disabled):not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--c-accent-fill) 88%, var(--c-fg)); }
+/* B9: opacity alone over the bright accent fill still reads as "ready" in dark. Drop the fill
+   entirely so a disabled primary reads unambiguously disabled in both themes; --disabled-opacity
+   (from the shared .mw-btn:disabled/[aria-disabled="true"] rules above) still applies on top. */
+.mw-btn--primary:disabled { background: var(--c-surface); color: var(--c-fg-subtle); border-color: var(--c-line); }
+.mw-btn--primary[aria-disabled="true"] { background: var(--c-surface); color: var(--c-fg-subtle); border-color: var(--c-line); }
 .mw-btn--secondary { background: transparent; color: var(--c-fg); border-color: var(--c-line-strong); }
 .mw-btn--secondary:not(:disabled):not([aria-disabled="true"]):hover { background: var(--c-surface); }
 .mw-btn--ghost { background: transparent; color: var(--c-fg-muted); }

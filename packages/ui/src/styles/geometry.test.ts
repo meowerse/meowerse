@@ -82,6 +82,18 @@ describe("B10 geometry: tty and app controls share one shape", () => {
     '.mw-prompt__send[aria-disabled="true"]'])("%s uses the shared disabled opacity", (sel) =>
     expect(rule(sel)).toMatch(/opacity:\s*var\(--disabled-opacity\)/));
 
+  // B9 fix round 1: opacity alone over the bright accent fill still reads as "ready" in dark
+  // (barely distinguishable from enabled). A disabled primary must drop the fill entirely, with
+  // tokens only — no hard-coded colours (the file-wide colourLiterals check above already forbids
+  // that, this pins the exact, intentional token choice so a future edit can't quietly regress it).
+  it.each([".mw-btn--primary:disabled", '.mw-btn--primary[aria-disabled="true"]'])(
+    "%s drops the accent fill for token-only muted colours", (sel) => {
+      const body = rule(sel);
+      expect(body).toMatch(/background:\s*var\(--c-surface\)/);
+      expect(body).toMatch(/color:\s*var\(--c-fg-subtle\)/);
+      expect(body).toMatch(/border-color:\s*var\(--c-line\)/);
+    });
+
   it("the :active press scale only runs without reduced motion", () => {
     expect(activeTransformOutsideNoPref(css)).toBe(false);
     expect(css.match(NO_PREF)?.join("")).toMatch(/\.mw-btn[^{]*:active\s*\{[^}]*transform:\s*scale/);

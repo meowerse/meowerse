@@ -161,7 +161,13 @@ a.mw-btn:hover { text-decoration: none; }
 .preview--wide { grid-column: 1 / -1; }
 .preview__stage { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-width: 0; min-height: var(--sp-8); padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .preview__stage > * { max-width: 100%; }
-.preview__stage .mw-header { position: static; flex: 1 1 100%; }
+/* A stage can be narrower than the header/footer's natural width (a gallery column, say): let their
+   own internal rows wrap onto a second line instead of overflowing the stage's border (review9) —
+   never clip with `overflow`, which would just hide the same focusable controls instead of fixing
+   their layout. */
+.preview__stage .mw-header { position: static; flex: 1 1 100%; flex-wrap: wrap; row-gap: var(--sp-2); }
+.preview__stage .mw-header__actions { flex-wrap: wrap; row-gap: var(--sp-2); justify-content: flex-end; }
+.preview__stage .mw-header__nav { flex-wrap: wrap; row-gap: var(--sp-1); }
 .preview__stage .mw-footer { flex: 1 1 100%; margin-top: 0; }
 .preview__title { font-size: var(--fs-2); color: var(--c-fg-muted); }
 .dodont { display: grid; gap: var(--sp-4); }
@@ -196,7 +202,10 @@ a.mw-btn:hover { text-decoration: none; }
 .gallery-item h2 a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); margin: 0 calc(var(--sp-2) * -1); border-radius: var(--r-m); color: var(--c-fg); }
 .gallery-item h2 a:hover { background: var(--c-surface); text-decoration: none; }
 .gallery-pair { display: grid; gap: var(--sp-3); }
-@media (min-width: 960px) { .gallery-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+/* review9: a wide preview (AppHeader) doesn't fit a half-width column at any desktop width — its
+   nav overflowed the panel and rendered over the neighbour, at ~1.1-2.1:1 contrast. --stack keeps
+   the pair in one column (dark above light) at every width, giving it the full section width. */
+@media (min-width: 960px) { .gallery-pair:not(.gallery-pair--stack) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .gallery-theme { display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .gallery-theme__label { font-size: var(--fs-1); color: var(--c-fg-subtle); }
 .gallery-theme .previews { grid-template-columns: 1fr; }
