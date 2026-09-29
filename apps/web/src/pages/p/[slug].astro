@@ -1,4 +1,5 @@
 ---
+import ExtLinkMark from "../../components/ExtLinkMark.astro";
 import { getCollection, type CollectionEntry } from "astro:content";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import ProjectStatus from "../../components/ProjectStatus.astro";
@@ -26,7 +27,7 @@ const d = entry.data;
         {d.links.map((l, i) => (
           <a class={`mw-btn mw-btn--md ${i === 0 ? "mw-btn--primary" : "mw-btn--secondary"}`} href={l.href} {...linkAttrs(l.href)}>
             {l.label}
-            {isExternal(l.href) && <><span class="ext-mark" aria-hidden="true"> ↗</span><span class="sr-only"> (opens in a new tab)</span></>}
+            {isExternal(l.href) && <ExtLinkMark />}
           </a>
         ))}
       </div>
