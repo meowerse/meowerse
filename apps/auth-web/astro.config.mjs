@@ -6,6 +6,8 @@ import react from "@astrojs/react";
 // blocks data: fonts, which silently dropped Bytesized to a fallback on the
 // deployed site. External woff2 are also cacheable + smaller (no base64 bloat).
 export default defineConfig({
+  // The canonical host (src/lib/seo.ts SITE; a test keeps the two equal).
+  site: "https://auth.alxnko.dev",
   integrations: [react()],
   vite: { build: { assetsInlineLimit: 0 } },
 });

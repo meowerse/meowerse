@@ -28,8 +28,24 @@
 # "no-store, public, max-age=604800".
 /app
   Cache-Control: no-store
+  X-Robots-Tag: noindex
 /app/*
   Cache-Control: no-store
+  X-Robots-Tag: noindex
+
+# Private pages kept out of search (X-Robots-Tag, alongside the <meta name="robots"> the layout
+# writes from src/lib/seo.ts). /join previews nothing without a session. One X-Robots-Tag rule per
+# path; same /app-style prefix care: nothing else starts with /join or /404.
+/join*
+  X-Robots-Tag: noindex
+/404*
+  X-Robots-Tag: noindex
+
+# Crawler files (static assets, never the Worker): an hour, one Cache-Control each.
+/sitemap.xml
+  Cache-Control: public, max-age=3600
+/robots.txt
+  Cache-Control: public, max-age=3600
 
 # Brand icons (packages/brand). Stable URLs but NOT content-hashed, so they get a
 # week of caching rather than the immutable year used for /_astro/*. One

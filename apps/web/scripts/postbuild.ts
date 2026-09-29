@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { buildCsp, dataUrls, MAX_HEADER, probeOrigins, styleAttrs } from "../src/lib/csp";
-import { pagePaths, sitemapXml } from "../src/lib/sitemap";
+import { pagePaths, sitemapXml } from "@meowerse/ui/seo";
 import { SITE } from "../src/lib/site";
 
 const root = process.cwd();
