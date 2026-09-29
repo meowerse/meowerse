@@ -14,6 +14,8 @@ describe("AppHeader", () => {
     render(<AppHeader session={{ loading: false, authenticated: true, username: "alex", verified: true }} />);
     expect(screen.getByRole("link", { name: "account" })).toBeInTheDocument();
     expect(screen.getByText("alex")).toBeInTheDocument();
+    // the username is written next to the avatar, so the avatar is decorative: the name is read once
+    expect(screen.queryByRole("img", { name: "alex" })).toBeNull();
     expect(screen.queryByRole("link", { name: "log in" })).toBeNull();
   });
   it("exposes the docs link to guests and authed users", () => {

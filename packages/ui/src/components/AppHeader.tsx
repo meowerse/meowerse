@@ -66,7 +66,7 @@ export function AppHeader({ session, className, links = DEFAULT_LINKS }: {
           {!session.loading && session.authenticated && (
             <>
               {links.signedIn.map((l) => <a key={l.href} href={l.href}>{l.label}</a>)}
-              <span className="mw-header__user"><Avatar name={session.username} size="sm" /> {session.username}</span>
+              <span className="mw-header__user"><Avatar name={session.username} size="sm" decorative /> {session.username}</span>
             </>
           )}
         </nav>

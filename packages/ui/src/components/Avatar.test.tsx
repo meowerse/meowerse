@@ -16,4 +16,12 @@ describe("Avatar", () => {
     render(<Avatar name="Cats & Co" />);
     expect(screen.getByRole("img", { name: "Cats & Co" })).toHaveTextContent("C");
   });
+  it("decorative: hidden from assistive tech, for when the name is already shown next to it", () => {
+    const { container } = render(<p><Avatar name="alex" decorative /> alex</p>);
+    expect(screen.queryByRole("img")).toBeNull();
+    const el = container.querySelector(".mw-avatar")!;
+    expect(el).toHaveAttribute("aria-hidden", "true");
+    expect(el).not.toHaveAttribute("aria-label");
+    expect(el).toHaveTextContent("A");
+  });
 });
