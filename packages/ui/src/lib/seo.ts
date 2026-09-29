@@ -81,6 +81,8 @@ export function pageSeo(site: string, pages: SeoPages, pathname: string): PageSe
   throw new Error(`${path} is not classified: add it to the public, unlisted or private pages`);
 }
 
+// These match the tags exactly as the layouts write them (attribute order and quoting included); a
+// reordered tag fails the build loudly rather than passing silently.
 const attr = (html: string, re: RegExp) => [...html.matchAll(re)].map((m) => m[1]);
 
 /**

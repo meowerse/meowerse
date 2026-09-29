@@ -10,7 +10,8 @@ interface Props { title: string; bodyClass?: string; footer?: boolean; header?: 
 const { title, bodyClass, footer = true, header = false } = Astro.props;
 // Public and unlisted pages: canonical (on the .dev host) + description; private pages: noindex.
 // The classification lives in src/lib/seo.ts; an unclassified page throws here and fails the build.
-const seo = pageSeo(SITE, PAGES, Astro.url.pathname);
+// By route, not request URL: in `astro dev` the 404 page renders for the unknown URL itself.
+const seo = pageSeo(SITE, PAGES, Astro.routePattern);
 const footerLinks = [
   { label: "about", href: "/about" },
   { label: "privacy", href: "/privacy" },

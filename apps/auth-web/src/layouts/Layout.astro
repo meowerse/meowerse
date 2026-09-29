@@ -10,7 +10,8 @@ interface Props { title: string; wide?: boolean }
 const { title, wide } = Astro.props;
 // Public pages: canonical (on the .dev host) + description; private pages: noindex. The
 // classification lives in src/lib/seo.ts; an unclassified page throws here and fails the build.
-const seo = pageSeo(SITE, PAGES, Astro.url.pathname);
+// By route, not request URL: in `astro dev` the 404 page renders for the unknown URL itself.
+const seo = pageSeo(SITE, PAGES, Astro.routePattern);
 // UI + OIDC/API are one Worker on the same origin now, so the base is "" — all
 // calls use relative paths (base = "" → "/login", "/api/session", "/tg/status").
 const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "";

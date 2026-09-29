@@ -12,7 +12,8 @@ const walk = (d: string): string[] =>
   readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
 const html = walk(dist).map((f) => relative(dist, f)).filter((f) => f.endsWith(".html") && !f.startsWith("_astro"));
 const built = Object.fromEntries(html.map((f) => [sitePath(f), readFileSync(join(dist, f), "utf8")]));
-if (Object.keys(built).length !== html.length) throw new Error(`two built files map to the same page:\n  ${html.join("\n  ")}`);
+const dupes = html.filter((f, i) => html.findIndex((g) => sitePath(g) === sitePath(f)) !== i);
+if (dupes.length) throw new Error(`built files that map to an already-built page: ${dupes.join(", ")}`);
 const problems = checkBuild(SITE, PAGES, built);
 if (problems.length) throw new Error(`search-engine signals:\n  ${problems.join("\n  ")}`);
 const paths = sitemapPaths(PAGES);
