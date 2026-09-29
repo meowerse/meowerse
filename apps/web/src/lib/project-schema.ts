@@ -4,7 +4,10 @@ import { z } from "astro/zod";
 const https = z.url({ protocol: /^https$/ });
 
 export const statusSchema = z.discriminatedUnion("kind", [
-  // a live check of a public, CORS-readable endpoint (its origin becomes a connect-src entry)
+  // a live check of a public, CORS-readable endpoint (its origin becomes a connect-src entry).
+  // Known limit: auth (content/projects/auth.json) is probed through /.well-known/openid-configuration,
+  // which the zone edge-caches (infra/cloudflare/cache.tf), so a cached answer can read "up" while the
+  // worker is down. Sub-project 3 adds a no-store /health to auth and moves this probe to it.
   z.strictObject({ kind: z.literal("probe"), url: https, method: z.enum(["GET", "HEAD"]) }),
   // nothing public to check: say so instead of pretending (B9)
   z.strictObject({ kind: z.literal("static"), state: z.enum(["info"]), text: z.string().min(1).max(80) }),

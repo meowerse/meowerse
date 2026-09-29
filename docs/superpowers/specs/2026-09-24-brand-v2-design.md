@@ -248,7 +248,8 @@ Deferred to a later sub-project:
 Closed in sub-project 2:
 - W-01, W-02, W-03, W-04, W-05, W-06, W-07, W-08, W-10, W-11, W-12, W-14, W-15, W-16, W-17;
 - W-09, except the note below;
-- U-15 and U-28 (ui, needed by the site's axe and Trusted Types gates).
+- U-15 (ui part; meowsenger's own Avatar moves to ui in sub-project 4) and U-28 (ui, needed by the
+  site's axe and Trusted Types gates).
 - SP1 deferrals: unused Cat3D assets in app dist, cat colour tokens, `assetsInlineLimit: 0`, and the
   Modal `display:none`/`visibility:hidden` Playwright test.
 
