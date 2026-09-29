@@ -192,6 +192,9 @@ a.mw-btn:hover { text-decoration: none; }
 .demo__out { font-size: var(--fs-2); color: var(--c-fg-muted); }
 .demo__frame { position: relative; width: 100%; border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .demo__frame .mw-header { position: static; }
+/* AuthGate fills 40vh of a page while it waits or fails; in a demo frame that's a tall empty box. */
+.demo__frame--gate .mw-gate { min-height: 0; padding: var(--sp-5); }
+.demo__frame--gate > p { margin: 0; padding: var(--sp-5); }
 .demo-stage { padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 /* B9: a demo island's live stage is inert until hydrated; its wait (or failure) line floats over the
    still preview's top-right corner, out of flow, so showing and removing it never shifts the page. */
@@ -238,6 +241,8 @@ a.mw-btn:hover { text-decoration: none; }
 .pg__out { display: grid; gap: var(--sp-3); min-width: 0; }
 .pg__stage { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-height: calc(var(--sp-8) * 2); padding: var(--sp-5); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .pg__stage .mw-header { position: static; }
+/* Long unbroken text typed into a control (or an error message) wraps inside the stage instead of widening the page. */
+.pg__stage > * { max-width: 100%; overflow-wrap: anywhere; }
 .pg__code { max-height: 24rem; overflow: auto; }
 .pg-fallback { padding: var(--sp-5); border: 1px dashed var(--c-line-input); border-radius: var(--r-l); }
 /* client:only ships no server-rendered markup, only this fallback, so hydration always replaces a

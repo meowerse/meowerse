@@ -13,4 +13,8 @@ describe("Spinner", () => {
     expect(screen.getByRole("status").className).toContain("mw-spinner--lg");
     expect(screen.getByRole("status").className).toContain("x");
   });
+  it("a blank label falls back to \"loading\", so the status always has a name", () => {
+    render(<Spinner label="  " />);
+    expect(screen.getByRole("status")).toHaveAttribute("aria-label", "loading");
+  });
 });

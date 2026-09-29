@@ -32,9 +32,14 @@ function readCache(): Known | null {
   try {
     const raw = sessionStorage.getItem(CACHE_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as { at: number; data: Known };
+    const c = JSON.parse(raw) as { at: number; data?: Partial<Known> };
     if (Date.now() - c.at > TTL) return null;
-    return c.data;
+    // Anyone can edit sessionStorage (or an older build wrote it): a signed-in entry without a real
+    // username would reach <Avatar name={undefined}> in AppHeader. Treat a malformed entry as no cache
+    // and ask the server again.
+    const d = c.data;
+    if (!d || d.loading !== false || (d.authenticated && !(typeof d.username === "string" && d.username))) return null;
+    return d as Known;
   } catch {
     return null;
   }

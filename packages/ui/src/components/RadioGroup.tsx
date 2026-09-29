@@ -23,8 +23,9 @@ export function RadioGroup({ name, legend, options, value, onChange, className }
   return (
     <fieldset className={cx("mw-radio", className)}>
       <legend>{legend}</legend>
-      {options.map((o) => {
-        const id = `${gid}-${o.value}`;
+      {options.map((o, i) => {
+        // By position, not by value: a value may hold spaces or repeat, neither of which an id can.
+        const id = `${gid}-${i}`;
         return (
           <label key={o.value} htmlFor={id} className="mw-radio__opt">
             <input id={id} type="radio" name={name} value={o.value}

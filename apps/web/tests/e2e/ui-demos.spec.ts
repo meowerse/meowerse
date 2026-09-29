@@ -23,13 +23,46 @@ test("Toast: a pushed toast shows in the notifications region", async ({ page })
   await expect(page.getByRole("region", { name: "notifications" })).toContainText("message sent");
 });
 
-test("AuthGate: a failing session check is an error with a retry, never a redirect", async ({ page }) => {
+test("AuthGate: each stand-in answer shows its state; the error's retry re-checks; nothing ever navigates away", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/ui/components/auth-gate/");
   await hydrated(page, "#demo-title");
   const demo = page.locator(".demo-stage");
-  await expect(demo).toContainText("the account service had a problem.");
-  await expect(demo.getByRole("button", { name: "try again" })).toBeVisible();
+  const frame = demo.locator(".demo__frame");
+  // Signed in first: the happy path, the gate showing what it wraps.
+  await expect(demo.getByRole("radio", { name: "signed in" })).toBeChecked();
+  await expect(frame).toHaveText("account settings");
+
+  // Still checking: the same markup the gate itself renders while it waits (the example above is the real one).
+  await demo.getByRole("radio", { name: "still checking" }).check();
+  await expect(frame.getByRole("status", { name: "checking your session" })).toBeVisible();
+  const still = await frame.locator(".mw-gate").evaluate((el) => el.outerHTML);
+  const real = await page.evaluate(() => [...document.querySelectorAll(".mw-gate")].find((el) => !el.closest(".demo-stage"))!.outerHTML);
+  expect(still).toBe(real);
+
+  // Service error, said to be simulated; its retry shows the wait again, then the same failure.
+  await demo.getByRole("radio", { name: "service error (simulated)" }).check();
+  await expect(demo).toContainText("a simulated failure");
+  await expect(frame).toContainText("the account service had a problem.");
+  let release = () => {};
+  const held = new Promise<void>((r) => { release = r; });
+  await page.route("**/ui-demo/no-account/api/session", async (route) => { await held; await route.continue(); });
+  await frame.getByRole("button", { name: "try again" }).click();
+  await expect(frame.getByRole("status", { name: "checking your session" })).toBeVisible();
+  release();
+  await expect(frame).toContainText("the account service had a problem.");
+  await page.unroute("**/ui-demo/no-account/api/session");
+
+  // Back to signed in: a fresh check against its own stand-in, not the last answer.
+  await demo.getByRole("radio", { name: "signed in" }).check();
+  await expect(frame).toHaveText("account settings");
+  // The frame is sized to its content, not the gate's full-page 40vh.
+  await demo.getByRole("radio", { name: "service error (simulated)" }).check();
+  await expect(frame).toContainText("the account service had a problem.");
+  expect((await frame.boundingBox())!.height).toBeLessThan(260);
   expect(new URL(page.url()).pathname).toBe("/ui/components/auth-gate/");
+  expect(errors).toEqual([]);
 });
 
 test("Prompt: sends exactly what was typed; Enter sends on desktop, the button sends on phones", async ({ page }, info) => {

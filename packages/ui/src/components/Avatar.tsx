@@ -2,7 +2,8 @@ import { cx } from "../lib/cx";
 
 /** a rounded square with a person's initial, in three sizes. */
 export function Avatar({ name, size = "md", decorative = false, className }: {
-  /** the person's name; its first character becomes the visible initial and its accessible name. */
+  /** the person's name; its first character becomes the visible initial and the whole name its
+   *  accessible name. An empty or blank name shows "?" and is named "no name". */
   name: string;
   /** the avatar's size. */
   size?: "sm" | "md" | "lg";
@@ -12,9 +13,11 @@ export function Avatar({ name, size = "md", decorative = false, className }: {
   /** extra class names to append. */
   className?: string;
 }) {
-  const initial = (name.trim()[0] ?? "?").toUpperCase();
+  const shown = name.trim();
+  // The first code point, not the first UTF-16 unit: `"😺 cat"[0]` is half an emoji.
+  const initial = ([...shown][0] ?? "?").toUpperCase();
   return (
-    <span {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": name })}
+    <span {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": shown || "no name" })}
       className={cx("mw-avatar", `mw-avatar--${size}`, className)}>
       <span aria-hidden="true" className="mono" data-case="preserve">{initial}</span>
     </span>

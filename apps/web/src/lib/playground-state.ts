@@ -4,7 +4,13 @@ import tokens from "@meowerse/ui/tokens.json";
 import type { ComponentDoc } from "./ui-api";
 
 export type Scalar = string | boolean | number;
-export type PropSpec = { name: string; kind: "enum" | "boolean" | "text" | "number"; values?: string[]; default: Scalar; required: boolean; min?: number; max?: number };
+/** `default` is the control's starting value (a seed, else the component's own default); `componentDefault`
+ *  is what the component itself does when the prop is left out, when it declares one — they differ for a
+ *  seeded optional prop (Card's title starts as "profile", but Card has no title by default). */
+export type PropSpec = {
+  name: string; kind: "enum" | "boolean" | "text" | "number"; values?: string[]; default: Scalar; componentDefault?: Scalar;
+  required: boolean; min?: number; max?: number;
+};
 export type PlayComponent = { name: string; props: PropSpec[] };
 export type Theme = "system" | "dark" | "light";
 export type Accent = "green" | "blue" | "amber";
@@ -36,6 +42,10 @@ const URL_PROPS = new Set(["href", "src", "action", "formAction"]);
  *  bounded default so a URL can't push a numeric prop (or a future one) to an absurd value. */
 const NUMBER_RANGE: Record<string, { min: number; max: number }> = { maxRows: { min: 1, max: 20 } };
 const DEFAULT_NUMBER_RANGE = { min: 0, max: 999 };
+
+/** The longest text value a URL may carry; the island's text controls take no more either, so a
+ *  reload restores exactly what was typed. */
+export const TEXT_MAX = 200;
 
 /** Rounds to an integer and clamps to the spec's range; NaN and ±Infinity fall back to the range's
  *  minimum rather than poisoning the result (`Math.max`/`min` both return NaN if either side is NaN).
@@ -69,8 +79,10 @@ export function specsFromDoc(doc: ComponentDoc, seed: Record<string, Scalar>): P
     if (!kind) continue;
     const fallback: Scalar = kind === "enum" ? p.values![0]! : kind === "boolean" ? false : kind === "number" ? 0 : "";
     const range = kind === "number" ? (NUMBER_RANGE[p.name] ?? DEFAULT_NUMBER_RANGE) : undefined;
+    const own = parseDefault(p.default, kind);
     out.push({
-      name: p.name, kind, values: p.values, default: seed[p.name] ?? parseDefault(p.default, kind) ?? fallback, required: p.required,
+      name: p.name, kind, values: p.values, default: seed[p.name] ?? own ?? fallback, required: p.required,
+      ...(own !== undefined && { componentDefault: own }),
       ...(range && { min: range.min, max: range.max }),
     });
   }
@@ -84,7 +96,7 @@ function coerce(spec: PropSpec, raw: string): Scalar | undefined {
     case "enum": return spec.values!.includes(raw) ? raw : undefined;
     case "boolean": return raw === "1" ? true : raw === "0" ? false : undefined;
     case "number": { const n = Number(raw); return raw !== "" && Number.isFinite(n) ? clampNumber(spec, n) : undefined; }
-    case "text": return raw.slice(0, 200);
+    case "text": return raw.slice(0, TEXT_MAX);
   }
 }
 
@@ -122,13 +134,23 @@ export function serializeState(s: PlayState, comps: PlayComponent[]): string {
   return `?${q.toString()}`;
 }
 
-/** What the preview element receives: required props always, others only when they differ from the default. */
+/** What the preview element receives — and so exactly what the snippet shows. A required prop always
+ *  gets its current value, "" included: it's required, so leaving it out is never right (that handed
+ *  Prompt `value={undefined}`, and its `value.trim()` took the whole playground down). An optional prop
+ *  is left out when leaving it out changes nothing (it equals the component's own default, or it's an
+ *  unset boolean), and an optional text prop cleared to "" means "unset": a text control can't tell
+ *  "empty" from "not given", and the component's default is the useful reading of it (an empty
+ *  sendLabel or Spinner label would only leave a control without a name). */
 export function elementProps(comp: PlayComponent, s: PlayState): Record<string, Scalar> {
   const out: Record<string, Scalar> = {};
   for (const spec of comp.props) {
     const v = s.props[spec.name];
-    if (v === undefined || v === "") continue;
-    if (spec.required || v !== spec.default) out[spec.name] = v;
+    if (v === undefined) continue;
+    if (!spec.required) {
+      if (v === spec.componentDefault || (spec.kind === "text" && v === "")) continue;
+      if (spec.kind === "boolean" && spec.componentDefault === undefined && v === false) continue;
+    }
+    out[spec.name] = v;
   }
   return out;
 }

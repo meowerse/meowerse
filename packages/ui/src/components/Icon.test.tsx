@@ -37,4 +37,10 @@ describe("Icon", () => {
       expect(container.querySelector("path"), name).not.toBeNull();
     }
   });
+  it("renders nothing for a name that's only on Object.prototype (constructor, toString, __proto__)", () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty", ""]) {
+      const { container } = render(<Icon name={name} />);
+      expect(container.querySelector("svg"), name).toBeNull();
+    }
+  });
 });

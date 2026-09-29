@@ -17,13 +17,16 @@ const flat = (c: ReactNode): Part[] =>
       : typeof c === "string" || typeof c === "number" ? [c]
         : [];
 
-const text = (s: string) => (/[{}<>]/.test(s) ? `{${JSON.stringify(s)}}` : s);
+// JSX folds a line break in text into a space and decodes an HTML entity (in text and in a quoted
+// attribute alike), so either one gets written as a JS string literal to mean exactly what's rendered.
+const ENTITY = /&(?:#\d+|#x[\da-f]+|\w+);/i;
+const text = (s: string) => (/[{}<>\r\n]/.test(s) || ENTITY.test(s) ? `{${JSON.stringify(s)}}` : s);
 const handler = (prop: string) => (/^on[A-Z]/.test(prop) ? `handle${prop.slice(2)}` : prop);
 
 function attr(k: string, v: unknown): string | null {
   if (v === undefined || v === null) return null;
   if (v === true) return k;
-  if (typeof v === "string") return /["\n]/.test(v) ? `${k}={${JSON.stringify(v)}}` : `${k}="${v}"`;
+  if (typeof v === "string") return /["\r\n]/.test(v) || ENTITY.test(v) ? `${k}={${JSON.stringify(v)}}` : `${k}="${v}"`;
   if (typeof v === "number" || typeof v === "boolean") return `${k}={${v}}`;
   if (typeof v === "function") return `${k}={${handler(k)}}`;
   if (isValidElement(v)) return `${k}={${toJsx(v).replace(/\n\s*/g, "")}}`;
