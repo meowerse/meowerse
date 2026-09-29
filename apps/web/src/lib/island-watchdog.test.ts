@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { watchIsland } from "./island-watchdog";
 
+const MSG = "the playground didn't load. reload the page to try again.";
+
 afterEach(() => vi.useRealTimers());
 
 function root() {
@@ -17,16 +19,23 @@ describe("watchIsland (B9: a lazy chunk that never arrives)", () => {
   it("turns the wait into a plain error with a way out", () => {
     vi.useFakeTimers();
     const r = root();
-    watchIsland(r, 100);
+    watchIsland(r, MSG, 100);
     vi.advanceTimersByTime(100);
     expect(r.querySelector(".mw-status")).toHaveProperty("className", "mw-status mw-status--fail");
-    expect(r.querySelector(".mw-status__text")!.textContent).toBe("the playground didn't load. reload the page to try again.");
+    expect(r.querySelector(".mw-status__text")!.textContent).toBe(MSG);
+  });
+  it("says what the caller passes: one watchdog for the playground and the demos", () => {
+    vi.useFakeTimers();
+    const r = root();
+    watchIsland(r, "the demo didn't load. reload the page to try again.", 100);
+    vi.advanceTimersByTime(100);
+    expect(r.querySelector(".mw-status__text")!.textContent).toBe("the demo didn't load. reload the page to try again.");
   });
   it("adds a real reload control next to the message, that actually reloads the page (B9: a recovery path, not just wording)", () => {
     vi.useFakeTimers();
     const r = root();
     const reload = vi.fn();
-    watchIsland(r, 100, reload);
+    watchIsland(r, MSG, 100, reload);
     vi.advanceTimersByTime(100);
     const btn = r.querySelector<HTMLButtonElement>(".mw-status__action button");
     expect(btn).not.toBeNull();
@@ -41,19 +50,19 @@ describe("watchIsland (B9: a lazy chunk that never arrives)", () => {
   it("defaults the reload control to the real location.reload (not injected in production use)", () => {
     vi.useFakeTimers();
     const r = root();
-    watchIsland(r, 100); // no injected reload — exercises the real default parameter
+    watchIsland(r, MSG, 100); // no injected reload — exercises the real default parameter
     vi.advanceTimersByTime(100);
     expect(r.querySelector<HTMLButtonElement>(".mw-status__action button")).not.toBeNull();
   });
   it("stays quiet once the island says it's ready, or when cancelled", () => {
     vi.useFakeTimers();
     const r = root();
-    watchIsland(r, 100);
+    watchIsland(r, MSG, 100);
     r.setAttribute("data-ready", "");
     vi.advanceTimersByTime(100);
     expect(r.querySelector(".mw-status")!.className).toContain("mw-status--wait");
     const r2 = root();
-    watchIsland(r2, 100)();
+    watchIsland(r2, MSG, 100)();
     vi.advanceTimersByTime(100);
     expect(r2.querySelector(".mw-status")!.className).toContain("mw-status--wait");
   });

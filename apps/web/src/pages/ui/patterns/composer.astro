@@ -1,6 +1,7 @@
 ---
 import DocsLayout from "../../../layouts/DocsLayout.astro";
 import PromptDemo from "../../../ui-docs/demos/prompt";
+import DemoIsland from "../../../components/docs/DemoIsland.astro";
 const rows = [
   ["field", "At least 44 px tall, a 1 px line border, a 4 px radius and 32 px of left padding. The › glyph is 16 px, on the first text line, subtle at rest and accent on focus. The field is never disabled: sends queue in an outbox."],
   ["send", "A 44×44 button with a 4 px radius, aligned to the bottom of the field."],
@@ -19,7 +20,7 @@ const rows = [
   </header>
   <section class="docs-section" aria-labelledby="try-title">
     <h2 id="try-title">try it</h2>
-    <div class="demo-stage" data-preview><PromptDemo client:visible /></div>
+    <div class="demo-stage" data-preview><DemoIsland><PromptDemo client:visible /></DemoIsland></div>
   </section>
   <section class="docs-section" aria-labelledby="geo-title">
     <h2 id="geo-title">geometry and behaviour</h2>

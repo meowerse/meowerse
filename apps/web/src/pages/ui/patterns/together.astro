@@ -6,6 +6,7 @@ import ThemeButton from "../../../components/ThemeButton.astro";
 import ToastDemo from "../../../ui-docs/demos/toast-provider";
 import ConfirmDialogDemo from "../../../ui-docs/demos/confirm-dialog";
 import ModalDemo from "../../../ui-docs/demos/modal";
+import DemoIsland from "../../../components/docs/DemoIsland.astro";
 
 const noop = () => {};
 const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "offline — check your connection"]] as const;
@@ -30,7 +31,7 @@ const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "off
         <Prompt label="message" value="" onChange={noop} onSubmit={noop} />
       </div>
       <p class="mw-field__hint">Type a message to send. Enter sends, Shift+Enter adds a line, and nothing is sent while an input method is still composing.</p>
-      <ToastDemo client:visible />
+      <DemoIsland><ToastDemo client:visible /></DemoIsland>
     </div>
   </section>
 
@@ -122,7 +123,7 @@ const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "off
     <h2 id="pair-8">8. dialogs next to a prompt</h2>
     <div class="pairing__body">
       <Prompt label="message" value="" onChange={noop} onSubmit={noop} />
-      <ConfirmDialogDemo client:visible />
+      <DemoIsland><ConfirmDialogDemo client:visible /></DemoIsland>
     </div>
   </section>
 
@@ -144,7 +145,7 @@ const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "off
     <h2 id="pair-10">10. sheets over a header with a status line</h2>
     <div class="pairing__body">
       <div class="mw-header"><Wordmark name="meowsenger" /><StatusLine state="wait">reconnecting…</StatusLine></div>
-      <ModalDemo client:visible />
+      <DemoIsland><ModalDemo client:visible /></DemoIsland>
       <p class="mw-muted">Menus and drawers aren't in @meowerse/ui yet; they move in from meowsenger in sub-project 4 (audit D-5, D-6), and this pairing gains them then.</p>
     </div>
   </section>

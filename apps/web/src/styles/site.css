@@ -189,6 +189,10 @@ a.mw-btn:hover { text-decoration: none; }
 .demo__frame { position: relative; width: 100%; border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .demo__frame .mw-header { position: static; }
 .demo-stage { padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+/* B9: a demo island's live stage is inert until hydrated; its wait (or failure) line floats over the
+   still preview's top-right corner, out of flow, so showing and removing it never shifts the page. */
+.demo-island { position: relative; }
+.demo-island__wait { position: absolute; inset-block-start: 0; inset-inline-end: 0; max-width: 100%; padding: var(--sp-1) var(--sp-2); background: var(--c-bg-elev); border: 1px solid var(--c-line); border-radius: var(--r-m); }
 .demo-source summary { display: flex; align-items: center; min-height: var(--control-height); cursor: pointer; color: var(--c-fg-muted); font-size: var(--fs-2); }
 .demo-modal { display: grid; gap: var(--sp-3); }
 .demo-modal__row { display: flex; align-items: flex-end; gap: var(--sp-2); }
