@@ -70,7 +70,15 @@ describe("AppHeader", () => {
     await user.click(burger);
     expect(nav.className).toContain("is-open");
     expect(burger).toHaveAttribute("aria-expanded", "true");
-    await user.click(screen.getByRole("link", { name: "about" }));
+    // jsdom can't navigate: cancel the link's default action (capture phase, before React's
+    // bubbling handler) so the click still reaches the nav without a "Not implemented" error.
+    const noNavigate = (e: Event) => e.preventDefault();
+    document.addEventListener("click", noNavigate, { capture: true });
+    try {
+      await user.click(screen.getByRole("link", { name: "about" }));
+    } finally {
+      document.removeEventListener("click", noNavigate, { capture: true });
+    }
     expect(nav.className).not.toContain("is-open");
   });
 });

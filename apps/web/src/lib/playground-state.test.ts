@@ -7,6 +7,11 @@ import {
   type PlayComponent, type PropSpec,
 } from "./playground-state";
 
+// Built once at collection time (like ui-api.test.ts and registry.test.ts): a full TypeScript
+// program over packages/ui is seconds of CPU, which the 5 s per-test timeout can't absorb when the
+// whole monorepo runs its suites in parallel.
+const realApi = extractUiApi(uiDirFrom(process.cwd()));
+
 const doc: ComponentDoc = {
   name: "Button", file: "src/components/Button.tsx", inherits: ["ButtonHTMLAttributes"],
   props: [
@@ -92,9 +97,8 @@ describe("playground state", () => {
     expect(parseState("?c=link&p.href=https://evil.example/&p.label=hi", denyComps).props).toEqual({ label: "hi" });
   });
   it("drops href/src/action/formAction for every real, seeded playground component (the Wordmark.href case)", () => {
-    const api = extractUiApi(uiDirFrom(process.cwd()));
     for (const [name, seed] of Object.entries(SEEDS)) {
-      const realDoc = api.components.find((c) => c.name === name)!;
+      const realDoc = realApi.components.find((c) => c.name === name)!;
       const names = specsFromDoc(realDoc, seed).map((s) => s.name);
       for (const denied of ["href", "src", "action", "formAction"]) expect(names, `${name}.${denied}`).not.toContain(denied);
     }
