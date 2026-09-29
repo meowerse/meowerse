@@ -20,7 +20,9 @@ trap 'rm -rf "$TMP"' EXIT
 # Brand tokens (packages/ui/src/styles/tokens.css) — kept in sync by hand.
 GREEN="#00ff82"        # --mw-green / --text-accent (dark)
 GREEN_DARK="#0a7a42"   # --text-accent (light): 5.5:1 on white, 3.8:1 on black
-SURFACE="#0d0d0d"      # --surface-0 (dark)
+# The manifests' theme/background colour is the dark page background, read from the generated tokens so
+# it can't drift (apps/web/src/lib/public-files.test.ts checks the committed web manifest against it).
+SURFACE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["semantic"]["dark"]["bg"])' "$HERE/../ui/design/tokens.json")"
 EPS=0.5                # RDP tolerance; 0.5 traces the mask pixel-perfectly
 
 mkdir -p "$OUT"
@@ -93,7 +95,8 @@ distribute() { # distribute <app> <name> <short_name> [description]
 }
 
 echo "distributing:"
-distribute web             "meowerse"        "meowerse"   "Small, fast web apps by alxnko and the design system they share."
+# the web description is SITE.description (apps/web/src/lib/site.ts); public-files.test.ts keeps them equal
+distribute web             "meowerse"        "meowerse"   "Small, fast web apps by alxnko: one account, a messenger, and the design system they share."
 distribute auth-web        "meowerse auth"   "auth"
 distribute meowsenger-web  "meowsenger"      "meowsenger"
 

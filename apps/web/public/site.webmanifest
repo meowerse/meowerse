@@ -4,7 +4,7 @@
   "id": "/",
   "start_url": "/",
   "display": "standalone",
-  "description": "Small, fast web apps by alxnko and the design system they share.",
+  "description": "Small, fast web apps by alxnko: one account, a messenger, and the design system they share.",
   "icons": [
     { "src": "/icon-192.webp", "sizes": "192x192", "type": "image/webp" },
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
@@ -13,6 +13,6 @@
     { "src": "/icon-maskable-512.webp", "sizes": "512x512", "type": "image/webp", "purpose": "maskable" },
     { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
-  "theme_color": "#0d0d0d",
-  "background_color": "#0d0d0d"
+  "theme_color": "#0a0a0b",
+  "background_color": "#0a0a0b"
 }
