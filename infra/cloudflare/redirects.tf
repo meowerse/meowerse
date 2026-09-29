@@ -14,14 +14,30 @@ resource "cloudflare_ruleset" "redirect_eu_org_to_dev" {
   rules = [
     {
       ref         = "redirect_apex_to_dev"
-      description = "Redirect apex/web to alxnko.dev"
-      expression  = "http.host in {\"alxnko.eu.org\" \"www.alxnko.eu.org\" \"meow.alxnko.eu.org\"}"
+      description = "Redirect apex/www to alxnko.dev"
+      expression  = "http.host in {\"alxnko.eu.org\" \"www.alxnko.eu.org\"}"
       action      = "redirect"
       action_parameters = {
         from_value = {
           status_code = 308
           target_url = {
             expression = "concat(\"https://alxnko.dev\", http.request.uri.path)"
+          }
+          preserve_query_string = true
+        }
+      }
+      enabled = true
+    },
+    {
+      ref         = "redirect_meow_to_dev"
+      description = "Redirect meow to meow.alxnko.dev (B24)"
+      expression  = "http.host == \"meow.alxnko.eu.org\""
+      action      = "redirect"
+      action_parameters = {
+        from_value = {
+          status_code = 308
+          target_url = {
+            expression = "concat(\"https://meow.alxnko.dev\", http.request.uri.path)"
           }
           preserve_query_string = true
         }

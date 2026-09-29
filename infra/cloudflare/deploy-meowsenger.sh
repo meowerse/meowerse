@@ -5,7 +5,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-if git status --porcelain -- workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk | grep -q .; then
+if git status --porcelain -- workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk packages/ui packages/brand | grep -q .; then
   [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted meowsenger changes. commit or ALLOW_DIRTY=1" >&2; exit 1; }
 fi
 ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/meowsenger-web build

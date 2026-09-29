@@ -7,7 +7,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-if git status --porcelain -- workers/auth apps/auth-web packages/auth-shared | grep -q .; then
+if git status --porcelain -- workers/auth apps/auth-web packages/auth-shared packages/ui packages/brand | grep -q .; then
   [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted auth changes. commit or ALLOW_DIRTY=1" >&2; exit 1; }
 fi
 ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/auth-web build
