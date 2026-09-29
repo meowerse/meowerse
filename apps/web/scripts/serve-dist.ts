@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { gzipSync } from "node:zlib";
-import { headersFor, parseHeaders } from "../src/lib/headers";
+import { headersFor, parseHeaders } from "@meowerse/ui/seo";
 
 const dist = join(process.cwd(), "dist");
 const port = Number(process.argv[2] ?? 4371);

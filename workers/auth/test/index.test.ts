@@ -40,16 +40,19 @@ test("redirects *.alxnko.eu.org to *.alxnko.dev with 308, CORS and HSTS", async 
   expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
 });
 
-test("serves security.txt and robots.txt", async () => {
+test("serves security.txt; robots.txt and sitemap.xml are static assets, not Worker routes", async () => {
   const { env, deps } = await fixture();
   const s = await handle(new Request("https://iss/.well-known/security.txt"), env, deps);
   expect(s.status).toBe(200);
   expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
   expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
-  const rob = await handle(new Request("https://iss/robots.txt"), env, deps);
-  expect(rob.status).toBe(200);
-  expect(await rob.text()).toContain("User-agent: GPTBot");
+  // apps/auth-web/public/robots.txt and the postbuild dist/sitemap.xml are served by Cloudflare
+  // before the Worker runs; the Worker has no copy that could drift (ASSETS is unbound here → 404).
+  for (const p of ["/robots.txt", "/sitemap.xml"]) {
+    const r = await handle(new Request(`https://iss${p}`), env, deps);
+    expect(r.status, p).toBe(404);
+  }
 });
 
 test("discovery + jwks are served and cacheable", async () => {

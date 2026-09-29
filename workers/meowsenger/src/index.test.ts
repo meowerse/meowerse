@@ -20,15 +20,18 @@ describe("router", () => {
     expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
   });
 
-  it("serves security.txt and robots.txt", async () => {
+  it("serves security.txt; robots.txt and sitemap.xml are static assets, not Worker routes", async () => {
     const s = await handle(new Request("https://meowsenger-api.alxnko.dev/.well-known/security.txt"), env, deps);
     expect(s.status).toBe(200);
     expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
     expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
-    const rob = await handle(new Request("https://meowsenger-api.alxnko.dev/robots.txt"), env, deps);
-    expect(rob.status).toBe(200);
-    expect(await rob.text()).toContain("User-agent: GPTBot");
+    // apps/meowsenger-web/public/robots.txt and the postbuild dist/sitemap.xml are served by
+    // Cloudflare before the Worker runs; the Worker has no copy that could drift (ASSETS unbound → 404).
+    for (const p of ["/robots.txt", "/sitemap.xml"]) {
+      const r = await handle(new Request(`https://meowsenger.alxnko.dev${p}`), env, deps);
+      expect(r.status, p).toBe(404);
+    }
   });
 
   it("answers OPTIONS with 204 + CORS", async () => {

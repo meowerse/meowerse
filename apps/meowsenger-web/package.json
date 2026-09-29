@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "astro build && bun scripts/postbuild.ts",
     "lint": "astro check",
     "test": "vitest run --coverage"
   },
@@ -19,6 +19,7 @@
     "@astrojs/check": "^0.9.9",
     "@testing-library/dom": "^10",
     "@testing-library/react": "^16",
+    "@types/node": "^26.6.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.9",

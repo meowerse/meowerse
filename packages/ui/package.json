@@ -10,6 +10,7 @@
     "./tokens.json": "./design/tokens.json",
     "./theme": "./src/lib/theme.ts",
     "./status": "./src/lib/status.ts",
+    "./seo": "./src/lib/seo.ts",
     "./assets/fonts/*": "./src/assets/fonts/*",
     "./cat3d": "./src/cat3d/index.ts",
     "./cat3d/attach": "./src/cat3d/attach.ts"
