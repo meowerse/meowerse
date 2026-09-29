@@ -84,7 +84,7 @@ test("clearing Prompt's value or Avatar's name keeps the playground: the preview
   await expect(stage.getByRole("img", { name: "no name" })).toHaveText("?");
   await page.reload();
   await expect(page.getByRole("textbox", { name: "name", exact: true })).toHaveValue("   ");
-  await expect(stage.locator(".mw-status--fail")).toHaveCount(0);
+  await expect(stage.locator(".pg__error")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -94,6 +94,8 @@ test("clearing Prompt's value or Avatar's name keeps the playground: the preview
 test("a preview that throws is contained: an inline error, live controls, and it recovers when the input changes", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // Global, but only for the exact sentinel: nothing in the island trims a control's own value, so only
+  // the previewed Avatar (name.trim()) ever hits it.
   await page.addInitScript(() => {
     const trim = String.prototype.trim;
     String.prototype.trim = function (this: string) {
@@ -103,7 +105,7 @@ test("a preview that throws is contained: an inline error, live controls, and it
   });
   await page.goto("/ui/playground/?c=avatar&p.name=boom");
   const stage = page.locator(".pg__stage");
-  const fail = stage.locator(".mw-status--fail");
+  const fail = stage.locator(".pg__error");
   await expect(fail).toContainText("this combination of props can't render");
   await expect(fail).toHaveAttribute("role", "alert");
   await expect(fail.locator("code")).toHaveText("forced failure for the test");

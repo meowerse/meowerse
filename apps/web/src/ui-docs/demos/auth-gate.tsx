@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthGate, RadioGroup, Spinner, clearSessionCache } from "@meowerse/ui";
 
 // Each state points AuthGate at a static stand-in for the account service under public/ui-demo/, so
@@ -22,6 +22,8 @@ export default function Demo() {
   // useSession shares one cache and one in-flight check per page: drop both on a switch, so the next
   // gate asks its own stand-in instead of reusing the last one's answer.
   const pick = (v: string) => { clearSessionCache(); setK(v); };
+  // ...and on the way out: the stand-in's "signed in" must never outlive the demo as a cached session.
+  useEffect(() => clearSessionCache, []);
   return (
     <div className="demo">
       <RadioGroup name="demo-gate" legend="account service answers" value={k} onChange={pick} options={[

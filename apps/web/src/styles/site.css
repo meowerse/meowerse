@@ -242,6 +242,8 @@ a.mw-btn:hover { text-decoration: none; }
 .pg__stage { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-height: calc(var(--sp-8) * 2); padding: var(--sp-5); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
 .pg__stage .mw-header { position: static; }
 /* Long unbroken text typed into a control (or an error message) wraps inside the stage instead of widening the page. */
+/* (`anywhere`, not `break-word`: the text sits in nested inline and flex boxes, whose min-content width
+   only `anywhere` lets shrink.) */
 .pg__stage > * { max-width: 100%; overflow-wrap: anywhere; }
 .pg__code { max-height: 24rem; overflow: auto; }
 .pg-fallback { padding: var(--sp-5); border: 1px dashed var(--c-line-input); border-radius: var(--r-l); }

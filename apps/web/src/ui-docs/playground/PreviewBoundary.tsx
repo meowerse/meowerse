@@ -43,7 +43,8 @@ export function PreviewBoundary({ resetKey, children }: { resetKey: string; chil
   return (
     <>
       <Catch resetKey={resetKey} onError={setError}>{children}</Catch>
-      {/* StatusLine `fail` is its own role=alert, announced when it appears; nothing else in the stage is
+      {/* pg__error tells this line apart from a previewed StatusLine in `fail` (tests select on it).
+          StatusLine `fail` is its own role=alert, announced when it appears; nothing else in the stage is
           a live region. While the state keeps throwing it stays mounted and only its message updates. */}
       {error && (
         <StatusLine state="fail" className="pg__error">
