@@ -45,7 +45,7 @@ describe("Field", () => {
     expect(input).toHaveAttribute("placeholder", " ");
     const label = input.nextElementSibling!;
     expect(label.tagName).toBe("LABEL");
-    expect(label).toHaveClass("mw-field__label");
+    expect(label).toHaveClass("mw-field__float-label");
     expect(label).toHaveAttribute("for", input.id);
     expect(container.querySelectorAll("label")).toHaveLength(1);
   });

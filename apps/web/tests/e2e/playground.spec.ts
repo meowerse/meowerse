@@ -135,7 +135,7 @@ test("labelPlacement is an enum control: float shows Prompt's label, clearing th
   await page.getByLabel("labelPlacement").selectOption("float");
   await expect(page).toHaveURL(/p\.labelPlacement=float/);
   await expect(page.locator(".pg__code")).toContainText('labelPlacement="float"');
-  const label = stage.locator(".mw-prompt__label");
+  const label = stage.locator(".mw-prompt__float-label");
   await expect(label).toBeVisible();
   await expect(stage.getByRole("textbox", { name: "message" })).toBeVisible();
   const mid = () => label.evaluate((l) => {

@@ -73,7 +73,7 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
         ref={setRefs}
         onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown}
         enterKeyHint="send" autoComplete="off" aria-busy={busy || undefined} />
-      {float && <label htmlFor={id} className="mw-prompt__label">{label}</label>}
+      {float && <label htmlFor={id} className="mw-prompt__float-label">{label}</label>}
       <button type="button" className="mw-prompt__send" aria-label={sendLabel.trim() || "send"}
         aria-disabled={empty || undefined} onClick={send}>
         <Icon name="send" size={20} />

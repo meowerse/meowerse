@@ -27,7 +27,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   const hasHint = !!hint?.trim();
   const hasError = !!error?.trim();
   const describedBy = cx(hasHint && hintId, hasError && `${id}-err`) || undefined;
-  const labelEl = <label htmlFor={id} className={float ? "mw-field__label" : undefined}>{label}</label>;
+  const labelEl = <label htmlFor={id} className={float ? "mw-field__float-label" : undefined}>{label}</label>;
   return (
     <div className={cx("mw-field", float && "mw-field--float", hasError && "mw-field--error", className)}>
       {!float && labelEl}

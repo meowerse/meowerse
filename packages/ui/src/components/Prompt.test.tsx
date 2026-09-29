@@ -135,7 +135,7 @@ describe("Prompt", () => {
     expect(box).toHaveAttribute("placeholder", " ");
     const label = box.nextElementSibling!;
     expect(label.tagName).toBe("LABEL");
-    expect(label).toHaveClass("mw-prompt__label");
+    expect(label).toHaveClass("mw-prompt__float-label");
     expect(label).not.toHaveClass("sr-only");
     expect(label).toHaveAttribute("for", box.id);
     expect(container.querySelectorAll("label")).toHaveLength(1);
