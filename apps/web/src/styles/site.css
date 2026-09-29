@@ -14,6 +14,10 @@ body { min-height: 100dvh; display: flex; flex-direction: column; }
 .site-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); border-radius: var(--r-m); color: var(--c-fg-muted); font-size: var(--fs-2); white-space: nowrap; }
 .site-nav a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
 .site-nav a[aria-current="page"] { color: var(--c-fg); box-shadow: inset 0 -2px 0 var(--c-accent); }
+/* The theme button is [hidden] until its script binds it (it does nothing without JS); it keeps its
+   44 px slot meanwhile so revealing it never shifts the nav. visibility still keeps it out of focus
+   and the accessibility tree, like [hidden] would. */
+.mw-themetoggle[data-theme-button][hidden] { display: inline-flex !important; visibility: hidden; }
 .theme-button__sun, .theme-button__moon { display: inline-flex; }
 .theme-button__moon { display: none; }
 :root[data-theme="light"] .theme-button__sun { display: none; }
@@ -120,7 +124,7 @@ a.mw-btn:hover { text-decoration: none; }
 .swatch { width: var(--sp-6); height: var(--sp-6); margin-right: var(--sp-2); vertical-align: middle; }
 .swatch__rect { stroke: var(--c-line-strong); stroke-width: 1; }
 .codeblock { min-width: 0; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-m); }
-.codeblock__bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding-left: var(--sp-3); border-bottom: 1px solid var(--c-line); }
+.codeblock__bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding-left: var(--sp-3); border-bottom: 1px solid var(--c-line); min-height: var(--control-height); } /* the copy button's row stays reserved while it's [hidden] before JS */
 .codeblock__lang { font-size: var(--fs-1); color: var(--c-fg-subtle); }
 .codeblock__copy { min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-3); background: none; border: 0; border-radius: var(--r-m); color: var(--c-fg-muted); font: inherit; font-size: var(--fs-2); cursor: pointer; }
 .codeblock__copy:hover { color: var(--c-fg); background: var(--c-bg-elev); }

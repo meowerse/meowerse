@@ -25,6 +25,7 @@ export function bindThemeButtons(doc: Document = document): void {
   const root = doc.documentElement;
   const sync = () => { const label = themeLabel(current(doc)); for (const b of buttons) b.setAttribute("aria-label", label); };
   for (const b of buttons) {
+    b.hidden = false; // rendered [hidden]: it does nothing until this binds it
     b.addEventListener("click", () => {
       try {
         toggleTheme();

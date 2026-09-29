@@ -6,6 +6,7 @@ export function bindCopyButtons(doc: Document = document, clip: Clip = globalThi
   for (const b of doc.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
     if (b.dataset.bound) continue;
     b.dataset.bound = "1";
+    b.hidden = false; // rendered [hidden]: it does nothing until this binds it
     b.addEventListener("click", async () => {
       const id = b.dataset.copy ?? "";
       const status = doc.querySelector<HTMLElement>(`[data-copy-status="${id}"]`);

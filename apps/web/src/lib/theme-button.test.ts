@@ -5,6 +5,7 @@ import { bindThemeButtons, themeLabel } from "./theme-button";
 const button = () => {
   const b = document.createElement("button");
   b.setAttribute("data-theme-button", "");
+  b.hidden = true; // as ThemeButton.astro renders it
   document.body.append(b);
   return b;
 };
@@ -17,6 +18,12 @@ describe("theme button", () => {
   it("labels the action, not the state", () => {
     expect(themeLabel("dark")).toBe("switch to light theme");
     expect(themeLabel("light")).toBe("switch to dark theme");
+  });
+  it("is hidden until bound (it does nothing without JS), then revealed", () => {
+    const b = button();
+    expect(b.hidden).toBe(true);
+    bindThemeButtons(document);
+    expect(b.hidden).toBe(false);
   });
   it("starts from the resolved theme (dark by default), toggles and persists", async () => {
     const b = button();

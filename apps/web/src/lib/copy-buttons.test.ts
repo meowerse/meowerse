@@ -10,6 +10,7 @@ function block() {
   const btn = document.createElement("button");
   btn.dataset.copy = "c1";
   btn.textContent = "copy";
+  btn.hidden = true; // as CodeBlock.astro renders it
   const status = document.createElement("p");
   status.dataset.copyStatus = "c1";
   document.body.append(pre, btn, status);
@@ -18,6 +19,12 @@ function block() {
 
 describe("copy buttons (B9: no silent failure)", () => {
   beforeEach(() => vi.useRealTimers());
+  it("is hidden until bound (it does nothing without JS), then revealed", () => {
+    const { btn } = block();
+    expect(btn.hidden).toBe(true);
+    bindCopyButtons(document, { writeText: vi.fn(async () => {}) });
+    expect(btn.hidden).toBe(false);
+  });
   it("copies the block's text and says so, then resets", async () => {
     vi.useFakeTimers();
     const { btn, status } = block();

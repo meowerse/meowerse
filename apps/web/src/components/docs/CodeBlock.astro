@@ -5,7 +5,7 @@ const { id, code, lang } = Astro.props;
 <div class="codeblock">
   <div class="codeblock__bar">
     <span class="codeblock__lang">{lang}</span>
-    <button type="button" class="codeblock__copy" data-copy={id}>copy</button>
+    <button type="button" class="codeblock__copy" data-copy={id} hidden>copy</button>
   </div>
   <pre id={id} tabindex="0"><code>{code}</code></pre>
   <p class="sr-only" aria-live="polite" data-copy-status={id}></p>
