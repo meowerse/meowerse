@@ -142,4 +142,13 @@ describe("useSession", () => {
     expect(await screen.findByText("hi cached")).toBeInTheDocument();
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it("ignores a malformed cache entry (signed in without a username) and asks the server again", async () => {
+    sessionStorage.setItem("mw-session", JSON.stringify({ at: Date.now(), data: { loading: false, authenticated: true } }));
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ authenticated: true, username: "alex", verified: true }), { status: 200 }));
+    render(<View base="https://api" />);
+    expect(await screen.findByText("hi alex")).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
 });

@@ -24,4 +24,14 @@ describe("Avatar", () => {
     expect(el).not.toHaveAttribute("aria-label");
     expect(el).toHaveTextContent("A");
   });
+  it("an empty or blank name shows \"?\" and is still a named image, without crashing", () => {
+    const { rerender } = render(<Avatar name="" />);
+    expect(screen.getByRole("img", { name: "no name" })).toHaveTextContent("?");
+    rerender(<Avatar name={"  \t "} />);
+    expect(screen.getByRole("img", { name: "no name" })).toHaveTextContent("?");
+  });
+  it("names the image by the trimmed name, and takes a whole emoji as the initial", () => {
+    render(<Avatar name={" 😺 cat "} />);
+    expect(screen.getByRole("img", { name: "😺 cat" }).textContent).toBe("😺");
+  });
 });

@@ -9,5 +9,6 @@ export function Spinner({ size = "md", label = "loading", className }: {
   /** extra class names to append. */
   className?: string;
 }) {
-  return <span role="status" aria-label={label} className={cx("mw-spinner", `mw-spinner--${size}`, className)} />;
+  // A blank label would leave the status without a name: fall back to the default.
+  return <span role="status" aria-label={label.trim() || "loading"} className={cx("mw-spinner", `mw-spinner--${size}`, className)} />;
 }

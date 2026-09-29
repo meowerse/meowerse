@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, clearSessionCache } from "@meowerse/ui";
+import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, StatusLine, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, type AccountInfo, type Grant } from "../lib/authApi";
 
 export default function AccountSettings({ base }: { base: string }) {
@@ -14,7 +14,11 @@ export default function AccountSettings({ base }: { base: string }) {
   const [busy, setBusy] = useState(false);
 
   function reload() {
-    getAccount(base).then((a) => { if (a.error === "no_session") setError("no_session"); else setAcct(a); }).catch(() => setError("network"));
+    setError("");
+    // Any other failure (a 404 once the account behind a live session is gone, a 5xx) comes back as
+    // `{ error }` with none of the account's fields: it's an error to show, never an account to render
+    // (`acct.telegram.linked` on it threw and blanked the whole page).
+    getAccount(base).then((a) => { if (a.error) setError(a.error === "no_session" ? "no_session" : "failed"); else setAcct(a); }).catch(() => setError("network"));
     getGrants(base).then((g) => setGrants(g.grants ?? [])).catch(() => {});
   }
   useEffect(reload, [base]);
@@ -51,6 +55,13 @@ export default function AccountSettings({ base }: { base: string }) {
   }
 
   if (error === "no_session") return <Alert variant="error">please <a href="/login">sign in</a> to manage your account.</Alert>;
+  if (error === "failed" || error === "network") {
+    return (
+      <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>
+        {error === "network" ? "can't reach the account service." : "couldn't load your account."}
+      </StatusLine>
+    );
+  }
   if (!acct) return <div className="mw-stack"><Spinner label="loading account" /></div>;
 
   return (

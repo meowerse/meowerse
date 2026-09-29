@@ -23,10 +23,11 @@ export function RadioGroup({ name, legend, options, value, onChange, className }
   return (
     <fieldset className={cx("mw-radio", className)}>
       <legend>{legend}</legend>
-      {options.map((o) => {
-        const id = `${gid}-${o.value}`;
+      {options.map((o, i) => {
+        // Id and key by position, not by value: a value may hold spaces or repeat, which neither can.
+        const id = `${gid}-${i}`;
         return (
-          <label key={o.value} htmlFor={id} className="mw-radio__opt">
+          <label key={i} htmlFor={id} className="mw-radio__opt">
             <input id={id} type="radio" name={name} value={o.value}
               checked={value === o.value} onChange={() => onChange(o.value)} />
             <span>{o.label}{o.hint && <em className="mw-radio__hint">{o.hint}</em>}</span>

@@ -57,7 +57,9 @@ export function Icon({ name, size = 18, className, label }: {
   /** gives the icon a name, making it an image instead of decorative. */
   label?: string;
 }) {
-  const paths = ICONS[name];
+  // An own key only: a plain lookup finds Object.prototype's too (`ICONS["constructor"]` is a function,
+  // and `.map` on it threw), and `name` is a free string (Badge's icon, a playground text control).
+  const paths = Object.prototype.hasOwnProperty.call(ICONS, name) ? ICONS[name] : undefined;
   if (!paths) return null;
   return (
     <svg

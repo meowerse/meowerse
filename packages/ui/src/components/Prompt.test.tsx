@@ -91,4 +91,32 @@ describe("Prompt", () => {
       window.matchMedia = original;
     }
   });
+
+  it("an empty or blank value renders (never throws), with send disabled and nothing sent", async () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(<Prompt label="message" value="" onChange={() => {}} onSubmit={onSubmit} />);
+    const send = screen.getByRole("button", { name: "send" });
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(send);
+    rerender(<Prompt label="message" value={"   \n "} onChange={() => {}} onSubmit={onSubmit} />);
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(send);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("a blank sendLabel falls back to \"send\"; maxRows below 1 (or NaN) still grows to one row, never collapses", () => {
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 500 });
+    try {
+      for (const maxRows of [0, -3, NaN]) {
+        const { unmount } = render(<Prompt label="message" value="x" onChange={() => {}} onSubmit={() => {}} sendLabel=" " maxRows={maxRows} />);
+        expect(screen.getByRole("button", { name: "send" })).toBeInTheDocument();
+        expect((screen.getByRole("textbox") as HTMLTextAreaElement).style.height).toBe("44px");
+        unmount();
+      }
+    } finally {
+      if (sh) Object.defineProperty(HTMLElement.prototype, "scrollHeight", sh);
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+    }
+  });
 });

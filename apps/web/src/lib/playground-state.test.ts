@@ -3,7 +3,7 @@ import tokens from "@meowerse/ui/tokens.json";
 import { extractUiApi, uiDirFrom, type ComponentDoc } from "./ui-api";
 import { SEEDS } from "../ui-docs/playground/seeds";
 import {
-  clampNumber, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, specsFromDoc, themeClass,
+  clampNumber, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, specsFromDoc, TEXT_MAX, themeClass,
   type PlayComponent, type PropSpec,
 } from "./playground-state";
 
@@ -28,9 +28,9 @@ const comps: PlayComponent[] = [{ name: "Button", props: specsFromDoc(doc, { chi
 describe("playground state", () => {
   it("builds controls from the extracted props; functions, className and inherited props are left out; seeds add children", () =>
     expect(comps[0]!.props).toEqual([
-      { name: "variant", kind: "enum", values: ["primary", "secondary"], default: "secondary", required: false },
-      { name: "loading", kind: "boolean", values: undefined, default: false, required: false },
-      { name: "maxRows", kind: "number", values: undefined, default: 6, required: false, min: 1, max: 20 },
+      { name: "variant", kind: "enum", values: ["primary", "secondary"], default: "secondary", componentDefault: "secondary", required: false },
+      { name: "loading", kind: "boolean", values: undefined, default: false, componentDefault: false, required: false },
+      { name: "maxRows", kind: "number", values: undefined, default: 6, componentDefault: 6, required: false, min: 1, max: 20 },
       { name: "children", kind: "text", default: "save", required: true },
     ]));
   it("reads a URL, ignoring anything invalid", () => {
@@ -102,5 +102,57 @@ describe("playground state", () => {
       const names = specsFromDoc(realDoc, seed).map((s) => s.name);
       for (const denied of ["href", "src", "action", "formAction"]) expect(names, `${name}.${denied}`).not.toContain(denied);
     }
+  });
+
+  describe("an empty string is a real value (regression: clearing Prompt's value blanked the whole playground)", () => {
+    // The real Prompt and Avatar, from the extracted TypeScript props and their seeds.
+    const real = (name: string): PlayComponent => ({ name, props: specsFromDoc(realApi.components.find((c) => c.name === name)!, SEEDS[name]!) });
+    const prompt = real("Prompt"), avatar = real("Avatar"), card = real("Card"), spinner = real("Spinner"), badge = real("Badge");
+    const all = [prompt, avatar, card, spinner, badge];
+
+    it("a required text prop cleared to \"\" is still passed, as \"\" (never left out, never undefined)", () => {
+      const s = parseState("?c=prompt", all);
+      expect(elementProps(prompt, { ...s, props: { ...s.props, value: "" } })).toEqual({ label: "message", value: "" });
+      const a = parseState("?c=avatar", all);
+      expect(elementProps(avatar, { ...a, props: { ...a.props, name: "" } })).toEqual({ name: "" });
+      expect(elementProps(avatar, { ...a, props: { ...a.props, name: "   " } })).toEqual({ name: "   " });
+    });
+    it("an optional text prop cleared to \"\" means unset: it's left out, so the component's own default applies", () => {
+      const s = parseState("?c=prompt&p.sendLabel=&p.placeholder=", all);
+      expect(s.props.sendLabel).toBe("");
+      expect(elementProps(prompt, s)).toEqual({ label: "message", value: "see you at 7" });
+      expect(elementProps(spinner, parseState("?c=spinner&p.label=", all))).toEqual({});
+      expect(elementProps(badge, parseState("?c=badge&p.icon=", all))).toEqual({ children: "verified" });
+      // ...but whitespace is a value like any other, and is passed through as typed.
+      expect(elementProps(prompt, parseState("?c=prompt&p.sendLabel=%20", all))).toMatchObject({ sendLabel: " " });
+    });
+    it("a seeded optional prop is passed while it holds the seed (Card's title isn't Card's default), and left out once cleared", () => {
+      expect(elementProps(card, parseState("?c=card", all))).toEqual({ title: "profile", children: "signed in as alxnko." });
+      expect(elementProps(card, parseState("?c=card&p.title=", all))).toEqual({ children: "signed in as alxnko." });
+    });
+    it("an optional prop equal to the component's own default is left out; anything else is passed", () => {
+      expect(elementProps(prompt, parseState("?c=prompt&p.maxRows=6&p.busy=0&p.enterSends=auto", all))).toEqual({ label: "message", value: "see you at 7" });
+      expect(elementProps(prompt, parseState("?c=prompt&p.maxRows=1&p.busy=1&p.enterSends=never", all)))
+        .toEqual({ label: "message", value: "see you at 7", maxRows: 1, busy: true, enterSends: "never" });
+      // An optional boolean with no declared default: false is the same as leaving it out.
+      const bare: PlayComponent = { name: "X", props: [{ name: "on", kind: "boolean", default: false, required: false }] };
+      expect(elementProps(bare, { c: "X", props: { on: false }, o: DEFAULT_OVERRIDES })).toEqual({});
+      expect(elementProps(bare, { c: "X", props: { on: true }, o: DEFAULT_OVERRIDES })).toEqual({ on: true });
+    });
+    it("the URL round-trips \"\": p.value= reloads as \"\", not as the seed", () => {
+      const s = parseState("?c=prompt", all);
+      const cleared = { ...s, props: { ...s.props, value: "", sendLabel: "" } };
+      const q = serializeState(cleared, all);
+      expect(q).toBe("?c=prompt&p.value=&p.sendLabel=");
+      expect(parseState(q, all)).toEqual(cleared);
+      expect(parseState("?c=avatar&p.name=", all).props.name).toBe("");
+      expect(parseState("?c=avatar&p.name=%20%20", all).props.name).toBe("  ");
+    });
+    it("long text is capped at TEXT_MAX both ways, so what reloads is what was typed (the island's control has the same maxLength)", () => {
+      const long = "x".repeat(TEXT_MAX + 50);
+      expect(parseState(`?c=avatar&p.name=${long}`, all).props.name).toBe("x".repeat(TEXT_MAX));
+      const s = parseState(`?c=avatar&p.name=${"y".repeat(TEXT_MAX)}`, all);
+      expect(parseState(serializeState(s, all), all)).toEqual(s);
+    });
   });
 });

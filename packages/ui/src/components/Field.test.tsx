@@ -21,4 +21,11 @@ describe("Field", () => {
     await userEvent.click(screen.getByRole("button", { name: /show password/i }));
     expect(input.type).toBe("text");
   });
+  it("a blank hint or error is ignored: no empty alert, not marked invalid, no empty description", () => {
+    render(<Field label="username" hint=" " error={"  "} name="u" />);
+    const input = screen.getByLabelText("username");
+    expect(input).not.toHaveAttribute("aria-invalid");
+    expect(input).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

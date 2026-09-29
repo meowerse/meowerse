@@ -16,4 +16,13 @@ describe("RecoveryCodes", () => {
     await userEvent.click(screen.getByRole("button", { name: /copy all/i }));
     expect(writeText).toHaveBeenCalledWith("ABCD-1234\nEFGH-5678");
   });
+  it("no codes: no empty list, and nothing to copy", () => {
+    render(<RecoveryCodes codes={[]} />);
+    expect(screen.queryByRole("list")).toBeNull();
+    expect(screen.getByRole("button", { name: /copy all/i })).toBeDisabled();
+  });
+  it("a repeated code still shows every entry", () => {
+    render(<RecoveryCodes codes={["AAAA-1111", "AAAA-1111"]} />);
+    expect(screen.getAllByText("AAAA-1111")).toHaveLength(2);
+  });
 });

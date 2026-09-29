@@ -15,4 +15,11 @@ describe("RadioGroup", () => {
     render(<RadioGroup name="ct" legend="app type" options={opts} value="confidential" onChange={() => {}} />);
     expect(screen.getByRole("radio", { name: "confidential" })).toBeChecked();
   });
+  it("labels still work for values with spaces or repeats, and no options is an empty group, not a crash", () => {
+    render(<RadioGroup name="x" legend="pick" options={[{ label: "a b", value: "a b" }, { label: "again", value: "a b" }]} value="a b" onChange={() => {}} />);
+    expect(screen.getByRole("radio", { name: "a b" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "again" })).toBeInTheDocument();
+    render(<RadioGroup name="y" legend="nothing" options={[]} value="" onChange={() => {}} />);
+    expect(screen.getByRole("group", { name: "nothing" }).querySelectorAll("input")).toHaveLength(0);
+  });
 });

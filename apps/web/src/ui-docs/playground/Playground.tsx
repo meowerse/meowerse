@@ -7,10 +7,11 @@ import { Button, Checkbox, Field, RadioGroup, contrast } from "@meowerse/ui";
 import tokens from "@meowerse/ui/tokens.json";
 import { toJsx } from "../../lib/jsx";
 import {
-  ACCENTS, clampNumber, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, themeClass,
+  ACCENTS, clampNumber, DEFAULT_OVERRIDES, elementProps, OVERRIDABLE, overrideCss, overrideVars, parseState, serializeState, TEXT_MAX, themeClass,
   type Accent, type Density, type Overrides, type PlayComponent, type PlayState, type Scalar, type Theme,
 } from "../../lib/playground-state";
 import { PLAYABLE } from "./playable";
+import { PreviewBoundary } from "./PreviewBoundary";
 
 export default function Playground({ components }: { components: PlayComponent[] }) {
   const [state, setState] = useState<PlayState>(() => parseState(location.search, components));
@@ -18,8 +19,9 @@ export default function Playground({ components }: { components: PlayComponent[]
   const stage = useRef<HTMLDivElement>(null);
   const comp = components.find((c) => c.name === state.c) ?? components[0]!;
   const play = PLAYABLE[comp.name]!;
+  const query = serializeState(state, components);
 
-  useEffect(() => { history.replaceState(history.state, "", `${location.pathname}${serializeState(state, components)}`); }, [state, components]);
+  useEffect(() => { history.replaceState(history.state, "", `${location.pathname}${query}`); }, [query]);
   useEffect(() => {
     const el = stage.current;
     if (!el) return;
@@ -77,7 +79,7 @@ export default function Playground({ components }: { components: PlayComponent[]
             <Checkbox key={p.name} label={p.name} checked={state.props[p.name] === true} onChange={(e) => setProp(p.name, e.target.checked)} />
           ) : (
             <Field key={p.name} label={p.name} type={p.kind === "number" ? "number" : "text"} value={String(state.props[p.name] ?? "")}
-              min={p.kind === "number" ? p.min : undefined} max={p.kind === "number" ? p.max : undefined}
+              min={p.kind === "number" ? p.min : undefined} max={p.kind === "number" ? p.max : undefined} maxLength={p.kind === "text" ? TEXT_MAX : undefined}
               onChange={(e) => setProp(p.name, p.kind === "number" ? clampNumber(p, Number(e.target.value)) : e.target.value)} />
           ))}
         </fieldset>
@@ -95,7 +97,9 @@ export default function Playground({ components }: { components: PlayComponent[]
         </fieldset>
       </div>
       <div className="pg__out">
-        <div ref={stage} className={["pg__stage", themeClass(state.o.theme)].filter(Boolean).join(" ")} data-preview>{element}</div>
+        <div ref={stage} className={["pg__stage", themeClass(state.o.theme)].filter(Boolean).join(" ")} data-preview>
+          <PreviewBoundary resetKey={query}>{element}</PreviewBoundary>
+        </div>
         <p className="mw-muted">Overrides apply to this preview only and live in the address, never on a server.</p>
         <pre className="pg__code" tabIndex={0}><code>{snippet}</code></pre>
         <div className="btn-row">

@@ -11,4 +11,10 @@ describe("Card", () => {
     render(<Card className="x">bare</Card>);
     expect(screen.getByText("bare").closest(".mw-card")).toHaveClass("x");
   });
+  it("a blank title renders no heading and no region, just the card", () => {
+    const { container } = render(<Card title="  ">body</Card>);
+    expect(screen.queryByRole("heading")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
+    expect(container.querySelector(".mw-card")).toHaveTextContent("body");
+  });
 });

@@ -26,6 +26,16 @@ describe("toJsx: snippets serialised from the same elements the previews render"
     expect(toJsx(<p>{"a {b}"}</p>)).toBe('<p>{"a {b}"}</p>');
     expect(toJsx(<Button title={'say "hi"'}>x</Button>)).toBe('<Button title={"say \\"hi\\""}>x</Button>');
   });
+  it("writes an empty string prop as an empty attribute (the playground's cleared required prop), and empty text as no children", () => {
+    expect(toJsx(<Button title="">x</Button>)).toBe('<Button title="">x</Button>');
+    expect(toJsx(<Button>{""}</Button>)).toBe("<Button></Button>");
+  });
+  it("braces a line break or an HTML entity, which JSX would fold or decode, in text and attributes", () => {
+    expect(toJsx(<p>{"a\nb"}</p>)).toBe('<p>{"a\\nb"}</p>');
+    expect(toJsx(<p>{"&amp;"}</p>)).toBe('<p>{"&amp;"}</p>');
+    expect(toJsx(<Button title={"&#60;x"}>y</Button>)).toBe('<Button title={"&#60;x"}>y</Button>');
+    expect(toJsx(<p>{"cats & co"}</p>)).toBe("<p>cats & co</p>");
+  });
   it("drops null/undefined props and empty children, names non-handler functions after the prop", () => {
     expect(toJsx(<Button title={undefined} aria-label={null as unknown as string}>{false}{null}go</Button>)).toBe("<Button>go</Button>");
     const Slot = (_: { title: string; render: () => null }) => null;

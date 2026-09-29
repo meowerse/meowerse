@@ -13,7 +13,7 @@ export type PromptProps = {
   onChange: (v: string) => void;
   /** called with the trimmed value when it is sent. */
   onSubmit: (v: string) => void;
-  /** the send button's accessible name. */
+  /** the send button's accessible name; a blank one falls back to "send". */
   sendLabel?: string;
   /** the tallest the textarea grows before it scrolls. */
   maxRows?: number;
@@ -33,14 +33,15 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
   const id = useId();
   const inner = useRef<HTMLTextAreaElement | null>(null);
   const empty = value.trim() === "";
+  const rows = maxRows >= 1 ? maxRows : 1;         // 0, a negative or NaN would collapse the field
 
   useLayoutEffect(() => {                         // auto-grow up to maxRows, then scroll
     const el = inner.current;
     if (!el) return;
     el.style.height = "auto";
     const lh = parseFloat(getComputedStyle(el).lineHeight) || 24;
-    el.style.height = `${Math.min(el.scrollHeight, lh * maxRows + 20)}px`;
-  }, [value, maxRows]);
+    el.style.height = `${Math.min(el.scrollHeight, lh * rows + 20)}px`;
+  }, [value, rows]);
 
   const send = () => { if (!empty) onSubmit(value.trim()); };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -65,7 +66,7 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
         ref={setRefs}
         onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown}
         enterKeyHint="send" autoComplete="off" aria-busy={busy || undefined} />
-      <button type="button" className="mw-prompt__send" aria-label={sendLabel}
+      <button type="button" className="mw-prompt__send" aria-label={sendLabel.trim() || "send"}
         aria-disabled={empty || undefined} onClick={send}>
         <Icon name="send" size={20} />
       </button>
