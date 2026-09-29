@@ -12,6 +12,7 @@ describe("package.json exports", () => {
     expect(pkg.exports).toMatchObject({
       "./theme": "./src/lib/theme.ts",
       "./status": "./src/lib/status.ts",
+      "./seo": "./src/lib/seo.ts",
       "./tokens.json": "./design/tokens.json",
       "./assets/fonts/*": "./src/assets/fonts/*",
     });

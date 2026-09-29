@@ -57,31 +57,6 @@ Canonical: https://auth.alxnko.dev/.well-known/security.txt
 Policy: https://auth.alxnko.dev/privacy
 `;
 
-const ROBOTS_TXT = `User-agent: *
-Allow: /
-
-User-agent: GPTBot
-Disallow: /
-
-User-agent: ChatGPT-User
-Disallow: /
-
-User-agent: CCBot
-Disallow: /
-
-User-agent: anthropic-ai
-Disallow: /
-
-User-agent: Claude-Web
-Disallow: /
-
-User-agent: Bytespider
-Disallow: /
-
-User-agent: Google-Extended
-Disallow: /
-`;
-
 function now(deps: Deps): number {
   return deps.clock ? deps.clock() : Math.floor(Date.now() / 1000);
 }
@@ -878,17 +853,6 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
       },
     });
   }
-  if (m === "GET" && pathname === "/robots.txt") {
-    return new Response(ROBOTS_TXT, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "public, max-age=86400",
-        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
-        ...cors,
-      },
-    });
-  }
-
   if (m === "GET" && pathname === "/.well-known/openid-configuration") {
     return json(discoveryDoc(env), 200, { ...PUBLIC_CORS, ...CACHE_1H });
   }
