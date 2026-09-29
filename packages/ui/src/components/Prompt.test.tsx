@@ -119,4 +119,28 @@ describe("Prompt", () => {
       else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
     }
   });
+
+  it("labelPlacement defaults to hidden: a visually-hidden label and the label as placeholder", () => {
+    const { container } = render(<Prompt label="message" value="" onChange={() => {}} onSubmit={() => {}} />);
+    expect(container.firstElementChild).not.toHaveClass("mw-prompt--float");
+    const box = screen.getByRole("textbox", { name: "message" });
+    expect(box).toHaveAttribute("placeholder", "message");
+    expect(container.querySelector("label")).toHaveClass("sr-only");
+  });
+
+  it("labelPlacement=float: a visible label after the textarea, same accessible name, a space placeholder unless one is given", () => {
+    const { container, rerender } = render(<Prompt label="message" labelPlacement="float" value="" onChange={() => {}} onSubmit={() => {}} />);
+    expect(container.firstElementChild).toHaveClass("mw-prompt", "mw-prompt--float");
+    const box = screen.getByRole("textbox", { name: "message" });
+    expect(box).toHaveAttribute("placeholder", " ");
+    const label = box.nextElementSibling!;
+    expect(label.tagName).toBe("LABEL");
+    expect(label).toHaveClass("mw-prompt__float-label");
+    expect(label).not.toHaveClass("sr-only");
+    expect(label).toHaveAttribute("for", box.id);
+    expect(container.querySelectorAll("label")).toHaveLength(1);
+    rerender(<Prompt label="message" labelPlacement="float" placeholder="say hi" value="" onChange={() => {}} onSubmit={() => {}} />);
+    expect(box).toHaveAttribute("placeholder", "say hi");
+    expect(screen.getByRole("button", { name: "send" })).toBeInTheDocument();
+  });
 });

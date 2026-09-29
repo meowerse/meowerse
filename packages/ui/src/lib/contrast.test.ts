@@ -10,7 +10,7 @@ describe("contrast", () => {
   it("doesn't depend on argument order", () =>
     expect(contrast("#0a6e3c", "#e9e8e4")).toBeCloseTo(contrast("#e9e8e4", "#0a6e3c"), 10));
   it("pairs name only real semantic tokens, with an AA minimum", () => {
-    expect(CONTRAST_PAIRS.length).toBe(21);
+    expect(CONTRAST_PAIRS.length).toBe(26);
     for (const [fg, bg, min] of CONTRAST_PAIRS) {
       expect(tokens.semantic.dark).toHaveProperty(fg);
       expect(tokens.semantic.dark).toHaveProperty(bg);

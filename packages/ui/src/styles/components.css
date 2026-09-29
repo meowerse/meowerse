@@ -56,6 +56,49 @@
 .mw-field__hint { font-size: var(--fs-2); color: var(--c-fg-subtle); }
 .mw-field__error { font-size: var(--fs-2); color: var(--c-danger); }
 
+/* ---- labelPlacement="float" (Field, Prompt) --------------------------------------------------------------
+   The label rests inside the empty control where a placeholder would be, and moves up onto the top border
+   (legend-style, like .mw-radio legend) once the control is focused or filled, so it stays visible. CSS only:
+   the label follows the control, the components give a blank placeholder a single space, and
+   `:placeholder-shown` + `:focus-within` place it, so it works on SSR output with JS off. The root reserves
+   the floated label's upper half (--sp-2) in both states: moving never shifts layout. The label's background
+   is the control's surface from its midline (the border line) down, and transparent above that, so it hides
+   the border behind the text on any outer surface without a patch. While focused it starts 4px higher to
+   hide the focus ring too (2px wide, 2px out: global.css), which shows as a thin --c-bg-elev strip where the
+   outer surface differs. Every rule is scoped under the --float modifier and the classes are
+   *__float-label: apps use their own `.mw-field__label` spans (meowsenger-web), which must stay untouched. */
+.mw-field--float { padding-top: var(--sp-2); }
+.mw-field--float .mw-field__float-label, .mw-prompt--float .mw-prompt__float-label {
+  position: absolute; z-index: 1; padding: 0 var(--sp-1); transform: translateY(-50%);
+  font-size: var(--fs-4); line-height: 24px; color: var(--c-fg-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+  background: linear-gradient(transparent calc(50% - 1px), var(--c-bg-elev) 0);
+}
+.mw-field--float:focus-within .mw-field__float-label, .mw-prompt--float:focus-within .mw-prompt__float-label {
+  background: linear-gradient(transparent calc(50% - 5px), var(--c-bg-elev) 0);
+}
+/* text lines up with the input's own text (1px border + --sp-3 padding) in both positions */
+.mw-field--float .mw-field__float-label { top: 50%; left: calc(var(--sp-3) + 1px - var(--sp-1)); max-width: calc(100% - 2 * (var(--sp-3) + 1px - var(--sp-1))); }
+.mw-field--float .mw-field__control:has(.mw-field__reveal) > .mw-field__float-label { max-width: calc(100% - (var(--sp-3) + 1px - var(--sp-1)) - 44px); }
+.mw-field--float:focus-within .mw-field__float-label,
+.mw-field--float input:not(:placeholder-shown) + .mw-field__float-label { top: 0; font-size: var(--fs-2); line-height: 16px; }
+/* separate rules: an unknown pseudo-class would drop a whole selector list */
+.mw-field--float input:autofill + .mw-field__float-label { top: 0; font-size: var(--fs-2); line-height: 16px; }
+.mw-field--float input:-webkit-autofill + .mw-field__float-label { top: 0; font-size: var(--fs-2); line-height: 16px; }
+.mw-field--float.mw-field--error .mw-field__float-label { color: var(--c-danger); }
+.mw-field--float input:disabled + .mw-field__float-label { opacity: var(--disabled-opacity); }
+/* a real placeholder shows only once the label has moved out of its way */
+.mw-field--float input::placeholder, .mw-prompt--float textarea::placeholder { opacity: 0; }
+.mw-field--float input:focus::placeholder, .mw-prompt--float textarea:focus::placeholder { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .mw-field--float .mw-field__float-label, .mw-prompt--float .mw-prompt__float-label { transition: top var(--d-fast) var(--ease), font-size var(--d-fast) var(--ease); }
+}
+@media (forced-colors: active) {
+  .mw-field--float .mw-field__float-label, .mw-prompt--float .mw-prompt__float-label,
+  .mw-field--float:focus-within .mw-field__float-label, .mw-prompt--float:focus-within .mw-prompt__float-label { background: Canvas; color: CanvasText; }
+  .mw-field--float input:disabled + .mw-field__float-label { color: GrayText; }
+}
+
 .mw-check { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); font-size: var(--fs-3); cursor: pointer; }
 .mw-check input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--c-accent); cursor: pointer; }
 .mw-check:has(input:disabled) { opacity: var(--disabled-opacity); cursor: not-allowed; }
@@ -178,6 +221,13 @@ a.mw-wordmark:hover { color: var(--c-accent); text-decoration: none; }
 .mw-prompt textarea::placeholder { color: var(--c-fg-subtle); }
 .mw-prompt__send { flex: none; width: var(--control-height); height: var(--control-height); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-m); border: 0; background: var(--c-accent-fill); color: var(--c-on-accent); cursor: pointer; }
 .mw-prompt__send[aria-disabled="true"] { opacity: var(--disabled-opacity); cursor: not-allowed; }
+/* float (see the Field block above): the label's text lines up after the › glyph (1px border + 32px padding),
+   centred on the first line (1px + 9px padding + half the 24px line), and stops short of the send button. */
+.mw-prompt--float { padding-top: var(--sp-2); }
+.mw-prompt--float .mw-prompt__glyph { top: calc(var(--sp-2) + 10px); }
+.mw-prompt--float .mw-prompt__float-label { top: calc(var(--sp-2) + 22px); left: calc(33px - var(--sp-1)); max-width: calc(100% - 38px - var(--control-height) - var(--sp-2)); }
+.mw-prompt--float:focus-within .mw-prompt__float-label,
+.mw-prompt--float textarea:not(:placeholder-shown) + .mw-prompt__float-label { top: var(--sp-2); font-size: var(--fs-2); line-height: 16px; }
 
 /* ---- Cat3D: decorative; --cat-color / --cat-edge come from tokens.gen.css (primitive.scene) ---- */
 /* the in-flow poster <img width/height> sizes the box (no inline style); the canvas overlays it once live */

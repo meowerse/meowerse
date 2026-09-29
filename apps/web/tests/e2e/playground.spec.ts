@@ -127,3 +127,26 @@ test("a preview that throws is contained: an inline error, live controls, and it
   await expect(page.locator("[data-playground] .pg-fallback")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("labelPlacement is an enum control: float shows Prompt's label, clearing the value brings it back inside, and the URL and snippet follow", async ({ page }) => {
+  await page.goto("/ui/playground/?c=prompt");
+  const stage = page.locator(".pg__stage");
+  await expect(stage.locator(".mw-prompt")).not.toHaveClass(/mw-prompt--float/);
+  await page.getByLabel("labelPlacement").selectOption("float");
+  await expect(page).toHaveURL(/p\.labelPlacement=float/);
+  await expect(page.locator(".pg__code")).toContainText('labelPlacement="float"');
+  const label = stage.locator(".mw-prompt__float-label");
+  await expect(label).toBeVisible();
+  await expect(stage.getByRole("textbox", { name: "message" })).toBeVisible();
+  const mid = () => label.evaluate((l) => {
+    const t = l.parentElement!.querySelector("textarea")!.getBoundingClientRect(), r = l.getBoundingClientRect();
+    return Math.round(r.top + r.height / 2 - t.top);
+  });
+  await expect.poll(mid).toBe(0);                                    // seeded value: on the border
+  await page.getByRole("textbox", { name: "value", exact: true }).fill("");
+  await expect(page).toHaveURL(/p\.value=(&|$)/);
+  await expect.poll(mid).toBe(22);                                   // empty: back inside, on the first line
+  await page.getByLabel("labelPlacement").selectOption("hidden");
+  await expect(page).not.toHaveURL(/p\.labelPlacement/);
+  await expect(stage.locator("label.sr-only")).toHaveCount(1);
+});

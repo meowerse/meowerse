@@ -7,7 +7,7 @@ test("colours: every semantic token in both themes and every contrast pair passi
   await page.goto("/ui/foundations/colours/");
   await expect(page.locator('section[aria-labelledby="sem-title"] tbody tr')).toHaveCount(21);
   const rows = page.locator('section[aria-labelledby="contrast-title"] tbody tr');
-  await expect(rows).toHaveCount(42);
+  await expect(rows).toHaveCount(52);
   await expect(page.locator('section[aria-labelledby="contrast-title"] .mw-status--fail')).toHaveCount(0);
 });
 
