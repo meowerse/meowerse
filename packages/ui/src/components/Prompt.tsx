@@ -3,9 +3,12 @@ import { cx } from "../lib/cx";
 import { Icon } from "./Icon";
 
 export type PromptProps = {
-  /** the visually-hidden label, also used as the placeholder. */
+  /** the label: visually hidden and repeated as the placeholder, unless labelPlacement is float. */
   label: string;
-  /** overrides the placeholder text shown while empty. */
+  /** where the label sits: hidden (the placeholder repeats it), or float — shown inside the empty field and
+   *  moved up onto its top border once it is focused or filled, so it stays visible (CSS only). */
+  labelPlacement?: "hidden" | "float";
+  /** overrides the placeholder text shown while empty (with a floating label, only while focused). */
   placeholder?: string;
   /** the textarea's current value. */
   value: string;
@@ -29,11 +32,12 @@ const coarse = () => typeof matchMedia !== "undefined" && matchMedia("(pointer: 
 
 /** the chat composer: a › glyph before a normal, auto-growing textarea, with a visible send button. */
 export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prompt(
-  { label, placeholder, value, onChange, onSubmit, sendLabel = "send", maxRows = 6, busy = false, enterSends = "auto", className }, ref) {
+  { label, labelPlacement = "hidden", placeholder, value, onChange, onSubmit, sendLabel = "send", maxRows = 6, busy = false, enterSends = "auto", className }, ref) {
   const id = useId();
   const inner = useRef<HTMLTextAreaElement | null>(null);
   const empty = value.trim() === "";
   const rows = maxRows >= 1 ? maxRows : 1;         // 0, a negative or NaN would collapse the field
+  const float = labelPlacement === "float";
 
   useLayoutEffect(() => {                         // auto-grow up to maxRows, then scroll
     const el = inner.current;
@@ -59,13 +63,17 @@ export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prom
   }, [ref]);
 
   return (
-    <div className={cx("mw-prompt", busy && "is-busy", className)}>
+    <div className={cx("mw-prompt", float && "mw-prompt--float", busy && "is-busy", className)}>
       <span className="mw-prompt__glyph" aria-hidden="true">›</span>
-      <label htmlFor={id} className="sr-only">{label}</label>
-      <textarea id={id} rows={1} value={value} placeholder={placeholder ?? label}
+      {!float && <label htmlFor={id} className="sr-only">{label}</label>}
+      {/* float: the label follows the textarea so `textarea:placeholder-shown + label` places it with no JS;
+          that needs a placeholder, so without one it is a single (invisible) space. */}
+      <textarea id={id} rows={1} value={value}
+        placeholder={float ? (placeholder?.trim() ? placeholder : " ") : placeholder ?? label}
         ref={setRefs}
         onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown}
         enterKeyHint="send" autoComplete="off" aria-busy={busy || undefined} />
+      {float && <label htmlFor={id} className="mw-prompt__label">{label}</label>}
       <button type="button" className="mw-prompt__send" aria-label={sendLabel.trim() || "send"}
         aria-disabled={empty || undefined} onClick={send}>
         <Icon name="send" size={20} />

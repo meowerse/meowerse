@@ -22,9 +22,9 @@ export function contrast(a: string, b: string): number {
 /** min is WCAG AA: 4.5 for text, 3 for the focus ring and input boundaries. */
 export const CONTRAST_PAIRS: readonly ContrastPair[] = [
   ["fg", "bg", 4.5], ["fg", "bgElev", 4.5], ["fg", "surface", 4.5], ["fg", "surfaceRaised", 4.5],
-  ["fgMuted", "bg", 4.5], ["fgMuted", "surface", 4.5], ["fgSubtle", "bg", 4.5], ["fgSubtle", "surface", 4.5],
+  ["fgMuted", "bg", 4.5], ["fgMuted", "surface", 4.5], ["fgMuted", "bgElev", 4.5], ["fgSubtle", "bg", 4.5], ["fgSubtle", "surface", 4.5],
   ["accent", "bg", 4.5], ["accent", "surface", 4.5], ["onAccent", "accentFill", 4.5],
-  ["danger", "bg", 4.5], ["danger", "dangerTint", 4.5], ["onDanger", "danger", 4.5],
+  ["danger", "bg", 4.5], ["danger", "bgElev", 4.5], ["danger", "dangerTint", 4.5], ["onDanger", "danger", 4.5],
   ["ok", "bg", 4.5], ["ok", "surface", 4.5], ["info", "bg", 4.5], ["warn", "bg", 4.5],
   ["focus", "bg", 3], ["lineInput", "bg", 3], ["lineInput", "bgElev", 3],
 ];

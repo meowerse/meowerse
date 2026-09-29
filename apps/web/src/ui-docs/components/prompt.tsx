@@ -9,9 +9,11 @@ export default {
     { title: "empty", note: "send is aria-disabled", node: <Prompt label="message" value="" onChange={noop} onSubmit={noop} /> },
     { title: "with text", node: <Prompt label="message" value="see you at 7" onChange={noop} onSubmit={noop} /> },
     { title: "busy", note: "still editable; sends queue", node: <Prompt label="message" value="and one more thing" busy onChange={noop} onSubmit={noop} /> },
+    { title: "floating label", note: "labelPlacement=\"float\": the label shows while empty", node: <Prompt label="message" labelPlacement="float" value="" onChange={noop} onSubmit={noop} /> },
+    { title: "floating label, with text", note: "the label stays visible on the border", node: <Prompt label="message" labelPlacement="float" value="see you at 7" onChange={noop} onSubmit={noop} /> },
   ],
   a11y: [
-    "A labelled textarea: the label is visually hidden and the placeholder repeats it.",
+    "A labelled textarea: the label is visually hidden and the placeholder repeats it. With labelPlacement=\"float\" the same label is shown instead, inside the empty field and then on its border, so it never disappears while typing.",
     "On desktop, Enter sends and Shift+Enter adds a line; on phones, Enter adds a line and the button sends. Nothing is sent while an input method is composing.",
     "The field is never disabled; the send button is 44×44 px and named \"send\".",
   ],

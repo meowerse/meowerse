@@ -9,9 +9,13 @@ export default {
     { title: "password", note: "with a reveal button", node: <Field label="password" type="password" defaultValue="correct horse" /> },
     { title: "error", node: <Field label="username" defaultValue="alxnko" error="that name is taken — try another" />, html: true },
     { title: "disabled", node: <Field label="email" defaultValue="not collected" disabled />, html: true },
+    { title: "floating label", note: "labelPlacement=\"float\": rests inside while empty, moves onto the border once focused or filled",
+      node: <Field label="username" labelPlacement="float" autoCapitalize="none" autoCorrect="off" spellCheck={false} />, html: true },
+    { title: "floating label, filled", note: "stays visible on the border; never runs under the reveal button", node: <Field label="password" labelPlacement="float" type="password" defaultValue="correct horse" hint="12–128 characters" /> },
   ],
   a11y: [
     "The label is always visible and tied to the input.",
+    "With labelPlacement=\"float\" the label is still the input's real <label>, so its accessible name doesn't change; it only moves (CSS alone, no JS), keeping a long label on one line with an ellipsis.",
     "The hint and the error are linked with aria-describedby; an error sets aria-invalid and is announced.",
     "The reveal button is 44×44 px and named \"show password\" or \"hide password\".",
     "Inputs are 16 px, so phones don't zoom in.",
