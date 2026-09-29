@@ -3,7 +3,8 @@ import { setStatus } from "./status-dom";
 
 export const ISLAND_TIMEOUT_MS = 10_000;
 
-/** The island sets data-ready on `root` once mounted; otherwise the root's StatusLine turns into
+/** Whoever owns `root` sets data-ready on it once the island is live (the playground island itself;
+ *  demo-islands.ts for the /ui demos); otherwise the root's StatusLine turns into
  *  `message` (what didn't load, and what to do) with a real way out (B9: a plain-language message alone isn't a recovery path) — a button
  *  next to it that reloads the page, the same `.mw-status__action` slot StatusLine's own `action`
  *  prop renders into. `reload` defaults to the real `location.reload()`; a test injects its own (the
