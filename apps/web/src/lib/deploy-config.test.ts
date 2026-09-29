@@ -21,6 +21,12 @@ describe("deploy config", () => {
     }
     expect(read(`infra/cloudflare/deploy-${svc}.sh`)).toMatch(/git status --porcelain -- [^|]*packages\/ui packages\/brand/);
   });
+  it.each(["web", "auth", "meowsenger"])("CI detects %s changes on the same paths (W-12)", (svc) => {
+    const pattern = new RegExp(`grep -qE '\\^\\(([^)]+)\\)' <<<"\\$diff" && echo "${svc}=1"`).exec(read(".github/workflows/deploy.yml"))?.[1] ?? "";
+    expect(pattern, svc).toContain("packages/ui/");
+    expect(pattern, svc).toContain("packages/brand/");
+    if (svc === "web") expect(pattern).not.toContain("ts-shared");
+  });
   it("deploy-status covers every service (W-14)", () =>
     expect(read("infra/deploy-status.sh")).toContain("for svc in api web worker auth meowsenger; do"));
   it("meow.alxnko.eu.org redirects to meow.alxnko.dev, not alxnko.dev (B24, W-15)", () => {
