@@ -25,8 +25,18 @@ const usable = (el: HTMLElement) => {
 // don't fight over keydown.
 const modalStack: string[] = [];
 
+/** a dialog over the page that keeps focus inside until it closes. */
 export function Modal({ open, onClose, title, children, className }: {
-  open: boolean; onClose: () => void; title: string; children: ReactNode; className?: string;
+  /** whether the dialog is open. */
+  open: boolean;
+  /** called when Escape or the backdrop closes the dialog. */
+  onClose: () => void;
+  /** the dialog's title, used to label it for assistive tech. */
+  title: string;
+  /** the dialog's content. */
+  children: ReactNode;
+  /** extra class names to append to the dialog panel. */
+  className?: string;
 }) {
   const id = useId();
   const panelRef = useRef<HTMLDivElement>(null);

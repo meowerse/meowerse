@@ -5,13 +5,13 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-if git status --porcelain -- apps/web packages/ts-shared | grep -q .; then
+if git status --porcelain -- apps/web packages/ui packages/brand | grep -q .; then
   [ "${ALLOW_DIRTY:-0}" = "1" ] || { echo "ERROR: uncommitted web changes. commit or ALLOW_DIRTY=1" >&2; exit 1; }
 fi
 ASTRO_TELEMETRY_DISABLED=1 bun run --filter @meowerse/web build
 # --branch main is REQUIRED: the Pages project's PRODUCTION branch is "main", but this
 # repo's default branch is "master". Without --branch, wrangler infers the branch from
-# git ("master") and creates a PREVIEW deploy — production (meow.alxnko.eu.org) never
+# git ("master") and creates a PREVIEW deploy — production (meow.alxnko.dev) never
 # updates. Pinning --branch main makes every deploy land on production.
 bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --branch main --commit-hash "$(git rev-parse HEAD)"
 bash infra/record-deploy.sh web

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSession, clearSessionCache } from "./useSession";
 
@@ -48,7 +48,7 @@ describe("useSession", () => {
     render(<View2 base="https://api" />);
     const btn = await screen.findByRole("button", { name: "error network" });
     expect(sessionStorage.getItem("mw-session")).toBeNull();
-    btn.click();
+    await act(async () => btn.click());
     expect(await screen.findByText("hi alex")).toBeInTheDocument();
     expect(spy).toHaveBeenCalledTimes(2);
   });
@@ -70,7 +70,7 @@ describe("useSession", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) =>
       new Promise((_, rej) => init!.signal!.addEventListener("abort", () => rej(new DOMException("a", "AbortError")))));
     render(<View2 base="https://api" />);
-    await vi.advanceTimersByTimeAsync(8_001);
+    await act(() => vi.advanceTimersByTimeAsync(8_001));
     expect(await screen.findByRole("button", { name: "error timeout" })).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -86,7 +86,7 @@ describe("useSession", () => {
     );
     const buttons = await screen.findAllByRole("button", { name: "error network" });
     expect(buttons).toHaveLength(2);
-    buttons[0]!.click();
+    await act(async () => buttons[0]!.click());
     const messages = await screen.findAllByText("hi alex");
     expect(messages).toHaveLength(2);
     expect(spy).toHaveBeenCalledTimes(2);
@@ -117,7 +117,7 @@ describe("useSession", () => {
     // Both islands share one in-flight load; retry from one clears it and starts
     // a second, newer load before the first has resolved.
     const retryButtons = screen.getAllByRole("button", { name: "retry" });
-    retryButtons[0]!.click();
+    await act(async () => retryButtons[0]!.click());
     await waitFor(() => expect(resolvers).toHaveLength(2));
 
     // Resolve the stale (first) request, then the fresh (second) one.

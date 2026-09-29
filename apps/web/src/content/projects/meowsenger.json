@@ -1,0 +1,38 @@
+{
+  "name": "meowsenger",
+  "order": 2,
+  "service": true,
+  "summary": "A real-time messenger you sign in to with your meowerse account.",
+  "what": [
+    "Chats with one person, groups and channels, with replies, edits, deletes, forwarding, reactions and search.",
+    "Groups have invite links and join requests, and a channel can be public, with its own address.",
+    "It shows who is typing, who is online and who has read a message.",
+    "There is no separate password: you sign in with meowerse accounts.",
+    "Messages are not end-to-end encrypted. They travel over HTTPS and are stored on the server, which is what lets history and search work on every device."
+  ],
+  "how": [
+    "The web app is Astro with React islands, served by the same Cloudflare Worker as the API, which is an OpenID Connect client of meowerse accounts.",
+    "Each chat is a Durable Object: a new message is written to its SQLite storage and broadcast to everyone connected over WebSockets.",
+    "Chats and message history are also synced to D1, off the send path."
+  ],
+  "diagram": {
+    "label": "Message path: your browser talks to the meowsenger Worker; each chat's Durable Object stores and broadcasts; D1 keeps a synced copy.",
+    "steps": [
+      { "title": "your browser", "note": "astro + react islands" },
+      { "title": "meowsenger worker", "note": "sign-in + api" },
+      { "title": "chat durable object", "note": "sqlite + websockets" },
+      { "title": "d1", "note": "synced off the send path" }
+    ]
+  },
+  "facts": [
+    { "k": "sign-in", "v": "meowerse accounts (OpenID Connect)" },
+    { "k": "realtime", "v": "WebSockets through one Durable Object per chat" },
+    { "k": "storage", "v": "Durable Object SQLite, Cloudflare D1" },
+    { "k": "encryption", "v": "HTTPS in transit; not end-to-end encrypted" }
+  ],
+  "status": { "kind": "probe", "url": "https://meowsenger.alxnko.dev/health", "method": "GET" },
+  "links": [
+    { "label": "open meowsenger", "href": "https://meowsenger.alxnko.dev/" },
+    { "label": "source", "href": "https://github.com/meowerse/meowerse/tree/master/workers/meowsenger" }
+  ]
+}

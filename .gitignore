@@ -18,3 +18,5 @@ workers/*/tmp/
 .worktrees/
 /.agents
 /.tmp-export-claude
+apps/web/test-results/
+apps/web/playwright-report/

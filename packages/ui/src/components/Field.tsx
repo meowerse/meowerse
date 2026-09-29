@@ -3,9 +3,15 @@ import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
 export type FieldProps = Omit<InputHTMLAttributes<HTMLInputElement>, "id"> & {
-  label: string; hint?: string; error?: string;
+  /** the visible label, always shown and tied to the input. */
+  label: string;
+  /** helper text shown below the input, linked with aria-describedby. */
+  hint?: string;
+  /** an error message shown instead of the hint; also sets aria-invalid. */
+  error?: string;
 };
 
+/** a labelled text input with an optional hint or error, and a reveal button for passwords. */
 export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   { label, hint, error, type = "text", className, ...rest }, ref) {
   const id = useId();

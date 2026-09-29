@@ -22,4 +22,11 @@ describe("Button", () => {
     await userEvent.click(screen.getByRole("button"));
     expect(fn).toHaveBeenCalledOnce();
   });
+  // T11 review: an Astro page nested <Button slot="..."> inside another framework component (Astro
+  // slot syntax doesn't apply to framework children), and it landed on the native <button> as a
+  // meaningless DOM attribute. `slot` isn't a real prop here — it must never be forwarded.
+  it("never forwards a stray `slot` attribute to the native button", () => {
+    render(<Button slot="action">try again</Button>);
+    expect(screen.getByRole("button")).not.toHaveAttribute("slot");
+  });
 });

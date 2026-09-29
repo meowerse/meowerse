@@ -148,7 +148,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     return json({ error: "rate_limited" }, 429, cors);
   }
 
-  if (path === "/health" && (m === "GET" || m === "HEAD")) return json({ ok: true }, 200, cors);
+  // meow.alxnko.dev probes this cross-origin for its live status list: a plain public CORS answer
+  // (no credentials, no Vary), never cached, so "up" always means up right now.
+  if (path === "/health" && (m === "GET" || m === "HEAD"))
+    return json({ ok: true }, 200, { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" });
   if (path === "/auth/login" && (m === "GET" || m === "HEAD")) return handleLogin(deps.auth());
   if (path === "/auth/callback" && (m === "GET" || m === "HEAD")) return handleCallback(req, env, deps);
   if (path === "/api/session" && m === "GET") return handleSession(req, deps.getDb(), deps.now(), cors);

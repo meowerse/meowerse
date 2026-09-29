@@ -3,13 +3,31 @@ import { cx } from "../lib/cx";
 import { Icon } from "./Icon";
 
 export type PromptProps = {
-  label: string; placeholder?: string; value: string; onChange: (v: string) => void;
-  onSubmit: (v: string) => void; sendLabel?: string; maxRows?: number; busy?: boolean;
-  enterSends?: "auto" | "always" | "never"; className?: string;
+  /** the visually-hidden label, also used as the placeholder. */
+  label: string;
+  /** overrides the placeholder text shown while empty. */
+  placeholder?: string;
+  /** the textarea's current value. */
+  value: string;
+  /** called with the new value on every keystroke. */
+  onChange: (v: string) => void;
+  /** called with the trimmed value when it is sent. */
+  onSubmit: (v: string) => void;
+  /** the send button's accessible name. */
+  sendLabel?: string;
+  /** the tallest the textarea grows before it scrolls. */
+  maxRows?: number;
+  /** shows the composer as busy; the field stays editable so sends can queue. */
+  busy?: boolean;
+  /** whether Enter sends: auto only on non-touch pointers, always, or never (the button always sends). */
+  enterSends?: "auto" | "always" | "never";
+  /** extra class names to append. */
+  className?: string;
 };
 
 const coarse = () => typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
 
+/** the chat composer: a › glyph before a normal, auto-growing textarea, with a visible send button. */
 export const Prompt = forwardRef<HTMLTextAreaElement, PromptProps>(function Prompt(
   { label, placeholder, value, onChange, onSubmit, sendLabel = "send", maxRows = 6, busy = false, enterSends = "auto", className }, ref) {
   const id = useId();

@@ -1,0 +1,15 @@
+---
+// Wraps one React demo island (B9, see src/lib/demo-islands.ts): the server-rendered preview stays in
+// place but is inert until hydrated, with a "[wait] loading the demo…" line over it (revealed by JS only),
+// and a <noscript> note for visitors without JavaScript. The island goes in the default slot.
+import { StatusLine } from "@meowerse/ui";
+---
+<div class="demo-island" data-demo>
+  <div class="demo-island__stage" data-demo-stage inert><slot /></div>
+  <div class="demo-island__wait" data-demo-wait hidden><StatusLine state="wait" live>loading the demo…</StatusLine></div>
+  <noscript><p class="mw-muted">This demo needs JavaScript to respond. Without it you see how it looks, not how it behaves.</p></noscript>
+</div>
+<script>
+  import { bindDemoIslands } from "../../lib/demo-islands";
+  bindDemoIslands();
+</script>

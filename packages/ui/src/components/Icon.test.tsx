@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Icon } from "./Icon";
+import { Icon, ICON_NAMES } from "./Icon";
 
 describe("Icon", () => {
   it("renders a known icon as an svg carrying data-icon + paths", () => {
@@ -23,6 +23,18 @@ describe("Icon", () => {
     for (const name of icons) {
       const { container } = render(<Icon name={name} />);
       expect(container.querySelector(`svg[data-icon='${name}']`)).toBeTruthy();
+    }
+  });
+  it("draws its paths as <path> elements, never through innerHTML (Trusted Types, U-28)", () => {
+    const { container } = render(<Icon name="sun" />);
+    expect(container.querySelectorAll("svg[data-icon='sun'] > path")).toHaveLength(2);
+  });
+  it("ICON_NAMES lists exactly the icons it can draw", () => {
+    expect(ICON_NAMES).toContain("send");
+    expect(ICON_NAMES.length).toBeGreaterThanOrEqual(36);
+    for (const name of ICON_NAMES) {
+      const { container } = render(<Icon name={name} />);
+      expect(container.querySelector("path"), name).not.toBeNull();
     }
   });
 });

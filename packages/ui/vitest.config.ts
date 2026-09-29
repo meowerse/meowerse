@@ -11,7 +11,7 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
       exclude: [
-        "src/index.ts", "src/styles/**", "src/**/*.test.{ts,tsx}",
+        "src/index.ts", "src/cat3d/index.ts", "src/styles/**", "src/**/*.test.{ts,tsx}",
         // WebGL2 has no jsdom implementation; scripts/cat-poster.ts verifies it end to end in Chromium (real GPU).
         "src/cat3d/renderer.ts",
       ],

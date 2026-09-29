@@ -34,7 +34,7 @@ jobs:
           diff="$(git diff --name-only "$base" ${{ github.sha }})"
           echo "$diff"
           grep -qE '^(workers/api/|packages/ts-shared/)' <<<"$diff" && echo "api=1" >> "$GITHUB_OUTPUT" || echo "api=0" >> "$GITHUB_OUTPUT"
-          grep -qE '^(apps/web/|packages/ts-shared/|packages/ui/|packages/brand/)' <<<"$diff" && echo "web=1" >> "$GITHUB_OUTPUT" || echo "web=0" >> "$GITHUB_OUTPUT"
+          grep -qE '^(apps/web/|packages/ui/|packages/brand/)' <<<"$diff" && echo "web=1" >> "$GITHUB_OUTPUT" || echo "web=0" >> "$GITHUB_OUTPUT"
           grep -qE '^workers/edge/' <<<"$diff" && echo "worker=1" >> "$GITHUB_OUTPUT" || echo "worker=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(workers/auth/|apps/auth-web/|packages/auth-shared/|packages/ui/|packages/brand/)' <<<"$diff" && echo "auth=1" >> "$GITHUB_OUTPUT" || echo "auth=0" >> "$GITHUB_OUTPUT"
           grep -qE '^(workers/meowsenger/|apps/meowsenger-web/|packages/auth-shared/|packages/auth-sdk/|packages/ui/|packages/brand/)' <<<"$diff" && echo "meowsenger=1" >> "$GITHUB_OUTPUT" || echo "meowsenger=0" >> "$GITHUB_OUTPUT"
@@ -61,7 +61,9 @@ jobs:
         run: |
           set -euo pipefail
           bun run --filter @meowerse/web build
-          bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --commit-hash "$(git rev-parse HEAD)"
+          # --branch main is required: the Pages project's production branch is "main" and this repo's
+          # default branch is master, so without it wrangler makes a Preview deploy (W-11).
+          bunx wrangler pages deploy apps/web/dist --project-name meowerse-web --branch main --commit-hash "$(git rev-parse HEAD)"
           bash infra/record-deploy.sh web "run-${{ github.run_id }}"
 
       - name: Deploy worker (wrangler)

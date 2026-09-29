@@ -1,0 +1,37 @@
+---
+import tokens from "@meowerse/ui/tokens.json";
+import { Wordmark } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+---
+<DocsLayout title="type" description="The @meowerse/ui type scale, line heights and fonts: JetBrains Mono everywhere, VT323 for the wordmarks.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>type</h1>
+    <p class="lede">One font, JetBrains Mono, at 400 and 700, so a › prompt and a button label share the same metrics. VT323 appears only in the wordmarks. Body text is 14 px with a 1.5 line height; inputs are 16 px so phones don't zoom; 12 px is the floor, for meta text only.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="scale-title">
+    <h2 id="scale-title">scale</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="type scale">
+      <table class="table">
+        <thead><tr><th scope="col">token</th><th scope="col">size</th><th scope="col">sample</th></tr></thead>
+        <tbody>
+          {tokens.type.scale.map((px, i) => (
+            <tr><td><code>{`--fs-${i + 1}`}</code></td><td>{px}px · {px / 16}rem</td><td class={`fs-${i + 1}`}>meow › [ ok ]</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="lead-title">
+    <h2 id="lead-title">line height</h2>
+    <ul class="docs-list">{Object.entries(tokens.type.leading).map(([k, v]) => <li><code>{`--leading-${k}`}</code>: {v}</li>)}</ul>
+  </section>
+  <section class="docs-section" aria-labelledby="font-title">
+    <h2 id="font-title">fonts</h2>
+    <p class="fs-4">JetBrains Mono 400: The quick brown fox jumps over the lazy cat. Съешь ещё этих мягких булок.</p>
+    <p class="fs-4 bold">JetBrains Mono 700: The quick brown fox jumps over the lazy cat.</p>
+    <p>A metric-matched fallback face keeps the layout still while the font loads. Latin is preloaded; Cyrillic and the symbols subset load only on pages that use those glyphs.</p>
+    <div class="demo-row">
+      <Wordmark name="meowerse" /><Wordmark name="meowsenger" /><Wordmark name="auth" /><Wordmark name="ui" />
+    </div>
+  </section>
+</DocsLayout>

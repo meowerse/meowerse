@@ -23,3 +23,28 @@ jobs:
 
       - name: Test (with coverage gate)
         run: just test
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        working-directory: apps/web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Build meow.alxnko.dev (postbuild CSP + guards)
+        run: bun run --filter @meowerse/web build
+
+      - name: Byte budgets
+        run: bun run --filter @meowerse/web budget
+
+      - name: e2e (screenshots are compared locally only)
+        run: bun run --filter @meowerse/web e2e

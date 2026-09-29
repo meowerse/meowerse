@@ -1,0 +1,29 @@
+---
+import { StatusLine } from "@meowerse/ui";
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import Playground from "../../ui-docs/playground/Playground";
+import { componentDoc } from "../../ui-docs/api";
+import { SEEDS } from "../../ui-docs/playground/seeds";
+import { specsFromDoc, type PlayComponent } from "../../lib/playground-state";
+
+const components: PlayComponent[] = Object.entries(SEEDS).map(([name, seed]) => ({ name, props: specsFromDoc(componentDoc(name), seed) }));
+---
+<DocsLayout title="playground" description="Change a component's props, the theme and the tokens live, and copy the resulting snippet. Everything stays in the URL.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>playground</h1>
+    <p class="lede">Pick a component, change its props, the theme and a few tokens, and copy the result. The controls come from the component's TypeScript types. Your setup lives in the address, so you can share it.</p>
+  </header>
+  <div class="pg-shell" data-playground>
+    <Playground client:only="react" components={components}>
+      <div slot="fallback" class="pg-fallback" data-js-only hidden><StatusLine state="wait" live>loading the playground…</StatusLine></div>
+    </Playground>
+    <noscript><p>The playground needs JavaScript. Every component also has its own page, which works without it.</p></noscript>
+  </div>
+  <script>
+    import { watchIsland } from "../../lib/island-watchdog";
+    const root = document.querySelector<HTMLElement>("[data-playground]");
+    // Without JS only the noscript note shows: the wait line is revealed here, never claiming to load forever.
+    root?.querySelector<HTMLElement>(".pg-fallback[data-js-only]")?.removeAttribute("hidden");
+    if (root) watchIsland(root, "the playground didn't load. reload the page to try again.");
+  </script>
+</DocsLayout>

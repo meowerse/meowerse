@@ -1,0 +1,38 @@
+---
+import { Alert, Button, Spinner, StatusLine } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+const rules = [
+  "A control that needs background work (a captcha, the session, a socket, a lazy chunk) is either disabled with a visible reason or enabled with a queue that finishes the action once ready. It is never enabled and then refused.",
+  "Every wait has a visible state, a timeout, a plain error, and a way to retry or recover.",
+  "No failure is silent: it's shown, or deliberately ignored with a comment in the code.",
+  "Actions are idempotent where they can be: double submits are blocked and sends carry a client id.",
+  "State is checked again on return: back/forward and the back-forward cache, tab visibility and reconnects.",
+  "Unknown is not down: when a check can't get an answer, say it's unknown.",
+];
+---
+<DocsLayout title="empty, loading, error" description="How meowerse shows waiting, failure, the unknown and emptiness, so nothing looks ready when it isn't.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>empty, loading, error</h1>
+    <p class="lede">No blocking background logic (B9): nothing looks ready while it isn't, and no wait lasts forever.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="rules-title">
+    <h2 id="rules-title">rules</h2>
+    <ul class="docs-list">{rules.map((r) => <li>{r}</li>)}</ul>
+  </section>
+  <section class="docs-section" aria-labelledby="spec-title">
+    <h2 id="spec-title">specimens</h2>
+    <div class="specimen">
+      <h3>loading</h3>
+      <StatusLine state="wait" live>loading your chats… (gives up after 10 s)</StatusLine>
+      <Spinner label="loading your chats" />
+      <h3>failed</h3>
+      <StatusLine state="fail">couldn't load your chats — the server took too long.<Button slot="action" size="sm">try again</Button></StatusLine>
+      <h3>unknown</h3>
+      <StatusLine state="info">meowsenger — unknown · no answer in 5 s</StatusLine>
+      <h3>empty</h3>
+      <div class="empty"><p class="empty__line"><span aria-hidden="true">› </span>no chats yet</p><Button variant="primary">start a chat</Button></div>
+      <h3>done</h3>
+      <Alert variant="success">saved.</Alert>
+    </div>
+  </section>
+</DocsLayout>

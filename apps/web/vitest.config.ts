@@ -1,17 +1,16 @@
 import { defineConfig } from "vitest/config";
 
-// Coverage is scoped to src/lib/** on purpose. That directory holds the only
-// pure TS logic in this app (the typed API client). This is the honest
-// exclusion for the 90% gate: the .astro pages and the React island
-// (src/components/**) are smoke-checked by `astro check` and `astro build`,
-// not by the coverage gate, so we do not pad the number with untested UI glue
-// or hold thin view code to a unit-test bar it was never meant to meet.
+// Pure logic lives in src/lib/** and carries the 90% gate. Pages, layouts and islands are covered by
+// `astro check`, the build (+ scripts/postbuild.ts guards) and the Playwright suite (bun run e2e).
+// DOM tests opt into jsdom per file with a `// @vitest-environment jsdom` first line.
 export default defineConfig({
   test: {
+    include: ["src/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
-      thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
       include: ["src/lib/**"],
+      exclude: ["src/lib/**/*.test.{ts,tsx}"],
+      thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
     },
   },
 });

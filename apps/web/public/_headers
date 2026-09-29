@@ -1,24 +1,43 @@
-# Cloudflare Pages headers for the web app.
+# Cloudflare Pages headers for meow.alxnko.dev. scripts/postbuild.ts replaces the CSP placeholder
+# below with the strict hash-based policy it computes from the built pages: one policy for every
+# page, the 404 included.
 #
-# Cache-Control caveat: Cloudflare COMBINES same-name headers across EVERY
-# matching rule — a more-specific path does NOT override a blanket one. So there
-# is deliberately NO Cache-Control under /*: a blanket rule there would merge
-# into this immutable one (e.g. "no-store, …, immutable") and defeat caching.
-# Set exactly ONE Cache-Control per path.
-
+# Cache-Control caveat: Cloudflare COMBINES same-name headers across every matching rule (a more
+# specific path does NOT override /*), so there is deliberately no Cache-Control under /*. Set
+# exactly one Cache-Control per path.
 /*
+  Content-Security-Policy: __CSP__
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
 
-# Content-hashed build assets (/_astro/*) never change under a given URL — cache hard.
+# Preview and branch deployments on *.pages.dev duplicate the real site: keep them out of search (W-08).
+https://:project.pages.dev/*
+  X-Robots-Tag: noindex
+https://:version.:project.pages.dev/*
+  X-Robots-Tag: noindex
+
+# Content-hashed build output never changes under a given URL.
 /_astro/*
   Cache-Control: public, max-age=31536000, immutable
 
-# Brand icons (packages/brand). Stable URLs but NOT content-hashed, so they get a
-# week of caching rather than the immutable year used for /_astro/*. One
-# Cache-Control per path, per the caveat above.
+# HTML: the browser revalidates; the edge serves fast and refreshes in the background.
+/
+  Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
+/p/*
+  Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
+/ui/*
+  Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
+/404.html
+  Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
+/sitemap.xml
+  Cache-Control: public, max-age=3600
+
+# Brand icons (packages/brand): stable URLs, not content-hashed, so a week rather than immutable.
 /favicon.ico
   Cache-Control: public, max-age=604800
 /favicon.svg

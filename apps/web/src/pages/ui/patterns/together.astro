@@ -1,0 +1,173 @@
+---
+import { Alert, Avatar, Badge, Button, Checkbox, Code, Field, Footer, Icon, Kbd, Prompt, RecoveryCodes, StatusLine, Wordmark } from "@meowerse/ui";
+import { Cat3D } from "@meowerse/ui/cat3d";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+import ThemeButton from "../../../components/ThemeButton.astro";
+import ToastDemo from "../../../ui-docs/demos/toast-provider";
+import ConfirmDialogDemo from "../../../ui-docs/demos/confirm-dialog";
+import ModalDemo from "../../../ui-docs/demos/modal";
+import DemoIsland from "../../../components/docs/DemoIsland.astro";
+
+const noop = () => {};
+const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "offline — check your connection"]] as const;
+---
+<DocsLayout title="tty and app, together" description="Every terminal-styled element next to the app components it appears with: twelve pairings, checked by screenshot tests.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>tty and app, together</h1>
+    <p class="lede">Terminal-styled and app-styled elements are one family (B10): the same tokens, the same 44 px height, the same line, radius, focus ring and disabled style. These specimens put each tty element next to the app components it sits with. They're here to be looked at; every control works on its own component page.</p>
+  </header>
+
+  <section class="pairing" data-pairing="1" aria-labelledby="pair-1">
+    <h2 id="pair-1">1. composer row</h2>
+    <div class="pairing__body chat">
+      <ol class="chat__log" aria-label="messages">
+        <li class="bubble">are we still on for tonight?<span class="bubble__meta">19:02</span></li>
+        <li class="bubble bubble--own"><span class="bubble__quote">are we still on for tonight?</span>yes — see you at 7<span class="bubble__meta">19:03 · read</span></li>
+        <li class="bubble">great, I'll bring the cat<span class="bubble__meta">19:04</span></li>
+      </ol>
+      <div class="composer-row">
+        <Button variant="ghost" aria-label="attach a file"><Icon name="plus" /></Button>
+        <Button variant="ghost" aria-label="add an emoji"><Icon name="mood-smile" /></Button>
+        <Prompt label="message" value="" onChange={noop} onSubmit={noop} />
+      </div>
+      <p class="mw-field__hint">Type a message to send. Enter sends, Shift+Enter adds a line, and nothing is sent while an input method is still composing.</p>
+      <DemoIsland><ToastDemo client:visible /></DemoIsland>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="2" aria-labelledby="pair-2">
+    <h2 id="pair-2">2. app header with a status line</h2>
+    <div class="pairing__body">
+      {headerStates.map(([state, text]) => (
+        <div class="mw-header">
+          <Wordmark name="meowsenger" />
+          <StatusLine state={state} children={text} />
+          <div class="mw-header__actions">
+            <Avatar name="alxnko" size="sm" />
+            <Button variant="ghost" aria-label="menu"><Icon name="dots" /></Button>
+            <ThemeButton />
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="3" aria-labelledby="pair-3">
+    <h2 id="pair-3">3. auth form under a prompt title</h2>
+    <div class="pairing__body specimen">
+      <h3 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>sign in</h3>
+      <Field label="username" defaultValue="alxnko" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+      <Field label="password" type="password" error="wrong password — try again or reset it" />
+      <Checkbox label="keep me signed in" />
+      <StatusLine state="wait" live>checking you're human…</StatusLine>
+      <div class="btn-row">
+        <Button variant="primary" disabled>sign in</Button>
+        <a class="mw-btn mw-btn--ghost mw-btn--md" href="/ui/patterns/forms/">forgot your password?</a>
+      </div>
+      <Alert variant="error">can't reach the account service — try again in a moment.</Alert>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="4" aria-labelledby="pair-4">
+    <h2 id="pair-4">4. field, prompt and button in one row</h2>
+    <div class="pairing__body">
+      <div class="together-row grid-overlay">
+        <Field label="name" defaultValue="alxnko" />
+        <Prompt label="message" value="hi" onChange={noop} onSubmit={noop} />
+        <Button>save</Button>
+      </div>
+      <p class="mw-muted">The 4 px grid shows they share one height, one 1 px border, one radius and one baseline.</p>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="5" aria-labelledby="pair-5">
+    <h2 id="pair-5">5. status vocabulary</h2>
+    <div class="pairing__body">
+      <StatusLine state="ok">online</StatusLine>
+      <StatusLine state="wait">connecting…</StatusLine>
+      <StatusLine state="fail">offline</StatusLine>
+      <StatusLine state="info">no public service to check</StatusLine>
+      <div class="btn-row"><Badge variant="verified" icon="rosette-discount-check">verified</Badge><Badge>neutral</Badge><Badge variant="danger">suspended</Badge></div>
+      <Alert variant="success">saved.</Alert>
+      <Alert variant="error">couldn't save — try again.</Alert>
+      <Alert>your codes were replaced.</Alert>
+      <p class="mw-muted">Toasts use the same words; see pairing 1. One colour, one glyph and one word per state.</p>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="6" aria-labelledby="pair-6">
+    <h2 id="pair-6">6. code and keys</h2>
+    <div class="pairing__body">
+      <p>Your invite code is <Code value="k3m9-X2p4-q8w1" copy />. Press <Kbd>Enter</Kbd> to send, or <Kbd>Shift</Kbd> + <Kbd>Enter</Kbd> for a new line.</p>
+      <RecoveryCodes codes={["Ab3D-x9Kq", "t4nW-8rD3", "H2vc-6Yp1", "m9Zs-4kT7"]} />
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="7" aria-labelledby="pair-7">
+    <h2 id="pair-7">7. landing hero</h2>
+    <div class="pairing__body together-hero">
+      <div class="specimen">
+        <Wordmark name="meowerse" />
+        <ul class="services">
+          <li><StatusLine state="ok">auth — up · 84 ms</StatusLine></li>
+          <li><StatusLine state="info">meowsenger — unknown · no answer in 5 s</StatusLine></li>
+        </ul>
+        <a class="mw-btn mw-btn--primary mw-btn--md" href="/">open the home page</a>
+      </div>
+      <Cat3D size={140} />
+      <Cat3D size={140} className="mw-cat3d--static" />
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="8" aria-labelledby="pair-8">
+    <h2 id="pair-8">8. dialogs next to a prompt</h2>
+    <div class="pairing__body">
+      <Prompt label="message" value="" onChange={noop} onSubmit={noop} />
+      <DemoIsland><ConfirmDialogDemo client:visible /></DemoIsland>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="9" aria-labelledby="pair-9">
+    <h2 id="pair-9">9. empty state</h2>
+    <div class="pairing__body together-split">
+      <ul class="together-list" aria-label="chats">
+        <li><Avatar name="alxnko" size="sm" decorative /> alxnko</li>
+        <li><Avatar name="Мяу" size="sm" decorative /> Мяу</li>
+      </ul>
+      <div class="empty">
+        <p class="empty__line"><span aria-hidden="true">› </span>no chats yet</p>
+        <Button variant="primary">start a chat</Button>
+      </div>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="10" aria-labelledby="pair-10">
+    <h2 id="pair-10">10. sheets over a header with a status line</h2>
+    <div class="pairing__body">
+      <div class="mw-header"><Wordmark name="meowsenger" /><StatusLine state="wait">reconnecting…</StatusLine></div>
+      <DemoIsland><ModalDemo client:visible /></DemoIsland>
+      <p class="mw-muted">Menus and drawers aren't in @meowerse/ui yet; they move in from meowsenger in sub-project 4 (audit D-5, D-6), and this pairing gains them then.</p>
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="11" aria-labelledby="pair-11">
+    <h2 id="pair-11">11. footer under a status line</h2>
+    <div class="pairing__body">
+      <StatusLine state="ok">all services up</StatusLine>
+      <Footer links={[{ label: "projects", href: "/#projects" }, { label: "ui docs", href: "/ui/" }]} legal="meowerse — a personal project by alxnko." />
+    </div>
+  </section>
+
+  <section class="pairing" data-pairing="12" aria-labelledby="pair-12">
+    <h2 id="pair-12">12. reduced motion and forced colours</h2>
+    <div class="pairing__body">
+      <p>Pairings 1 to 3 are also captured with reduced motion (the wordmark cursor holds still and waits stay [wait] lines) and in forced-colours mode (the focus ring stays visible). The screenshot tests in <code>apps/web/tests/e2e/screenshots.spec.ts</code> record both, at phone and desktop sizes.</p>
+    </div>
+  </section>
+
+  <script>
+    import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
+    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
+    else setTimeout(() => attachAllCat3D(), 200);
+  </script>
+</DocsLayout>

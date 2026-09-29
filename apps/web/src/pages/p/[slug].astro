@@ -1,0 +1,59 @@
+---
+import ExtLinkMark from "../../components/ExtLinkMark.astro";
+import { getCollection, type CollectionEntry } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import ProjectStatus from "../../components/ProjectStatus.astro";
+import Diagram from "../../components/Diagram.astro";
+import { isExternal, linkAttrs } from "../../lib/site";
+
+export async function getStaticPaths() {
+  const all = (await getCollection("projects")).sort((a, b) => a.data.order - b.data.order);
+  return all.map((entry, i) => ({ params: { slug: entry.id }, props: { entry, prev: all[i - 1], next: all[i + 1] } }));
+}
+interface Props { entry: CollectionEntry<"projects">; prev?: CollectionEntry<"projects">; next?: CollectionEntry<"projects"> }
+const { entry, prev, next } = Astro.props;
+const d = entry.data;
+---
+<BaseLayout title={d.name} description={d.summary}>
+  <article class="project" aria-labelledby="project-title">
+    <nav class="crumbs" aria-label="breadcrumb">
+      <a href="/#projects">projects</a><span aria-hidden="true">/</span><span aria-current="page">{d.name}</span>
+    </nav>
+    <header class="project__head">
+      <h1 id="project-title" class="prompt-title project__title"><span class="prompt-title__glyph" aria-hidden="true">› </span>{d.name}</h1>
+      <p class="lede">{d.summary}</p>
+      <ProjectStatus name={d.name} status={d.status} />
+      <div class="btn-row">
+        {d.links.map((l, i) => (
+          <a class={`mw-btn mw-btn--md ${i === 0 ? "mw-btn--primary" : "mw-btn--secondary"}`} href={l.href} {...linkAttrs(l.href)}>
+            {l.label}
+            {isExternal(l.href) && <ExtLinkMark />}
+          </a>
+        ))}
+      </div>
+    </header>
+    <section class="project__section" aria-labelledby="what-title">
+      <h2 id="what-title">what it is</h2>
+      <ul class="project__list">{d.what.map((t) => <li>{t}</li>)}</ul>
+    </section>
+    <section class="project__section" aria-labelledby="how-title">
+      <h2 id="how-title">how it works</h2>
+      <div class="project__how">
+        <ul class="project__list">{d.how.map((t) => <li>{t}</li>)}</ul>
+        <Diagram id={`dg-${entry.id}`} label={d.diagram.label} steps={d.diagram.steps} />
+      </div>
+    </section>
+    <section class="project__section" aria-labelledby="facts-title">
+      <h2 id="facts-title">at a glance</h2>
+      <dl class="facts">{d.facts.map((f) => <div class="facts__row"><dt>{f.k}</dt><dd>{f.v}</dd></div>)}</dl>
+    </section>
+    <nav class="project__pager" aria-label="other projects">
+      {prev ? <a class="mw-btn mw-btn--ghost mw-btn--md" href={`/p/${prev.id}/`}><span aria-hidden="true">← </span>{prev.data.name}</a> : <span />}
+      {next && <a class="mw-btn mw-btn--ghost mw-btn--md" href={`/p/${next.id}/`}>{next.data.name}<span aria-hidden="true"> →</span></a>}
+    </nav>
+  </article>
+  <script>
+    import { runProbes } from "../../lib/probe-runner";
+    void runProbes(document, { watch: true });
+  </script>
+</BaseLayout>

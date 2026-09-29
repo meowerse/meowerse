@@ -21,3 +21,5 @@ Disallow: /
 
 User-agent: Google-Extended
 Disallow: /
+
+Sitemap: https://meow.alxnko.dev/sitemap.xml

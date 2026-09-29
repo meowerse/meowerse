@@ -20,7 +20,9 @@ trap 'rm -rf "$TMP"' EXIT
 # Brand tokens (packages/ui/src/styles/tokens.css) — kept in sync by hand.
 GREEN="#00ff82"        # --mw-green / --text-accent (dark)
 GREEN_DARK="#0a7a42"   # --text-accent (light): 5.5:1 on white, 3.8:1 on black
-SURFACE="#0d0d0d"      # --surface-0 (dark)
+# The manifests' theme/background colour is the dark page background, read from the generated tokens so
+# it can't drift (apps/web/src/lib/public-files.test.ts checks the committed web manifest against it).
+SURFACE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["semantic"]["dark"]["bg"])' "$HERE/../ui/design/tokens.json")"
 EPS=0.5                # RDP tolerance; 0.5 traces the mask pixel-perfectly
 
 mkdir -p "$OUT"
@@ -51,12 +53,20 @@ python3 "$HERE/scripts/generate_favicons.py" "$SRC" "$OUT"
 # 3. Distribute ---------------------------------------------------------------
 # site.webmanifest is per-app (each needs its own name), so it is written by the
 # loop below rather than living in icons/.
-emit_manifest() { # emit_manifest <dir> <name> <short_name>
+emit_manifest() { # emit_manifest <dir> <name> <short_name> [description]
+  local extra=""
+  if [ -n "${4:-}" ]; then # a site (not only an app shell) also gets id/start_url/display/description (W-08)
+    extra="  \"id\": \"/\",
+  \"start_url\": \"/\",
+  \"display\": \"standalone\",
+  \"description\": \"$4\",
+"
+  fi
   cat > "$1/site.webmanifest" <<JSON
 {
   "name": "$2",
   "short_name": "$3",
-  "icons": [
+${extra}  "icons": [
     { "src": "/icon-192.webp", "sizes": "192x192", "type": "image/webp" },
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icon-512.webp", "sizes": "512x512", "type": "image/webp" },
@@ -70,7 +80,7 @@ emit_manifest() { # emit_manifest <dir> <name> <short_name>
 JSON
 }
 
-distribute() { # distribute <app> <name> <short_name>
+distribute() { # distribute <app> <name> <short_name> [description]
   local dir="$ROOT/apps/$1/public"
   [ -d "$dir" ] || { echo "!! missing $dir" >&2; return 1; }
   cp "$OUT/favicon.svg" "$OUT/favicon.ico" "$OUT/favicon.webp" "$OUT/favicon.png" \
@@ -80,12 +90,13 @@ distribute() { # distribute <app> <name> <short_name>
      "$OUT/icon-192.png" "$OUT/icon-192.webp" \
      "$OUT/icon-512.png" "$OUT/icon-512.webp" \
      "$OUT/icon-maskable-512.png" "$OUT/icon-maskable-512.webp" "$dir/"
-  emit_manifest "$dir" "$2" "$3"
+  emit_manifest "$dir" "$2" "$3" "${4:-}"
   echo "  -> apps/$1/public"
 }
 
 echo "distributing:"
-distribute web             "meowerse"        "meowerse"
+# the web description is SITE.description (apps/web/src/lib/site.ts); public-files.test.ts keeps them equal
+distribute web             "meowerse"        "meowerse"   "Small, fast web apps by alxnko: one account, a messenger, and the design system they share."
 distribute auth-web        "meowerse auth"   "auth"
 distribute meowsenger-web  "meowsenger"      "meowsenger"
 

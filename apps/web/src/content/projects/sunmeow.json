@@ -1,0 +1,35 @@
+{
+  "name": "sunmeow",
+  "order": 5,
+  "service": false,
+  "summary": "The host side: it streams a computer's desktop to moonmeow.",
+  "what": [
+    "Sunmeow runs on your computer, captures its desktop and streams it to moonmeow on your phone.",
+    "It is meant for real coding and office work from a phone, not for game sessions.",
+    "It is a fork of Sunshine: nearly all of its code is Sunshine's, and it stays under the GPL-3.0."
+  ],
+  "how": [
+    "It captures the screen, encodes it as video on the GPU and streams it to the client; input from the client is replayed on the desktop.",
+    "It follows upstream Sunshine rather than Apollo, so it keeps upstream's Linux capture and encoding fixes.",
+    "Its main target is a Linux desktop."
+  ],
+  "diagram": {
+    "label": "Host loop: sunmeow captures the desktop, encodes it on the GPU, streams it to moonmeow, and replays the input it gets back.",
+    "steps": [
+      { "title": "your desktop", "note": "linux" },
+      { "title": "capture", "note": "the screen, frame by frame" },
+      { "title": "gpu encode", "note": "video" },
+      { "title": "moonmeow", "note": "decodes, sends input back" }
+    ]
+  },
+  "facts": [
+    { "k": "role", "v": "streaming host for moonmeow" },
+    { "k": "fork of", "v": "LizardByte/Sunshine" },
+    { "k": "target", "v": "Linux desktops" },
+    { "k": "license", "v": "GPL-3.0" }
+  ],
+  "status": { "kind": "static", "state": "info", "text": "runs on your own devices: there's no public service to check" },
+  "links": [
+    { "label": "source", "href": "https://github.com/meowerse/sunmeow" }
+  ]
+}

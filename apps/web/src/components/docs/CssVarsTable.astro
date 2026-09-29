@@ -1,0 +1,23 @@
+---
+import type { CssApi } from "../../lib/css-api";
+interface Props { name: string; api: CssApi }
+const { name, api } = Astro.props;
+---
+{api.vars.length === 0 ? <p>Its rules use no custom properties.</p> : (
+  <div class="table-wrap" tabindex="0" role="region" aria-label={`${name} css custom properties`}>
+    <table class="table">
+      <thead><tr><th scope="col">variable</th><th scope="col">dark</th><th scope="col">light</th></tr></thead>
+      <tbody>
+        {api.vars.map((v) => (
+          <tr>
+            <td><code>{v.name}</code></td>
+            <td>{v.dark ? <code>{v.dark}</code> : v.alias ? <><code>{v.alias}</code><span class="mw-muted"> (legacy alias)</span></> : "—"}</td>
+            <td>{v.light ? <code>{v.light}</code> : v.dark ? <span class="mw-muted">same</span> : "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+)}
+<p class="mw-muted">Classes: {api.classes.map((c, i) => <><code>{`.${c}`}</code>{i < api.classes.length - 1 ? ", " : ""}</>)}. Set any of these variables on an ancestor (or wrap a subtree in <code>.mw-theme--dark</code> / <code>.mw-theme--light</code>) to restyle just that part of a page.</p>
+{api.declared.length > 0 && <p class="mw-muted">It declares: {api.declared.map((d) => <code>{d} </code>)}</p>}

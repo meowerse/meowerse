@@ -1,0 +1,39 @@
+---
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+const rules = [
+  "Lowercase, calm and short. Interface copy (labels, buttons, headings, status lines) is written in lowercase in the source, never with text-transform.",
+  "What people type is shown exactly as typed: names, messages, codes, email addresses.",
+  "Long-form prose, like these rules, keeps normal sentence case.",
+  "Errors say what happened and what to do next, in plain words; never a code alone.",
+  "A control that waits for something says why it waits, and is never enabled only to refuse.",
+  "The terminal flavour lives in small details: the › prompt, the block cursor on the wordmark, [ ok ] and [fail] status lines. At most one per region of a view.",
+  "Status always has a glyph and a word; colour alone never carries meaning.",
+];
+const examples = [
+  ["wrong password — try again or reset it", "Error 401"],
+  ["checking you're human… (the button stays disabled until done)", "an enabled button that answers \"verification not finished\""],
+  ["can't reach the server. check your connection and try again.", "Network error"],
+  ["[ ok ] online", "a green dot on its own"],
+  ["delete chat", "Delete Chat, DELETE CHAT"],
+  ["type Cats & Co to confirm (the phrase exactly as the owner wrote it)", "a lowercased phrase that can never match"],
+];
+---
+<DocsLayout title="voice and microcopy" description="How meowerse interfaces talk: lowercase, calm, short, and plain about errors.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>voice and microcopy</h1>
+    <p class="lede">Same voice as alxnko.dev: a terminal's calm, an app's clarity.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="rules-title">
+    <h2 id="rules-title">rules</h2>
+    <ul class="docs-list">{rules.map((r) => <li>{r}</li>)}</ul>
+  </section>
+  <section class="docs-section" aria-labelledby="ex-title">
+    <h2 id="ex-title">examples</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="microcopy examples">
+      <table class="table">
+        <thead><tr><th scope="col">write</th><th scope="col">not</th></tr></thead>
+        <tbody>{examples.map(([good, bad]) => <tr><td>{good}</td><td>{bad}</td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+</DocsLayout>

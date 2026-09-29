@@ -5,9 +5,14 @@ type ToastItem = { id: number; message: string; variant: "success" | "error" | "
 type ToastInput = { message: string; variant?: ToastItem["variant"]; duration?: number };
 
 const Ctx = createContext<(t: ToastInput) => void>(() => {});
+/** returns a function that shows one toast; call it inside a ToastProvider. */
 export function useToast() { return useContext(Ctx); }
 
-export function ToastProvider({ children }: { children: ReactNode }) {
+/** short notices that appear at the bottom of the screen and go away on their own; useToast() shows one. */
+export function ToastProvider({ children }: {
+  /** the app rendered under the provider; toasts render alongside it. */
+  children: ReactNode;
+}) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const seq = useRef(0);
   const push = useCallback((t: ToastInput) => {

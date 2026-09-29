@@ -1,0 +1,281 @@
+/* meow.alxnko.dev: the site's one stylesheet. BaseLayout imports it once and Astro inlines it on every
+   page (one CSP hash, no render-blocking request). Tokens only: no colour literals, radii 2/4/8, the
+   spacing and type scales (src/lib/site-css.test.ts). Each task appends its own "---- name ----" section. */
+@import "@meowerse/ui/tokens.css";
+
+/* ---- shell ---- */
+html { scroll-padding-top: calc(var(--control-height) + var(--sp-5)); }
+body { min-height: 100dvh; display: flex; flex-direction: column; }
+.site-main { flex: 1; display: block; width: 100%; max-width: 72rem; margin-inline: auto; padding: var(--sp-6) clamp(var(--sp-4), 5vw, var(--sp-6)) var(--sp-7); }
+.site-main:focus { outline: none; }
+.skip { position: absolute; left: var(--sp-2); top: calc(-1 * var(--sp-8)); z-index: var(--z-skip); display: inline-flex; align-items: center; min-height: var(--control-height); padding: 0 var(--sp-3); background: var(--c-surface-raised); color: var(--c-fg); border: 1px solid var(--c-line-strong); border-radius: var(--r-m); }
+.skip:focus { top: var(--sp-2); text-decoration: none; }
+.site-nav { display: flex; align-items: center; gap: var(--sp-1); }
+.site-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); border-radius: var(--r-m); color: var(--c-fg-muted); font-size: var(--fs-2); white-space: nowrap; }
+.site-nav a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.site-nav a[aria-current="page"] { color: var(--c-fg); box-shadow: inset 0 -2px 0 var(--c-accent); }
+/* The theme button is [hidden] until its script binds it (it does nothing without JS); it keeps its
+   44 px slot meanwhile so revealing it never shifts the nav. visibility still keeps it out of focus
+   and the accessibility tree, like [hidden] would. */
+.mw-themetoggle[data-theme-button][hidden] { display: inline-flex !important; visibility: hidden; }
+.theme-button__sun, .theme-button__moon { display: inline-flex; }
+.theme-button__moon { display: none; }
+:root[data-theme="light"] .theme-button__sun { display: none; }
+:root[data-theme="light"] .theme-button__moon { display: inline-flex; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .theme-button__sun { display: none; }
+  :root:not([data-theme="dark"]) .theme-button__moon { display: inline-flex; }
+}
+.site-footer .mw-footer__legal { max-width: 60ch; }
+
+/* ---- shared text and actions ---- */
+.lede { font-size: var(--fs-4); color: var(--c-fg-muted); max-width: 60ch; }
+.prompt-title { font-size: var(--fs-5); }
+.prompt-title__glyph { color: var(--c-fg-subtle); font-weight: 400; }
+.ext-mark { color: var(--c-fg-subtle); }
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+a.mw-btn:hover { text-decoration: none; }
+
+/* ---- 404 ---- */
+.notfound { display: grid; gap: var(--sp-4); justify-items: start; padding-block: var(--sp-7); }
+.notfound__code { font-size: var(--fs-7); font-weight: 700; line-height: 1; color: var(--c-accent); }
+
+/* ---- projects ---- */
+.crumbs { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2); color: var(--c-fg-subtle); }
+.crumbs a { display: inline-flex; align-items: center; min-height: var(--control-height); color: var(--c-fg-muted); }
+.project { display: grid; gap: var(--sp-6); max-width: 60rem; }
+.project__head { display: grid; gap: var(--sp-4); justify-items: start; }
+.project__title { font-size: var(--fs-6); }
+.project__section { display: grid; gap: var(--sp-3); }
+.project__section h2 { font-size: var(--fs-5); }
+.project__list { display: grid; gap: var(--sp-2); max-width: 70ch; margin: 0; padding-left: var(--sp-5); }
+.project__how { display: grid; gap: var(--sp-5); align-items: start; }
+@media (min-width: 960px) { .project__how { grid-template-columns: minmax(0, 1fr) 22rem; } }
+.facts { display: grid; margin: 0; max-width: 48rem; border-top: 1px solid var(--c-line); }
+.facts__row { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: var(--sp-3); padding: var(--sp-2) 0; border-bottom: 1px solid var(--c-line); }
+.facts dt { font-size: var(--fs-2); color: var(--c-fg-subtle); }
+.facts dd { margin: 0; }
+.project__pager { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
+.probe { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); min-height: var(--control-height); }
+/* B26: a row with its own retry keeps the button's line reserved (a grid track stays when the button is
+   [hidden] before JS), and the button never shares the status line, whose length changes with the result. */
+.probe--retry { display: grid; grid-template-rows: auto var(--control-height); justify-items: start; }
+/* C7 (T3b ruling): the ↗ glyph inherits its button's text colour wherever .ext-mark sits inside .mw-btn
+   — a subtle colour on a filled primary button fails AA, and a link's own colour already carries it. */
+.mw-btn .ext-mark { color: inherit; }
+.diagram { display: grid; gap: var(--sp-2); width: 100%; max-width: 22rem; margin: 0; }
+.diagram__svg { display: block; width: 100%; height: auto; font-family: var(--font-mono); }
+.diagram__caption { font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.dg-box { fill: var(--c-bg-elev); stroke: var(--c-line-input); stroke-width: 1; }
+.dg-title { fill: var(--c-fg); font-size: var(--fs-3); font-weight: 700; }
+.dg-note { fill: var(--c-fg-muted); font-size: var(--fs-1); }
+.dg-arrow { fill: none; stroke: var(--c-fg-subtle); stroke-width: 1.5; }
+
+/* ---- home ---- */
+.hero { display: grid; gap: var(--sp-5); align-items: center; padding-block: var(--sp-5) var(--sp-7); }
+@media (min-width: 760px) { .hero { grid-template-columns: minmax(0, 1fr) auto; } }
+.hero__text { display: grid; gap: var(--sp-4); justify-items: start; }
+.hero__title { margin: 0; line-height: 1; }
+.hero__title .mw-wordmark { font-size: var(--fs-7); }
+.hero__cat { justify-self: center; }
+.block { display: grid; gap: var(--sp-4); padding-block: var(--sp-6); border-top: 1px solid var(--c-line); }
+.services { display: grid; margin: 0; padding: 0; list-style: none; }
+.services li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); padding-block: var(--sp-1); border-bottom: 1px solid var(--c-line); }
+.services .probe { flex: 1 1 18rem; }
+.row-links { display: flex; gap: var(--sp-1); }
+.row-links a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); border-radius: var(--r-m); color: var(--c-fg-muted); font-size: var(--fs-2); }
+.row-links a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.cards { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); margin: 0; padding: 0; list-style: none; }
+.card-link { display: grid; gap: var(--sp-2); height: 100%; padding: var(--sp-4); background: var(--c-bg-elev); border: 1px solid var(--c-line); border-radius: var(--r-l); color: var(--c-fg); transition: border-color var(--d-fast) var(--ease); }
+.card-link:hover { border-color: var(--c-line-input); text-decoration: none; }
+.card-link__name { font-weight: 700; }
+.card-link__sum { font-size: var(--fs-2); color: var(--c-fg-muted); }
+
+/* ---- docs ---- */
+.docs { display: grid; gap: var(--sp-5); }
+.docs__jump { display: inline-flex; align-items: center; justify-self: start; min-height: var(--control-height); color: var(--c-fg-muted); font-size: var(--fs-2); }
+.docs__content { display: grid; gap: var(--sp-6); align-content: start; min-width: 0; }
+.docs__nav { display: grid; gap: var(--sp-4); align-content: start; padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
+.docs__group-label { margin-bottom: var(--sp-1); font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.docs__nav ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.docs__nav a { display: flex; align-items: center; min-height: var(--control-height); padding: 0 var(--sp-3); border-left: 2px solid transparent; color: var(--c-fg-muted); font-size: var(--fs-2); }
+.docs__nav a:hover { color: var(--c-fg); background: var(--c-surface); text-decoration: none; }
+.docs__nav a[aria-current="page"] { color: var(--c-fg); border-left-color: var(--c-accent); }
+@media (min-width: 960px) {
+  .docs { grid-template-columns: 15rem minmax(0, 1fr); grid-template-areas: "nav content"; }
+  .docs__jump { display: none; }
+  .docs__content { grid-area: content; }
+  .docs__nav { grid-area: nav; position: sticky; top: calc(var(--control-height) + var(--sp-4)); max-height: calc(100dvh - var(--control-height) - var(--sp-6)); overflow-y: auto; padding-top: 0; border-top: 0; }
+}
+.docs-head { display: grid; gap: var(--sp-3); }
+.docs-section { display: grid; gap: var(--sp-3); min-width: 0; }
+.docs-section > h2 { font-size: var(--fs-5); }
+.docs-section h3 { font-size: var(--fs-4); }
+.docs-list { display: grid; gap: var(--sp-1); max-width: 70ch; margin: 0; padding-left: var(--sp-5); }
+/* C4: the /ui/ index links its groups' pages from .docs-list <li> — not inline prose, so the 44px
+   target rule applies. Scoped to <a> only: .docs-list also lists plain (non-link) rows elsewhere
+   (colours' brand/ansi swatches, voice's rules), which stay their natural text height. */
+.docs-list a { display: flex; align-items: center; min-height: var(--control-height); }
+.table-wrap { max-width: 100%; overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
+.table th, .table td { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--c-line); text-align: left; vertical-align: top; }
+.table th { color: var(--c-fg-muted); font-weight: 700; white-space: nowrap; }
+.table td code { white-space: nowrap; }
+.swatch { width: var(--sp-6); height: var(--sp-6); margin-right: var(--sp-2); vertical-align: middle; }
+.swatch__rect { stroke: var(--c-line-strong); stroke-width: 1; }
+.codeblock { min-width: 0; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+.codeblock__bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding-left: var(--sp-3); border-bottom: 1px solid var(--c-line); min-height: var(--control-height); } /* the copy button's row stays reserved while it's [hidden] before JS */
+.codeblock__lang { font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.codeblock__copy { min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-3); background: none; border: 0; border-radius: var(--r-m); color: var(--c-fg-muted); font: inherit; font-size: var(--fs-2); cursor: pointer; }
+.codeblock__copy:hover { color: var(--c-fg); background: var(--c-bg-elev); }
+.codeblock pre { margin: 0; border: 0; border-radius: 0; }
+.fs-1 { font-size: var(--fs-1); }
+.fs-2 { font-size: var(--fs-2); }
+.fs-3 { font-size: var(--fs-3); }
+.fs-4 { font-size: var(--fs-4); }
+.fs-5 { font-size: var(--fs-5); }
+.fs-6 { font-size: var(--fs-6); }
+.fs-7 { font-size: var(--fs-7); }
+.bold { font-weight: 700; }
+.sp-bar { display: block; height: var(--sp-3); background: var(--c-fg-subtle); }
+.sp-1 { width: var(--sp-1); }
+.sp-2 { width: var(--sp-2); }
+.sp-3 { width: var(--sp-3); }
+.sp-4 { width: var(--sp-4); }
+.sp-5 { width: var(--sp-5); }
+.sp-6 { width: var(--sp-6); }
+.sp-7 { width: var(--sp-7); }
+.sp-8 { width: var(--sp-8); }
+.r-box { width: var(--sp-8); height: var(--sp-8); background: var(--c-surface); border: 1px solid var(--c-line-input); }
+.r-s { border-radius: var(--r-s); }
+.r-m { border-radius: var(--r-m); }
+.r-l { border-radius: var(--r-l); }
+.demo-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+.demo-row > * { flex: 1 1 12rem; }
+.motion-demo { display: grid; gap: var(--sp-2); }
+.motion-demo__track { position: relative; height: var(--sp-6); border-bottom: 1px solid var(--c-line); }
+.motion-demo__dot { position: absolute; left: 0; top: var(--sp-2); width: var(--sp-4); height: var(--sp-4); border-radius: var(--r-s); background: var(--c-fg-muted); }
+.motion-demo__dot.d-fast { transition: transform var(--d-fast) var(--ease); }
+.motion-demo__dot.d-base { transition: transform var(--d-base) var(--ease); }
+.motion-demo__dot.d-slow { transition: transform var(--d-slow) var(--ease); }
+.motion-demo.is-playing .motion-demo__dot { transform: translateX(min(16rem, 60vw)); }
+.motion-note { display: none; }
+@media (prefers-reduced-motion: reduce) { .motion-note { display: block; } }
+
+/* ---- component pages ---- */
+.previews { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); }
+.preview { display: grid; gap: var(--sp-2); min-width: 0; margin: 0; }
+.preview--wide { grid-column: 1 / -1; }
+.preview__stage { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-width: 0; min-height: var(--sp-8); padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.preview__stage > * { max-width: 100%; }
+/* A stage can be narrower than the header/footer's natural width (a gallery column, say), so the
+   header/footer take the stage's full width (review9) instead of sitting inline at their own
+   content width. (The row-wrapping this comment used to describe — .mw-header__actions and
+   .mw-header__nav wrapping onto a second line — turned out to be dead weight once checked against
+   the T11 fix: AppHeader's own <640px breakpoint already collapses .mw-header__nav behind the
+   burger button, and its .mw-header__actions is two fixed-size 44px controls (ThemeToggle, the
+   burger) that were never the ones overflowing — verified with no overflow at 390/1024/1440 with
+   those two rules removed, across every /ui/components/app-header/ and /ui/gallery/ preview.) */
+.preview__stage .mw-header { position: static; flex: 1 1 100%; }
+.preview__stage .mw-footer { flex: 1 1 100%; margin-top: 0; }
+.preview__title { font-size: var(--fs-2); color: var(--c-fg-muted); }
+.dodont { display: grid; gap: var(--sp-4); }
+@media (min-width: 760px) { .dodont { grid-template-columns: 1fr 1fr; } }
+.dd-tag { font-weight: 700; white-space: pre; }
+.dd-tag--do { color: var(--c-ok); }
+.dd-tag--dont { color: var(--c-danger); }
+.icon-grid { display: grid; gap: var(--sp-2); grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); width: 100%; margin: 0; padding: 0; list-style: none; }
+.icon-grid li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2); }
+
+/* ---- demos and gallery ---- */
+.demo { display: grid; gap: var(--sp-3); justify-items: start; }
+.demo__out { font-size: var(--fs-2); color: var(--c-fg-muted); }
+.demo__frame { position: relative; width: 100%; border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.demo__frame .mw-header { position: static; }
+.demo-stage { padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+/* B9: a demo island's live stage is inert until hydrated; its wait (or failure) line floats over the
+   still preview's top-right corner, out of flow, so showing and removing it never shifts the page. */
+.demo-island { position: relative; }
+.demo-island__wait { position: absolute; inset-block-start: 0; inset-inline-end: 0; max-width: 100%; padding: var(--sp-1) var(--sp-2); background: var(--c-bg-elev); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+/* a failure (10 s later, rare) drops into the flow: its longer message and reload button must never cover the page below */
+.demo-island__wait:has(> .mw-status--fail) { position: static; margin-top: var(--sp-2); }
+.demo-source summary { display: flex; align-items: center; min-height: var(--control-height); cursor: pointer; color: var(--c-fg-muted); font-size: var(--fs-2); }
+.demo-modal { display: grid; gap: var(--sp-3); }
+.demo-modal__row { display: flex; align-items: flex-end; gap: var(--sp-2); }
+.demo-modal__row .mw-field { flex: 1; }
+.demo-modal__clear { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-height); height: var(--control-height); padding: 0; background: none; border: 1px solid var(--c-line); border-radius: var(--r-m); color: var(--c-fg-muted); cursor: pointer; }
+.demo-modal__more { padding-left: var(--sp-2); }
+.is-invisible { visibility: hidden; }
+.is-collapsed { display: none; }
+.chat { width: 100%; max-width: 36rem; justify-items: stretch; }
+.chat__log { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
+.bubble { align-self: flex-start; max-width: min(62ch, 85%); padding: var(--sp-2) var(--sp-3); background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-l) var(--r-l) var(--r-l) var(--r-s); overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble--own { align-self: flex-end; background: var(--c-bg-elev); border-color: var(--c-line-strong); border-radius: var(--r-l) var(--r-l) var(--r-s) var(--r-l); }
+.bubble__meta { display: block; margin-top: var(--sp-1); font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.bubble__quote { display: block; margin-bottom: var(--sp-1); padding-left: var(--sp-2); border-left: 2px solid var(--c-line-input); font-size: var(--fs-2); color: var(--c-fg-muted); }
+/* min-width (not just min-height) so short names ("Kbd", "Code") still clear the 44px target */
+.gallery-item h2 a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); padding: 0 var(--sp-2); margin: 0 calc(var(--sp-2) * -1); border-radius: var(--r-m); color: var(--c-fg); }
+.gallery-item h2 a:hover { background: var(--c-surface); text-decoration: none; }
+.gallery-pair { display: grid; gap: var(--sp-3); }
+/* review9: a wide preview (AppHeader) doesn't fit a half-width column at any desktop width — its
+   nav overflowed the panel and rendered over the neighbour, at ~1.1-2.1:1 contrast. --stack keeps
+   the pair in one column (dark above light) at every width, giving it the full section width. */
+@media (min-width: 960px) { .gallery-pair:not(.gallery-pair--stack) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.gallery-theme { display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.gallery-theme__label { font-size: var(--fs-1); color: var(--c-fg-subtle); }
+.gallery-theme .previews { grid-template-columns: 1fr; }
+/* axe link-in-text-block: an inline link needs a non-color cue, not just the accent hue */
+.gallery-item p a { text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---- playground ---- */
+.pg { display: grid; gap: var(--sp-5); }
+@media (min-width: 1100px) { .pg { grid-template-columns: 20rem minmax(0, 1fr); align-items: start; } }
+.pg__controls { display: grid; gap: var(--sp-4); }
+.pg__group { display: grid; gap: var(--sp-3); margin: 0; padding: var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+.pg__group > legend { padding: 0 var(--sp-1); font-size: var(--fs-2); color: var(--c-fg-muted); }
+.pg-select { display: grid; gap: var(--sp-1); font-size: var(--fs-2); color: var(--c-fg-muted); }
+.pg-select select { min-height: var(--control-height); padding: 0 var(--sp-3); font: inherit; font-size: var(--fs-4); color: var(--c-fg); background: var(--c-bg-elev); border: 1px solid var(--c-line-input); border-radius: var(--r-m); }
+.pg__out { display: grid; gap: var(--sp-3); min-width: 0; }
+.pg__stage { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); min-height: calc(var(--sp-8) * 2); padding: var(--sp-5); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.pg__stage .mw-header { position: static; }
+.pg__code { max-height: 24rem; overflow: auto; }
+.pg-fallback { padding: var(--sp-5); border: 1px dashed var(--c-line-input); border-radius: var(--r-l); }
+/* client:only ships no server-rendered markup, only this fallback, so hydration always replaces a
+   small box with the full control panel — a layout shift into whatever sits below it (the docs nav,
+   in the single-column mobile layout). The reservation doesn't need to match the panel's real height
+   (which varies per component and would need re-measuring whenever one is added or changed): CLS only
+   counts an element that was visible in the viewport before or after it moved, so it's enough to push
+   everything after the island below the fold for the swap — one viewport height covers that on any
+   device, without guessing at a fixed pixel number. */
+.pg-shell { min-height: 100svh; }
+
+/* ---- patterns ---- */
+.specimen { display: grid; gap: var(--sp-3); justify-items: start; max-width: 36rem; padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+.specimen > .mw-field, .specimen > .mw-alert, .specimen > .mw-status { justify-self: stretch; }
+.pairing { display: grid; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--c-line); }
+.pairing > h2 { font-size: var(--fs-4); }
+.pairing__body { display: grid; gap: var(--sp-3); min-width: 0; padding: var(--sp-4); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-l); }
+/* A narrow pairing panel (phone width) can be narrower than the header's natural row width — wrap
+   onto a second line rather than overflow the panel (review9's .preview__stage .mw-header). Every
+   child here (Avatar, the ghost menu button, ThemeButton) is a fixed, non-shrinking size on its own
+   (T11 review: @meowerse/ui's .mw-btn itself now never shrinks either), so wrapping is the only
+   thing left to do when they don't all fit one row — nothing here compensates for shrinking. */
+.pairing .mw-header { position: static; flex-wrap: wrap; row-gap: var(--sp-2); border: 1px solid var(--c-line); border-radius: var(--r-m); }
+.pairing .mw-header__actions { flex-wrap: wrap; row-gap: var(--sp-2); justify-content: flex-end; }
+.together-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+.together-row > .mw-field, .together-row > .mw-prompt { flex: 1 1 14rem; }
+.grid-overlay { background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) calc(var(--sp-1) - 1px), color-mix(in srgb, var(--c-accent) 22%, transparent) var(--sp-1)); }
+/* The icon-only ghost buttons no longer need a local `flex: none` (T11 review: @meowerse/ui's
+   .mw-btn has it now, for every button); wrapping is still this row's own job when the buttons'
+   fixed size plus the prompt don't fit one line at phone width. */
+.composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-1); }
+.composer-row .mw-prompt { flex: 1 1 14rem; }
+.together-split { display: grid; gap: var(--sp-4); }
+@media (min-width: 760px) { .together-split { grid-template-columns: 14rem minmax(0, 1fr); } }
+.together-list { display: grid; align-content: start; margin: 0; padding: 0; list-style: none; border-right: 1px solid var(--c-line); }
+.together-list li { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--control-height); padding: 0 var(--sp-2); }
+.empty { display: grid; gap: var(--sp-3); justify-items: start; align-content: center; min-height: calc(var(--sp-8) * 2); }
+.empty__line { color: var(--c-fg-muted); }
+.together-hero { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-5); }
+.together-hero .services { min-width: 16rem; }
+.rules-table td:first-child { font-weight: 700; white-space: nowrap; }

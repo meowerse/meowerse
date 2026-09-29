@@ -1,0 +1,51 @@
+---
+import tokens from "@meowerse/ui/tokens.json";
+import { Button, Field, Prompt } from "@meowerse/ui";
+import DocsLayout from "../../../layouts/DocsLayout.astro";
+const noop = () => {};
+---
+<DocsLayout title="space, radii, layers" description="Spacing, radii, stacking layers and control geometry of @meowerse/ui.">
+  <header class="docs-head">
+    <h1 class="prompt-title"><span class="prompt-title__glyph" aria-hidden="true">› </span>space, radii, layers</h1>
+    <p class="lede">A 4 px spacing scale, three radii, 1 px lines, and one control height, 44 px, so every target is easy to hit and terminal-style controls line up with app controls.</p>
+  </header>
+  <section class="docs-section" aria-labelledby="space-title">
+    <h2 id="space-title">spacing</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="spacing scale">
+      <table class="table">
+        <thead><tr><th scope="col">token</th><th scope="col">value</th><th scope="col">sample</th></tr></thead>
+        <tbody>{tokens.space.slice(1).map((v, i) => <tr><td><code>{`--sp-${i + 1}`}</code></td><td>{v}px</td><td><span class={`sp-bar sp-${i + 1}`} /></td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="radius-title">
+    <h2 id="radius-title">radii</h2>
+    <div class="demo-row">
+      {Object.entries(tokens.radius).map(([k, v]) => <div><div class={`r-box r-${k}`} /><p><code>{`--r-${k}`}</code> {v}px</p></div>)}
+    </div>
+    <p>2 px for chips and code, 4 px for controls, 8 px for cards and sheets. Avatars are rounded squares, not circles.</p>
+  </section>
+  <section class="docs-section" aria-labelledby="control-title">
+    <h2 id="control-title">controls</h2>
+    <p>A field, a prompt and a button share one height (<code>--control-height</code>, {tokens.control.height} px), one 1 px input border, one radius and one focus ring (B10). Disabled controls use <code>--disabled-opacity</code> ({tokens.control.disabledOpacity}) and always say why.</p>
+    <div class="demo-row">
+      <Field label="name" defaultValue="alxnko" />
+      <Prompt label="message" value="" onChange={noop} onSubmit={noop} />
+      <Button variant="secondary">save</Button>
+      <Button variant="secondary" disabled>disabled</Button>
+    </div>
+  </section>
+  <section class="docs-section" aria-labelledby="z-title">
+    <h2 id="z-title">layers</h2>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="stacking layers">
+      <table class="table">
+        <thead><tr><th scope="col">token</th><th scope="col">value</th><th scope="col">used by</th></tr></thead>
+        <tbody>
+          {Object.entries(tokens.z).map(([k, v]) => (
+            <tr><td><code>{`--z-${k}`}</code></td><td>{v}</td><td>{({ stage: "page content", chrome: "sticky header", dock: "menus and drawers", sheet: "modals", toast: "toasts, above sheets", skip: "the skip link, above everything" } as Record<string, string>)[k]}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</DocsLayout>

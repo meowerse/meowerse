@@ -23,6 +23,19 @@ describe("ConfirmDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "unlink" }));
     expect(onConfirm).toHaveBeenCalledWith({ password: "hunter2hunter2" });
   });
+  it("require-password shows a visible reason while the field is empty, wired to its aria-describedby (B9)", async () => {
+    render(<ConfirmDialog open onCancel={() => {}} onConfirm={() => {}}
+      title="unlink" description="d" confirmLabel="unlink" requirePassword />);
+    const btn = screen.getByRole("button", { name: "unlink" });
+    const input = screen.getByLabelText("your password");
+    expect(btn).toBeDisabled();
+    expect(screen.getByText("enter your password to confirm")).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription("enter your password to confirm");
+    await userEvent.type(input, "hunter2hunter2");
+    expect(btn).toBeEnabled();
+    expect(screen.queryByText("enter your password to confirm")).not.toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription("");
+  });
   it("resets the typed phrase when closed, so it reopens disarmed", async () => {
     const onConfirm = vi.fn();
     const { rerender } = render(<ConfirmDialog open onCancel={() => {}} onConfirm={onConfirm}

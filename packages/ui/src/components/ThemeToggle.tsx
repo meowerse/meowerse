@@ -3,7 +3,11 @@ import { resolvedTheme, toggleTheme } from "../lib/theme";
 import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
 
-export function ThemeToggle({ className }: { className?: string }) {
+/** a 44 px button that switches between the dark and light themes and remembers the choice. */
+export function ThemeToggle({ className }: {
+  /** extra class names to append. */
+  className?: string;
+}) {
   // Start with dark (the server default and most common case). The effect corrects this
   // after mount if the client prefers light, avoiding hydration mismatches.
   const [dark, setDark] = useState(true);

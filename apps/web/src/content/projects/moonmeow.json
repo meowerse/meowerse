@@ -1,0 +1,36 @@
+{
+  "name": "moonmeow",
+  "order": 4,
+  "service": false,
+  "summary": "An Android app for using your computer's desktop from your phone.",
+  "what": [
+    "Moonmeow shows your computer's screen on your phone and sends your touches, typing and mouse back, so you can write code, read logs or drive a terminal away from your desk.",
+    "It is tuned for desktop and office work rather than games: text input, pointer precision, keyboard shortcuts that get past Android, and resolutions that match a phone screen.",
+    "It works with sunmeow, and also with Sunshine and Apollo hosts.",
+    "There are no prebuilt releases yet: it is built from source."
+  ],
+  "how": [
+    "It is a fork of Artemis, which is itself a fork of Moonlight, so it speaks the Moonlight streaming protocol.",
+    "The host encodes the desktop as video; moonmeow decodes it on the phone and sends input events back.",
+    "It runs on Android 8.0 or newer and is licensed under the GPL-3.0."
+  ],
+  "diagram": {
+    "label": "Streaming loop: the host captures and encodes the desktop, moonmeow decodes it on the phone, and your input goes back.",
+    "steps": [
+      { "title": "host (sunmeow)", "note": "captures + encodes" },
+      { "title": "video stream", "note": "moonlight protocol" },
+      { "title": "moonmeow (phone)", "note": "decodes + shows it" },
+      { "title": "your input", "note": "touch, keys, mouse → host" }
+    ]
+  },
+  "facts": [
+    { "k": "platform", "v": "Android 8.0 or newer" },
+    { "k": "fork of", "v": "Artemis (Moonlight)" },
+    { "k": "hosts", "v": "sunmeow, Sunshine, Apollo" },
+    { "k": "license", "v": "GPL-3.0" }
+  ],
+  "status": { "kind": "static", "state": "info", "text": "runs on your own devices: there's no public service to check" },
+  "links": [
+    { "label": "source", "href": "https://github.com/meowerse/moonmeow" }
+  ]
+}

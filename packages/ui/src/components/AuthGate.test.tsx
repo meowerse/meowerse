@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthGate } from "./AuthGate";
@@ -49,7 +49,7 @@ describe("AuthGate", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) =>
       new Promise((_, rej) => init!.signal!.addEventListener("abort", () => rej(new DOMException("a", "AbortError")))));
     render(<AuthGate base="https://api"><p>secret</p></AuthGate>);
-    await vi.advanceTimersByTimeAsync(8_001);
+    await act(() => vi.advanceTimersByTimeAsync(8_001));
     expect(await screen.findByRole("alert")).toHaveTextContent("the account service is taking too long");
     vi.useRealTimers();
   });

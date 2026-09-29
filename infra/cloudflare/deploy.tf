@@ -21,7 +21,7 @@ locals {
       script = "infra/cloudflare/deploy-api.sh"
     }
     web = {
-      paths  = "apps/web packages/ts-shared"
+      paths  = "apps/web packages/ui packages/brand"
       script = "infra/cloudflare/deploy-web.sh"
     }
     worker = {
@@ -30,12 +30,12 @@ locals {
     }
     auth = {
       # one Worker: builds the Astro UI + serves it (static assets) alongside the OIDC IdP
-      paths  = "workers/auth apps/auth-web packages/auth-shared"
+      paths  = "workers/auth apps/auth-web packages/auth-shared packages/ui packages/brand"
       script = "infra/cloudflare/deploy-auth.sh"
     }
     meowsenger = {
       # one Worker: builds the Astro UI + serves it (static assets) alongside the BFF
-      paths  = "workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk"
+      paths  = "workers/meowsenger apps/meowsenger-web packages/auth-shared packages/auth-sdk packages/ui packages/brand"
       script = "infra/cloudflare/deploy-meowsenger.sh"
     }
   }

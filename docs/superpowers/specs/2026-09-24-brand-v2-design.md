@@ -243,6 +243,33 @@ Deferred to a later sub-project:
   singleton, not per `base`) → sub-project 5.
 - auth-web `LandingCta`'s optimistic guest CTA (A-16) → sub-project 3.
 
+### 6.3 Sub-project 2 disposition
+
+Closed in sub-project 2:
+- W-01, W-02, W-03, W-04, W-05, W-06, W-07, W-08, W-10, W-11, W-12, W-14, W-15, W-16, W-17;
+- W-09, except the note below;
+- U-15 (ui part; meowsenger's own Avatar moves to ui in sub-project 4) and U-28 (ui, needed by the
+  site's axe and Trusted Types gates).
+- SP1 deferrals: unused Cat3D assets in app dist, cat colour tokens, `assetsInlineLimit: 0`, and the
+  Modal `display:none`/`visibility:hidden` Playwright test.
+
+Deferred, with reasons:
+- **W-09 (part):** `Access-Control-Allow-Origin: *` on HTML is a Cloudflare Pages default that
+  `_headers` can't remove. It's harmless for public static pages.
+- **W-13 / B23:** Cloudflare Web Analytics and JS detections are zone and dashboard settings. The
+  strict CSP blocks their scripts; the toggles are the owner's. Live status is in the PR.
+- **W-18:** the meows API has no browser consumer after B16. Dropping its
+  `Access-Control-Allow-Credentials` belongs to `workers/api`, in sub-project 5.
+- **W-19 (part):** security.txt is now canonical for meow.alxnko.dev. Which contact address is
+  canonical is the owner's call.
+- **Together pairing 10 (menus, drawers):** those components move into `@meowerse/ui` with meowsenger
+  in sub-project 4 (audit D-5, D-6).
+- **Real-phone check of Cat3D finger tracking:** an owner check on a real device; the answer is
+  recorded on the sub-project 2 PR.
+- **Terraform state drift:** the TFC workspace state holds only part of the zone (web DNS, rate
+  limit, edge cache, Turnstile); the eu.org redirect ruleset is imported for B24, the rest is an
+  owner/SP5 item.
+
 ## 7. Terminal styling, per element (B8)
 
 Terminal styling is used only where it keeps or improves usability.

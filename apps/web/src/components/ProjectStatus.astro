@@ -1,0 +1,33 @@
+---
+// A live status line: server-rendered [wait], then probe-runner.ts reads the endpoint (B9).
+// Static statuses say plainly why there is nothing to check.
+// C6: a probe row ships a "check again" retry button — hidden until runProbes.ts reveals it,
+// ≥44px like every other control — because probe-runner.ts drives every [data-probe-retry] it
+// finds. `retry` (default true) renders that button + the <noscript> message; a caller that shows
+// several probe rows sharing one retry control (the home page's ls ~/services) passes `false` per
+// row and renders its own single shared button + noscript instead, so the page never ships more
+// than one [data-probe-retry] — probe-runner.ts re-runs every [data-probe] row no matter which
+// button triggered it, so one shared control is functionally identical to one per row.
+// B26: with its own retry the row is two fixed lines (status, then the button's control-height line),
+// reserved before JS reveals the button, so neither the reveal nor a longer result text moves the page.
+import { StatusLine } from "@meowerse/ui";
+import type { ProjectStatus } from "../lib/project-schema";
+import { describeProbe } from "../lib/probe";
+
+interface Props { name: string; status: ProjectStatus; retry?: boolean }
+const { name, status, retry = true } = Astro.props;
+const wait = describeProbe(name, "pending");
+---
+{status.kind === "probe" ? (
+  <div class:list={["probe", { "probe--retry": retry }]} data-probe data-name={name} data-url={status.url} data-method={status.method}>
+    <StatusLine state={wait.state} live children={wait.text} />
+    {retry && <>
+      <button type="button" class="mw-btn mw-btn--secondary mw-btn--md probe__retry" data-probe-retry hidden>check again</button>
+      <noscript><p class="mw-muted">live status needs JavaScript.</p></noscript>
+    </>}
+  </div>
+) : (
+  <div class="probe">
+    <StatusLine state={status.state} children={`${name} — ${status.text}`} />
+  </div>
+)}
