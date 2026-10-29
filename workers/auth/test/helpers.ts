@@ -369,7 +369,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [] };
       }
       if (/UPDATE access_tokens SET revoked_at .* WHERE jti/.test(sql)) {
-        const r = t.access_tokens.find((x) => x.jti === a[0] && x.client_id === a[1]);
+        const r = t.access_tokens.find((x) => x.jti === a[0] && x.client_id === a[1] && x.revoked_at == null);
         if (r) r.revoked_at = "revoked";
         return { rows: [], rowsAffected: r ? 1 : 0 };
       }

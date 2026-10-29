@@ -288,6 +288,12 @@ test("token.revoke -> one row with the authenticated client; unauthenticated rec
     expect((await h.call("/token/revoke", { body: { ...auth, token: "at_real" } })).status).toBe(200);
   });
   expect(row).toMatchObject({ event: "token.revoke", client_id: "mw_conf", account_id: null });
+  // Re-revoking an already-revoked token is a no-op: still 200 (RFC 7009), no second row, first time kept.
+  const firstRevokedAt = h.store.tables.access_tokens.find((t: { jti: string }) => t.jti === "at_real")!.revoked_at;
+  const before = h.rows().length;
+  expect((await h.call("/token/revoke", { body: { ...auth, token: "at_real" } })).status).toBe(200);
+  expect(h.rows()).toHaveLength(before);
+  expect(h.store.tables.access_tokens.find((t: { jti: string }) => t.jti === "at_real")!.revoked_at).toBe(firstRevokedAt);
   expect(JSON.stringify(h.seen)).not.toContain("at_real");
   expect(JSON.stringify(h.seen)).not.toContain("at_x");
   expect(JSON.stringify(h.seen)).not.toContain("mws_sec");
