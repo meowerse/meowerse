@@ -45,6 +45,7 @@ import { userinfoClaims } from "./userinfo";
 import { handleAvatar } from "./avatar";
 import { checkRateLimit } from "./ratelimit";
 import { turnstileGate } from "./turnstile";
+import { recordAudit } from "./audit";
 
 const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
 const SESS_COOKIE = "mw_sess";
@@ -268,6 +269,7 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
   const sess = await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) });
   const cookies = parseCookies(req.headers.get("Cookie"));
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
+  await recordAudit(deps, req, { event: "signup", accountId: res.accountId });
   return json({ ok: true, recoveryCodes: res.recoveryCodes, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
@@ -291,7 +293,11 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
-  if (!res.ok) return json({ error: "invalid_credentials" }, 401, cors);
+  if (!res.ok) {
+    // accountId only when the username exists; the attempted username is never stored.
+    await recordAudit(deps, req, { event: "login.fail", accountId: res.accountId ?? null });
+    return json({ error: "invalid_credentials" }, 401, cors);
+  }
 
   const cookies = parseCookies(req.headers.get("Cookie"));
   const existing = cookies[`__Host-${SESS_COOKIE}`];
@@ -301,6 +307,7 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
     : await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) });
 
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
+  await recordAudit(deps, req, { event: "login.ok", accountId: res.accountId });
   return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
@@ -346,6 +353,7 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
   });
   const idHash = await sha256Hex(cookies[`__Host-${SESS_COOKIE}`]!);
   const loc = await mintCodeRedirect(deps, env, request, session.accountId, idHash, session.authTime, scope);
+  await recordAudit(deps, req, { event: "consent.grant", accountId: session.accountId, clientId: request.clientId });
   return json({ redirect: loc }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": clearTkt });
 }
 
@@ -462,7 +470,11 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
-    if (!rot.ok) return json({ error: rot.error }, 400, { ...cors, ...noStore });
+    if (!rot.ok) {
+      // Refresh-token reuse already revoked the whole family inside rotateRefresh.
+      if (rot.reuse) await recordAudit(deps, req, { event: "token.reuse_detected", clientId });
+      return json({ error: rot.error }, 400, { ...cors, ...noStore });
+    }
     return mintResponse(env, deps, cors, noStore, {
       accountId: rot.accountId,
       clientId,
@@ -528,6 +540,7 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
     accountId = (await signInOrSignUpTelegram(db, tg)).accountId;
   }
   if (!(await consumeTicket(db, ticket.ticket_id, accountId))) return json({ error: "already_consumed" }, 409, cors);
+  await recordAudit(deps, req, { event: ticket.kind === "VERIFY_EXISTING" ? "telegram.link" : "telegram.login", accountId });
   return json({ ok: true }, 200, cors);
 }
 
@@ -563,6 +576,7 @@ async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<s
   const sess = await issueSession(db, { accountId: r.accountId, amr: "tg", authTime: now(deps), now: now(deps) });
   const cookies = parseCookies(req.headers.get("Cookie"));
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], r.accountId, sess.idHash, now(deps));
+  await recordAudit(deps, req, { event: "telegram.login", accountId: r.accountId });
   return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
@@ -623,7 +637,13 @@ async function handleLogout(req: Request, env: Env, deps: Deps, _cors: Record<st
   const url = new URL(req.url);
   const cookies = parseCookies(req.headers.get("Cookie"));
   const raw = cookies[`__Host-${SESS_COOKIE}`];
-  if (raw) await revokeSession(deps.getDb(), raw);
+  if (raw) {
+    // Resolve the owner BEFORE revoking (read-only; lookupSession would also roll the idle window).
+    const owner = (await deps.getDb().execute({ sql: "SELECT account_id, revoked_at FROM sessions WHERE id_hash = ?", args: [await sha256Hex(raw)] })).rows[0];
+    const liveAccountId = owner && owner.revoked_at == null ? String(owner.account_id) : null;
+    await revokeSession(deps.getDb(), raw);
+    if (liveAccountId) await recordAudit(deps, req, { event: "logout", accountId: liveAccountId });
+  }
   const dest =
     (await resolvePostLogout(
       deps,
@@ -646,7 +666,10 @@ async function handleRevoke(req: Request, _env: Env, deps: Deps, cors: Record<st
   const p = await readParams(req);
   const clientId = await authedConfidentialClient(req, deps, p);
   if (!clientId) return json({ error: "invalid_client" }, 401, { ...cors, "WWW-Authenticate": "Basic" });
-  if (p.token) await revokeAccessToken(deps.getDb(), p.token, clientId);
+  if (p.token) {
+    await revokeAccessToken(deps.getDb(), p.token, clientId);
+    await recordAudit(deps, req, { event: "token.revoke", clientId });
+  }
   return json({}, 200, cors); // RFC 7009: always 200 after client auth
 }
 
@@ -689,13 +712,17 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       verifiedOnly: asBool(p.verified_only),
       allowOfflineAccess: asBool(p.offline),
     });
+    if (res.ok) await recordAudit(deps, req, { event: "client.create", accountId: session.accountId, clientId: res.clientId });
     return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
   }
   if (sub === "clients/delete") {
-    return json({ ok: await deleteClient(db, session.accountId, p.client_id ?? "") }, 200, cors);
+    const deleted = await deleteClient(db, session.accountId, p.client_id ?? "");
+    if (deleted) await recordAudit(deps, req, { event: "client.delete", accountId: session.accountId, clientId: p.client_id });
+    return json({ ok: deleted }, 200, cors);
   }
   if (sub === "clients/rotate-secret") {
     const r = await rotateSecret(db, session.accountId, p.client_id ?? "");
+    if (r.ok) await recordAudit(deps, req, { event: "client.secret_rotate", accountId: session.accountId, clientId: p.client_id });
     return r.ok ? json(r, 200, { ...cors, ...securityHeaders() }) : json({ error: "not_rotatable" }, 400, cors);
   }
   if (sub === "clients/update") {
@@ -706,10 +733,12 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
       displayName: p.display_name,
     });
+    if (r.ok) await recordAudit(deps, req, { event: "client.update", accountId: session.accountId, clientId: p.client_id });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
   if (sub === "tokens") {
     const token = await createManagementToken(db, session.accountId, p.label);
+    await recordAudit(deps, req, { event: "mgmt_token.create", accountId: session.accountId });
     return json({ token }, 200, { ...cors, ...securityHeaders() });
   }
   return json({ error: "not_found" }, 404, cors);
@@ -765,20 +794,25 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
 
   if (sub === "password") {
     const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
+    if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
   if (sub === "grants/revoke") {
     await revokeGrant(db, accountId, p.client_id ?? "");
+    await recordAudit(deps, req, { event: "consent.revoke", accountId, clientId: p.client_id });
     return json({ ok: true }, 200, cors);
   }
   if (sub === "telegram/unlink") {
     const info = await getAccountInfo(db, accountId);
     if (!info?.hasPassword) return json({ error: "no_password_fallback" }, 409, cors); // refuse → avoid lockout
     await unlinkTelegram(db, accountId);
+    await recordAudit(deps, req, { event: "telegram.unlink", accountId });
     return json({ ok: true }, 200, cors);
   }
   if (sub === "recovery-codes") {
-    return json({ recoveryCodes: await regenerateRecoveryCodes(db, accountId) }, 200, { ...cors, ...securityHeaders() });
+    const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
+    await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
+    return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "delete") {
     const info = await getAccountInfo(db, accountId);
@@ -786,6 +820,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     const expected = info.username ?? info.displayName ?? "";
     if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
     await deleteAccount(db, accountId);
+    await recordAudit(deps, req, { event: "account.delete", accountId });
     return json({ ok: true }, 200, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
   }
   return json({ error: "not_found" }, 404, cors);
@@ -807,6 +842,9 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
     verifiedOnly: asBool(p.verified_only),
     allowOfflineAccess: asBool(p.offline),
   });
+  if (!("error" in res) && (res.created || !res.unchanged)) {
+    await recordAudit(deps, req, { event: res.created ? "client.create" : "client.update", accountId: ownerId, clientId: res.clientId });
+  }
   return "error" in res ? json({ error: res.error }, 400, cors) : json(res, 200, { ...cors, ...securityHeaders() });
 }
 
@@ -866,26 +904,28 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   // round-trips entirely (they'd otherwise slow every cold isolate). Tests leave
   // the flag unset so the schema + seed still run against the in-memory fake.
   if (env.SKIP_MIGRATIONS !== "1") await ensureSchema(deps);
+  // Handlers get Deps carrying the ExecutionContext so audit writes can run off the response path.
+  const d: Deps = ctx ? { ...deps, ctx } : deps;
 
-  if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, deps, cors, ctx);
-  if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, deps, cors, ctx);
-  if (pathname === "/signup" && m === "POST") return handleSignup(req, env, deps, cors);
-  if (pathname === "/login" && m === "POST") return handleLogin(req, env, deps, cors);
-  if (pathname === "/consent" && m === "POST") return handleConsent(req, env, deps, cors, ctx);
-  if (pathname === "/token" && m === "POST") return handleToken(req, env, deps, cors);
-  if (pathname === "/token/revoke" && m === "POST") return handleRevoke(req, env, deps, cors);
-  if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, deps, cors);
-  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, deps, cors, ctx);
-  if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, deps, cors);
-  if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, deps, cors);
-  if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, deps, cors);
-  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, deps, cors, pathname.slice("/api/dev/".length), ctx);
-  if (pathname === "/api/session" && m === "GET") return handleSession(req, env, deps, cors, ctx);
+  if (pathname === "/authorize/pending" && m === "GET") return handlePending(req, env, d, cors, ctx);
+  if (pathname === "/authorize" && (m === "GET" || m === "POST")) return handleAuthorize(req, env, d, cors, ctx);
+  if (pathname === "/signup" && m === "POST") return handleSignup(req, env, d, cors);
+  if (pathname === "/login" && m === "POST") return handleLogin(req, env, d, cors);
+  if (pathname === "/consent" && m === "POST") return handleConsent(req, env, d, cors, ctx);
+  if (pathname === "/token" && m === "POST") return handleToken(req, env, d, cors);
+  if (pathname === "/token/revoke" && m === "POST") return handleRevoke(req, env, d, cors);
+  if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, d, cors);
+  if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, d, cors, ctx);
+  if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, d, cors);
+  if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, d, cors);
+  if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, d, cors);
+  if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, d, cors, pathname.slice("/api/dev/".length), ctx);
+  if (pathname === "/api/session" && m === "GET") return handleSession(req, env, d, cors, ctx);
   if ((pathname === "/api/account" || pathname.startsWith("/api/account/")) && (m === "GET" || m === "POST")) {
-    return handleAccount(req, env, deps, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length), ctx);
+    return handleAccount(req, env, d, cors, pathname === "/api/account" ? "" : pathname.slice("/api/account/".length), ctx);
   }
-  if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, deps, cors);
-  if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, deps, cors);
+  if (pathname === "/mgmt/v1/clients" && (m === "PUT" || m === "POST")) return handleMgmt(req, env, d, cors);
+  if (pathname === "/userinfo" && (m === "GET" || m === "POST")) return handleUserinfo(req, env, d, cors);
   // Public, unauthenticated avatar proxy: cross-origin <img> loads its current
   // Telegram photo. `ctx` is threaded through Deps so it can edge-cache the bytes.
   // Cap the id length in the pattern itself (account ids are ~37 chars) so a huge
@@ -893,10 +933,10 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]{1,64})$/);
   if (av && m === "GET") {
     // Per-IP second line in front of the Bot-API amplification (same shape as /token).
-    if (!(await ipThrottle(req, deps, "avatar", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
-    return handleAvatar(req, env, ctx ? { ...deps, ctx } : deps, av[1]!, cors);
+    if (!(await ipThrottle(req, d, "avatar", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+    return handleAvatar(req, env, d, av[1]!, cors);
   }
-  if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, deps, cors);
+  if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, d, cors);
 
   // A request reaching here matched no API route above. Most UI pages (/account,
   // /verify, …) are served by Cloudflare BEFORE the worker; but the three

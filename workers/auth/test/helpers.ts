@@ -55,6 +55,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     consents: [],
     rate_limits: [],
     login_tickets: [],
+    audit_log: [],
   };
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
@@ -399,6 +400,13 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/UPDATE refresh_tokens SET used_at .* WHERE family_id/.test(sql)) {
         for (const r of t.refresh_tokens) if (r.family_id === a[0] && r.used_at == null) r.used_at = "used";
         return { rows: [] };
+      }
+
+      // --- audit log (SEC-2) ---
+      if (/INSERT INTO audit_log/.test(sql)) {
+        const id = t.audit_log.length + 1;
+        t.audit_log.push({ id, event: a[0], account_id: a[1], client_id: a[2], ip_trunc: a[3], ua_hash: a[4] });
+        return { rows: [], rowsAffected: 1, lastInsertRowid: id };
       }
 
       // --- rate limits ---
