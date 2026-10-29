@@ -105,9 +105,9 @@ export async function listGrants(db: DbClient, accountId: string): Promise<Grant
 }
 
 /** Revoke a user's grant to an app: drop consent + kill that app's live tokens for this user. */
-export async function revokeGrant(db: DbClient, accountId: string, clientId: string): Promise<void> {
+export async function revokeGrant(db: DbClient, accountId: string, clientId: string): Promise<boolean> {
   // Three independent writes known up front (not a CAS) → ONE batch round-trip.
-  await db.batch([
+  const res = await db.batch([
     { sql: "DELETE FROM consents WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
     { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
     {
@@ -115,4 +115,5 @@ export async function revokeGrant(db: DbClient, accountId: string, clientId: str
       args: [accountId, clientId],
     },
   ]);
+  return (res[0]?.rowsAffected ?? 0) > 0; // true only if a consent row existed
 }

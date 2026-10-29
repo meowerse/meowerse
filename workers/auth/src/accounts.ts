@@ -70,7 +70,8 @@ export interface LoginInput {
   username: string;
   password: string;
 }
-export type LoginResult = { ok: true; accountId: string } | { ok: false };
+/** On failure `accountId` is set only when the username exists (for the audit log; never exposed to clients). */
+export type LoginResult = { ok: true; accountId: string } | { ok: false; accountId?: string };
 
 /**
  * Verify username + password. On a missing user OR a missing credential it still
@@ -97,10 +98,10 @@ export async function loginVerify(
   const row = res.rows[0];
   if (!row || row.phc == null) {
     await verifyPassword(input.password, dummy);
-    return { ok: false };
+    return row ? { ok: false, accountId: String(row.id) } : { ok: false };
   }
   const ok = await verifyPassword(input.password, String(row.phc));
-  return ok ? { ok: true, accountId: String(row.id) } : { ok: false };
+  return ok ? { ok: true, accountId: String(row.id) } : { ok: false, accountId: String(row.id) };
 }
 
 /**

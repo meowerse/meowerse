@@ -152,6 +152,9 @@ export const SCHEMA: string[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL DEFAULT (datetime('now')),
     event TEXT NOT NULL, account_id TEXT, client_id TEXT, ip_trunc TEXT, ua_hash TEXT
   )`,
+  // Retention prune (ts range scan) + per-account audit lookups.
+  `CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, ts)`,
 ];
 
 /**
@@ -212,7 +215,9 @@ export function prodDeps(env: Env): Deps {
  *     CREATE INDEX IF NOT EXISTS idx_access_acct_client ON access_tokens(account_id, client_id);
  *     CREATE INDEX IF NOT EXISTS idx_refresh_acct_client ON refresh_tokens(account_id, client_id);
  *     CREATE INDEX IF NOT EXISTS idx_tickets_nonce ON login_tickets(nonce_hash);
- *     CREATE INDEX IF NOT EXISTS idx_client_secrets_client ON oauth_client_secrets(client_id);"
+ *     CREATE INDEX IF NOT EXISTS idx_client_secrets_client ON oauth_client_secrets(client_id);
+ *     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+ *     CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, ts);"
  *
  * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
  */

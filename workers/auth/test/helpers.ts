@@ -55,6 +55,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     consents: [],
     rate_limits: [],
     login_tickets: [],
+    audit_log: [],
   };
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
@@ -78,8 +79,9 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/SELECT client_id, approved_scope_snapshot, updated_at FROM consents WHERE account_id/.test(sql))
         return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null })) };
       if (/DELETE FROM consents WHERE account_id/.test(sql)) {
+        const before = t.consents.length;
         t.consents = t.consents.filter((r) => !(r.account_id === a[0] && r.client_id === a[1]));
-        return { rows: [] };
+        return { rows: [], rowsAffected: before - t.consents.length };
       }
       if (/UPDATE access_tokens SET revoked_at .* WHERE account_id/.test(sql)) {
         for (const r of t.access_tokens) if (r.account_id === a[0] && r.client_id === a[1]) r.revoked_at = "revoked";
@@ -367,9 +369,9 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [] };
       }
       if (/UPDATE access_tokens SET revoked_at .* WHERE jti/.test(sql)) {
-        const r = t.access_tokens.find((x) => x.jti === a[0]);
+        const r = t.access_tokens.find((x) => x.jti === a[0] && x.client_id === a[1] && x.revoked_at == null);
         if (r) r.revoked_at = "revoked";
-        return { rows: [] };
+        return { rows: [], rowsAffected: r ? 1 : 0 };
       }
       if (/FROM access_tokens WHERE jti/.test(sql))
         return { rows: t.access_tokens.filter((r) => r.jti === a[0]).map((r) => ({ expires_at: r.expires_at, revoked_at: r.revoked_at })) };
@@ -399,6 +401,13 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/UPDATE refresh_tokens SET used_at .* WHERE family_id/.test(sql)) {
         for (const r of t.refresh_tokens) if (r.family_id === a[0] && r.used_at == null) r.used_at = "used";
         return { rows: [] };
+      }
+
+      // --- audit log (SEC-2) ---
+      if (/INSERT INTO audit_log/.test(sql)) {
+        const id = t.audit_log.length + 1;
+        t.audit_log.push({ id, event: a[0], account_id: a[1], client_id: a[2], ip_trunc: a[3], ua_hash: a[4] });
+        return { rows: [], rowsAffected: 1, lastInsertRowid: id };
       }
 
       // --- rate limits ---
