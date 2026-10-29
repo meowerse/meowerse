@@ -15,7 +15,8 @@
     "d1:schema": "wrangler d1 execute meowsenger --remote --file schema.sql",
     "d1:schema-local": "wrangler d1 execute meowsenger --local --file schema.sql",
     "d1:schema-slice5": "wrangler d1 execute meowsenger --remote --file schema-slice5.sql",
-    "d1:schema-slice7": "wrangler d1 execute meowsenger --remote --file schema-slice7.sql"
+    "d1:schema-slice7": "wrangler d1 execute meowsenger --remote --file schema-slice7.sql",
+    "d1:schema-sec1": "wrangler d1 execute meowsenger --remote --file schema-sec1.sql"
   },
   "dependencies": {
     "@meowerse/auth": "workspace:*",

@@ -135,7 +135,7 @@ export async function handleCallback(req: Request, env: Env, deps: Deps): Promis
     await upsertUser(db, { ...info, sub, verified: info.verified ?? claims.verified === true }, now);
     const id = deps.newId();
     await createSession(db, {
-      id, userId: sub, accessToken: tok.access_token, refreshToken: tok.refresh_token ?? null,
+      id, userId: sub,
       accessExp: now + (tok.expires_in ?? 0) * 1000, now,
     });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { handleSession, handleLogout } from "./api";
 import type { DbClient, Row } from "./types";
-import { SESSION_COOKIE } from "./session";
+import { SESSION_COOKIE, sha256hex } from "./session";
 
 function memDb(session?: Row, user?: Row) {
   const del: string[] = [];
@@ -56,6 +56,7 @@ describe("handleLogout", () => {
     const res = await handleLogout(new Request("https://x/auth/logout", { method: "POST", headers: { Cookie: `${SESSION_COOKIE}=s1` } }), db, now, cors);
     expect(res.status).toBe(200);
     expect(del).toContain("s1");
+    expect(del).toContain(await sha256hex("s1"));
     expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
   });
   it("is a no-op 200 with no cookie", async () => {
