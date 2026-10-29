@@ -123,12 +123,15 @@ export async function recordAudit(
   deps: Deps,
   req: Request,
   e: { event: AuditEvent; accountId?: string | null; clientId?: string | null },
+  opts?: { network?: boolean },
 ): Promise<void> {
+  const network = opts?.network ?? true;
   const work = async (): Promise<void> => {
     try {
       const db = deps.getDb();
-      const ip = truncIp(req.headers.get("CF-Connecting-IP"));
-      const ua = await uaHash(req.headers.get("User-Agent"));
+      // network:false → the request is from a service (e.g. the auth bot), not the user: store NULLs.
+      const ip = network ? truncIp(req.headers.get("CF-Connecting-IP")) : null;
+      const ua = network ? await uaHash(req.headers.get("User-Agent")) : null;
       const res = await db.execute({
         sql: "INSERT INTO audit_log (event, account_id, client_id, ip_trunc, ua_hash) VALUES (?, ?, ?, ?, ?)",
         args: [e.event, e.accountId ?? null, e.clientId ?? null, ip, ua],

@@ -186,11 +186,12 @@ export async function recordAccessToken(
 }
 
 /** RFC 7009 revoke by jti, scoped to the authenticated client (best-effort, 200). */
-export async function revokeAccessToken(db: DbClient, jti: string, clientId: string): Promise<void> {
-  await db.execute({
+export async function revokeAccessToken(db: DbClient, jti: string, clientId: string): Promise<boolean> {
+  const res = await db.execute({
     sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE jti = ? AND client_id = ?",
     args: [jti, clientId],
   });
+  return (res.rowsAffected ?? 0) > 0; // true only if a token matched
 }
 
 /** RFC 7662 introspection by jti, scoped to the authenticated client (no cross-client oracle). */

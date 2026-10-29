@@ -203,6 +203,12 @@ test("password.change only on success; recovery.regenerate; consent.revoke; tele
   expect(await h.one(() => h.call("/api/account/password", { sess, body: { csrf, current_password: PW, new_password: "newpass123456" } }))).toMatchObject({ event: "password.change", account_id: accountId, client_id: null });
   expect(await h.one(() => h.call("/api/account/recovery-codes", { sess, body: { csrf } }))).toMatchObject({ event: "recovery.regenerate", account_id: accountId });
 
+  // revoking a grant that never existed writes no row (and stores no caller-supplied client id)
+  const none = h.rows().length;
+  expect((await h.call("/api/account/grants/revoke", { sess, body: { csrf, client_id: "mw_nonexistent" } })).status).toBe(200);
+  expect(h.rows()).toHaveLength(none);
+  expect(JSON.stringify(h.seen)).not.toContain("mw_nonexistent");
+
   h.store.tables.consents.push({ account_id: accountId, client_id: "mw_demo", scope_set_max: '["openid"]', approved_scope_snapshot: '["openid"]' });
   expect(await h.one(() => h.call("/api/account/grants/revoke", { sess, body: { csrf, client_id: "mw_demo" } }))).toMatchObject({ event: "consent.revoke", account_id: accountId, client_id: "mw_demo" });
 
@@ -234,7 +240,7 @@ test("consent.grant (allow only) -> one row with account + client; deny records 
 
 test("token.reuse_detected on refresh-token reuse (family revoked); ordinary rotation records nothing", async () => {
   const h = await harness();
-  const { tkt, csrf, sess } = await consentFlow(h, "aud_reuse");
+  const { tkt, csrf, sess, accountId } = await consentFlow(h, "aud_reuse");
   const r3 = await h.call("/consent", { sess, cookie: `__Host-mw_tkt=${tkt}`, body: { decision: "allow", csrf } });
   const code = new URL(((await r3.json()) as { redirect: string }).redirect).searchParams.get("code")!;
   const r4 = await h.call("/token", { body: { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_rt", redirect_uri: REDIRECT } });
@@ -248,7 +254,16 @@ test("token.reuse_detected on refresh-token reuse (family revoked); ordinary rot
     expect(r6.status).toBe(400);
     expect(await r6.json()).toEqual({ error: "invalid_grant" });
   });
-  expect(row).toMatchObject({ event: "token.reuse_detected", client_id: "mw_rt", account_id: null });
+  // attributed to the compromised family's account and client
+  expect(row).toMatchObject({ event: "token.reuse_detected", client_id: "mw_rt", account_id: accountId });
+  // a DIFFERENT client presenting the used token: same response, row still names the family's client
+  h.store.tables.oauth_clients.push({ client_id: "mw_other", status: "active", client_type: "public", display_name: "O", logo_url: null, allowed_scopes: '["openid"]', allow_offline_access: 0, verified_only: 0, first_party: 0 });
+  const other = await h.one(async () => {
+    const r7 = await h.call("/token", { body: { grant_type: "refresh_token", refresh_token: first, client_id: "mw_other" } });
+    expect(r7.status).toBe(400);
+    expect(await r7.json()).toEqual({ error: "invalid_grant" });
+  });
+  expect(other).toMatchObject({ event: "token.reuse_detected", client_id: "mw_rt", account_id: accountId });
   // an unknown refresh token is NOT reuse
   const n2 = h.rows().length;
   await h.call("/token", { body: { grant_type: "refresh_token", refresh_token: "rt_unknown", client_id: "mw_rt" } });
@@ -261,10 +276,19 @@ test("token.revoke -> one row with the authenticated client; unauthenticated rec
   h.store.tables.oauth_client_secrets.push({ client_id: "mw_conf", secret_phc: await hashPassword("mws_sec", { rounds: 1, iter: 500 }) });
   expect((await h.call("/token/revoke", { body: { token: "at_x" } })).status).toBe(401);
   expect(h.rows()).toHaveLength(0);
+  const auth = { client_id: "mw_conf", client_secret: "mws_sec" };
+  // no matching token (unknown jti, or another client's jti): RFC 7009 still 200, but nothing is recorded
+  h.store.tables.access_tokens.push({ jti: "at_foreign", account_id: "a", client_id: "mw_other", scope: "openid", family_id: "f", issued_at: 0, expires_at: 9e9, revoked_at: null });
+  expect((await h.call("/token/revoke", { body: { ...auth, token: "at_x" } })).status).toBe(200);
+  expect((await h.call("/token/revoke", { body: { ...auth, token: "at_foreign" } })).status).toBe(200);
+  expect(h.rows()).toHaveLength(0);
+  expect(h.store.tables.access_tokens[0]!.revoked_at).toBeNull();
+  h.store.tables.access_tokens.push({ jti: "at_real", account_id: "a", client_id: "mw_conf", scope: "openid", family_id: "f", issued_at: 0, expires_at: 9e9, revoked_at: null });
   const row = await h.one(async () => {
-    expect((await h.call("/token/revoke", { body: { client_id: "mw_conf", client_secret: "mws_sec", token: "at_x" } })).status).toBe(200);
+    expect((await h.call("/token/revoke", { body: { ...auth, token: "at_real" } })).status).toBe(200);
   });
   expect(row).toMatchObject({ event: "token.revoke", client_id: "mw_conf", account_id: null });
+  expect(JSON.stringify(h.seen)).not.toContain("at_real");
   expect(JSON.stringify(h.seen)).not.toContain("at_x");
   expect(JSON.stringify(h.seen)).not.toContain("mws_sec");
 });
@@ -281,21 +305,53 @@ async function tgStart(h: Awaited<ReturnType<typeof harness>>, body: unknown, se
   return new URL(((await r.json()) as { deepLink: string }).deepLink).searchParams.get("start")!;
 }
 
-test("telegram.link (deep-link VERIFY_EXISTING confirm) and telegram.login (deep-link sign-in confirm)", async () => {
+async function tgStartFull(h: Awaited<ReturnType<typeof harness>>, body: unknown, sess?: string) {
+  const r = await h.call("/tg/start", { sess, body });
+  const b = (await r.json()) as { ticketId: string; deepLink: string };
+  return { ticketId: b.ticketId, nonce: new URL(b.deepLink).searchParams.get("start")!, own: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
+}
+
+test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records signup (no network) and telegram.login only at /tg/status (user network)", async () => {
   const h = await harness();
   const { sess, accountId } = await h.signup("aud_tg");
   const nonce = await tgStart(h, { kind: "VERIFY_EXISTING" }, sess);
-  const link = await h.one(async () => {
-    expect((await tgConfirm(h, nonce, "55")).status).toBe(200);
-  });
-  expect(link).toMatchObject({ event: "telegram.link", account_id: accountId, client_id: null });
+  const before = h.rows().length;
+  expect((await tgConfirm(h, nonce, "55")).status).toBe(200);
+  expect(h.rows()).toHaveLength(before + 1);
+  const link = h.rows()[before]!;
+  expect(link).toMatchObject({ event: "telegram.link", account_id: accountId, client_id: null, ip_trunc: null, ua_hash: null });
 
-  const n2 = await tgStart(h, {});
+  // new Telegram user: confirm creates the account -> signup row, still NO network data, NO telegram.login yet
+  const t = await tgStartFull(h, {});
+  const b2 = h.rows().length;
+  expect((await tgConfirm(h, t.nonce, "777")).status).toBe(200);
+  const newAcct = h.store.tables.telegram_links.find((x) => String(x.telegram_id) === "777")!.account_id;
+  expect(h.rows()).toHaveLength(b2 + 1);
+  expect(h.rows()[b2]).toMatchObject({ event: "signup", account_id: newAcct, client_id: null, ip_trunc: null, ua_hash: null });
+
+  // the user's browser polls status: one telegram.login row per session issued, with the user's truncated IP
   const login = await h.one(async () => {
-    expect((await tgConfirm(h, n2, "777")).status).toBe(200);
+    const st = await h.call(`/tg/status?ticket=${t.ticketId}`, { cookie: `__Host-mw_tgown=${t.own}` });
+    expect(((await st.json()) as { ready: boolean }).ready).toBe(true);
   });
-  expect(login.event).toBe("telegram.login");
-  expect(login.account_id).toBe(h.store.tables.telegram_links.find((t) => String(t.telegram_id) === "777")!.account_id);
+  expect(login).toMatchObject({ event: "telegram.login", account_id: newAcct });
+
+  // existing Telegram user signing in again: no signup, one telegram.login at status
+  const t2 = await tgStartFull(h, {});
+  const b3 = h.rows().length;
+  expect((await tgConfirm(h, t2.nonce, "777")).status).toBe(200);
+  expect(h.rows()).toHaveLength(b3); // not created -> nothing at confirm
+  const login2 = await h.one(() => h.call(`/tg/status?ticket=${t2.ticketId}`, { cookie: `__Host-mw_tgown=${t2.own}` }));
+  expect(login2).toMatchObject({ event: "telegram.login", account_id: newAcct });
+
+  // not ready / wrong owner records nothing
+  const t3 = await tgStartFull(h, {});
+  const b4 = h.rows().length;
+  await h.call(`/tg/status?ticket=${t3.ticketId}`, { cookie: `__Host-mw_tgown=${t3.own}` });
+  await tgConfirm(h, t3.nonce, "778");
+  await h.call(`/tg/status?ticket=${t3.ticketId}`, { cookie: "__Host-mw_tgown=wrong" });
+  expect(h.rows().filter((r) => r.event === "telegram.login")).toHaveLength(2);
+  expect(h.rows()).toHaveLength(b4 + 1); // only the signup from confirm
 });
 
 test("telegram.link failure (linked elsewhere, 409) records nothing", async () => {
@@ -308,7 +364,7 @@ test("telegram.link failure (linked elsewhere, 409) records nothing", async () =
   expect(h.rows()).toHaveLength(n);
 });
 
-test("telegram.login via the Login Widget", async () => {
+test("Login Widget: signup (when created) + telegram.login", async () => {
   const h = await harness();
   const data: Record<string, string> = { id: "4242", first_name: "Neko", username: "nekow", auth_date: "1000" };
   const dcs = Object.keys(data).sort().map((k) => `${k}=${data[k]}`).join("\n");
@@ -318,11 +374,21 @@ test("telegram.login via the Login Widget", async () => {
   const bad = await h.call("/tg/widget", { body: { ...data, hash: "00" } });
   expect(bad.status).toBe(401);
   expect(h.rows()).toHaveLength(0);
+  const n = h.rows().length;
+  expect((await h.call("/tg/widget", { body: { ...data, hash } })).status).toBe(200);
+  const acct = h.store.tables.telegram_links.find((t) => String(t.telegram_id) === "4242")!.account_id;
+  // created account: signup + telegram.login, both from the user's own request (network recorded)
+  expect(h.rows()).toHaveLength(n + 2);
+  expect(h.rows().slice(n)).toMatchObject([
+    { event: "signup", account_id: acct, ip_trunc: IP_TRUNC },
+    { event: "telegram.login", account_id: acct, ip_trunc: IP_TRUNC },
+  ]);
+  expect(h.rows()[n]!.ua_hash).toMatch(/^[0-9a-f]{16}$/);
+  // second sign-in with the same Telegram id: login only
   const row = await h.one(async () => {
     expect((await h.call("/tg/widget", { body: { ...data, hash } })).status).toBe(200);
   });
-  expect(row.event).toBe("telegram.login");
-  expect(row.account_id).toBe(h.store.tables.telegram_links.find((t) => String(t.telegram_id) === "4242")!.account_id);
+  expect(row).toMatchObject({ event: "telegram.login", account_id: acct });
 });
 
 // ---- dashboard + mgmt (routed fake: only the audit insert matters)
@@ -410,7 +476,7 @@ test("mgmt PAT upsert: create and update are recorded, unchanged and unauthorize
 
 // ---------------------------------------------------------------- no secrets
 
-test("no secrets: no password, recovery code, session/csrf id, token or username reaches any audit_log parameter", async () => {
+test("no secrets: no password, recovery code, auth code, token, client secret, PAT, session/csrf id, Telegram id or username reaches any audit_log parameter", async () => {
   const h = await harness();
   const su = await h.signup("aud_secret_user");
   const login = await h.call("/login", { body: { username: "aud_secret_user", password: PW } });
@@ -422,10 +488,55 @@ test("no secrets: no password, recovery code, session/csrf id, token or username
   const regenerated = ((await rc.json()) as { recoveryCodes: string[] }).recoveryCodes;
   expect(h.seen.length).toBe(4); // signup, login.ok, password.change, recovery.regenerate
 
-  const blob = JSON.stringify(h.seen);
-  const secrets = [PW, "newpass123456", "aud_secret_user", su.sess, su.csrf, sess2, lb.csrf, ...su.recoveryCodes, ...regenerated, UA, IP];
-  for (const s of secrets) expect(blob).not.toContain(s);
-  for (const code of [...su.recoveryCodes, ...regenerated]) expect(blob.toLowerCase()).not.toContain(code.toLowerCase().replace(/-/g, ""));
+  // OAuth flow: auth code -> access + refresh token -> rotation -> reuse detection
+  const { tkt, csrf, sess } = await consentFlow(h, "aud_secret_oauth");
+  const allow = await h.call("/consent", { sess, cookie: `__Host-mw_tkt=${tkt}`, body: { decision: "allow", csrf } });
+  const code = new URL(((await allow.json()) as { redirect: string }).redirect).searchParams.get("code")!;
+  const ex = await h.call("/token", { body: { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_rt", redirect_uri: REDIRECT } });
+  const t1 = (await ex.json()) as { access_token: string; refresh_token: string };
+  expect(t1.access_token && t1.refresh_token && code).toBeTruthy();
+  const rot = await h.call("/token", { body: { grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: "mw_rt" } });
+  const t2 = (await rot.json()) as { access_token: string; refresh_token: string };
+  const reuse = await h.call("/token", { body: { grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: "mw_rt" } });
+  expect(reuse.status).toBe(400);
+  expect(h.rows().some((r) => r.event === "token.reuse_detected")).toBe(true);
+
+  // Telegram: the numeric Telegram id, via bot confirm and via the widget
+  const TG_ID = "918273645";
+  const t = await tgStartFull(h, {});
+  expect((await tgConfirm(h, t.nonce, TG_ID)).status).toBe(200);
+  await h.call(`/tg/status?ticket=${t.ticketId}`, { cookie: `__Host-mw_tgown=${t.own}` });
+  const WG_ID = "564738291";
+  const wd: Record<string, string> = { id: WG_ID, first_name: "Neko", username: "widgetnek", auth_date: "1000" };
+  const dcs = Object.keys(wd).sort().map((k) => `${k}=${wd[k]}`).join("\n");
+  const hk = await crypto.subtle.importKey("raw", new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(BOT_TOKEN))), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const whash = [...new Uint8Array(await crypto.subtle.sign("HMAC", hk, enc.encode(dcs)))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  expect((await h.call("/tg/widget", { body: { ...wd, hash: whash } })).status).toBe(200);
+
+  // Dashboard secrets: client secret (create + rotate) and management PAT
+  const d = devHarness([
+    [/SELECT client_type FROM oauth_clients/, () => ({ rows: [{ client_type: "confidential" }] })],
+    [/SELECT 1 FROM oauth_clients WHERE client_id .* AND owner_account_id/, () => ({ rows: [{ "1": 1 }] })],
+  ]);
+  const created = await devPost(d.deps, "/api/dev/clients", { csrf: "csrf1", name: "my-secret-app", client_type: "confidential", redirect_uris: "https://app.example/cb", scopes: "openid" });
+  const cb = (await created.json()) as { clientSecret?: string };
+  const rotated = await devPost(d.deps, "/api/dev/clients/rotate-secret", { csrf: "csrf1", client_id: "mw_1" });
+  const rb = (await rotated.json()) as { clientSecret?: string };
+  const tok = await devPost(d.deps, "/api/dev/tokens", { csrf: "csrf1", label: "pat-label" });
+  const pat = ((await tok.json()) as { token: string }).token;
+  expect(cb.clientSecret && rb.clientSecret && pat).toBeTruthy();
+  expect(d.audits().map((a) => a[0])).toEqual(["client.create", "client.secret_rotate", "mgmt_token.create"]);
+
+  const blob = JSON.stringify([...h.seen, ...d.audits()]);
+  const secrets = [
+    PW, "newpass123456", "aud_secret_user", "aud_secret_oauth", su.sess, su.csrf, sess2, lb.csrf, sess, csrf, tkt,
+    ...su.recoveryCodes, ...regenerated, UA, IP,
+    code, t1.access_token, t1.refresh_token, t2.access_token, t2.refresh_token,
+    TG_ID, WG_ID, "widgetnek", t.nonce, t.own,
+    cb.clientSecret!, rb.clientSecret!, pat, "pat-label",
+  ];
+  for (const x of secrets) expect(blob).not.toContain(x);
+  for (const c of [...su.recoveryCodes, ...regenerated]) expect(blob.toLowerCase()).not.toContain(c.toLowerCase().replace(/-/g, ""));
 });
 
 // ---------------------------------------------------------------- never throws

@@ -294,7 +294,8 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
   if (!res.ok) {
-    // accountId only when the username exists; the attempted username is never stored.
+    // Stores the account ID when the username exists (an internal-only existence signal,
+    // never exposed to the client) and NULL otherwise; the attempted username is never stored.
     await recordAudit(deps, req, { event: "login.fail", accountId: res.accountId ?? null });
     return json({ error: "invalid_credentials" }, 401, cors);
   }
@@ -472,7 +473,9 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
     if (!rot.ok) {
       // Refresh-token reuse already revoked the whole family inside rotateRefresh.
-      if (rot.reuse) await recordAudit(deps, req, { event: "token.reuse_detected", clientId });
+      if (rot.reuse) {
+        await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId ?? null, clientId: rot.familyClientId ?? clientId });
+      }
       return json({ error: rot.error }, 400, { ...cors, ...noStore });
     }
     return mintResponse(env, deps, cors, noStore, {
@@ -531,16 +534,22 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
     avatarUrl: body.avatar_url || null,
   };
   let accountId: string;
+  let created = false;
   if (ticket.kind === "VERIFY_EXISTING") {
     if (!ticket.account_id) return json({ error: "invalid_ticket" }, 400, cors);
     const r = await linkTelegramToAccount(db, ticket.account_id, tg);
     if (!r.ok) return json({ error: r.error }, 409, cors);
     accountId = ticket.account_id;
   } else {
-    accountId = (await signInOrSignUpTelegram(db, tg)).accountId;
+    const r = await signInOrSignUpTelegram(db, tg);
+    accountId = r.accountId;
+    created = r.created;
   }
   if (!(await consumeTicket(db, ticket.ticket_id, accountId))) return json({ error: "already_consumed" }, 409, cors);
-  await recordAudit(deps, req, { event: ticket.kind === "VERIFY_EXISTING" ? "telegram.link" : "telegram.login", accountId });
+  // The caller is the auth-bot Worker, not the user: its IP/UA must not be attributed to the account.
+  // telegram.login is recorded in handleTgStatus (the user's own browser request).
+  if (ticket.kind === "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.link", accountId }, { network: false });
+  else if (created) await recordAudit(deps, req, { event: "signup", accountId }, { network: false });
   return json({ ok: true }, 200, cors);
 }
 
@@ -558,6 +567,8 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
   const sess = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+  // Only a consumed SIGNIN_OR_SIGNUP ticket is a Telegram login (a VERIFY_EXISTING link issues a session too, but is not a login).
+  if (ticket.kind !== "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.login", accountId: ticket.account_id });
   return json({ ready: true, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
@@ -576,6 +587,7 @@ async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<s
   const sess = await issueSession(db, { accountId: r.accountId, amr: "tg", authTime: now(deps), now: now(deps) });
   const cookies = parseCookies(req.headers.get("Cookie"));
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], r.accountId, sess.idHash, now(deps));
+  if (r.created) await recordAudit(deps, req, { event: "signup", accountId: r.accountId });
   await recordAudit(deps, req, { event: "telegram.login", accountId: r.accountId });
   return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
@@ -667,8 +679,8 @@ async function handleRevoke(req: Request, _env: Env, deps: Deps, cors: Record<st
   const clientId = await authedConfidentialClient(req, deps, p);
   if (!clientId) return json({ error: "invalid_client" }, 401, { ...cors, "WWW-Authenticate": "Basic" });
   if (p.token) {
-    await revokeAccessToken(deps.getDb(), p.token, clientId);
-    await recordAudit(deps, req, { event: "token.revoke", clientId });
+    const revoked = await revokeAccessToken(deps.getDb(), p.token, clientId);
+    if (revoked) await recordAudit(deps, req, { event: "token.revoke", clientId });
   }
   return json({}, 200, cors); // RFC 7009: always 200 after client auth
 }
@@ -798,8 +810,8 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
   if (sub === "grants/revoke") {
-    await revokeGrant(db, accountId, p.client_id ?? "");
-    await recordAudit(deps, req, { event: "consent.revoke", accountId, clientId: p.client_id });
+    const revoked = await revokeGrant(db, accountId, p.client_id ?? "");
+    if (revoked) await recordAudit(deps, req, { event: "consent.revoke", accountId, clientId: p.client_id });
     return json({ ok: true }, 200, cors);
   }
   if (sub === "telegram/unlink") {

@@ -53,7 +53,10 @@ export interface RotateOk {
   family: string;
   newRefresh: string;
 }
-export type RotateResult = RotateOk | { ok: false; error: string; reuse?: boolean };
+/** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
+export type RotateResult =
+  | RotateOk
+  | { ok: false; error: string; reuse?: boolean; accountId?: string; familyClientId?: string };
 
 /**
  * Rotate a refresh token (spec §4, §10): single-use with reuse detection. A
@@ -73,7 +76,7 @@ export async function rotateRefresh(
 
   if (row.used_at != null) {
     await revokeFamily(db, String(row.family_id));
-    return { ok: false, error: "invalid_grant", reuse: true };
+    return { ok: false, error: "invalid_grant", reuse: true, accountId: String(row.account_id), familyClientId: String(row.client_id) };
   }
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
   if (Number(row.idle_expires_at) < i.now || Number(row.absolute_expires_at) < i.now) {
