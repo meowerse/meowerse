@@ -267,6 +267,11 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.login_tickets.filter((r) => r.nonce_hash === a[0]) };
       if (/SELECT \* FROM login_tickets WHERE ticket_id/.test(sql))
         return { rows: t.login_tickets.filter((r) => r.ticket_id === a[0]) };
+      if (/UPDATE login_tickets SET status = 'claimed'/.test(sql)) {
+        const row = t.login_tickets.find((r) => r.ticket_id === a[0] && r.status === "consumed" && Number(r.expires_at) >= Number(a[1]));
+        if (row) row.status = "claimed";
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
       if (/UPDATE login_tickets SET status = 'consumed'/.test(sql)) {
         const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending");
         if (row) {

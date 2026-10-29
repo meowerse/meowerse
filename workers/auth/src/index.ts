@@ -27,6 +27,7 @@ import {
   findPendingTicketByNonce,
   consumeTicket,
   getTicket,
+  claimTicket,
   unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
@@ -565,6 +566,8 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   // owner mismatch / unconsumed → "not ready" (never leak; ticket_id grants nothing)
   if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash)) return json({ ready: false }, 200, cors);
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
+  // Single use: only the poll that atomically claims a fresh ticket gets a session; later polls see "not ready".
+  if (!(await claimTicket(db, ticketId, now(deps)))) return json({ ready: false }, 200, cors);
   const sess = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
   // Only a consumed SIGNIN_OR_SIGNUP ticket is a Telegram login (a VERIFY_EXISTING link issues a session too, but is not a login).

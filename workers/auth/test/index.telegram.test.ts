@@ -128,3 +128,69 @@ test("widget sign-in issues a session; bad hash → 401; unconfigured → 503", 
   const noBot = await handle(new Request("https://iss/tg/widget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }), { ...env, TELEGRAM_BOT_TOKEN: undefined } as never, deps as never);
   expect(noBot.status).toBe(503);
 });
+
+// ---- single-use tickets: a consumed ticket yields at most ONE session, and only while fresh ----
+async function confirmedTicket(clock: { t: number }) {
+  const store = memStore();
+  const keys = await genSigningKeys();
+  const env = {
+    AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
+    STATE_SECRET: "s", CORS_ORIGINS: "https://web", BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+  };
+  const deps = { getDb: () => store.db, clock: () => clock.t };
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  const nonce = new URL(sb.deepLink).searchParams.get("start")!;
+  const ts = String(clock.t);
+  const body = { nonce, telegram_id: "77", username: "once", display_name: "Once", avatar_url: "", ts };
+  const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: "77", username: "once", displayName: "Once", avatarUrl: "", ts }));
+  const c = await handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
+  expect(c.status).toBe(200);
+  const poll = () => handle(new Request(`https://iss/tg/status?ticket=${sb.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${owner}` } }), env as never, deps as never);
+  const sessionCount = () => (store.tables.sessions as unknown[]).length;
+  const ticketStatus = () => (store.tables.login_tickets as { ticket_id: string; status: string }[]).find((r) => r.ticket_id === sb.ticketId)!.status;
+  return { poll, sessionCount, ticketStatus };
+}
+
+test("a consumed ticket yields exactly one session; later polls are 'not ready' and mint nothing", async () => {
+  const clock = { t: 1000 };
+  const t = await confirmedTicket(clock);
+  const first = await t.poll();
+  expect(((await first.json()) as { ready: boolean }).ready).toBe(true);
+  expect(cookieValue(first.headers.get("Set-Cookie"), "__Host-mw_sess")).toBeTruthy();
+  expect(t.ticketStatus()).toBe("claimed");
+  const sessions = t.sessionCount();
+  for (let i = 0; i < 3; i++) {
+    const again = await t.poll();
+    expect(((await again.json()) as { ready: boolean }).ready).toBe(false);
+    expect(again.headers.get("Set-Cookie")).toBeNull();
+  }
+  expect(t.sessionCount()).toBe(sessions);
+});
+
+test("concurrent polls on one consumed ticket: exactly one wins", async () => {
+  const t = await confirmedTicket({ t: 1000 });
+  const before = t.sessionCount();
+  const results = await Promise.all([t.poll(), t.poll(), t.poll()]);
+  const ready = await Promise.all(results.map(async (r) => ((await r.json()) as { ready: boolean }).ready));
+  expect(ready.filter(Boolean)).toHaveLength(1);
+  expect(t.sessionCount()).toBe(before + 1);
+});
+
+test("a consumed ticket is claimable within the 60s grace after expiry, not after", async () => {
+  const late = { t: 1000 };
+  const ok = await confirmedTicket(late);
+  late.t = 1000 + 300 + 60; // expires_at (1000+TTL 300) + grace 60: still claimable
+  expect(((await (await ok.poll()).json()) as { ready: boolean }).ready).toBe(true);
+
+  const tooLate = { t: 1000 };
+  const no = await confirmedTicket(tooLate);
+  const before = no.sessionCount();
+  tooLate.t = 1000 + 300 + 61;
+  const r = await no.poll();
+  expect(((await r.json()) as { ready: boolean }).ready).toBe(false);
+  expect(r.headers.get("Set-Cookie")).toBeNull();
+  expect(no.sessionCount()).toBe(before);
+  expect(no.ticketStatus()).toBe("consumed");
+});

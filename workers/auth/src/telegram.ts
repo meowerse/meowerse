@@ -166,6 +166,21 @@ export async function consumeTicket(db: DbClient, ticketId: string, accountId: s
 }
 
 /** Load a ticket by id (for the owner-bound status poll). */
+/** Seconds past `expires_at` that a browser may still collect a ticket confirmed right at its deadline. */
+export const TICKET_CLAIM_GRACE = 60;
+
+/**
+ * One-time claim of a consumed ticket: `consumed` → `claimed`. A ticket yields at most ONE session, and only
+ * while fresh (`expires_at` + grace). The conditional UPDATE is atomic, so concurrent polls can't both win.
+ */
+export async function claimTicket(db: DbClient, ticketId: string, now: number): Promise<boolean> {
+  const upd = await db.execute({
+    sql: "UPDATE login_tickets SET status = 'claimed' WHERE ticket_id = ? AND status = 'consumed' AND expires_at >= ?",
+    args: [ticketId, now - TICKET_CLAIM_GRACE],
+  });
+  return (upd.rowsAffected ?? 0) === 1;
+}
+
 export async function getTicket(db: DbClient, ticketId: string): Promise<TicketRow | null> {
   const r = await db.execute({ sql: "SELECT * FROM login_tickets WHERE ticket_id = ?", args: [ticketId] });
   return r.rows[0] ? (r.rows[0] as unknown as TicketRow) : null;
