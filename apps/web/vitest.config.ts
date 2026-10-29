@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 // DOM tests opt into jsdom per file with a `// @vitest-environment jsdom` first line.
 export default defineConfig({
   test: {
+    // Node >=25 ships a native globalThis.localStorage that is undefined without --localstorage-file and shadows jsdom's; --no-experimental-webstorage restores jsdom's.
+    execArgv: process.allowedNodeEnvironmentFlags.has("--no-experimental-webstorage") ? ["--no-experimental-webstorage"] : [],
     include: ["src/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
