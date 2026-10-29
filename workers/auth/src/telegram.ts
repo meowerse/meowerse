@@ -165,8 +165,10 @@ export async function consumeTicket(db: DbClient, ticketId: string, accountId: s
   return (upd.rowsAffected ?? 0) === 1;
 }
 
-/** Load a ticket by id (for the owner-bound status poll). */
-/** Seconds past `expires_at` that a browser may still collect a ticket confirmed right at its deadline. */
+/**
+ * Seconds past `expires_at` a consumed ticket may still be claimed. It only absorbs clock/latency skew: the
+ * owner cookie and the UI poll both end at TICKET_TTL, so it does not extend the user's 5-minute window.
+ */
 export const TICKET_CLAIM_GRACE = 60;
 
 /**
@@ -181,6 +183,12 @@ export async function claimTicket(db: DbClient, ticketId: string, now: number): 
   return (upd.rowsAffected ?? 0) === 1;
 }
 
+/** Undo a claim when the session could not be issued, so the browser's next poll can retry. */
+export async function unclaimTicket(db: DbClient, ticketId: string): Promise<void> {
+  await db.execute({ sql: "UPDATE login_tickets SET status = 'consumed' WHERE ticket_id = ? AND status = 'claimed'", args: [ticketId] });
+}
+
+/** Load a ticket by id (for the owner-bound status poll). */
 export async function getTicket(db: DbClient, ticketId: string): Promise<TicketRow | null> {
   const r = await db.execute({ sql: "SELECT * FROM login_tickets WHERE ticket_id = ?", args: [ticketId] });
   return r.rows[0] ? (r.rows[0] as unknown as TicketRow) : null;

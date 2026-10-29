@@ -150,7 +150,7 @@ async function confirmedTicket(clock: { t: number }) {
   const poll = () => handle(new Request(`https://iss/tg/status?ticket=${sb.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${owner}` } }), env as never, deps as never);
   const sessionCount = () => (store.tables.sessions as unknown[]).length;
   const ticketStatus = () => (store.tables.login_tickets as { ticket_id: string; status: string }[]).find((r) => r.ticket_id === sb.ticketId)!.status;
-  return { poll, sessionCount, ticketStatus };
+  return { poll, sessionCount, ticketStatus, store };
 }
 
 test("a consumed ticket yields exactly one session; later polls are 'not ready' and mint nothing", async () => {
@@ -193,4 +193,20 @@ test("a consumed ticket is claimable within the 60s grace after expiry, not afte
   expect(r.headers.get("Set-Cookie")).toBeNull();
   expect(no.sessionCount()).toBe(before);
   expect(no.ticketStatus()).toBe("consumed");
+});
+
+test("a failure after the claim releases it, so the next poll still signs the user in", async () => {
+  const t = await confirmedTicket({ t: 1000 });
+  const real = t.store.db.execute.bind(t.store.db);
+  let failOnce = true;
+  t.store.db.execute = (async (q: { sql: string }) => {
+    if (failOnce && /INSERT INTO sessions/.test(q.sql)) { failOnce = false; throw new Error("transient"); }
+    return real(q as never);
+  }) as typeof t.store.db.execute;
+  const first = await t.poll().catch(() => null);
+  if (first) expect(first.status).toBeGreaterThanOrEqual(500);
+  expect(t.ticketStatus()).toBe("consumed"); // released, not stranded
+  const retry = await t.poll();
+  expect(((await retry.json()) as { ready: boolean }).ready).toBe(true);
+  expect(t.ticketStatus()).toBe("claimed");
 });
