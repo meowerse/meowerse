@@ -77,6 +77,24 @@ describe("session store", () => {
     expect(b?.userId).toBe("u1");
     expect(t.size).toBe(1);
   });
+  it("a legacy row migrated by a concurrent request between our lookups is still found", async () => {
+    const now = 1_000_000;
+    const row: Row = { id: "x", user_id: "u1", access_exp: now, created_at: now, expires_at: now + 1e9 };
+    const hash = await sha256hex("legacy-cookie");
+    let hashReads = 0;
+    const db: DbClient = {
+      async all() { return []; },
+      // 1st hash read misses, raw read misses (already migrated), 2nd hash read hits.
+      async first(_sql, p = []) {
+        if (p[0] === hash) return ++hashReads === 1 ? undefined : { ...row, id: hash };
+        return undefined;
+      },
+      async run() {},
+    };
+    const s = await getSession(db, "legacy-cookie", now);
+    expect(s?.userId).toBe("u1");
+    expect(hashReads).toBe(2);
+  });
   it("an expired legacy row is deleted and returns null", async () => {
     const { db, t } = memDb();
     t.set("legacyOld", legacyRow("legacyOld", now - 1));

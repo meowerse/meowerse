@@ -70,6 +70,9 @@ export async function getSession(db: DbClient, cookie: string, now: number): Pro
         [hash, cookie],
       );
       row = await db.first(SELECT_SESSION, [hash]);
+    } else {
+      // A concurrent first use may have migrated the row between our two lookups.
+      row = await db.first(SELECT_SESSION, [hash]);
     }
   }
   if (!row) return null;
