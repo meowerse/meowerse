@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
 CREATE TABLE IF NOT EXISTS sessions (
-  id             TEXT PRIMARY KEY,          -- opaque cookie value
+  id             TEXT PRIMARY KEY,          -- sha256hex(cookie value); legacy rows may hold the raw value until first use
   user_id        TEXT NOT NULL,
   access_token   TEXT NOT NULL,
   refresh_token  TEXT,

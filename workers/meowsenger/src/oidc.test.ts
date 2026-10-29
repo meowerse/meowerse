@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { handleLogin, handleCallback } from "./oidc";
+import { sha256hex } from "./session";
 import type { AuthClient } from "@meowerse/auth";
 import type { DbClient, Row } from "./types";
 
@@ -31,7 +32,7 @@ function memDb() {
     async all() { return []; },
     async first() { return undefined; },
     async run(sql, p = []) {
-      if (sql.startsWith("INSERT INTO sessions")) s.set(String(p[0]), { id: p[0] });
+      if (sql.startsWith("INSERT INTO sessions")) { expect(p).not.toContain("AT"); expect(p).not.toContain("RT"); s.set(String(p[0]), { id: p[0], params: p }); }
       if (sql.startsWith("INSERT INTO users")) u.set(String(p[0]), { id: p[0] });
     },
   };
@@ -67,7 +68,8 @@ describe("handleCallback", () => {
     expect(res.headers.get("Location")).toBe("https://meowsenger.alxnko.eu.org/app");
     const setCookie = res.headers.get("Set-Cookie") ?? "";
     expect(setCookie).toContain("__Host-mw_session=sess1");
-    expect(s.has("sess1")).toBe(true);
+    expect(s.has(await sha256hex("sess1"))).toBe(true);
+    expect(s.has("sess1")).toBe(false);
     expect(u.has("u1")).toBe(true);
   });
   it("rejects a state mismatch with 400", async () => {
@@ -117,7 +119,8 @@ describe("handleCallback", () => {
     const d = deps(db, leanAuth, { sub: "u1", preferred_username: "alex" });
     const res = await handleCallback(cbReq("code=abc&state=st"), env, d);
     expect(res.status).toBe(302);
-    expect(s.has("sess1")).toBe(true);
+    expect(s.has(await sha256hex("sess1"))).toBe(true);
+    expect(s.has("sess1")).toBe(false);
     expect(u.has("u1")).toBe(true);
   });
   it("redirects browser to /auth/login?retry=1 when txn cookie is missing", async () => {
