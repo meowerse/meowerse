@@ -83,6 +83,8 @@ export interface AccountInfo {
 }
 export interface Grant {
   clientId: string;
+  /** App display name from the server (null → show the client id only). Optional for older servers. */
+  displayName?: string | null;
   approvedScopes: string[];
   updatedAt: string | null;
 }
