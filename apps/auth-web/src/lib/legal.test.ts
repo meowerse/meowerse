@@ -136,7 +136,7 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     // developers.cloudflare.com/durable-objects/api/sqlite-storage-api/: PITR "past 30 days"; turso.tech/pricing: Free "1 day".
     expect(privacy).toContain("up to 30 days");
     expect(privacy).toContain("SQLite-backed Cloudflare Durable Objects");
-    expect(privacy).toContain("on the Free plan the restore window is 1 day");
+    expect(privacy).toContain("We are on Turso's free plan, whose restore window is 1 day");
     expect(privacy).not.toContain("our database provider's backup window");
   });
   it("describes Minecraft plugin reporting and logs without Minekube", () => {
@@ -145,7 +145,7 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     const fs = PARTNERS.find((p) => p.partner.startsWith("FastStats"))!;
     expect(fs.partner).toContain("NexusCore");
     expect(fs.gets).toContain("error reports");
-    expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("19 plugin files");
+    expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("built into most of the server's plugins");
     expect(privacy).toContain("There is no retention limit today");
     expect(privacy).toContain("chat and commands");
     expect(privacy).toContain("voice-chat group (any distance)");
@@ -202,5 +202,29 @@ describe("shared terms page copy", () => {
   it("has a shared section plus a section per service", () => {
     for (const s of ["accounts", "acceptable use", "no warranty", "changes and contact", "Meowsenger", "meow-sim", "Minecraft server"]) expect(terms, s).toContain(s);
     expect(terms).toContain("not end-to-end encrypted");
+  });
+});
+
+// These read the code the copy describes, so a change there fails here instead of leaving the page wrong.
+describe("privacy copy stays anchored to the code it describes", () => {
+  const repo = (f: string) => readFileSync(join(__dirname, "../../../..", f), "utf8");
+  it("Meowsenger asks for exactly openid, profile and verified (no offline access)", () => {
+    expect(repo("workers/meowsenger/src/oidc.ts")).toMatch(/const SCOPES = "openid profile verified";/);
+  });
+  it("registered apps are active immediately (no review), as the third-party row says", () => {
+    expect(repo("workers/auth/src/dashboard.ts")).toContain("0, 'active'");
+    expect(APP_KINDS.find((k) => k.kind.startsWith("Third-party"))!.who).toMatch(/do not review/);
+  });
+  it("rate-limit retention is 7 days in housekeeping, matching the page", () => {
+    const hk = repo("workers/auth/src/housekeeping.ts");
+    expect(hk).toContain("export const RATE_LIMIT_RETENTION = 7 * 86400;");
+    expect(hk).toContain('"COALESCE(last_at, window_start) < ?"');
+  });
+  it("every .legal-table selector is scoped under .mw-prose, with a label fallback for old browsers", () => {
+    const css = table.split("<style")[1]!.split(">").slice(1).join(">").split("</style")[0]!;
+    for (const sel of css.match(/[^{}]+(?=\{)/g)!.flatMap((s) => s.split(",")).filter((s) => s.includes(".legal-table"))) {
+      expect(sel.trim(), sel).toMatch(/^(@media[^]*\s)?\.mw-prose \.legal-table/);
+    }
+    expect(table).toContain('content: attr(data-label) ": "; content: attr(data-label) ": " / ""');
   });
 });

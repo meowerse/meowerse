@@ -28,6 +28,6 @@ const { caption, head, rows, class: cls } = Astro.props;
     .mw-prose .legal-table tr { margin-bottom: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-m); background: var(--c-surface); }
     .mw-prose .legal-table th, .mw-prose .legal-table td { padding: var(--sp-1) 0; border: 0; }
     .mw-prose .legal-table th[scope="row"] { font-size: var(--fs-3); }
-    .mw-prose .legal-table td::before { content: attr(data-label) ": " / ""; color: var(--c-fg-muted); font-weight: 600; }
+    .mw-prose .legal-table td::before { content: attr(data-label) ": "; content: attr(data-label) ": " / ""; color: var(--c-fg-muted); font-weight: 600; }
   }
 </style>
