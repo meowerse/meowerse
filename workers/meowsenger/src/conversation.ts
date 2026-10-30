@@ -83,28 +83,31 @@ const RATE_MAX = 30;
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
 const PUSH_DEBOUNCE_MS = 30_000;
-/** Subrequests (D1 calls + DO fetches + outbound pushes) one message event may spend.
- *  Workers allow 50 per invocation; keep headroom. The inbox fan-out and the push
- *  fan-out of one message share this budget (see `SubBudget`). */
-const SUBREQUEST_BUDGET = 45;
+/** Two independent per-invocation subrequest budgets (Cloudflare limits page, Oct 2026,
+ *  Free plan): external `fetch()` subrequests are capped at 50; "subrequests to internal
+ *  services" (DO stub fetches) have a SEPARATE cap of 1,000.
+ *  EXTERNAL: Web Push POSTs, plus D1 queries counted conservatively (the docs list D1
+ *  ambiguously). 45 keeps headroom under 50.
+ *  INTERNAL: UserInbox /notify DO fetches. 900 keeps headroom under 1,000. */
+const EXTERNAL_BUDGET = 45;
+const INTERNAL_BUDGET = 900;
 /** After a transient push failure (429/5xx/network) a recipient becomes eligible again
  *  this long after the failure — not immediately, not after the full window. */
 const PUSH_RETRY_MS = 10_000;
 
-/** Subrequests spent so far in ONE message event (mirror write, member read, inbox
- *  fetches, push-target read, push sends, prunes). Counted synchronously. */
-interface SubBudget { used: number }
+/** Subrequests spent so far in ONE invocation, per budget. `ext`: mirror write, member
+ *  read, push-target read, push sends, prunes (counted synchronously). `int`: inbox DO
+ *  fetches. */
+interface SubBudget { ext: number; int: number }
 
-/** Live inbox previews sent inline per message. The rest of a large room gets a
- *  content-free invalidation from a follow-up (alarm) invocation, AFTER the pushes. */
-const INBOX_INLINE_CAP = 20;
 /** Max follow-up (alarm) invocations that may continue one queued fan-out. Beyond it
- *  the remaining work is dropped: the next message re-queues it and the client's 45 s
- *  sidebar poll covers the sidebar. */
+ *  the remaining work is dropped (logged, counts only): the next message re-queues it
+ *  and the client's 45 s sidebar poll covers the sidebar. */
 const MAX_FOLLOWUPS = 5;
 /** Pending fan-out work persisted in DO storage: recipient ids and the chat id only
- *  (never message text, endpoints or keys). */
-interface Overflow { chatId: string; push: string[]; inbox: string[]; rounds: number }
+ *  (never message text, endpoints or keys). `seq` increments on every queueOverflow so
+ *  a running follow-up can tell that new work arrived while it awaited. */
+interface Overflow { chatId: string; push: string[]; inbox: string[]; rounds: number; seq: number }
 const OVERFLOW_KEY = "fanout_overflow";
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
@@ -447,7 +450,9 @@ export class Conversation extends DurableObject<Env> {
     }
     // Off the critical path: mirror the preview to D1 and notify all members' UserInbox DOs.
     // Awaiting mirrorLastMessage ensures D1 is up-to-date if a client refetches on notification.
-    const budget: SubBudget = { used: 1 }; // the mirror write
+    // External: the mirror write + the member read (reserved up front, even when the
+    // member list is cached, so push sizing never depends on the inbox fan-out's timing).
+    const budget: SubBudget = { ext: 2, int: 0 };
     const sidebar = (async (): Promise<string[]> => {
       try {
         await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
@@ -463,9 +468,9 @@ export class Conversation extends DurableObject<Env> {
     // Whatever the per-invocation budget cut off continues from the DO alarm.
     this.ctx.waitUntil(
       (async () => {
-        const pushLeft = await this.pushOffline(chatId, senderId, budget, sidebar).catch(() => [] as string[]);
+        const pushLeft = await this.pushOffline(chatId, senderId, budget).catch(() => [] as string[]);
         const inboxLeft = await sidebar;
-        await this.queueOverflow(chatId, pushLeft, inboxLeft).catch(() => {});
+        await this.queueOverflow(chatId, senderId, pushLeft, inboxLeft).catch(() => {});
       })(),
     );
     return id;
@@ -486,6 +491,9 @@ export class Conversation extends DurableObject<Env> {
   private inboxMembers = new Map<string, { ids: string[]; at: number }>();
   /** Bumped by dropUser; a member read that raced a removal must not be cached/used. */
   private membershipGen = 0;
+  /** Per-invocation internal (DO fetch) budget; an instance field only so tests can
+   *  lower it (not production configuration). */
+  private internalBudget = INTERNAL_BUDGET;
   private async inboxFanout(chatId: string, senderId: string, message: Wire, budget: SubBudget): Promise<string[]> {
     const ns = this.env.USER_INBOX;
     if (!ns) return []; // binding not configured (older deploy / tests)
@@ -499,7 +507,7 @@ export class Conversation extends DurableObject<Env> {
       // hold the removed member: discard it and re-read once, and never cache it.
       for (let attempt = 0; ; attempt++) {
         const gen = this.membershipGen;
-        budget.used++;
+        if (attempt > 0) budget.ext++; // the re-read (the first read is reserved by the caller)
         ids = await chatMemberIds(this.d1(), chatId);
         if (gen === this.membershipGen) {
           this.inboxMembers.set(chatId, { ids, at: now });
@@ -516,11 +524,11 @@ export class Conversation extends DurableObject<Env> {
       senderId,
       forwarded: message.isForwarded,
     });
-    // Pushes matter more than live previews, so only a few previews go inline; members
-    // beyond the cap are returned and get a content-free invalidation from a follow-up.
-    const take = Math.max(0, Math.min(INBOX_INLINE_CAP, SUBREQUEST_BUDGET - budget.used));
+    // Every member gets a preview up to the INTERNAL budget; members beyond it are
+    // returned and get a content-free invalidation from a follow-up.
+    const take = Math.max(0, this.internalBudget - budget.int);
     const bounded = ids.slice(0, take);
-    budget.used += bounded.length;
+    budget.int += bounded.length;
     await Promise.all(
       bounded.map((id) =>
         ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {}),
@@ -538,18 +546,17 @@ export class Conversation extends DurableObject<Env> {
    * Debounced PER RECIPIENT (see `lastPush`); the window is reserved synchronously,
    * right after the single D1 read and before any send, so concurrent messages can't
    * double-push and one recipient's push never silences another. Shares this event's
-   * `budget` with the inbox fan-out (waited for first, so its spend is final).
+   * external `budget` (the inbox fan-out spends the separate internal one).
    */
-  private async pushOffline(chatId: string, senderId: string, budget: SubBudget, sidebar: Promise<unknown>): Promise<string[]> {
+  private async pushOffline(chatId: string, senderId: string, budget: SubBudget): Promise<string[]> {
     if (!this.env.VAPID_PRIVATE_JWK) return []; // push not configured
     // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
     // backgrounded tab still gets a push (its service worker suppresses the toast while
     // a Meowsenger window is visible).
     const active = this.activeUsers();
     for (const u of active) this.lastPush.delete(u); // they've seen the chat
-    budget.used++; // the target read
+    budget.ext++; // the target read
     const all = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active]);
-    await sidebar.catch(() => {}); // its subrequest spend is now final
     return this.fanPush(all, budget, active.filter((u) => u !== senderId).length);
   }
 
@@ -571,8 +578,8 @@ export class Conversation extends DurableObject<Env> {
     const targets: Array<{ endpoint: string; userId: string }> = [];
     for (const [userId, endpoints] of byUser) {
       if (now - (this.lastPush.get(userId) ?? -Infinity) < PUSH_DEBOUNCE_MS) { debounced++; continue; }
-      if (budget.used + endpoints.length > SUBREQUEST_BUDGET) { cut.push(userId); continue; }
-      budget.used += endpoints.length;
+      if (budget.ext + endpoints.length > EXTERNAL_BUDGET) { cut.push(userId); continue; }
+      budget.ext += endpoints.length;
       for (const endpoint of endpoints) targets.push({ endpoint, userId });
       this.lastPush.set(userId, now);
     }
@@ -582,6 +589,7 @@ export class Conversation extends DurableObject<Env> {
     if (activeExcluded !== null) {
       if (byUser.size > 0 && debounced === byUser.size) {
         console.log("push_decision skipped=debounce");
+        console.log(`push_decision outcome eligible=${byUser.size} attempted=0 accepted=0 transient_failed=0 permanent_failed=0 suppressed_active=${activeExcluded} suppressed_debounce=${debounced} deferred=${cut.length}`);
         return cut;
       }
       console.log(`push_decision targets=${targets.length} active_excluded=${activeExcluded}${debounced > 0 ? ` debounced=${debounced}` : ""}`);
@@ -600,8 +608,8 @@ export class Conversation extends DurableObject<Env> {
         // family — never the endpoint URL, keys, user or chat ids.
         const prune = status === 404 || status === 410 || status === 403;
         console.log(`push_delivery status=${status} service=${pushHostFamily(ep)}${status === 403 ? " pruned=1" : ""}`);
-        if (prune && budget.used < SUBREQUEST_BUDGET) {
-          budget.used++;
+        if (prune && budget.ext < EXTERNAL_BUDGET) {
+          budget.ext++;
           await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
         }
         const o = status >= 200 && status < 300 ? "ok" : status === 0 || status === 429 || status >= 500 ? "transient" : "final";
@@ -616,6 +624,18 @@ export class Conversation extends DurableObject<Env> {
         this.lastPush.set(u, now - PUSH_DEBOUNCE_MS + PUSH_RETRY_MS);
       }
     }
+    // Per-recipient outcome counts (no identities). `eligible` = recipients with a
+    // subscription that were not excluded as active/sender; `deferred` = queued for the
+    // alarm. Active exclusion is per USER: any non-away socket in this room suppresses
+    // push on all of that user's devices.
+    let accepted = 0, transientFailed = 0, permanentFailed = 0;
+    for (const u of reserved) {
+      const o = outcome.get(u);
+      if (o === "ok") accepted++; else if (o === "transient") transientFailed++; else permanentFailed++;
+    }
+    console.log(
+      `push_decision outcome eligible=${byUser.size} attempted=${reserved.size} accepted=${accepted} transient_failed=${transientFailed} permanent_failed=${permanentFailed} suppressed_active=${activeExcluded ?? 0} suppressed_debounce=${debounced} deferred=${cut.length}`,
+    );
     return cut;
   }
 
@@ -629,60 +649,84 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Persist recipients (ids only) that the first invocation could not serve, merged
-   *  with any work already queued by earlier messages, and arm an immediate alarm. */
-  private async queueOverflow(chatId: string, push: string[], inbox: string[]): Promise<void> {
+   *  with any work already queued by earlier messages, and arm an immediate alarm.
+   *  The current sender is never a queued push target (they are looking at the chat). */
+  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[]): Promise<void> {
     if (push.length === 0 && inbox.length === 0) return;
-    const prev = (await this.ctx.storage.get<Overflow>(OVERFLOW_KEY)) ?? { chatId, push: [], inbox: [], rounds: 0 };
+    const prev = (await this.ctx.storage.get<Overflow>(OVERFLOW_KEY)) ?? { chatId, push: [], inbox: [], rounds: 0, seq: 0 };
     const next: Overflow = {
       chatId,
-      push: [...new Set([...prev.push, ...push])],
+      push: [...new Set([...prev.push, ...push])].filter((u) => u !== senderId),
       inbox: [...new Set([...prev.inbox, ...inbox])],
       rounds: 0, // new work: a fresh follow-up allowance
+      seq: prev.seq + 1,
     };
     await this.ctx.storage.put(OVERFLOW_KEY, next);
     await this.armAlarm(Date.now());
   }
 
+  /** Write back the outcome of one follow-up run WITHOUT losing work queued meanwhile:
+   *  keep everything in the current record that the run did not start with (new work),
+   *  plus this run's leftovers that are still queued (dropUser may have pruned some).
+   *  If `queueOverflow` ran meanwhile (seq changed) its reset `rounds` stands. */
+  private async settleOverflow(work: Overflow, pushLeft: string[], inboxLeft: string[]): Promise<void> {
+    const cur = await this.ctx.storage.get<Overflow>(OVERFLOW_KEY);
+    if (!cur) return; // pruned empty by dropUser: nothing left to serve
+    const hadPush = new Set(work.push);
+    const hadInbox = new Set(work.inbox);
+    const curPush = new Set(cur.push);
+    const curInbox = new Set(cur.inbox);
+    const push = [...new Set([...cur.push.filter((u) => !hadPush.has(u)), ...pushLeft.filter((u) => curPush.has(u))])];
+    const inbox = [...new Set([...cur.inbox.filter((u) => !hadInbox.has(u)), ...inboxLeft.filter((u) => curInbox.has(u))])];
+    if (push.length === 0 && inbox.length === 0) { await this.ctx.storage.delete(OVERFLOW_KEY); return; }
+    const rounds = cur.seq === work.seq ? work.rounds + 1 : cur.rounds;
+    await this.ctx.storage.put(OVERFLOW_KEY, { chatId: work.chatId, push, inbox, rounds, seq: cur.seq } satisfies Overflow);
+    await this.armAlarm(Date.now());
+  }
+
   /** One follow-up invocation: pushes first (re-read, so removed members and users now
    *  looking at the chat drop out), then content-free `{chatId, invalidate}` inbox
-   *  signals to members beyond the inline cap (client refetches the list). Anything
-   *  still cut by this invocation's own budget is re-queued, up to MAX_FOLLOWUPS. */
+   *  signals to members beyond the inline budget (client refetches the list). Anything
+   *  still cut by this invocation's own budgets is re-queued, up to MAX_FOLLOWUPS. A
+   *  failure re-queues the whole run with rounds+1 (never orphans the work). */
   private async runOverflow(): Promise<void> {
     const work = await this.ctx.storage.get<Overflow>(OVERFLOW_KEY);
     if (!work) return;
-    if (work.rounds >= MAX_FOLLOWUPS) { await this.ctx.storage.delete(OVERFLOW_KEY); return; }
-    const budget: SubBudget = { used: 0 };
-    let pushLeft: string[] = [];
-    if (work.push.length > 0 && this.env.VAPID_PRIVATE_JWK) {
-      const pending = new Set(work.push);
-      const active = this.activeUsers();
-      for (const u of active) this.lastPush.delete(u);
-      budget.used++;
-      const all = await pushTargetsForChat(this.d1(), work.chatId, active); // join on chat_members: removed users drop out
-      pushLeft = await this.fanPush(all.filter((t) => pending.has(t.userId)), budget, null);
+    if (work.rounds >= MAX_FOLLOWUPS) {
+      console.log(`push_decision overflow_dropped push=${work.push.length} inbox=${work.inbox.length}`);
+      await this.ctx.storage.delete(OVERFLOW_KEY);
+      return;
     }
-    let inboxLeft: string[] = [];
-    const ns = this.env.USER_INBOX;
-    if (work.inbox.length > 0 && ns) {
-      budget.used++;
-      const members = new Set(await chatMemberIds(this.d1(), work.chatId));
-      const pending = work.inbox.filter((u) => members.has(u));
-      const take = Math.max(0, SUBREQUEST_BUDGET - budget.used);
-      const now = pending.slice(0, take);
-      inboxLeft = pending.slice(take);
-      budget.used += now.length;
-      const body = JSON.stringify({ chatId: work.chatId, invalidate: true });
-      await Promise.all(
-        now.map((id) => ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {})),
-      );
+    const budget: SubBudget = { ext: 0, int: 0 };
+    let pushLeft: string[] = this.env.VAPID_PRIVATE_JWK ? work.push : [];
+    let inboxLeft: string[] = this.env.USER_INBOX ? work.inbox : [];
+    try {
+      if (work.push.length > 0 && this.env.VAPID_PRIVATE_JWK) {
+        const pending = new Set(work.push);
+        const active = this.activeUsers();
+        for (const u of active) this.lastPush.delete(u);
+        budget.ext++;
+        const all = await pushTargetsForChat(this.d1(), work.chatId, active); // join on chat_members: removed users drop out
+        pushLeft = await this.fanPush(all.filter((t) => pending.has(t.userId)), budget, null);
+      }
+      const ns = this.env.USER_INBOX;
+      if (work.inbox.length > 0 && ns) {
+        budget.ext++;
+        const members = new Set(await chatMemberIds(this.d1(), work.chatId));
+        const pending = work.inbox.filter((u) => members.has(u));
+        const take = Math.max(0, this.internalBudget - budget.int);
+        const now = pending.slice(0, take);
+        inboxLeft = pending.slice(take);
+        budget.int += now.length;
+        const body = JSON.stringify({ chatId: work.chatId, invalidate: true });
+        await Promise.all(
+          now.map((id) => ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {})),
+        );
+      }
+    } catch (e) {
+      console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"}`);
     }
-    // Re-read: dropUser may have pruned the queue while we awaited.
-    const cur = (await this.ctx.storage.get<Overflow>(OVERFLOW_KEY)) ?? work;
-    const stillPush = pushLeft.filter((u) => cur.push.includes(u));
-    const stillInbox = inboxLeft.filter((u) => cur.inbox.includes(u));
-    if (stillPush.length === 0 && stillInbox.length === 0) { await this.ctx.storage.delete(OVERFLOW_KEY); return; }
-    await this.ctx.storage.put(OVERFLOW_KEY, { chatId: work.chatId, push: stillPush, inbox: stillInbox, rounds: work.rounds + 1 } satisfies Overflow);
-    await this.armAlarm(Date.now());
+    await this.settleOverflow(work, pushLeft, inboxLeft);
   }
 
   /**
@@ -871,7 +915,8 @@ export class Conversation extends DurableObject<Env> {
     );
     this.broadcast({ type: "deleted", id });
     // Schedule the hard purge for just after this row ages out of the window.
-    void this.armAlarm(Date.now() + PURGE_AFTER_MS + 60_000); // never postpones a sooner alarm (e.g. a queued fan-out)
+    // never postpones a sooner alarm (e.g. a queued fan-out); failure is logged, not floating
+    this.ctx.waitUntil(this.armAlarm(Date.now() + PURGE_AFTER_MS + 60_000).catch(() => console.log("purge_arm_failed")));
   }
 
   /**
