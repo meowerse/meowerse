@@ -1,11 +1,15 @@
 import type { Deps } from "./db";
 import type { DbClient } from "./types";
 import { TICKET_CLAIM_GRACE } from "./telegram";
+import { REFRESH_ABS_TTL } from "./refresh";
+import { ACCESS_TTL } from "./token";
 
 /** One day margin kept past every expiry before a row is physically deleted. */
 export const HOUSEKEEPING_MARGIN = 86400;
 /** audit_log retention window. */
 export const AUDIT_RETENTION_DAYS = 365;
+/** Evidence kept past a token family's absolute expiry (refresh reuse / code replay detection). */
+export const RETENTION_GRACE = 30 * 86400;
 /** Rows deleted per statement, and max statements per table per run (=> 10k rows/table/run). */
 export const BATCH_SIZE = 500;
 export const MAX_BATCHES = 20;
@@ -23,6 +27,8 @@ export interface HousekeepingResult {
 }
 
 interface Target {
+  /** Result/failure key (a table may have more than one target). */
+  key: string;
   table: string;
   where: string;
   args: unknown[];
@@ -36,21 +42,46 @@ function sqliteTs(epochSeconds: number): string {
 /**
  * Deletion targets. All integer expiry columns are epoch SECONDS.
  *
- * Deliberately NOT cleaned (rows are still read after expiry):
- *  - refresh_tokens: rotateRefresh checks `used_at` (reuse detection -> family revoke + audit)
- *    BEFORE the expiry check, so deleting expired rotated rows would silence reuse detection.
- *  - oauth_codes: exchangeCode checks `consumed_at` (replay -> revoke family) before expiry.
- *  - login_requests (no writer), rate_limits / management_tokens (no expiry column).
+ * Token-evidence retention (owner-approved): rows are never deleted by an individual idle expiry,
+ * because reuse/replay detection (rotateRefresh `used_at`, exchangeCode `consumed_at`) must keep
+ * working while the token family is still valid.
+ *  - refresh_tokens: only when the WHOLE family is past absolute expiry + RETENTION_GRACE.
+ *  - oauth_codes consumed: the family it created expires <= code expiry + REFRESH_ABS_TTL and its
+ *    access tokens die <= ACCESS_TTL later; keep until that + RETENTION_GRACE.
+ *  - oauth_codes never redeemed: no family exists; expiry + RETENTION_GRACE.
+ * Not cleaned: login_requests (no writer), rate_limits / management_tokens (no expiry column).
+ * Account deletion removes these rows by account_id immediately (accounts.ts), independent of this.
  */
 function targets(now: number): Target[] {
   const cutoff = now - HOUSEKEEPING_MARGIN;
+  const familyCutoff = now - RETENTION_GRACE;
   return [
-    { table: "audit_log", where: "ts < ?", args: [sqliteTs(now - AUDIT_RETENTION_DAYS * 86400)] },
-    { table: "login_tickets", where: "expires_at < ?", args: [now - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
+    { key: "audit_log", table: "audit_log", where: "ts < ?", args: [sqliteTs(now - AUDIT_RETENTION_DAYS * 86400)] },
+    { key: "login_tickets", table: "login_tickets", where: "expires_at < ?", args: [now - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
     // lookupSession/whoami reject on absolute expiry; the row is dead one day past it.
-    { table: "sessions", where: "absolute_expires_at < ?", args: [cutoff] },
+    { key: "sessions", table: "sessions", where: "absolute_expires_at < ?", args: [cutoff] },
     // introspect() returns inactive for expired or missing rows alike (ACCESS_TTL is 15 min).
-    { table: "access_tokens", where: "expires_at < ?", args: [cutoff] },
+    { key: "access_tokens", table: "access_tokens", where: "expires_at < ?", args: [cutoff] },
+    {
+      key: "refresh_tokens",
+      table: "refresh_tokens",
+      // Defensive sibling check: a row stays while ANY row of its family is inside the window.
+      where: `absolute_expires_at < ? AND NOT EXISTS (
+        SELECT 1 FROM refresh_tokens s WHERE s.family_id = refresh_tokens.family_id AND s.absolute_expires_at >= ?)`,
+      args: [familyCutoff, familyCutoff],
+    },
+    {
+      key: "oauth_codes_consumed",
+      table: "oauth_codes",
+      where: "consumed_at IS NOT NULL AND expires_at < ?",
+      args: [now - REFRESH_ABS_TTL - ACCESS_TTL - RETENTION_GRACE],
+    },
+    {
+      key: "oauth_codes_unredeemed",
+      table: "oauth_codes",
+      where: "consumed_at IS NULL AND expires_at < ?",
+      args: [now - RETENTION_GRACE],
+    },
   ];
 }
 
@@ -72,11 +103,11 @@ export async function runHousekeeping(db: DbClient, now: number, opts: Housekeep
   const maxBatches = opts.maxBatches ?? MAX_BATCHES;
   const result: HousekeepingResult = { deleted: {}, failed: [] };
   for (const t of targets(now)) {
-    result.deleted[t.table] = 0;
+    result.deleted[t.key] = 0;
     try {
-      await deleteBounded(db, t, batchSize, maxBatches, (n) => (result.deleted[t.table]! += n));
+      await deleteBounded(db, t, batchSize, maxBatches, (n) => (result.deleted[t.key]! += n));
     } catch {
-      result.failed.push(t.table);
+      result.failed.push(t.key);
     }
   }
   return result;
