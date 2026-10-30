@@ -21,6 +21,7 @@ export type AuditEvent =
   | "consent.grant"
   | "consent.revoke"
   | "token.reuse_detected"
+  | "token.code_replay"
   | "token.revoke"
   | "client.create"
   | "client.update"

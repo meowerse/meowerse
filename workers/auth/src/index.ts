@@ -460,7 +460,13 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   if (p.grant_type === "authorization_code") {
     const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
-    if (!ex.ok) return json({ error: ex.error }, 400, { ...cors, ...noStore });
+    if (!ex.ok) {
+      // Code replay already revoked every token issued from the code inside exchangeCode.
+      if (ex.replay) {
+        await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId ?? null, clientId: ex.codeClientId ?? clientId });
+      }
+      return json({ error: ex.error }, 400, { ...cors, ...noStore });
+    }
     return mintResponse(env, deps, cors, noStore, {
       accountId: ex.accountId,
       clientId,

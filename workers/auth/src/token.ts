@@ -57,7 +57,7 @@ export interface ExchangeOk {
   authTime: number;
   family: string;
 }
-export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean };
+export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; accountId?: string; codeClientId?: string };
 
 /**
  * Redeem an authorization code (spec §5, §8, §10/#3). Single-use via a
@@ -78,7 +78,7 @@ export async function exchangeCode(
     // RFC 6749 §4.1.2: a replayed code revokes every token issued from it, including
     // the offline refresh token, which shares the code's family.
     await revokeFamily(db, String(row.jti_family));
-    return { ok: false, error: "invalid_grant", replay: true };
+    return { ok: false, error: "invalid_grant", replay: true, accountId: String(row.account_id), codeClientId: String(row.client_id) };
   }
   if (Number(row.expires_at) < i.now) return { ok: false, error: "invalid_grant" };
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
