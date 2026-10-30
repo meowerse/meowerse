@@ -190,3 +190,16 @@ test("(D2) online scope: no refresh token, still atomic", async () => {
   expect(await usableAccess(f.real, family)).toBe(1);
   expect(await n(f.real, "refresh_tokens")).toBe(0);
 });
+
+test("(C2) failure INSIDE the real transaction rolls back the access insert and the consume", async () => {
+  const f = await fixture();
+  const { code, hash } = await issueCode(f.real, ["openid", "offline_access"]);
+  // the refresh INSERT (2nd statement) aborts after the access INSERT already ran
+  await f.real.execute("CREATE TRIGGER boom BEFORE INSERT ON refresh_tokens BEGIN SELECT RAISE(ABORT, 'boom'); END");
+  const r = await f.exchange(code);
+  expect(r.status).toBe(500);
+  expect(await n(f.real, "access_tokens")).toBe(0);
+  expect(await n(f.real, "oauth_codes WHERE code_hash = ? AND consumed_at IS NULL", [hash])).toBe(1);
+  await f.real.execute("DROP TRIGGER boom");
+  expect((await f.exchange(code)).status).toBe(200);
+});

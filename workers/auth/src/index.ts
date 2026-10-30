@@ -445,8 +445,11 @@ async function mintResponse(
   // consumed" and "its tokens exist" therefore become visible together, so a
   // replay can never revoke an empty family while the first request's tokens are
   // still to be inserted.
-  // If the batch throws, the whole transaction rolled back: the code stays
-  // unconsumed, nothing was issued, and the client may retry. Answer 500.
+  // If the batch throws, the transaction rolled back: the code stays unconsumed,
+  // nothing was issued, and the client may retry. (If COMMIT succeeded but the
+  // response was lost, the code is consumed and the tokens exist, but we still
+  // return no token; a retry takes the replay path and revokes the family.)
+  // Either way no token reaches the client. Answer 500.
   let res;
   try {
     res = await db.batch([...stmts, consumeCodeStmt(i.codeHash)], "write");
