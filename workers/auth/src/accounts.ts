@@ -219,8 +219,9 @@ export async function countRecoveryCodes(db: DbClient, accountId: string): Promi
  * `db.batch(..., "write")` transaction (BEGIN IMMEDIATE), so a mid-sequence
  * failure rolls the whole erasure back and a concurrent token issuance is
  * serialized against it. The guarded token inserts (INSERT ... SELECT WHERE
- * EXISTS(code unconsumed / refresh unused)) cannot write once this transaction
- * has removed the account's oauth_codes / refresh_tokens rows. Owned-client
+ * EXISTS(code unconsumed / refresh unused)) cannot write from codes / refresh
+ * tokens that existed at deletion, because this transaction removes those rows.
+ * (A fresh oauth_codes / sessions INSERT is not guarded; out of scope here.) Owned-client
  * children are deleted via subqueries on `oauth_clients.owner_account_id`, so
  * nothing depends on a prior read. Children first; `oauth_clients` then
  * `accounts` last. `audit_log` rows are intentionally kept (the caller records
