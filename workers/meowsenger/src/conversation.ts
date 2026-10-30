@@ -3,6 +3,7 @@ import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
+import { d1Client } from "./db";
 import { pushTargetsForChat, sendPush, deleteDeadPushSubscription, pushHostFamily } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
@@ -196,6 +197,17 @@ export class Conversation extends DurableObject<Env> {
       if (a?.userId) s.add(a.userId);
     }
     return [...s];
+  }
+
+  /** Users with at least one NON-away socket in this room (the chat is on screen
+   *  somewhere for them). Same hibernation-safe derivation as onlineUsers. */
+  private activeUsers(): string[] {
+    const active = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attach | null;
+      if (a?.userId && !a.away) active.add(a.userId);
+    }
+    return [...active];
   }
 
   /** Users who are online (≥1 socket) but whose EVERY socket is `away` (all their
@@ -474,11 +486,20 @@ export class Conversation extends DurableObject<Env> {
     // D1 read so a burst skips the read entirely (the recipient's SW fetches the
     // details when it wakes, so a suppressed tickle loses nothing).
     const now = Date.now();
-    if (now - (this.lastPush.get(chatId) ?? 0) < PUSH_DEBOUNCE_MS) return;
+    if (now - (this.lastPush.get(chatId) ?? 0) < PUSH_DEBOUNCE_MS) {
+      console.log("push_decision skipped=debounce");
+      return;
+    }
+    // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
+    // backgrounded tab still gets a push (its service worker suppresses the toast while
+    // a Meowsenger window is visible). Previously every connected socket, even "away",
+    // blocked the push, so a phone with the tab in the background got nothing.
+    const active = this.activeUsers();
+    const targets = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active]);
+    // Observability without identities: counts only.
+    console.log(`push_decision targets=${targets.length} active_excluded=${active.filter((u) => u !== senderId).length}`);
+    if (targets.length === 0) return; // nothing sent: don't hold the debounce window
     this.lastPush.set(chatId, now);
-    const exclude = [senderId, ...this.onlineUsers()];
-    const targets = await pushTargetsForChat(this.d1(), chatId, exclude);
-    if (targets.length === 0) return;
     await Promise.all(
       targets.map(async ({ endpoint: ep, userId }) => {
         const status = await sendPush(ep, this.env, now);
@@ -974,20 +995,11 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
-   * Minimal D1 adapter (same shape as `d1Client` in db.ts) for the mirror write.
-   * The DO only ever needs `run`; `all`/`first` are stubbed to satisfy DbClient.
+   * D1 adapter (shared `d1Client`). It MUST implement `all`/`first` for real: the DO
+   * reads chat membership (inbox fan-out) and push targets through them. They were
+   * once stubbed to `[]`, which made every push/inbox target list silently empty.
    */
   private d1(): DbClient {
-    const db = this.env.DB;
-    return {
-      all: async () => [],
-      first: async () => undefined,
-      run: async (sql: string, params: unknown[] = []) => {
-        await db
-          .prepare(sql)
-          .bind(...params)
-          .run();
-      },
-    };
+    return d1Client(this.env.DB);
   }
 }
