@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCurrent, isExternal, linkAttrs, NAV, SITE } from "./site";
+import { FOOTER_LINKS, isCurrent, isExternal, linkAttrs, NAV, SITE } from "./site";
 
 describe("site", () => {
   it("canonical host and theme colours come from the tokens", () => {
@@ -20,5 +20,10 @@ describe("site", () => {
     expect(isCurrent("/p/auth/", "/p/")).toBe(true);
     expect(isCurrent("/ui/components/button/", "/ui/")).toBe(true);
     expect(isCurrent("/", "/ui/")).toBe(false);
+  });
+  it("footer links to the shared privacy policy and terms on auth.alxnko.dev", () => {
+    const hrefs = FOOTER_LINKS.map((l) => l.href);
+    expect(hrefs).toContain("https://auth.alxnko.dev/privacy");
+    expect(hrefs).toContain("https://auth.alxnko.dev/terms");
   });
 });
