@@ -380,7 +380,7 @@ describe("Conversation offline push decision", () => {
       await new Promise((r) => setTimeout(r, 10));
     }
   };
-  interface Queued { push: string[]; inbox: string[]; attempts?: Record<string, number>; notBefore?: Record<string, number>; rounds?: number; total?: number }
+  interface Queued { push: string[]; inbox: string[]; attempts?: Record<string, number>; notBefore?: Record<string, number>; rounds?: number; total?: number; ceiling?: number }
   const queued = (c: string) => runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.get<Queued>("fanout_overflow"));
   const SECRET = "SECRET-BODY-xyz";
   /** Test-only: lower the per-invocation internal (DO fetch) budget of one room. */
@@ -558,19 +558,16 @@ describe("Conversation offline push decision", () => {
   });
 
   /** Alarm control for tests that must not race the runtime's own alarm firing: the
-   *  auto-fired alarm becomes a no-op, `runAlarm` runs one real invocation. */
+   *  auto-fired alarm is ALWAYS a no-op (a toggle could let a runtime-fired alarm overlap
+   *  a manual one), `runAlarm` calls the real handler directly. */
   async function manualAlarms(c: string): Promise<() => Promise<void>> {
-    let manual = false;
     let orig!: () => Promise<void>;
     await runInDurableObject(stub(c), async (inst: Conversation) => {
       orig = internals(inst).alarm.bind(inst);
-      internals(inst).alarm = async () => { if (manual) await orig(); };
+      internals(inst).alarm = async () => {};
     });
     // Run the real handler directly (runDurableObjectAlarm only fires a scheduled alarm).
-    return async () => {
-      manual = true;
-      try { await runInDurableObject(stub(c), async () => { await orig(); }); } finally { manual = false; }
-    };
+    return async () => { await runInDurableObject(stub(c), async () => { await orig(); }); };
   }
   const withFakeTime = async (start: number, body: (at: (ms: number) => void) => Promise<void>) => {
     let t = start;
@@ -597,6 +594,9 @@ describe("Conversation offline push decision", () => {
     expect(allDecisionLogs()).toContain("push_decision overflow_dropped push=19 inbox=0");
     expect(await queued(c)).toBeUndefined();
     expect(pushCalls()).toHaveLength(sentInline); // nothing was sent by the failing rounds
+    // every failing push round and the final drop still log their one outcome line
+    expect(outcomeLogs().filter((l) => l.includes("attempted=0 ") && l.includes("deferred=19"))).toHaveLength(5);
+    expect(outcomeLogs().filter((l) => l.includes("dropped=19"))).toHaveLength(1);
   });
 
   it("(ag) transient 503 then 201: retried once after >= 10 s, delivered exactly once, queue key gone", async () => {
@@ -803,6 +803,174 @@ describe("Conversation offline push decision", () => {
     await drainAlarms(c);
     expect(pushedTo()).not.toContain(EP(`${c}-${victim}`));
     expect(m.inbox).not.toContain(`inbox:${victim}`);
+  });
+
+  // ---- review round: progress counting, first-send failures, old records ---------------
+  const countsByEndpoint = (): Map<string, number> => {
+    const n = new Map<string, number>();
+    for (const u of pushedTo()) n.set(u, (n.get(u) ?? 0) + 1);
+    return n;
+  };
+  const setEnv = (c: string, patch: Record<string, unknown>) => runInDurableObject(stub(c), async (inst: Conversation) => { Object.assign(internals(inst).env, patch); });
+  /** Runs alarms, 10 s of fake time apart, until nothing is queued. */
+  const runUntilDone = async (runAlarm: () => Promise<void>, c: string, at: (ms: number) => void, from = 0, max = 80) => {
+    let rounds = 0;
+    for (let i = 1; i <= max && (await queued(c)); i++) { at(from + i * 10_000); await runAlarm(); rounds++; }
+    return rounds;
+  };
+  /** Makes the VAPID key import THROW (importVapidKey itself swallows bad key material, so
+   *  the only way in is its env read): the first read (pushOffline's "is push configured"
+   *  check) succeeds, later ones throw until the returned restore() puts the key back. */
+  const breakVapid = async (c: string): Promise<() => Promise<void>> => {
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      const e = internals(inst).env;
+      let reads = 0;
+      Object.defineProperty(e, "VAPID_PRIVATE_JWK", { configurable: true, get() { if (++reads > 1) throw new Error("kms down"); return vapid.VAPID_PRIVATE_JWK; } });
+    });
+    return () => runInDurableObject(stub(c), async (inst: Conversation) => {
+      Object.defineProperty(internals(inst).env, "VAPID_PRIVATE_JWK", { configurable: true, writable: true, enumerable: true, value: vapid.VAPID_PRIVATE_JWK });
+    });
+  };
+
+  it("(aj) sustained 503 outage with 300 push targets: every recipient gets exactly 3 attempts, then is dropped and logged; none fewer", async () => {
+    await withFakeTime(6_000_000, async (at) => {
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 503 }));
+      const users = Array.from({ length: 300 }, (_, i) => `u${i}`);
+      const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await queued(c))?.push).toHaveLength(300));
+      expect((await queued(c))!.ceiling).toBe(10 + 3 * Math.ceil(300 / 44)); // scaled with the batch
+      const rounds = await runUntilDone(runAlarm, c, at);
+      expect(await queued(c)).toBeUndefined();
+      const counts = countsByEndpoint();
+      expect(counts.size).toBe(300);
+      console.info(`COST 300-push-target room under a 503 outage: pushes=${pushCalls().length} alarm_rounds=${rounds} (ceiling 31)`);
+      for (const [, n] of counts) expect(n).toBe(3); // exactly 3: none dropped early, none retried again
+      const dropped = outcomeLogs().reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0);
+      expect(dropped).toBe(300);
+      expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(false);
+    });
+  }, 60_000);
+
+  it("(ak) the VAPID import throws on the first send, then is fixed: the recipient is delivered on retry", async () => {
+    await withFakeTime(7_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      const fix = await breakVapid(c);
+      try {
+        await send(sender, "one");
+        await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+      } finally { await fix(); }
+      expect(allDecisionLogs().some((l) => l.startsWith("push_decision send_error"))).toBe(true);
+      expect(pushCalls()).toHaveLength(0);
+      expect((await queued(c))!.push).toEqual(["rcpt"]);
+      expect((await queued(c))!.attempts).toEqual({ rcpt: 1 });
+      at(10_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(1);
+      expect(await queued(c)).toBeUndefined();
+    });
+  });
+
+  it("(al) the first target read throws once: every member but the sender is queued and delivered via the follow-up", async () => {
+    await withFakeTime(8_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt", "other"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      let thrown = false;
+      await setEnv(c, { DB: { prepare: (sql: string) => { if (!thrown && sql.includes("push_subscriptions")) { thrown = true; throw new Error("d1 blip"); } return DB.prepare(sql); } } });
+      try {
+        await send(sender, "one");
+        await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+      } finally { await setEnv(c, { DB }); }
+      const q = (await queued(c))!;
+      expect([...q.push].sort()).toEqual(["other", "rcpt"]); // over-included; never the sender
+      expect(q.attempts).toEqual({ other: 1, rcpt: 1 });
+      expect(q.notBefore).toEqual({ other: 8_010_000, rcpt: 8_010_000 });
+      expect(outcomeLogs().at(-1)).toContain("deferred=2");
+      expect(pushCalls()).toHaveLength(0);
+      at(10_000); await runAlarm();
+      expect(pushedTo()).toEqual([EP(`${c}-rcpt`)]); // re-filtered by subscription
+      expect(await queued(c)).toBeUndefined();
+    });
+  });
+
+  it("(am) the target read AND the member read fail: logged with counts, nothing queued, nothing thrown", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+    const sender = await connect(c, "sender");
+    await setEnv(c, { DB: { prepare: (sql: string) => { if (sql.includes("push_subscriptions") || sql.includes("chat_members")) throw new Error("d1 down"); return DB.prepare(sql); } } });
+    try {
+      await send(sender, "one");
+      await settle();
+    } finally { await setEnv(c, { DB }); }
+    expect(allDecisionLogs().some((l) => /^push_decision overflow_error \S+ members_unreadable=1/.test(l))).toBe(true);
+    expect(await queued(c)).toBeUndefined();
+  });
+
+  it("(an) budget-cut recipients survive a first-send failure: all 61 delivered exactly once after the fix", async () => {
+    await withFakeTime(9_000_000, async (at) => {
+      const users = Array.from({ length: 61 }, (_, i) => `u${i}`);
+      const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      const fix = await breakVapid(c);
+      try {
+        await send(sender, "one");
+        await vi.waitFor(async () => expect((await queued(c))?.push).toHaveLength(61));
+      } finally { await fix(); }
+      const q = (await queued(c))!;
+      expect(Object.keys(q.attempts ?? {})).toHaveLength(42); // the reserved ones failed once; the 19 cut ones keep a fresh allowance
+      expect(pushCalls()).toHaveLength(0);
+      await runUntilDone(runAlarm, c, at);
+      expect(await queued(c)).toBeUndefined();
+      const counts = countsByEndpoint();
+      expect(counts.size).toBe(61);
+      for (const [, n] of counts) expect(n).toBe(1);
+    });
+  });
+
+  it("(ao) an old-shape record (no attempts / notBefore / total / ceiling) is read and processed", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+    const runAlarm = await manualAlarms(c);
+    await runInDurableObject(stub(c), async (inst: Conversation) => { await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], rounds: 1, seq: 3 }); });
+    await runAlarm();
+    expect(pushedTo()).toEqual([EP(`${c}-rcpt`)]);
+    expect(await queued(c)).toBeUndefined();
+  });
+
+  it("(ap) the scaled ceiling is hit and logged: the rest is dropped, key gone", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+    const runAlarm = await manualAlarms(c);
+    // 1 recipient -> ceiling 10 + 3 * ceil(1 / 44) = 13; a record that has used all its rounds
+    await runInDurableObject(stub(c), async (inst: Conversation) => { await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 13, ceiling: 13, seq: 1 }); });
+    await runAlarm();
+    expect(allDecisionLogs()).toContain("push_decision overflow_dropped push=1 inbox=0 reason=ceiling");
+    expect(outcomeLogs().at(-1)).toContain("dropped=1");
+    expect(pushCalls()).toHaveLength(0);
+    expect(await queued(c)).toBeUndefined();
+    // and one round below the ceiling is still served
+    await runInDurableObject(stub(c), async (inst: Conversation) => { await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 12, ceiling: 13, seq: 1 }); });
+    await runAlarm();
+    expect(pushCalls()).toHaveLength(1);
+  });
+
+  it("(aq) follow-up suppressed_active counts only PENDING recipients who were skipped as active", async () => {
+    await withFakeTime(10_000_000, async (at) => {
+      let n = 0;
+      fetchSpy.mockImplementation(async () => new Response(null, { status: ++n === 1 ? 503 : 201 }));
+      const c = newChat(); await seed(c, ["sender", "a", "b"], ["a", "b"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await connect(c, "b"); // active and subscribed -> counted by the first send only
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await queued(c))?.push).toEqual(["a"]));
+      expect(outcomeLogs().at(-1)).toContain("suppressed_active=1");
+      at(10_000); await runAlarm();
+      expect(outcomeLogs().at(-1)).toContain("suppressed_active=0");
+      expect(outcomeLogs().at(-1)).toContain("accepted=1");
+    });
   });
 
   it("(s) per-message cost: DM and 10-member group", async () => {
