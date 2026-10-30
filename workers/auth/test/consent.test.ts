@@ -3,9 +3,12 @@ import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } fr
 import { routedDb } from "./helpers";
 
 test("listGrants parses scopes (bad json → []); revokeGrant drops consent + kills app tokens", async () => {
-  const db = routedDb([[/FROM consents WHERE account_id/, () => ({ rows: [{ client_id: "mw_1", approved_scope_snapshot: '["openid"]', updated_at: "t" }, { client_id: "mw_2", approved_scope_snapshot: "bad", updated_at: null }] })]]);
+  const db = routedDb([[/FROM consents c LEFT JOIN oauth_clients o .* WHERE c\.account_id/, () => ({ rows: [{ client_id: "mw_1", approved_scope_snapshot: '["openid"]', updated_at: "t", display_name: "meowsenger" }, { client_id: "mw_2", approved_scope_snapshot: "bad", updated_at: null, display_name: "  " }] })]]);
   const g = await listGrants(db, "a");
-  expect(g[0]).toMatchObject({ clientId: "mw_1", approvedScopes: ["openid"], updatedAt: "t" });
+  expect(g[0]).toMatchObject({ clientId: "mw_1", displayName: "meowsenger", approvedScopes: ["openid"], updatedAt: "t" });
+  expect(g[1]?.displayName).toBeNull(); // blank name falls back to null
+  const long = await listGrants(routedDb([[/FROM consents c LEFT JOIN/, () => ({ rows: [{ client_id: "mw_3", approved_scope_snapshot: "[]", updated_at: null, display_name: "x".repeat(200) }] })]]), "a");
+  expect(long[0]?.displayName).toHaveLength(80);
   expect(g[1]?.approvedScopes).toEqual([]);
 
   const log: { sql: string; args: unknown[] }[] = [];
