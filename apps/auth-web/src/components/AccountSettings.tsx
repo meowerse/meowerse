@@ -95,9 +95,8 @@ export default function AccountSettings({ base }: { base: string }) {
           <div className="mw-stack">
             {grants.map((g) => (
               <div key={g.clientId} className="mw-row">
-                <span>
-                  {g.displayName ? <strong data-case="preserve">{g.displayName}</strong> : null}
-                  {g.displayName ? " " : null}
+                <span style={{ overflowWrap: "anywhere" }}>
+                  {g.displayName ? <><strong data-case="preserve">{g.displayName}</strong>{" "}</> : null}
                   <code className={g.displayName ? "mono mw-muted" : "mono"} data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}
                 </span>
                 <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "revoke", clientId: g.clientId })}>revoke</Button>
@@ -126,7 +125,7 @@ export default function AccountSettings({ base }: { base: string }) {
       <p><a href="/logout" onClick={() => clearSessionCache()}><Button variant="secondary">sign out</Button></a></p>
 
       <ConfirmDialog open={confirm?.kind === "revoke"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
-        title="revoke access?" description="the app will immediately lose access to your account. you can re-authorize any time."
+        title="revoke access?" description={`${grants.find((x) => x.clientId === confirm?.clientId)?.displayName ?? "the app"} will immediately lose access to your account. you can re-authorize any time.`}
         confirmLabel="revoke access" variant="danger" loading={busy} />
       <ConfirmDialog open={confirm?.kind === "unlink"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="unlink telegram?" description="you'll lose your verified status and telegram sign-in." confirmLabel="unlink" variant="danger" loading={busy} />

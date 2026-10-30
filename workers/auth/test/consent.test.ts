@@ -7,6 +7,8 @@ test("listGrants parses scopes (bad json → []); revokeGrant drops consent + ki
   const g = await listGrants(db, "a");
   expect(g[0]).toMatchObject({ clientId: "mw_1", displayName: "meowsenger", approvedScopes: ["openid"], updatedAt: "t" });
   expect(g[1]?.displayName).toBeNull(); // blank name falls back to null
+  const long = await listGrants(routedDb([[/FROM consents c LEFT JOIN/, () => ({ rows: [{ client_id: "mw_3", approved_scope_snapshot: "[]", updated_at: null, display_name: "x".repeat(200) }] })]]), "a");
+  expect(long[0]?.displayName).toHaveLength(80);
   expect(g[1]?.approvedScopes).toEqual([]);
 
   const log: { sql: string; args: unknown[] }[] = [];

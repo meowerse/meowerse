@@ -102,7 +102,9 @@ export async function listGrants(db: DbClient, accountId: string): Promise<Grant
     } catch {
       approvedScopes = [];
     }
-    const name = row.display_name == null ? "" : String(row.display_name).trim();
+    // Developer-chosen and not length-limited at creation: cap what the account page shows.
+    const raw = row.display_name == null ? "" : String(row.display_name).trim();
+    const name = raw.length > 80 ? `${raw.slice(0, 79)}…` : raw;
     return { clientId: String(row.client_id), displayName: name === "" ? null : name, approvedScopes, updatedAt: row.updated_at == null ? null : String(row.updated_at) };
   });
 }
