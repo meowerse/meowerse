@@ -1,6 +1,7 @@
 import { TYP, TOKEN_USE, sha256, b64urlEncode, verifyPkceS256 } from "@meowerse/auth-shared";
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
+import { revokeFamily } from "./refresh";
 import { signJwt } from "./jwt";
 import type { DbClient } from "./types";
 import type { AuthorizeRequest } from "./authorize";
@@ -74,10 +75,9 @@ export async function exchangeCode(
   if (!row) return { ok: false, error: "invalid_grant" };
 
   if (row.consumed_at != null) {
-    await db.execute({
-      sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ?",
-      args: [String(row.jti_family)],
-    });
+    // RFC 6749 §4.1.2: a replayed code revokes every token issued from it, including
+    // the offline refresh token, which shares the code's family.
+    await revokeFamily(db, String(row.jti_family));
     return { ok: false, error: "invalid_grant", replay: true };
   }
   if (Number(row.expires_at) < i.now) return { ok: false, error: "invalid_grant" };
