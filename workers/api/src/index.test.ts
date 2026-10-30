@@ -90,7 +90,8 @@ describe("router basics", () => {
     expect(body).toContain("Contact: mailto:security@alxnko.dev");
     // RFC 9116 §2.5.2: the URL it is served from must be among its Canonical values.
     expect(body).toContain("Canonical: https://api.meow.alxnko.dev/.well-known/security.txt");
-    expect(body).toContain("Policy: https://auth.alxnko.dev/privacy");
+    // RFC 9116 Policy is a vulnerability-disclosure policy; none exists yet, so the field is omitted.
+    expect(body).not.toContain("Policy:");
     expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
     const rob = await handle(new Request("https://api.meow.alxnko.dev/robots.txt"), env, d);
