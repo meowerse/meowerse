@@ -49,8 +49,9 @@
   /**
    * Decide what to show for one push. Returns { show:false } or { show:true, title, body, chatId }.
    *  - no stored opt-in                      → purge, show nothing
-   *  - /api/session non-OK / unauthenticated / other account → purge, show nothing
-   *  - /api/session network error (offline)  → show nothing, KEEP the subscription
+   *  - /api/session 401/403, authenticated:false, no user id, or another account → purge, show nothing
+   *  - /api/session 5xx / 429 / other non-OK / unreadable body / network error → show nothing,
+   *    KEEP the subscription and the opt-in (transient)
    *  - identity verified → /api/chats; failure or nothing unread → show nothing
    */
   async function decidePush(deps) {
@@ -65,12 +66,16 @@
     } catch (e) {
       return { show: false, reason: "offline" };
     }
-    if (!who || !who.ok) { await purge(store, registration); return { show: false, reason: "session_failed" }; }
+    // /api/session answers "signed out" with 200 {authenticated:false}, never a non-200 — so
+    // only 401/403 are a definitive "not you"; every other failure (5xx, 429, a proxy page…)
+    // is transient: show nothing but KEEP the subscription and the opt-in.
+    if (who && (who.status === 401 || who.status === 403)) { await purge(store, registration); return { show: false, reason: "session_denied" }; }
+    if (!who || !who.ok) return { show: false, reason: "session_unavailable" };
     var id = null;
     try {
       var s = await who.json();
       id = s && s.authenticated && s.user && s.user.id ? String(s.user.id) : null;
-    } catch (e) { id = null; }
+    } catch (e) { return { show: false, reason: "session_unreadable" }; }
     if (!id || id !== stored) { await purge(store, registration); return { show: false, reason: id ? "account_mismatch" : "signed_out" }; }
 
     try {

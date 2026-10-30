@@ -1,6 +1,7 @@
 // Web Push client: register the service worker + (un)subscribe to VAPID push, and
 // mirror the subscription to the server. Browser-glue over navigator.serviceWorker /
 // PushManager / Notification; the pure key decode is unit-tested below-the-fold.
+import { writeOptInIdb } from "./pushOptIn";
 
 /** True when this browser can do Web Push (SW + PushManager + Notification). */
 export function pushSupported(): boolean {
@@ -54,9 +55,11 @@ export class PushError extends Error {
 // or foreign marker means ownership is UNKNOWN: sync then only ever asks the server to
 // repair (never create) and drops the local subscription if that is refused.
 const SYNC_KEY = "mw_push_synced";
-// Endpoint whose server-side removal has not been confirmed yet (`<userId>|<endpoint>`).
-// The local subscription is already gone by then; this lets the same account retry.
+// Endpoints whose server-side removal has not been confirmed yet: `<userId>|<endpoint>`
+// entries, newline-separated, at most MAX_PENDING (oldest dropped). The local subscription
+// is already gone by then; this lets the same account retry each one.
 const PENDING_KEY = "mw_push_pending_unsub";
+const MAX_PENDING = 5;
 function readKey(k: string): string | null {
   try { return globalThis.localStorage?.getItem(k) ?? null; } catch { return null; }
 }
@@ -66,12 +69,21 @@ function writeKey(k: string, v: string | null): void {
     else globalThis.localStorage?.setItem(k, v);
   } catch { /* storage blocked — we just re-sync next time */ }
 }
+const readPending = (): string[] => (readKey(PENDING_KEY) ?? "").split("\n").filter(Boolean);
+function writePending(list: string[]): void {
+  writeKey(PENDING_KEY, list.length ? list.slice(-MAX_PENDING).join("\n") : null);
+}
+const endpointOf = (entry: string) => entry.slice(entry.indexOf("|") + 1);
 const readSynced = () => readKey(SYNC_KEY);
 const writeSynced = (v: string | null) => writeKey(SYNC_KEY, v);
 
-/** Tell the service worker which account opted in (id only) — or clear it (null). The
- *  worker refuses to show previews unless the signed-in account matches this id. */
+/** Record which account opted in (id only) for the service worker — or clear it (null).
+ *  The worker refuses to show previews unless the signed-in account matches this id, and
+ *  purges the subscription when there is no id, so the id is written to the worker's
+ *  IndexedDB store DIRECTLY and awaited (idempotent). The postMessage afterwards is only
+ *  a notify/fallback (an old worker without a handler, or no IndexedDB, can lose it). */
 async function setSwOptIn(userId: string | null): Promise<void> {
+  await writeOptInIdb(userId);
   try {
     const reg = await navigator.serviceWorker.getRegistration();
     const target = reg?.active ?? navigator.serviceWorker.controller;
@@ -80,8 +92,9 @@ async function setSwOptIn(userId: string | null): Promise<void> {
 }
 
 /** POST a subscription to the server. Returns null on success, else an error code.
- *  `mode` "enable" is an explicit user action; "repair" only refreshes an own row. */
-async function postSubscription(base: string, sub: PushSubscription, mode: "enable" | "repair"): Promise<string | null> {
+ *  `mode` "enable" is an explicit user action; "repair" only refreshes an own row (and, with
+ *  `previousEndpoint`, moves the caller's own row there after an endpoint rotation). */
+async function postSubscription(base: string, sub: PushSubscription, mode: "enable" | "repair", previousEndpoint?: string): Promise<string | null> {
   const json = sub.toJSON();
   let res: Response;
   try {
@@ -89,7 +102,7 @@ async function postSubscription(base: string, sub: PushSubscription, mode: "enab
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys, mode }),
+      body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys, mode, ...(previousEndpoint ? { previous_endpoint: previousEndpoint } : {}) }),
     });
   } catch {
     return "network";
@@ -141,6 +154,8 @@ export async function enablePush(base: string, userId?: string): Promise<string>
     throw new PushError(err);
   }
   writeSynced(`${owner}|${sub.endpoint}`);
+  // An explicit re-enable supersedes any unconfirmed removal of this very endpoint.
+  writePending(readPending().filter((e) => endpointOf(e) !== sub.endpoint));
   await setSwOptIn(owner);
   return "granted";
 }
@@ -188,11 +203,16 @@ async function serverUnsubscribe(base: string, endpoint: string): Promise<boolea
  * Also retries a pending (unconfirmed) server removal left by an interrupted logout.
  */
 export async function syncPushSubscription(base: string, userId: string): Promise<boolean> {
-  const pending = readKey(PENDING_KEY);
-  if (pending !== null) {
-    if (markerUser(pending) === userId) {
-      if (await serverUnsubscribe(base, pending.slice(pending.indexOf("|") + 1))) writeKey(PENDING_KEY, null);
-    } else writeKey(PENDING_KEY, null); // another account's: only they could remove it; the dead endpoint is pruned on 404/410
+  const pendingAll = readPending();
+  if (pendingAll.length) {
+    // Retry this account's removals; another account's entry is not ours to send (the dead
+    // endpoint is pruned server-side on its next 404/410).
+    const still: string[] = [];
+    for (const entry of pendingAll) {
+      if (markerUser(entry) !== userId) continue;
+      if (!(await serverUnsubscribe(base, endpointOf(entry)))) still.push(entry);
+    }
+    writePending(still);
   }
   if (!pushSupported() || Notification.permission !== "granted") return false;
   try {
@@ -201,17 +221,30 @@ export async function syncPushSubscription(base: string, userId: string): Promis
     if (!sub) return false;
     const marker = `${userId}|${sub.endpoint}`;
     const current = readSynced();
-    if (current === marker) return false;
     const drop = async () => {
       writeSynced(null);
       await setSwOptIn(null);
       await sub.unsubscribe().catch(() => {});
     };
+    // A removal of THIS endpoint was requested (disable/logout) but not confirmed: the
+    // subscription is a revived leftover. Never repair it back to life — drop it locally
+    // (the removal retry above already ran / stays pending).
+    if (pendingAll.some((entry) => endpointOf(entry) === sub.endpoint)) {
+      await drop();
+      return false;
+    }
+    if (current === marker) {
+      // Already confirmed: only re-assert the worker's opt-in id (cheap, idempotent).
+      await setSwOptIn(userId);
+      return false;
+    }
     if (current !== null && markerUser(current) !== userId) {
       await drop(); // another account's (or an unknown owner's) subscription on this browser
       return false;
     }
-    const err = await postSubscription(base, sub, "repair");
+    // Same account, different endpoint → the browser rotated it: ask the server to move our row.
+    const previous = current !== null && endpointOf(current) !== sub.endpoint ? endpointOf(current) : undefined;
+    const err = await postSubscription(base, sub, "repair", previous);
     if (err) {
       if (err === "not_subscribed" || err === "endpoint_owned" || permanentError(err)) await drop();
       return false;
@@ -255,6 +288,8 @@ export async function disablePush(base: string, userId?: string): Promise<void> 
   } catch { /* nothing to drop */ }
   if (!endpoint) return;
   const owner = userId || (marker ? markerUser(marker) : "");
-  writeKey(PENDING_KEY, `${owner}|${endpoint}`);
-  if (await serverUnsubscribe(base, endpoint)) writeKey(PENDING_KEY, null);
+  const entry = `${owner}|${endpoint}`;
+  // Append (never overwrite an earlier unconfirmed removal), then try this one.
+  writePending([...readPending().filter((e) => e !== entry), entry]);
+  if (await serverUnsubscribe(base, endpoint)) writePending(readPending().filter((e) => e !== entry));
 }

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, urlBase64ToUint8Array, syncPushSubscription, clearLocalPush, PushError } from "./push";
 
 /** A fresh in-memory localStorage per test (the unit env is plain Node). */
@@ -12,6 +14,48 @@ function memStorage() {
   };
 }
 beforeEach(() => vi.stubGlobal("localStorage", memStorage()));
+
+/** Minimal IndexedDB double: databases keyed by name, each store a Map. Enough for the
+ *  page writer (src/lib/pushOptIn.ts) AND the worker's real makeIdbStore (public/sw-core.js). */
+function fakeIdb(o: { failTx?: boolean } = {}) {
+  const dbs = new Map<string, Map<string, Map<string, unknown>>>();
+  const opens: string[] = [];
+  const idb = {
+    open(name: string, _v: number) {
+      opens.push(name);
+      const r: Record<string, unknown> = {};
+      setTimeout(() => {
+        const created = !dbs.has(name);
+        if (created) dbs.set(name, new Map());
+        const stores = dbs.get(name)!;
+        r.result = {
+          createObjectStore: (s: string) => stores.set(s, new Map()),
+          close: () => {},
+          transaction: (s: string) => {
+            const t: Record<string, unknown> = {};
+            const st = stores.get(s);
+            if (!st) throw new Error("NotFoundError");
+            t.objectStore = () => ({
+              put: (v: unknown, k: string) => { st.set(k, v); return {}; },
+              delete: (k: string) => { st.delete(k); return {}; },
+              get: (k: string) => { const q: Record<string, unknown> = {}; q.result = st.get(k); return q; },
+            });
+            setTimeout(() => { if (o.failTx) (t.onerror as () => void)?.(); else (t.oncomplete as () => void)?.(); }, 0);
+            return t;
+          },
+        };
+        if (created) (r.onupgradeneeded as () => void)?.();
+        (r.onsuccess as () => void)?.();
+      }, 0);
+      return r;
+    },
+  };
+  return { idb, dbs, opens, value: () => dbs.get("mw-push")?.get("kv")?.get("optedInUser") ?? null };
+}
+// public/sw-core.js is the reader of that store; load its real IDB store implementation.
+const swSandbox: { self: Record<string, unknown> } = { self: {} };
+runInNewContext(readFileSync(new URL("../../public/sw-core.js", import.meta.url), "utf8"), swSandbox);
+const swCore = swSandbox.self.mwPushCore as { makeIdbStore(idb: unknown): { get(): Promise<string | null>; set(i: string): Promise<unknown>; clear(): Promise<unknown> } };
 afterEach(() => vi.unstubAllGlobals());
 const BASE = "https://x";
 
@@ -269,12 +313,56 @@ describe("syncPushSubscription (self-heal on app load)", () => {
     expect(localStorage.getItem("mw_push_synced")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it("re-sends when the SAME user's endpoint rotated", async () => {
+  it("endpoint rotated (same user): repair carries previous_endpoint from the marker, then the marker follows", async () => {
     localStorage.setItem("mw_push_synced", "u1|https://jmt1.google.com/fcm/send/old");
     const fetchMock = ok();
     stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
     expect(await syncPushSubscription(BASE, "u1")).toBe(true);
+    const body = JSON.parse(String(((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body));
+    expect(body).toMatchObject({ mode: "repair", endpoint: sub.endpoint, previous_endpoint: "https://jmt1.google.com/fcm/send/old" });
     expect(localStorage.getItem("mw_push_synced")).toBe(`u1|${sub.endpoint}`);
+  });
+  it("no marker (unknown ownership) sends NO previous_endpoint", async () => {
+    const fetchMock = ok();
+    stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
+    await syncPushSubscription(BASE, "u1");
+    expect(JSON.parse(String(((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body))).not.toHaveProperty("previous_endpoint");
+  });
+  it("rotation the server refuses (404: no own row at the previous endpoint) drops the local subscription", async () => {
+    localStorage.setItem("mw_push_synced", "u1|https://jmt1.google.com/fcm/send/old");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "not_subscribed" }), { status: 404 }));
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+  });
+  it("a pending removal of the SAME endpoint is never repaired back to life: dropped locally, removal retried", async () => {
+    localStorage.setItem("mw_push_pending_unsub", `u1|${sub.endpoint}`);
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (u: string) => { calls.push(String(u)); return new Response("{}", { status: 200 }); });
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(calls).toEqual([`${BASE}/api/push/unsubscribe`]); // the retry; NO subscribe/repair
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    expect(localStorage.getItem("mw_push_pending_unsub")).toBeNull();
+    expect(swMessages).toContainEqual({ type: "mw-optin", userId: null });
+  });
+  it("same pending-removal guard when the retry fails (entry kept for the next load)", async () => {
+    localStorage.setItem("mw_push_pending_unsub", `u1|${sub.endpoint}`);
+    const fetchMock = vi.fn(async () => { throw new TypeError("offline"); });
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_pending_unsub")).toBe(`u1|${sub.endpoint}`);
+  });
+  it("a pending removal for a DIFFERENT endpoint does not block repair", async () => {
+    localStorage.setItem("mw_push_pending_unsub", "u1|https://push/other");
+    stubEnv({ permission: "granted", subscription: sub, fetch: ok() });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(true);
   });
   it("drops the local subscription + marker when the server permanently refuses it", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad_endpoint" }), { status: 400 }));
@@ -550,5 +638,106 @@ describe("push.ts edge paths", () => {
       await syncPushSubscription(BASE, "u1");
       expect(unsub, String(status)).toBe(dropped);
     }
+  });
+});
+
+describe("disablePush keeps several pending removals (max 5)", () => {
+  const entries = () => (localStorage.getItem("mw_push_pending_unsub") ?? "").split("\n").filter(Boolean);
+  it("a second failed logout does not overwrite the first pending removal; the same account retries both", async () => {
+    const down = vi.fn(async () => { throw new TypeError("offline"); });
+    stubEnv({ subscription: { endpoint: "https://push/e1", unsubscribe: async () => true }, fetch: down });
+    await disablePush(BASE, "u1");
+    stubEnv({ subscription: { endpoint: "https://push/e2", unsubscribe: async () => true }, fetch: down });
+    await disablePush(BASE, "u1");
+    expect(entries()).toEqual(["u1|https://push/e1", "u1|https://push/e2"]);
+    const sent: string[] = [];
+    const retry = vi.fn(async (_u: string, init?: RequestInit) => { sent.push(JSON.parse(String(init?.body)).endpoint); return new Response("{}", { status: 200 }); });
+    stubEnv({ subscription: null, permission: "granted", fetch: retry });
+    await syncPushSubscription(BASE, "u1");
+    expect(sent).toEqual(["https://push/e1", "https://push/e2"]);
+    expect(entries()).toEqual([]);
+  });
+  it("only the unconfirmed ones stay; entries of another account are dropped; the list is capped at 5 (newest kept)", async () => {
+    localStorage.setItem("mw_push_pending_unsub", ["u1|https://push/a", "u2|https://push/b", "u1|https://push/c"].join("\n"));
+    const f = vi.fn(async (_u: string, init?: RequestInit) =>
+      JSON.parse(String(init?.body)).endpoint === "https://push/c" ? new Response("x", { status: 503 }) : new Response("{}", { status: 200 }));
+    stubEnv({ subscription: null, permission: "granted", fetch: f });
+    await syncPushSubscription(BASE, "u1");
+    expect(entries()).toEqual(["u1|https://push/c"]);
+    localStorage.setItem("mw_push_pending_unsub", Array.from({ length: 5 }, (_, i) => `u1|https://push/p${i}`).join("\n"));
+    stubEnv({ subscription: { endpoint: "https://push/new", unsubscribe: async () => true }, fetch: vi.fn(async () => { throw new TypeError("x"); }) });
+    await disablePush(BASE, "u1");
+    expect(entries()).toEqual([...Array.from({ length: 4 }, (_, i) => `u1|https://push/p${i + 1}`), "u1|https://push/new"]);
+  });
+  it("enabling again supersedes an unconfirmed removal of the same endpoint", async () => {
+    localStorage.setItem("mw_push_pending_unsub", "u1|https://push/e1");
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).endsWith("/api/push/key") ? new Response(JSON.stringify({ key: "AQID" }), { status: 200 }) : new Response("{}", { status: 200 }));
+    stubEnv({ permission: "granted", subscription: null, fetch: fetchMock });
+    expect(await enablePush(BASE, "u1")).toBe("granted");
+    expect(entries()).toEqual([]);
+  });
+});
+
+describe("opt-in id is written to IndexedDB directly (not only posted)", () => {
+  const sub = { endpoint: "https://push/e1", toJSON: () => ({ endpoint: "https://push/e1", keys: { p256dh: "k", auth: "a" } }), unsubscribe: async () => true };
+  const okFetch = () => vi.fn(async (url: string) =>
+    String(url).endsWith("/api/push/key") ? new Response(JSON.stringify({ key: "AQID" }), { status: 200 }) : new Response("{}", { status: 200 }));
+
+  it("enable writes the id the worker's real store reads — even when postMessage can't reach any worker", async () => {
+    const f = fakeIdb();
+    vi.stubGlobal("indexedDB", f.idb);
+    stubEnv({ permission: "granted", subscription: sub, fetch: okFetch() });
+    // No active worker and no controller: the message is lost.
+    vi.stubGlobal("navigator", { serviceWorker: { register: async () => ({}), ready: Promise.resolve({ pushManager: { getSubscription: async () => sub, subscribe: async () => sub } }), getRegistration: async () => ({ pushManager: {} }), controller: null } });
+    expect(await enablePush(BASE, "u1")).toBe("granted");
+    expect(f.value()).toBe("u1");
+    expect(await swCore.makeIdbStore(f.idb).get()).toBe("u1"); // same DB/store/key as the SW reads
+  });
+  it("every load whose marker matches re-asserts the id (repairs a lost/never-delivered write)", async () => {
+    const f = fakeIdb();
+    vi.stubGlobal("indexedDB", f.idb);
+    localStorage.setItem("mw_push_synced", "u1|https://push/e1");
+    const fetchMock = okFetch();
+    stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
+    expect(f.value()).toBeNull();
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false); // nothing to repair on the server
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(f.value()).toBe("u1");
+  });
+  it("repair success also writes it", async () => {
+    const f = fakeIdb();
+    vi.stubGlobal("indexedDB", f.idb);
+    stubEnv({ permission: "granted", subscription: sub, fetch: okFetch() });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(true);
+    expect(f.value()).toBe("u1");
+  });
+  it("disable, clearLocalPush and a foreign-account drop clear it directly", async () => {
+    for (const act of [
+      () => disablePush(BASE, "u1"),
+      () => clearLocalPush(),
+      () => { localStorage.setItem("mw_push_synced", "uOther|https://push/e1"); return syncPushSubscription(BASE, "u1"); },
+    ]) {
+      const f = fakeIdb();
+      vi.stubGlobal("indexedDB", f.idb);
+      await swCore.makeIdbStore(f.idb).set("u1");
+      stubEnv({ permission: "granted", subscription: sub, fetch: okFetch() });
+      await act();
+      expect(f.value()).toBeNull();
+    }
+  });
+  it("a failing / missing IndexedDB never breaks the flow (postMessage fallback still fires)", async () => {
+    vi.stubGlobal("indexedDB", fakeIdb({ failTx: true }).idb);
+    stubEnv({ permission: "granted", subscription: sub, fetch: okFetch() });
+    expect(await enablePush(BASE, "u1")).toBe("granted");
+    expect(swMessages).toContainEqual({ type: "mw-optin", userId: "u1" });
+    vi.stubGlobal("indexedDB", { open: () => { throw new Error("blocked"); } });
+    expect(await syncPushSubscription(BASE, "u2")).toBe(false);
+    vi.stubGlobal("indexedDB", { open: () => { const r: Record<string, unknown> = {}; setTimeout(() => (r.onerror as () => void)?.(), 0); return r; } });
+    stubEnv({ permission: "granted", subscription: sub, fetch: okFetch() });
+    expect(await enablePush(BASE, "u1")).toBe("granted");
+    // open ok, but the store is missing (transaction throws synchronously)
+    vi.stubGlobal("indexedDB", { open: () => { const r: Record<string, unknown> = {}; setTimeout(() => { r.result = { close() {}, transaction() { throw new Error("NotFoundError"); } }; (r.onsuccess as () => void)?.(); }, 0); return r; } });
+    expect(await enablePush(BASE, "u1")).toBe("granted");
   });
 });

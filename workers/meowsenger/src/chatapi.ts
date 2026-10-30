@@ -203,7 +203,7 @@ export function handlePushKey(env: Env, cors: Record<string, string>): Response 
 export async function handlePushSubscribe(req: Request, db: DbClient, now: number, cors: Record<string, string>): Promise<Response> {
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
-  let body: { endpoint?: string; mode?: string; keys?: { p256dh?: string; auth?: string } };
+  let body: { endpoint?: string; mode?: string; previous_endpoint?: unknown; keys?: { p256dh?: string; auth?: string } };
   try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
   if (!body.endpoint || typeof body.endpoint !== "string") return json({ error: "bad_body" }, 400, cors, NS);
   // The stored endpoint is later POSTed to by the DO (server-side fetch). Reject
@@ -212,7 +212,9 @@ export async function handlePushSubscribe(req: Request, db: DbClient, now: numbe
   if (!isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
   const mode = body.mode === undefined ? "enable" : body.mode;
   if (mode !== "enable" && mode !== "repair") return json({ error: "bad_body" }, 400, cors, NS);
-  const r = await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now, mode);
+  // Rotation: only meaningful for a repair; a non-string is ignored.
+  const previous = mode === "repair" && typeof body.previous_endpoint === "string" ? body.previous_endpoint : undefined;
+  const r = await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now, mode, previous);
   // Ownership is never transferred: an endpoint held by another account is refused.
   if (r === "owned") return json({ error: "endpoint_owned" }, 409, cors, NS);
   if (r === "not_subscribed") return json({ error: "not_subscribed" }, 404, cors, NS);

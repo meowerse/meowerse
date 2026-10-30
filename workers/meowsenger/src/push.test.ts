@@ -48,6 +48,11 @@ function pushDb() {
             subs[i] = { endpoint, user_id, p256dh, auth, created_at }; // unguarded upsert (would transfer)
           }
         } else subs.push({ endpoint, user_id, p256dh, auth, created_at });
+      } else if (sql.includes("NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)")) {
+        // Rotation move (mirrors the single guarded UPDATE).
+        const [endpoint, p256dh, auth, created_at, prev, user_id, newEp] = p as [string, unknown, unknown, number, string, string, string];
+        const i = subs.findIndex((s) => s.endpoint === prev && s.user_id === user_id);
+        if (i >= 0 && !subs.some((s) => s.endpoint === newEp)) subs[i] = { endpoint, user_id, p256dh, auth, created_at };
       } else if (sql.startsWith("UPDATE push_subscriptions SET")) {
         const [p256dh, auth, created_at, endpoint, user_id] = p as [unknown, unknown, number, string, string];
         const i = subs.findIndex((s) => s.endpoint === endpoint && s.user_id === user_id);
@@ -187,6 +192,25 @@ describe("savePushSubscription / deletePushSubscription", () => {
     expect(await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k9", auth: "a9" }, 5, "repair")).toBe("ok");
     expect(subs).toHaveLength(1);
     expect(subs[0]).toMatchObject({ user_id: "u1", p256dh: "k9", auth: "a9" });
+  });
+  it("repair with previousEndpoint moves the caller's OWN row to the rotated endpoint", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u1", { endpoint: "old", p256dh: "k", auth: "a" }, 1);
+    expect(await savePushSubscription(db, "u1", { endpoint: "new", p256dh: "k2", auth: "a2" }, 5, "repair", "old")).toBe("ok");
+    expect(subs).toEqual([{ endpoint: "new", user_id: "u1", p256dh: "k2", auth: "a2", created_at: 5 }]);
+  });
+  it("rotation is refused when the previous endpoint belongs to another account", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u2", { endpoint: "old", p256dh: "k", auth: "a" }, 1);
+    expect(await savePushSubscription(db, "u1", { endpoint: "new" }, 5, "repair", "old")).toBe("not_subscribed");
+    expect(subs).toEqual([{ endpoint: "old", user_id: "u2", p256dh: "k", auth: "a", created_at: 1 }]);
+  });
+  it("rotation is refused when the new endpoint already exists (nothing overwritten)", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u1", { endpoint: "old", p256dh: "k", auth: "a" }, 1);
+    await savePushSubscription(db, "u2", { endpoint: "new", p256dh: "x", auth: "x" }, 2);
+    expect(await savePushSubscription(db, "u1", { endpoint: "new" }, 5, "repair", "old")).toBe("owned");
+    expect(subs.map((s) => `${s.user_id}|${s.endpoint}`).sort()).toEqual(["u1|old", "u2|new"]);
   });
   it("the enable upsert SQL carries the ownership guard and never sets user_id", async () => {
     const seen: string[] = [];

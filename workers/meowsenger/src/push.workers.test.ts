@@ -46,4 +46,23 @@ describe("push_subscriptions on real D1", () => {
     await deleteDeadPushSubscription(db, EP, "uA", 300);
     expect(await owners()).toEqual([]);
   });
+  it("rotation (previousEndpoint) atomically moves the caller's own row; never another user's; never onto an existing endpoint", async () => {
+    const OLD = "https://fcm.googleapis.com/fcm/send/old";
+    const rows = async () => (await db.all("SELECT endpoint, user_id, p256dh FROM push_subscriptions ORDER BY endpoint", [])).map((r) => `${r.user_id}|${r.endpoint}|${r.p256dh}`);
+    // own row moves
+    await savePushSubscription(db, "uA", { endpoint: OLD, p256dh: "old" }, 1);
+    expect(await savePushSubscription(db, "uA", { endpoint: EP, p256dh: "new" }, 2, "repair", OLD)).toBe("ok");
+    expect(await rows()).toEqual([`uA|${EP}|new`]);
+    // another user's previous row is never touched
+    await DB.exec("DELETE FROM push_subscriptions");
+    await savePushSubscription(db, "uB", { endpoint: OLD, p256dh: "B" }, 1);
+    expect(await savePushSubscription(db, "uA", { endpoint: EP, p256dh: "A" }, 2, "repair", OLD)).toBe("not_subscribed");
+    expect(await rows()).toEqual([`uB|${OLD}|B`]);
+    // an existing row at the new endpoint is never overwritten
+    await DB.exec("DELETE FROM push_subscriptions");
+    await savePushSubscription(db, "uA", { endpoint: OLD, p256dh: "A-old" }, 3);
+    await savePushSubscription(db, "uB", { endpoint: EP, p256dh: "B-new" }, 4);
+    expect(await savePushSubscription(db, "uA", { endpoint: EP, p256dh: "A" }, 5, "repair", OLD)).toBe("owned");
+    expect(await rows()).toEqual([`uB|${EP}|B-new`, `uA|${OLD}|A-old`].sort());
+  });
 });

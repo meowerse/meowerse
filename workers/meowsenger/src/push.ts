@@ -134,15 +134,29 @@ export type SaveResult = "ok" | "owned" | "not_subscribed";
  *    row. An endpoint already owned by another account is left untouched → "owned".
  *  - mode "repair" (load-time sync): ONLY refreshes the keys of the caller's existing
  *    row; never inserts → "not_subscribed" when there is none, "owned" when another
- *    account holds it.
+ *    account holds it. A repair may carry `previousEndpoint` (rotation, see above).
  *  The ownership guard is in the SQL (`WHERE user_id = excluded.user_id`), so a race
  *  can't transfer a row; the follow-up read only classifies the outcome. Then the user
  *  is trimmed to the newest MAX_PUSH_SUBS_PER_USER rows. */
 export async function savePushSubscription(
   db: DbClient, userId: string, sub: PushSub, now: number, mode: "enable" | "repair" = "enable",
+  previousEndpoint?: string,
 ): Promise<SaveResult> {
   if (!sub.endpoint) return "not_subscribed";
   if (mode === "repair") {
+    // Endpoint rotation: atomically MOVE the caller's OWN row from `previousEndpoint` to
+    // the new endpoint. One statement, so it can't touch another user's row (user_id
+    // guard), never inserts (needs the prior own row), and never overwrites an existing
+    // row at the new endpoint (NOT EXISTS). Anything refused falls through to the plain
+    // repair below, which classifies the outcome.
+    if (previousEndpoint && previousEndpoint !== sub.endpoint) {
+      await db.run(
+        `UPDATE push_subscriptions SET endpoint = ?, p256dh = ?, auth = ?, created_at = ?
+         WHERE endpoint = ? AND user_id = ?
+           AND NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)`,
+        [sub.endpoint, sub.p256dh ?? null, sub.auth ?? null, now, previousEndpoint, userId, sub.endpoint],
+      );
+    }
     await db.run(
       "UPDATE push_subscriptions SET p256dh = ?, auth = ?, created_at = ? WHERE endpoint = ? AND user_id = ?",
       [sub.p256dh ?? null, sub.auth ?? null, now, sub.endpoint, userId],

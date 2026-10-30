@@ -1527,6 +1527,10 @@ function pushHandlerDb(uid: string, subs: Array<{ endpoint: string; user_id: str
         const i = subs.findIndex((x) => x.endpoint === endpoint);
         if (i < 0) subs.push({ endpoint, user_id, p256dh });
         else if (/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) ? subs[i].user_id === user_id : true) subs[i] = { endpoint, user_id, p256dh };
+      } else if (sql.includes("NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)")) {
+        const [endpoint, p256dh, , , prev, user_id, newEp] = p as [string, unknown, unknown, number, string, string, string];
+        const i = subs.findIndex((x) => x.endpoint === prev && x.user_id === user_id);
+        if (i >= 0 && !subs.some((x) => x.endpoint === newEp)) subs[i] = { endpoint, user_id, p256dh };
       } else if (sql.startsWith("UPDATE push_subscriptions SET")) {
         const [p256dh, , , endpoint, user_id] = p as [unknown, unknown, number, string, string];
         const i = subs.findIndex((x) => x.endpoint === endpoint && x.user_id === user_id);
@@ -1563,6 +1567,22 @@ describe("Web Push endpoints", () => {
     const ok = await handlePushSubscribe(subReq({ endpoint: EP, mode: "repair", keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
     expect(ok.status).toBe(200);
     expect(subs).toEqual([{ endpoint: EP, user_id: "uA", p256dh: "A2" }]);
+  });
+  it("subscribe mode=repair + previous_endpoint rotates the caller's own row (never another account's; non-string ignored)", async () => {
+    const NEW = "https://fcm.googleapis.com/fcm/send/rotated";
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [{ endpoint: EP, user_id: "uA", p256dh: "A" }];
+    // another account cannot rotate uA's row
+    const other = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: EP, keys: { p256dh: "B" } }), pushHandlerDb("uB", subs), now, cors);
+    expect(other.status).toBe(404);
+    expect(subs).toEqual([{ endpoint: EP, user_id: "uA", p256dh: "A" }]);
+    // a non-string previous_endpoint is ignored → plain repair of a missing row → 404
+    for (const prev of [123, null]) {
+      const bad = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: prev, keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
+      expect(bad.status).toBe(404);
+    }
+    const ok = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: EP, keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
+    expect(ok.status).toBe(200);
+    expect(subs).toEqual([{ endpoint: NEW, user_id: "uA", p256dh: "A2" }]);
   });
   it("subscribe rejects an unknown mode with 400", async () => {
     const res = await handlePushSubscribe(subReq({ endpoint: EP, mode: "steal" }), pushHandlerDb("uA", []), now, cors);

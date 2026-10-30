@@ -58,8 +58,8 @@ describe("decidePush — identity gate", () => {
     expect(t.unsubscribed).toBe(1);
     expect(store.value()).toBeNull();
   });
-  it("401 / non-OK session → no preview, subscription dropped", async () => {
-    for (const status of [401, 403, 500]) {
+  it("401 / 403 session → no preview, subscription dropped", async () => {
+    for (const status of [401, 403]) {
       const store = memStore("uA");
       const { t, registration } = swReg();
       const { fetchFn, urls } = net(() => json({}, status));
@@ -69,6 +69,33 @@ describe("decidePush — identity gate", () => {
       expect(t.unsubscribed).toBe(1);
       expect(store.value()).toBeNull();
     }
+  });
+  it("transient session failures (500 / 503 / 429 / 404) → no preview but the subscription and opt-in are KEPT", async () => {
+    for (const status of [500, 503, 429, 404]) {
+      const store = memStore("uA");
+      const { t, registration } = swReg();
+      const { fetchFn, urls } = net(() => json({}, status));
+      const d = await core.decidePush({ store, fetchFn, registration });
+      expect(d, String(status)).toMatchObject({ show: false, reason: "session_unavailable" });
+      expect(urls).toEqual(["/api/session"]);
+      expect(t.unsubscribed, String(status)).toBe(0);
+      expect(store.value(), String(status)).toBe("uA");
+    }
+  });
+  it("a 200 session with an unreadable body is transient too (kept, nothing shown)", async () => {
+    const store = memStore("uA");
+    const { t, registration } = swReg();
+    const { fetchFn } = net(() => new Response("<html>captive portal</html>", { status: 200 }));
+    expect(await core.decidePush({ store, fetchFn, registration })).toMatchObject({ show: false, reason: "session_unreadable" });
+    expect(t.unsubscribed).toBe(0);
+    expect(store.value()).toBe("uA");
+  });
+  it("200 session without a user id → dropped", async () => {
+    const store = memStore("uA");
+    const { t, registration } = swReg();
+    const { fetchFn } = net(() => json({ authenticated: true, user: {} }));
+    expect(await core.decidePush({ store, fetchFn, registration })).toMatchObject({ show: false, reason: "signed_out" });
+    expect(t.unsubscribed).toBe(1);
   });
   it("signed out (authenticated:false) → no preview, subscription dropped", async () => {
     const store = memStore("uA");
@@ -131,4 +158,15 @@ describe("handleMessage (opt-in id from the page)", () => {
     expect(await core.handleMessage(null, store)).toBe(false);
     expect(store.value()).toBe("uA");
   });
+});
+
+describe("service worker caching headers", () => {
+  const headers = readFileSync(new URL("../../public/_headers", import.meta.url), "utf8");
+  for (const path of ["/sw.js", "/sw-core.js"]) {
+    it(`${path} is always revalidated (a stale identity gate must not outlive a deploy)`, () => {
+      const block = new RegExp(`^${path.replace(".", "\\.")}\\n((?:[ \\t]+.*\\n?)+)`, "m").exec(headers);
+      expect(block, `${path} rule in _headers`).not.toBeNull();
+      expect(block![1]).toMatch(/Cache-Control:\s*no-cache\s*$/m);
+    });
+  }
 });
