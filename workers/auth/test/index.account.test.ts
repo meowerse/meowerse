@@ -17,6 +17,11 @@ async function loggedIn(username: string, extraEnv: Record<string, string> = { A
 function post(env: unknown, deps: unknown, path: string, sess: string, body: unknown) {
   return handle(new Request(`https://iss${path}`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}` }, body: JSON.stringify(body) }), env as never, deps as never);
 }
+async function startToken(env: unknown, deps: unknown, sess: string, csrf: string, extra: Record<string, unknown> = {}): Promise<string> {
+  const r = await post(env, deps, "/api/account/delete/start", sess, { csrf, ...extra });
+  expect(r.status).toBe(200);
+  return ((await r.json()) as { confirm_token: string }).confirm_token;
+}
 function get(env: unknown, deps: unknown, path: string, sess?: string) {
   return handle(new Request(`https://iss${path}`, { headers: sess ? { Cookie: `__Host-mw_sess=${sess}` } : {} }), env as never, deps as never);
 }
@@ -84,8 +89,11 @@ test("POST /api/account/delete: bad csrf 403, wrong confirm 400, correct erases 
   expect((await post(env, deps, "/api/account/delete", sess, { csrf: "WRONG", confirm: "neko_del" })).status).toBe(403);
   // wrong confirmation phrase
   expect((await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "nope" })).status).toBe(400);
+  // no confirmation token
+  expect((await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_del" })).status).toBe(403);
   // correct
-  const ok = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_del" });
+  const confirm_token = await startToken(env, deps, sess, csrf);
+  const ok = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_del", confirm_token });
   expect(ok.status).toBe(200);
   expect(ok.headers.get("Set-Cookie")).toContain("mw_sess");
   // session is gone → the same cookie now 401s
@@ -112,7 +120,8 @@ test("POST /api/account/delete confirms against displayName for a username-less 
   store.tables.sessions.push({ id_hash: idHash, account_id: "acct_tgd", auth_time: 1000, amr: "tg", csrf_token: "csrfd", idle_expires_at: 9e9, absolute_expires_at: 9e9, revoked_at: null });
   // confirm must equal the displayName (username is null)
   expect((await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "wrong" })).status).toBe(400);
-  const ok = await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "TG Del" });
+  const confirm_token = await startToken(env, deps, "delraw", "csrfd");
+  const ok = await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "TG Del", confirm_token });
   expect(ok.status).toBe(200);
   expect(store.tables.accounts.some((a) => a.id === "acct_tgd")).toBe(false);
 });
@@ -130,7 +139,11 @@ test("POST /api/account/delete with the flag off/unset → 503 deletion_unavaila
     const { store, env, deps, sess, csrf, accountId } = await loggedIn(`neko_off_${Object.values(extra)[0] ?? "unset"}`, extra);
     const before = JSON.stringify(store.tables);
     const auditBefore = (store.tables.audit_log ?? []).length;
-    const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: `neko_off_${Object.values(extra)[0] ?? "unset"}` });
+    const confirm = `neko_off_${Object.values(extra)[0] ?? "unset"}`;
+    const st = await post(env, deps, "/api/account/delete/start", sess, { csrf, current_password: "accttest1234" });
+    expect(st.status).toBe(503);
+    expect(await st.json()).toEqual({ error: "deletion_unavailable" });
+    const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm, confirm_token: "x" });
     expect(r.status).toBe(503);
     expect(await r.json()).toEqual({ error: "deletion_unavailable" });
     expect(r.headers.get("Set-Cookie")).toBeNull();
@@ -144,7 +157,8 @@ test("POST /api/account/delete with the flag off/unset → 503 deletion_unavaila
 test("POST /api/account/delete with an active owned client (memStore) → 409 owns_active_clients, account kept", async () => {
   const { store, env, deps, sess, csrf, accountId } = await loggedIn("neko_owner");
   store.tables.oauth_clients.push({ client_id: "cl_own", owner_account_id: accountId, deleted_at: null });
-  const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_owner" });
+  const confirm_token = await startToken(env, deps, sess, csrf);
+  const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_owner", confirm_token });
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "owns_active_clients" });
   expect(store.tables.accounts.some((a) => a.id === accountId)).toBe(true);

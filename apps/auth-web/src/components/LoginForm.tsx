@@ -1,6 +1,6 @@
 import { useState, useRef, type FormEvent } from "react";
 import { Button, Field, Alert, clearSessionCache } from "@meowerse/ui";
-import { postLogin, nextLocation } from "../lib/authApi";
+import { postLogin, postAuthLocation } from "../lib/authApi";
 import Turnstile, { type TurnstileRef } from "./Turnstile";
 
 export default function LoginForm({ base, turnstileSiteKey }: { base: string; turnstileSiteKey?: string }) {
@@ -22,7 +22,7 @@ export default function LoginForm({ base, turnstileSiteKey }: { base: string; tu
       const res = await postLogin(base, username, password, activeToken || undefined);
       if (res.ok) {
         clearSessionCache();
-        window.location.href = nextLocation(res.next);
+        window.location.href = postAuthLocation(res.next, window.location.search);
       } else {
         setError(loginError(res.error));
         // Single-use token was consumed by siteverify; reset for the next attempt

@@ -1,7 +1,7 @@
 import { validatePassword, genRecoveryCodes, normalizeRecoveryCode } from "@meowerse/auth-shared";
 import { hashPassword, verifyPassword, DEFAULT_PBKDF2, CHEAP_PBKDF2, type Pbkdf2Params } from "./crypto";
 import { randomId } from "./security";
-import { accountPresent } from "./codeguard";
+import { accountPresent, allOf, sessionLive, guardedInsert } from "./codeguard";
 import type { DbClient } from "./types";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
@@ -221,6 +221,65 @@ export async function countRecoveryCodes(db: DbClient, accountId: string): Promi
   return Number(r.rows[0]?.n ?? 0);
 }
 
+/** The step-up confirmation that authorises ONE deletion: bound to the account, the session, and an expiry. */
+export interface DeleteConfirmation {
+  tokenHash: string;
+  sessionIdHash: string;
+  now: number;
+}
+
+/** Lifetime of a delete confirmation token, seconds. */
+export const DELETE_CONFIRM_TTL = 300;
+
+/**
+ * Check the account's current password. "none" = the account has no password credential (Telegram-only).
+ * A wrong/missing password costs the same PBKDF2 verify (dummy PHC when absent is unnecessary: this
+ * runs only for an already-authenticated session, so there is no account-enumeration surface).
+ */
+export async function verifyAccountPassword(db: DbClient, accountId: string, password: string): Promise<"ok" | "wrong" | "none"> {
+  const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] });
+  const row = cred.rows[0];
+  if (!row) return "none";
+  return (await verifyPassword(password, String(row.phc))) ? "ok" : "wrong";
+}
+
+/**
+ * Store a new single-use delete confirmation (only the SHA-256 of the token) bound to this account + session, and
+ * invalidate every earlier unused one for the account. ONE write batch; the insert is guarded on the account
+ * existing and the session being live, so nothing is written for a deleted account / revoked session.
+ * Returns false when nothing was issued.
+ */
+export async function issueDeleteConfirmation(
+  db: DbClient,
+  i: { accountId: string; sessionIdHash: string; tokenHash: string; now: number },
+): Promise<boolean> {
+  const guard = allOf(accountPresent(i.accountId), sessionLive(i.sessionIdHash, i.accountId, i.now));
+  const res = await db.batch(
+    [
+      { sql: "DELETE FROM account_delete_confirmations WHERE account_id = ? AND used_at IS NULL", args: [i.accountId] },
+      guardedInsert(
+        "account_delete_confirmations",
+        "token_hash, account_id, session_id_hash, created_at, expires_at",
+        "?, ?, ?, ?, ?",
+        [i.tokenHash, i.accountId, i.sessionIdHash, i.now, i.now + DELETE_CONFIRM_TTL],
+        guard,
+      ),
+    ],
+    "write",
+  );
+  return (res[1]?.rowsAffected ?? 0) === 1;
+}
+
+/** Read-only probe (after a failed delete batch): is this confirmation still usable for this account + session? */
+export async function deleteConfirmationUsable(db: DbClient, accountId: string, c: DeleteConfirmation): Promise<boolean> {
+  const live = sessionLive(c.sessionIdHash, accountId, c.now);
+  const r = await db.execute({
+    sql: `SELECT 1 FROM account_delete_confirmations WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ? AND ${live.sql}`,
+    args: [c.tokenHash, accountId, c.sessionIdHash, c.now, ...live.args],
+  });
+  return r.rows.length > 0;
+}
+
 /**
  * Erase an account and everything it owns, ATOMICALLY: every DELETE runs in ONE
  * `db.batch(..., "write")` transaction (BEGIN IMMEDIATE), so a mid-sequence
@@ -240,9 +299,25 @@ export async function deleteAccount(
   db: DbClient,
   accountId: string,
   audit: { ipTrunc: string | null; uaHash: string | null } = { ipTrunc: null, uaHash: null },
+  confirm: DeleteConfirmation,
 ): Promise<void> {
   const owned = "(SELECT client_id FROM oauth_clients WHERE owner_account_id = ?)";
-  const stmts: { sql: string; args: unknown[] }[] = [
+  const stmts: { sql: string; args: unknown[] }[] = [];
+  // Single-use confirmation, consumed atomically INSIDE the batch (REQUIRED): the UPDATE
+  // wins only for an unused, unexpired token bound to this account AND this session; the next statement then
+  // aborts the whole batch (NOT NULL violation) when it changed nothing. Two racing requests with the same
+  // token serialize on the write transaction, so exactly one consumes it.
+  // The UPDATE also requires the session to still be live (unrevoked, unexpired, account present): a logout in
+  // another tab between the handler's lookup and this batch makes it change nothing.
+  const live = sessionLive(confirm.sessionIdHash, accountId, confirm.now);
+  stmts.push(
+    {
+      sql: `UPDATE account_delete_confirmations SET used_at = ? WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ? AND ${live.sql}`,
+      args: [confirm.now, confirm.tokenHash, accountId, confirm.sessionIdHash, confirm.now, ...live.args],
+    },
+    { sql: "INSERT INTO audit_log (event) SELECT NULL WHERE changes() = 0", args: [] },
+  );
+  stmts.push(
     // In-batch guard: an ACTIVE owned client (created after the handler's pre-check) must never be
     // hard-deleted silently. This inserts a row with a NULL (NOT NULL) `event` only when one exists, so
     // the constraint error aborts and rolls back the WHOLE batch. With none it inserts nothing.
@@ -257,11 +332,11 @@ export async function deleteAccount(
     { sql: `DELETE FROM access_tokens WHERE client_id IN ${owned}`, args: [accountId] },
     { sql: `DELETE FROM refresh_tokens WHERE client_id IN ${owned}`, args: [accountId] },
     { sql: `DELETE FROM consents WHERE client_id IN ${owned}`, args: [accountId] },
-  ];
+  );
   const accountKeyed = [
     "recovery_codes", "password_credentials", "telegram_links", "sessions",
     "consents", "access_tokens", "refresh_tokens",
-    "oauth_codes", "login_requests", "login_tickets",
+    "oauth_codes", "login_requests", "login_tickets", "account_delete_confirmations",
   ];
   for (const tbl of accountKeyed) {
     stmts.push({ sql: `DELETE FROM ${tbl} WHERE account_id = ?`, args: [accountId] });

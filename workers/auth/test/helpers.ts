@@ -1,3 +1,4 @@
+import { deleteAccount } from "../src/accounts";
 import type { SigningKeyRecord } from "../src/keys";
 import type { DbClient } from "../src/types";
 
@@ -57,6 +58,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     rate_limits: [],
     login_tickets: [],
     audit_log: [],
+    account_delete_confirmations: [],
   };
   // Conditional INSERT ... SELECT ... WHERE EXISTS(unspent credential): last arg is its hash.
   // Token inserts carry a second layer (account still exists): args end [..., credentialHash, accountId].
@@ -72,6 +74,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
     return true;
   };
+  let lastConfirmChanges = 0; // emulates changes() after the delete-confirmation consume UPDATE
   let lastAccountChanges = 0; // emulates changes() after `DELETE FROM accounts`
   // Only valid because deleteAccount puts the audit insert IMMEDIATELY after that delete; it is not reset by other writes.
   const exec: DbClient["execute"] = async (stmt) => {
@@ -119,6 +122,38 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/^SELECT client_id FROM oauth_clients WHERE owner_account_id = \? AND deleted_at IS NULL/.test(sql))
         return { rows: t.oauth_clients.filter((r) => r.owner_account_id === a[0] && r.deleted_at == null).map((r) => ({ client_id: r.client_id })) };
       if (/^SELECT 1 FROM accounts WHERE id = \?/.test(sql)) return { rows: t.accounts.filter((r) => r.id === a[0]).map(() => ({ "1": 1 })) };
+      // --- account-delete step-up confirmations ---
+      if (/^INSERT INTO account_delete_confirmations/.test(sql)) {
+        const [tokenHash, accountId, sessHash, createdAt, expiresAt] = a;
+        if (!t.accounts.some((r) => r.id === accountId) || !t.sessions.some((r) => r.id_hash === sessHash && r.account_id === accountId && r.revoked_at == null))
+          return { rows: [], rowsAffected: 0 };
+        t.account_delete_confirmations.push({ token_hash: tokenHash, account_id: accountId, session_id_hash: sessHash, created_at: createdAt, expires_at: expiresAt, used_at: null });
+        return { rows: [], rowsAffected: 1 };
+      }
+      if (/^DELETE FROM account_delete_confirmations WHERE account_id = \? AND used_at IS NULL/.test(sql)) {
+        t.account_delete_confirmations = t.account_delete_confirmations.filter((r) => !(r.account_id === a[0] && r.used_at == null));
+        return { rows: [] };
+      }
+      if (/^DELETE FROM account_delete_confirmations WHERE account_id = \?/.test(sql)) {
+        t.account_delete_confirmations = t.account_delete_confirmations.filter((r) => r.account_id !== a[0]);
+        return { rows: [] };
+      }
+      if (/^UPDATE account_delete_confirmations SET used_at/.test(sql)) {
+        const [usedAt, tokenHash, accountId, sessHash, nowTs] = a;
+        const row = t.account_delete_confirmations.find((r) => r.token_hash === tokenHash && r.account_id === accountId && r.session_id_hash === sessHash && r.used_at == null && Number(r.expires_at) > Number(nowTs));
+        const live = t.sessions.some((r) => r.id_hash === sessHash && r.account_id === accountId && r.revoked_at == null && Number(r.idle_expires_at) >= Number(nowTs) && Number(r.absolute_expires_at) >= Number(nowTs));
+        if (row && live) row.used_at = usedAt;
+        lastConfirmChanges = row && live ? 1 : 0;
+        return { rows: [], rowsAffected: lastConfirmChanges };
+      }
+      if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE changes\(\) = 0/.test(sql)) {
+        if (lastConfirmChanges === 0) throw Object.assign(new Error("NOT NULL constraint failed: audit_log.event"), { code: "SQLITE_CONSTRAINT_NOTNULL" });
+        return { rows: [], rowsAffected: 0 };
+      }
+      if (/^SELECT 1 FROM account_delete_confirmations WHERE token_hash/.test(sql)) {
+        const live = t.sessions.some((r) => r.id_hash === a[2] && r.account_id === a[1] && r.revoked_at == null && Number(r.idle_expires_at) >= Number(a[3]) && Number(r.absolute_expires_at) >= Number(a[3]));
+        return { rows: live ? t.account_delete_confirmations.filter((r) => r.token_hash === a[0] && r.account_id === a[1] && r.session_id_hash === a[2] && r.used_at == null && Number(r.expires_at) > Number(a[3])).map(() => ({ "1": 1 })) : [] };
+      }
       // Simulates deleteAccount's guard statement (a NOT NULL violation on real SQLite) iff an active owned client exists.
       if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE EXISTS/.test(sql)) {
         if (t.oauth_clients.some((r) => r.owner_account_id === a[0] && r.deleted_at == null)) throw new Error("NOT NULL constraint failed: audit_log.event");
@@ -548,4 +583,30 @@ export async function seedLiveSession(db: DbClient, idHash: string, accountId: s
           VALUES (?, ?, ?, 'pwd', 'csrf', ?, ?)`,
     args: [idHash, accountId, now, now + 100_000, now + 100_000],
   });
+}
+
+/**
+ * Test-only: store a usable delete confirmation for `accountId` (reusing one of its live sessions, or seeding one)
+ * and return the DeleteConfirmation to pass to deleteAccount. `now` must be inside the session's validity window.
+ */
+export async function seedDeleteConfirmation(db: DbClient, accountId: string, now = 1000): Promise<{ tokenHash: string; sessionIdHash: string; now: number }> {
+  const existing = (await db.execute({ sql: "SELECT id_hash FROM sessions WHERE account_id = ? AND revoked_at IS NULL AND idle_expires_at >= ? AND absolute_expires_at >= ? LIMIT 1", args: [accountId, now, now] })).rows[0];
+  const sessionIdHash = existing ? String(existing.id_hash) : `sess_del_${accountId}`;
+  if (!existing) await seedLiveSession(db, sessionIdHash, accountId, now);
+  const tokenHash = `tok_del_${accountId}`;
+  await db.execute({
+    sql: "INSERT OR REPLACE INTO account_delete_confirmations (token_hash, account_id, session_id_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+    args: [tokenHash, accountId, sessionIdHash, now, now + 300],
+  });
+  return { tokenHash, sessionIdHash, now };
+}
+
+/** Test-only: delete an account through deleteAccount with a freshly seeded confirmation (production callers always pass a real one). */
+export async function deleteAccountForTest(
+  db: DbClient,
+  accountId: string,
+  audit?: { ipTrunc: string | null; uaHash: string | null },
+  now = 1000,
+): Promise<void> {
+  await deleteAccount(db, accountId, audit, await seedDeleteConfirmation(db, accountId, now));
 }

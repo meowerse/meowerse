@@ -10,7 +10,7 @@ import { linkTelegramToAccount } from "../src/telegram";
 import { sha256Hex } from "../src/crypto";
 import { createManagementToken, verifyManagementToken } from "../src/dashboard";
 import { authenticateClient } from "../src/clients";
-import { genSigningKeys, cookieValue, seedLiveSession } from "./helpers";
+import { genSigningKeys, cookieValue, seedLiveSession, deleteAccountForTest } from "./helpers";
 import type { DbClient } from "../src/types";
 
 // Account-deletion races: a request that read a valid session/account just before deleteAccount
@@ -79,7 +79,7 @@ async function setup() {
   const idHash = await sha256Hex(sess);
   return {
     db, wrapped, call, sess, csrf, accountId, idHash,
-    deleteNow: () => deleteAccount(db, accountId),
+    deleteNow: () => deleteAccountForTest(db, accountId),
     onNextSessionRead: (fn: () => Promise<void>) => { hook = fn; hookRe = /FROM sessions WHERE id_hash/; },
     onNext: (re: RegExp, fn: () => Promise<void>) => { hook = fn; hookRe = re; },
     onNextConsentRead: (fn: () => Promise<void>) => { hook = fn; hookRe = /FROM consents WHERE account_id/; },
@@ -400,7 +400,7 @@ test("signup: resolveNext returning nothing (new account deleted before the sile
   expect(tkt).toBeTruthy();
   f.onNextConsentRead(async () => {
     const id = String((await run(f.db, "SELECT id FROM accounts WHERE username = 'newbie'")).rows[0]!.id);
-    await deleteAccount(f.db, id);
+    await deleteAccountForTest(f.db, id);
   });
   const r = await f.call("/signup", { cookie: `__Host-mw_tkt=${tkt}`, body: { username: "newbie", password: "accttest1234" } });
   expect(r.status).toBe(401);
