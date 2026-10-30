@@ -291,7 +291,7 @@ test("scheduledHousekeeping logs one counts-only line; swallows errors", async (
     expect(err).toHaveBeenCalledWith("housekeeping_failed");
     const bad: DbClient = { execute: async () => { throw new Error("x"); }, batch: async () => [] };
     await scheduledHousekeeping({ getDb: () => bad }, NOW);
-    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
+    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,rate_limits,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
   } finally {
     log.mockRestore();
     err.mockRestore();
