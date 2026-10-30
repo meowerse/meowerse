@@ -66,6 +66,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
     return true;
   };
+  let lastAccountChanges = 0; // emulates changes() after `DELETE FROM accounts`
+  // Only valid because deleteAccount puts the audit insert IMMEDIATELY after that delete; it is not reset by other writes.
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;
@@ -108,7 +110,21 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.sessions = t.sessions.filter((r) => r.account_id !== a[0]);
         return { rows: [] };
       }
+      if (/^SELECT client_id FROM oauth_clients WHERE owner_account_id = \? AND deleted_at IS NULL/.test(sql))
+        return { rows: t.oauth_clients.filter((r) => r.owner_account_id === a[0] && r.deleted_at == null).map((r) => ({ client_id: r.client_id })) };
+      if (/^SELECT 1 FROM accounts WHERE id = \?/.test(sql)) return { rows: t.accounts.filter((r) => r.id === a[0]).map(() => ({ "1": 1 })) };
+      // Simulates deleteAccount's guard statement (a NOT NULL violation on real SQLite) iff an active owned client exists.
+      if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE EXISTS/.test(sql)) {
+        if (t.oauth_clients.some((r) => r.owner_account_id === a[0] && r.deleted_at == null)) throw new Error("NOT NULL constraint failed: audit_log.event");
+        return { rows: [], rowsAffected: 0 };
+      }
+      if (/^INSERT INTO audit_log .* WHERE changes\(\) = 1/.test(sql)) {
+        if (lastAccountChanges !== 1) return { rows: [], rowsAffected: 0 };
+        t.audit_log.push({ id: t.audit_log.length + 1, event: a[0], account_id: a[1], client_id: a[2], ip_trunc: a[3], ua_hash: a[4] });
+        return { rows: [], rowsAffected: 1 };
+      }
       if (/DELETE FROM accounts WHERE id/.test(sql)) {
+        lastAccountChanges = t.accounts.filter((r) => r.id === a[0]).length;
         t.accounts = t.accounts.filter((r) => r.id !== a[0]);
         return { rows: [] };
       }
@@ -471,7 +487,14 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
 
       return { rows: [] };
   };
-  const db: DbClient = { execute: exec, batch: async (stmts) => Promise.all(stmts.map((s) => exec(s))) };
+  // Sequential, stops at the first error. Does NOT roll back earlier statements (unlike real libsql
+  // batch("write")); tests needing atomicity use a real in-memory libsql instead.
+  const seqBatch: DbClient["batch"] = async (stmts) => {
+    const out = [];
+    for (const s of stmts) out.push(await exec(s));
+    return out;
+  };
+  const db: DbClient = { execute: exec, batch: seqBatch };
   return { db, tables: t };
 }
 

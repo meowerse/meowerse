@@ -139,3 +139,13 @@ test("POST /api/account/delete with the flag off/unset → 503 deletion_unavaila
     expect((await get(env, deps, "/api/account", sess)).status).toBe(200); // session survives
   }
 });
+
+test("POST /api/account/delete with an active owned client (memStore) → 409 owns_active_clients, account kept", async () => {
+  const { store, env, deps, sess, csrf, accountId } = await loggedIn("neko_owner");
+  store.tables.oauth_clients.push({ client_id: "cl_own", owner_account_id: accountId, deleted_at: null });
+  const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_owner" });
+  expect(r.status).toBe(409);
+  expect(await r.json()).toEqual({ error: "owns_active_clients" });
+  expect(store.tables.accounts.some((a) => a.id === accountId)).toBe(true);
+  expect(store.tables.audit_log.some((a) => a.event === "account.delete")).toBe(false);
+});

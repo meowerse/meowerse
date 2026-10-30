@@ -32,7 +32,7 @@ async function seedAccount(db: DbClient, a: string, tgId: number) {
   await run("INSERT INTO telegram_links (telegram_id, account_id) VALUES (?, ?)", [tgId, a]);
   await run("INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, 'h')", [a]);
   await run("INSERT INTO sessions (id_hash, account_id, auth_time, csrf_token, idle_expires_at, absolute_expires_at) VALUES (?, ?, 1, 'c', 9, 9)", [`s_${a}`, a]);
-  await run("INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, allowed_scopes) VALUES (?, ?, ?, 'public', '[]')", [c, `n_${a}`, a]);
+  await run("INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, allowed_scopes, deleted_at) VALUES (?, ?, ?, 'public', '[]', '2026-01-01')", [c, `n_${a}`, a]);
   await run("INSERT INTO oauth_client_secrets (client_id, secret_phc) VALUES (?, 'x')", [c]);
   await run("INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri) VALUES (?, 'http://x/cb')", [c]);
   // own consent on the seeded demo client + someone else's consent on this account's client
@@ -63,7 +63,6 @@ async function twoAccounts() {
 
 test("(a) deleteAccount empties every table for the account; other accounts untouched; audit_log kept", async () => {
   const db = await twoAccounts();
-  await db.execute({ sql: "INSERT INTO audit_log (event, account_id) VALUES ('account.delete', 'acct_v')", args: [] });
   const bystander = await rowsFor(db, "acct_o");
   const before = await rowsFor(db, "acct_v");
   for (const v of Object.values(before)) expect(v).toBeGreaterThan(0);
@@ -72,7 +71,7 @@ test("(a) deleteAccount empties every table for the account; other accounts unto
 
   for (const v of Object.values(await rowsFor(db, "acct_v"))) expect(v).toBe(0);
   expect(await rowsFor(db, "acct_o")).toEqual(bystander);
-  expect(await count(db, "audit_log WHERE account_id = 'acct_v'")).toBe(1);
+  expect(await count(db, "audit_log WHERE account_id = 'acct_v' AND event = 'account.delete'")).toBe(1);
 });
 
 test("(b) a failing DELETE inside the batch rolls everything back and throws", async () => {

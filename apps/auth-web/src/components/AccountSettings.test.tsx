@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Same harness as DevelopersPage.test.tsx: jsdom by pragma, explicit cleanup, plain existence checks.
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@meowerse/ui";
 import AccountSettings from "./AccountSettings";
@@ -80,5 +80,22 @@ describe("AccountSettings", () => {
     await screen.findByText("alxnko");
     expect(screen.getByRole("button", { name: "delete account" })).not.toBeNull();
     expect(screen.queryByText(/handled on request for now/)).toBeNull();
+  });
+
+  it("maps a 409 owns_active_clients delete answer to the developer-dashboard message", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith("/grants")) return json({ grants: [] });
+      if (u.endsWith("/api/account/delete")) return json({ error: "owns_active_clients" }, 409);
+      return json({ ...ACCOUNT, deleteEnabled: true });
+    });
+    page();
+    await screen.findByText("alxnko");
+    fireEvent.click(screen.getByRole("button", { name: "delete account" }));
+    fireEvent.change(await screen.findByLabelText("type alxnko to confirm"), { target: { value: "alxnko" } });
+    const buttons = screen.getAllByRole("button", { name: "delete account" });
+    fireEvent.click(buttons[buttons.length - 1]!);
+    await waitFor(() => expect(screen.getByText("delete your apps in the developer dashboard first")).not.toBeNull());
+    expect(screen.queryByText("could not delete account")).toBeNull();
   });
 });
