@@ -5,7 +5,7 @@
  * toggle showed "on" while the server stored nothing.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "../test/rtl";
+import { render, screen, fireEvent, waitFor, within, act } from "../test/rtl";
 
 // A plain function, not vi.fn: a vi.fn whose implementation rejects reports the
 // rejection as a test failure even though the component catches it.
@@ -152,6 +152,36 @@ describe("Settings — push switch states", () => {
     fireEvent.click(toggle());
     expect((await screen.findByRole("alert")).textContent).toMatch(/Chrome may have hidden it/);
     await waitFor(() => expect(screen.getByText(/last error: denied/)).toBeTruthy());
+  });
+
+  it("the visible on/off word is hidden from assistive tech (the switch already announces it)", async () => {
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    await waitFor(() => expect(document.querySelector(".mw-setting__state")!.getAttribute("aria-hidden")).toBe("true"));
+  });
+
+  it("denied copy mentions android settings only on Android", async () => {
+    H.impl = async () => "denied";
+    const ua = vi.spyOn(navigator, "userAgent", "get");
+    ua.mockReturnValue("Mozilla/5.0 (X11; Linux x86_64) Chrome/120");
+    const first = render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(toggle());
+    expect((await screen.findByRole("alert")).textContent).not.toMatch(/android/i);
+    first.unmount();
+    ua.mockReturnValue("Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile");
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(toggle());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/android settings/);
+    ua.mockRestore();
+  });
+
+  it("says it couldn't load the account when the user id never arrives (~10 s)", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<Settings base="https://x" open onClose={() => {}} />);
+      expect(screen.getByText("loading…")).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_100); });
+      expect(screen.getByText(/couldn't load your account — reload/)).toBeTruthy();
+    } finally { vi.useRealTimers(); }
   });
 
   it("details show permission/sw/subscription yes-no and no endpoint", async () => {

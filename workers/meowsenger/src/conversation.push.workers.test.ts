@@ -177,4 +177,82 @@ describe("Conversation offline push decision", () => {
     }
     expect(decisionLogs()).toEqual(["push_decision targets=1 active_excluded=1"]);
   });
+
+  it("(h) burst: N concurrent messages push each recipient exactly once (window reserved before any await)", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt", "rcpt2"], ["rcpt", "rcpt2"]); await configureVapid(c);
+    const sender = await connect(c, "sender");
+    const N = 6;
+    // Slow push service: later messages' decisions run while earlier sends are in flight.
+    fetchSpy.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 100)); return new Response(null, { status: 201 }); });
+    for (let i = 0; i < N; i++) sender.send(JSON.stringify({ type: "send", tempId: `b${++seq}`, body: `m${i}` }));
+    await vi.waitFor(() => expect(decisionLogs()).toHaveLength(N), { timeout: 5000 });
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(2));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(pushedTo().sort()).toEqual([EP(`${c}-rcpt`), EP(`${c}-rcpt2`)]);
+  });
+
+  it("(i) DM: pushed at t0, recipient opens the chat then backgrounds, new message at t15 is pushed again; without opening it stays debounced", async () => {
+    let t = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    try {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(() => expect(pushCalls()).toHaveLength(1));
+      t += 5_000;
+      await send(sender, "two (rcpt never looked)");
+      expect(pushCalls()).toHaveLength(1);
+      await connectAway(c, "rcpt", sender); // opened the chat (fresh socket), then backgrounded
+      t += 10_000; // t15
+      await send(sender, "three");
+      await vi.waitFor(() => expect(pushCalls()).toHaveLength(2));
+    } finally { nowSpy.mockRestore(); }
+  });
+
+  it("(j) group: pushing Carol does not silence Dave (per-recipient window)", async () => {
+    const c = newChat(); await seed(c, ["sender", "carol", "dave"], ["carol", "dave"]); await configureVapid(c);
+    const sender = await connect(c, "sender");
+    const dave = await connect(c, "dave"); // active → excluded from the first push
+    await send(sender, "one");
+    await vi.waitFor(() => expect(pushedTo()).toEqual([EP(`${c}-carol`)]));
+    const away = waitFor(sender, (t) => t.includes('"presence"') && t.includes('"away":true'));
+    dave.send(JSON.stringify({ type: "away", away: true }));
+    await away;
+    await send(sender, "two"); // within 30 s: Carol debounced, Dave pushed
+    await vi.waitFor(() => expect(pushedTo()).toEqual([EP(`${c}-carol`), EP(`${c}-dave`)]));
+  });
+
+  it("(k) push fan-out is capped per message (50), logs the truncated count, and imports the VAPID key once", async () => {
+    const users = Array.from({ length: 60 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+    const importSpy = vi.spyOn(crypto.subtle, "importKey");
+    const sender = await connect(c, "sender");
+    await send(sender, "hi");
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(50));
+    expect(decisionLogs()).toEqual(["push_decision targets=50 active_excluded=0", "push_decision truncated=10"]);
+    expect(importSpy.mock.calls.filter((a) => a[0] === "jwk")).toHaveLength(1);
+    importSpy.mockRestore();
+  });
+
+  it("(l) a removed member's inbox gets no preview right after dropUser (member cache cleared)", async () => {
+    const c = newChat(); await seed(c, ["sender", "bob", "carol"], []);
+    const hits: string[] = [];
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      (inst.env as unknown as Record<string, unknown>).USER_INBOX = {
+        idFromName: (n: string) => n,
+        get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
+      };
+    });
+    const sender = await connect(c, "sender");
+    await send(sender, "one");
+    await vi.waitFor(() => expect(hits).toContain("inbox:carol"));
+    // Remove carol (D1 + the REST handler's dropUser), then send immediately (< 5 s).
+    await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind(c, "carol").run();
+    await stub(c).dropUser("carol", true);
+    hits.length = 0;
+    await send(sender, "two");
+    await vi.waitFor(() => expect(hits).toContain("inbox:bob"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hits).not.toContain("inbox:carol");
+  });
 });

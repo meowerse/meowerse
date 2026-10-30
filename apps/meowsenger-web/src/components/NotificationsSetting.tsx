@@ -5,6 +5,9 @@ import {
 } from "../lib/push";
 
 const SITE = "meowsenger.alxnko.dev";
+/** How long to wait for the account id before saying it failed to load. */
+const USER_WAIT_MS = 10_000;
+const isAndroid = () => typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent || "");
 const IOS_HINT = "on iPhone: tap share → add to home screen, open meowsenger from the home screen, then turn notifications on here";
 
 type Env = "supported" | "unsupported" | "ios-tab";
@@ -28,6 +31,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   const [busy, setBusy] = useState<"on" | "off" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [diag, setDiag] = useState<PushDiagnostics | null>(null);
+  const [userTimedOut, setUserTimedOut] = useState(false);
   const labelId = useId();
   const statusId = useId();
 
@@ -43,6 +47,13 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
     void refresh();
   }, [open]);
 
+  // The account id arrives asynchronously; if it never does, say so instead of "loading…".
+  useEffect(() => {
+    if (!open || userId) { setUserTimedOut(false); return; }
+    const t = setTimeout(() => setUserTimedOut(true), USER_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [open, userId]);
+
   // NOT async-before-permission: enablePush() runs synchronously up to requestPermission().
   function turnOn() {
     if (busy || !userId) return;
@@ -53,7 +64,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
         if (result === "granted") { setSubscribed(true); recordPushError(null); return; }
         recordPushError(result);
         if (result === "unsupported") setErr("notifications aren't available right now — try again later.");
-        else if (result === "denied") setErr(`notifications were blocked. if you never saw a prompt, Chrome may have hidden it — tap the lock icon in the address bar, allow notifications for ${SITE}, then try again. also check android settings → apps → chrome → notifications.`);
+        else if (result === "denied") setErr(`notifications were blocked. if you never saw a prompt, Chrome may have hidden it — tap the lock icon in the address bar, allow notifications for ${SITE}, then try again.${isAndroid() ? " also check android settings → apps → chrome → notifications." : ""}`);
         else setErr("the permission prompt was dismissed or hidden — tap the switch again and choose allow. if nothing appears, tap the bell/lock icon in the address bar and allow notifications.");
       },
       (e: unknown) => {
@@ -87,7 +98,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   let status: string;
   if (env === "ios-tab") status = IOS_HINT;
   else if (!supported) status = "not supported in this browser";
-  else if (loading) status = "loading…";
+  else if (loading) status = userTimedOut ? "couldn't load your account — reload the page" : "loading…";
   else if (busy === "on") status = "turning on…";
   else if (busy === "off") status = "turning off…";
   else if (on) status = "on — you'll get a notification when a message arrives while meowsenger is closed";
@@ -99,7 +110,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
       <div className="mw-setting mw-setting--push">
         <div className="mw-setting__text">
           <span className="mw-setting__label" id={labelId}>
-            push notifications <span className="mw-setting__state" data-on={on ? "1" : "0"}>{on ? "on" : "off"}</span>
+            push notifications <span className="mw-setting__state" data-on={on ? "1" : "0"} aria-hidden="true">{on ? "on" : "off"}</span>
           </span>
           <span className="mw-setting__hint mw-muted" id={statusId}>{status}</span>
         </div>

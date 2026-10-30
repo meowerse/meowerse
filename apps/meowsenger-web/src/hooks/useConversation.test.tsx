@@ -316,11 +316,48 @@ describe("useConversation — scroll, notify, flash", () => {
     setVisibility("hidden");
     const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
-    expect(MockNotification.instances.length).toBe(1);
+    await waitFor(() => expect(MockNotification.instances.length).toBe(1));
     expect(MockNotification.instances[0].body).toBe("ping");
     // Our OWN message never notifies.
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m3", senderId: "u1", body: "self", createdAt: 3000 }) }));
+    await new Promise((r) => setTimeout(r, 20));
     expect(MockNotification.instances.length).toBe(1);
+  });
+
+  describe("with a service worker", () => {
+    const showNotification = vi.fn(async () => {});
+    function installSw(subscribed: boolean) {
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: { getRegistration: async () => ({ showNotification, pushManager: { getSubscription: async () => (subscribed ? {} : null) } }) },
+      });
+      (window as unknown as { PushManager: unknown }).PushManager = function PushManager() {};
+    }
+    afterEach(() => {
+      delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
+      delete (window as unknown as { PushManager?: unknown }).PushManager;
+      showNotification.mockClear();
+    });
+
+    it("an active push subscription suppresses the in-page notification (the SW push covers it)", async () => {
+      installSw(true);
+      setVisibility("hidden");
+      const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+      act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(showNotification).not.toHaveBeenCalled();
+      expect(MockNotification.instances.length).toBe(0);
+    });
+
+    it("without a push subscription it shows via the registration with the SW's tag", async () => {
+      installSw(false);
+      setVisibility("hidden");
+      const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+      act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
+      await waitFor(() => expect(showNotification).toHaveBeenCalledTimes(1));
+      expect(showNotification).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ body: "ping", tag: "meowsenger-msg" }));
+      expect(MockNotification.instances.length).toBe(0);
+    });
   });
 
   it("jumpToMessage flashes an already-loaded row in place (no server fetch)", async () => {
@@ -362,6 +399,7 @@ describe("useConversation — branch guards", () => {
     setVisibility("hidden");
     const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", createdAt: 2000 }) }));
+    await new Promise((r) => setTimeout(r, 20));
     expect(MockNotification.instances.length).toBe(0);
   });
 

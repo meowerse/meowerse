@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction, type Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
+import { pushSubscribed } from "../lib/push";
 
 /** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
  *  edit/delete, spec §6). */
@@ -37,18 +38,33 @@ const ERROR_COPY: Record<string, string> = {
   rate_limited: "you're sending too fast — slow down a moment",
 };
 
+/** Same tag the service worker uses (public/sw.js), so an in-page and a push
+ *  notification for the same burst collapse into one. */
+const NOTIFY_TAG = "meowsenger-msg";
+
 /**
- * Fire a browser notification for an incoming message while the tab is backgrounded
- * (Slice 9). Conservative — only when the Notification API exists, the document is
- * hidden, and permission is already GRANTED (never auto-requests). Silent no-op
- * otherwise. No service worker / Web Push — the tab must be open.
+ * Notify about an incoming message while the tab is backgrounded (Slice 9).
+ * Conservative — only when the Notification API exists, the document is hidden, and
+ * permission is already GRANTED (never auto-requests). When this device has an active
+ * push subscription the service worker's push already covers it, so nothing is shown
+ * here (no double notification). Otherwise it goes through the SW registration with the
+ * SW's tag (so duplicates collapse), falling back to a page Notification.
  */
-function maybeNotify(title: string, body: string) {
+async function maybeNotify(title: string, body: string): Promise<void> {
   if (typeof Notification === "undefined") return;
   if (typeof document !== "undefined" && !document.hidden) return;
   if (Notification.permission !== "granted") return;
+  const text = body || "sent a message";
   try {
-    new Notification(title, { body: body || "sent a message" });
+    if (await pushSubscribed()) return; // the SW push covers this device
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) {
+      await reg.showNotification(title, { body: text, tag: NOTIFY_TAG });
+      return;
+    }
+  } catch { /* fall through to the page notification */ }
+  try {
+    new Notification(title, { body: text, tag: NOTIFY_TAG });
   } catch { /* some browsers throw off a non-SW context — ignore */ }
 }
 
@@ -308,7 +324,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         });
       }
       if (frame.message.senderId !== meIdRef.current) {
-        maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
+        void maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
       }
       onActiveMessageRef.current?.(frame.message); // realtime sidebar preview for the open chat
     } else if (frame.type === "presence_snapshot") {

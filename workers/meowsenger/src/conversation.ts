@@ -4,7 +4,7 @@ import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { d1Client } from "./db";
-import { pushTargetsForChat, sendPush, deleteDeadPushSubscription, pushHostFamily } from "./push";
+import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -83,6 +83,8 @@ const RATE_MAX = 30;
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
 const PUSH_DEBOUNCE_MS = 30_000;
+/** Max push endpoints targeted per message (bounds subrequests + signing work). */
+const MAX_PUSH_TARGETS = 50;
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
 const MAX_EMOJI_LEN = 8;
@@ -126,8 +128,11 @@ export class Conversation extends DurableObject<Env> {
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
   // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
   private lastSeenStamp = new Map<string, number>();
-  // Last time (ms) we fanned out a Web Push for this chat, to coalesce pushes to
-  // ~once/PUSH_DEBOUNCE_MS (see pushOffline). One entry per chat this DO serves (1).
+  // Per-RECIPIENT push window: userId → time (ms) we last reserved a Web Push for them,
+  // to coalesce pushes to ~once/PUSH_DEBOUNCE_MS per user (see pushOffline). Reserved
+  // synchronously (before any await) so a concurrent burst can't double-push; cleared
+  // when the user next has an active socket here (they have seen the chat). Bounded by
+  // this chat's member count.
   private lastPush = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -166,6 +171,7 @@ export class Conversation extends DurableObject<Env> {
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
+    this.lastPush.delete(userId); // a fresh socket is visible: they're seeing the chat → reset their push window
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
     // Presence: derive who was online BEFORE this socket joined (exclude the
@@ -277,6 +283,7 @@ export class Conversation extends DurableObject<Env> {
     // user's DERIVED status (away iff ALL their sockets are away). Peers-only.
     if (msg.type === "away") {
       ws.serializeAttachment({ ...att, away: !!msg.away });
+      if (!msg.away) this.lastPush.delete(att.userId); // back on screen → reset their push window
       this.broadcast({ type: "presence", userId: att.userId, online: true, away: this.awayUsers().includes(att.userId) }, ws);
       return;
     }
@@ -442,6 +449,8 @@ export class Conversation extends DurableObject<Env> {
    * the real-time sidebar delta.
    * Member ids are cached ~5s per chat so a busy room doesn't read chat_members on
    * every message; a just-joined member starts getting deltas within that window.
+   * The cache is cleared by `dropUser` (removal/leave/demotion), so a removed member
+   * never receives a preview after the REST handler returns.
    */
   private inboxMembers = new Map<string, { ids: string[]; at: number }>();
   private async inboxFanout(chatId: string, senderId: string, message: Wire): Promise<void> {
@@ -475,40 +484,60 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
-   * Send a payloadless Web Push to every subscription of a chat member who has NO
-   * live socket in this room (so they aren't already getting it over the wire) and
-   * isn't the sender. A dead endpoint (404/410) is pruned. No-op when VAPID isn't
-   * configured. One D1 read for the target endpoints; sends run concurrently.
+   * Send a payloadless Web Push to every subscription of a chat member who is not the
+   * sender and has no ACTIVE (non-away) socket in this room — offline, busy in another
+   * chat, or with the tab backgrounded (their service worker decides whether to show
+   * it). A dead endpoint (404/410) is pruned. No-op when VAPID isn't configured.
+   * Debounced PER RECIPIENT (see `lastPush`): the window is reserved synchronously,
+   * right after the single D1 read and before any await, so concurrent messages can't
+   * double-push and one recipient's push never silences another. At most
+   * MAX_PUSH_TARGETS endpoints are pushed per message; the VAPID key is imported once.
    */
   private async pushOffline(chatId: string, senderId: string): Promise<void> {
     if (!this.env.VAPID_PRIVATE_JWK) return; // push not configured
-    // Coalesce: at most one offline fan-out per chat per window. Stamp BEFORE the
-    // D1 read so a burst skips the read entirely (the recipient's SW fetches the
-    // details when it wakes, so a suppressed tickle loses nothing).
+    // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
+    // backgrounded tab still gets a push (its service worker suppresses the toast while
+    // a Meowsenger window is visible).
+    const active = this.activeUsers();
+    for (const u of active) this.lastPush.delete(u); // they've seen the chat
+    const all = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active]);
+    // ---- synchronous section: filter by window + reserve (no await until sends) ----
     const now = Date.now();
-    if (now - (this.lastPush.get(chatId) ?? 0) < PUSH_DEBOUNCE_MS) {
+    const fresh = all.filter((t) => now - (this.lastPush.get(t.userId) ?? -Infinity) >= PUSH_DEBOUNCE_MS);
+    const debounced = new Set(all.map((t) => t.userId)).size - new Set(fresh.map((t) => t.userId)).size;
+    let targets = fresh;
+    let truncated = 0;
+    if (targets.length > MAX_PUSH_TARGETS) {
+      truncated = targets.length - MAX_PUSH_TARGETS;
+      targets = targets.slice(0, MAX_PUSH_TARGETS);
+    }
+    const reserved = new Set(targets.map((t) => t.userId));
+    for (const u of reserved) this.lastPush.set(u, now);
+    // ---- end synchronous section ----
+    const activeExcluded = active.filter((u) => u !== senderId).length;
+    if (all.length > 0 && fresh.length === 0) {
       console.log("push_decision skipped=debounce");
       return;
     }
-    // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
-    // backgrounded tab still gets a push (its service worker suppresses the toast while
-    // a Meowsenger window is visible). Previously every connected socket, even "away",
-    // blocked the push, so a phone with the tab in the background got nothing.
-    const active = this.activeUsers();
-    const targets = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active]);
     // Observability without identities: counts only.
-    console.log(`push_decision targets=${targets.length} active_excluded=${active.filter((u) => u !== senderId).length}`);
-    if (targets.length === 0) return; // nothing sent: don't hold the debounce window
-    this.lastPush.set(chatId, now);
+    console.log(`push_decision targets=${targets.length} active_excluded=${activeExcluded}${debounced > 0 ? ` debounced=${debounced}` : ""}`);
+    if (truncated > 0) console.log(`push_decision truncated=${truncated}`);
+    if (targets.length === 0) return;
+    const key = await importVapidKey(this.env);
+    const delivered = new Set<string>();
     await Promise.all(
       targets.map(async ({ endpoint: ep, userId }) => {
-        const status = await sendPush(ep, this.env, now);
+        const status = await sendPush(ep, this.env, now, fetch, key);
         // Delivery observability: ONLY the push service's HTTP status and its host
         // family — never the endpoint URL, keys, user or chat ids.
         console.log(`push_delivery status=${status} service=${pushHostFamily(ep)}`);
+        if (status >= 200 && status < 300) delivered.add(userId);
         if (status === 404 || status === 410) await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
       }),
     );
+    // Roll back the window for recipients where nothing was delivered, so the next
+    // message retries them instead of being silenced by a push that never went out.
+    for (const u of reserved) if (!delivered.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
   }
 
   /**
@@ -558,6 +587,11 @@ export class Conversation extends DurableObject<Env> {
    * anyway). Closing runs the normal presence cleanup via webSocketClose.
    */
   async dropUser(userId: string, revoked: boolean): Promise<void> {
+    // The cached member list (inbox fan-out) may still contain a just-removed user;
+    // drop it so the next message re-reads chat_members and the removed user's inbox
+    // gets no further previews. Also forget their push window.
+    this.inboxMembers.clear();
+    this.lastPush.delete(userId);
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attach | null;
       if (a?.userId !== userId) continue;
