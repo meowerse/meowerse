@@ -106,19 +106,19 @@ function codeRow(over: Record<string, unknown> = {}) {
   };
 }
 
-test("exchangeCode success consumes once and returns the grant", async () => {
-  const routes: Route[] = [
-    [/SELECT \* FROM oauth_codes/, () => ({ rows: [codeRow()] })],
-    [/UPDATE oauth_codes SET consumed_at/, () => ({ rows: [], rowsAffected: 1 })],
-  ];
-  const res = await exchangeCode(routedDb(routes), {
+test("exchangeCode success validates WITHOUT consuming and returns the grant + codeHash", async () => {
+  const log: { sql: string; args: unknown[] }[] = [];
+  const routes: Route[] = [[/SELECT \* FROM oauth_codes/, () => ({ rows: [codeRow()] })]];
+  const res = await exchangeCode(routedDb(routes, log), {
     code: "code_x",
     verifier: VERIFIER,
     clientId: "mw_demo",
     redirectUri: "https://app/cb",
     now: 1000,
   });
-  expect(res).toMatchObject({ ok: true, accountId: "acct_1", scope: ["openid", "profile"], nonce: "n1", family: "fam" });
+  expect(res).toMatchObject({ ok: true, accountId: "acct_1", scope: ["openid", "profile"], nonce: "n1", family: "fam", codeHash: await sha256Hex("code_x") });
+  // consumption now happens atomically with token issuance, never here
+  expect(log.some((c) => /UPDATE oauth_codes/.test(c.sql))).toBe(false);
 });
 
 test("exchangeCode replay revokes the token family and fails", async () => {

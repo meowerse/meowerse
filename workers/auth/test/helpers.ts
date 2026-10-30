@@ -57,6 +57,10 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     login_tickets: [],
     audit_log: [],
   };
+  // Conditional INSERT ... SELECT ... WHERE EXISTS(unconsumed code): last arg is the code hash.
+  const guardOk = (sql: string, a: unknown[]): boolean =>
+    !/FROM oauth_codes WHERE code_hash = \? AND consumed_at IS NULL\)/.test(sql) ||
+    t.oauth_codes.some((r) => r.code_hash === a[a.length - 1] && r.consumed_at == null);
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;
@@ -371,6 +375,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
 
       // --- access tokens ---
       if (/INSERT INTO access_tokens/.test(sql)) {
+        if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };
         t.access_tokens.push({ jti: a[0], account_id: a[1], client_id: a[2], scope: a[3], family_id: a[4], issued_at: a[5], expires_at: a[6], revoked_at: null });
         return { rows: [] };
       }
@@ -388,6 +393,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
 
       // --- refresh tokens ---
       if (/INSERT INTO refresh_tokens/.test(sql)) {
+        if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };
         t.refresh_tokens.push({
           token_hash: a[0],
           family_id: a[1],

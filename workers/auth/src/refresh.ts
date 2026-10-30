@@ -1,6 +1,7 @@
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import type { DbClient } from "./types";
+import { codeGuard } from "./codeguard";
 
 /** Refresh-token lifetimes (spec §3): 14d idle / 30d absolute, sliding. */
 export const REFRESH_IDLE_TTL = 14 * 24 * 3600;
@@ -15,15 +16,17 @@ export const REFRESH_ABS_TTL = 30 * 24 * 3600;
  *  callers batch it with the access_token INSERT (offline-token pair). */
 export async function refreshTokenInsert(
   i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
+  codeHash?: string,
 ): Promise<{ stmt: { sql: string; args: unknown[] }; token: string }> {
   const token = "rt_" + randomId(32);
   const tokenHash = await sha256Hex(token);
   return {
     token,
-    stmt: {
-      sql: `INSERT INTO refresh_tokens (token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
+    stmt: codeGuard(
+      "refresh_tokens",
+      "token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at",
+      "?, ?, ?, ?, ?, ?, ?, ?",
+      [
         tokenHash,
         i.family,
         i.clientId,
@@ -33,7 +36,8 @@ export async function refreshTokenInsert(
         i.now + REFRESH_IDLE_TTL,
         i.absExpires ?? i.now + REFRESH_ABS_TTL,
       ],
-    },
+      codeHash,
+    ),
   };
 }
 

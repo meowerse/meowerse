@@ -3,6 +3,8 @@ import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import { revokeFamily } from "./refresh";
 import { signJwt } from "./jwt";
+import { codeGuard } from "./codeguard";
+export { consumeCodeStmt } from "./codeguard";
 import type { DbClient } from "./types";
 import type { AuthorizeRequest } from "./authorize";
 
@@ -56,14 +58,22 @@ export interface ExchangeOk {
   nonce: string | null;
   authTime: number;
   family: string;
+  /** SHA-256 of the code; the issuing batch consumes the row by this key. */
+  codeHash: string;
 }
 export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; accountId?: string; codeClientId?: string };
 
 /**
- * Redeem an authorization code (spec §5, §8, §10/#3). Single-use via a
- * consumed_at marker; a SECOND presentation of an already-consumed code revokes
- * the whole token family and returns invalid_grant. Re-validates client +
- * byte-exact redirect_uri and the PKCE verifier.
+ * Validate an authorization code (spec §5, §8, §10/#3). A presentation of an
+ * already-consumed code revokes the whole token family and returns
+ * invalid_grant. Re-validates client + byte-exact redirect_uri and the PKCE
+ * verifier.
+ *
+ * This does NOT consume the code. Consumption happens in the SAME transaction
+ * that inserts the tokens (see `codeGuard` / `consumeCodeStmt`), so "code
+ * consumed" and "its tokens exist" become visible together. Consuming here and
+ * inserting later left a window where a replay revoked an empty family and the
+ * first request then inserted usable tokens into it.
  */
 export async function exchangeCode(
   db: DbClient,
@@ -85,12 +95,6 @@ export async function exchangeCode(
   if (String(row.redirect_uri) !== i.redirectUri) return { ok: false, error: "invalid_grant" };
   if (!(await verifyPkceS256(i.verifier, String(row.code_challenge)))) return { ok: false, error: "invalid_grant" };
 
-  const consume = await db.execute({
-    sql: "UPDATE oauth_codes SET consumed_at = datetime('now') WHERE code_hash = ? AND consumed_at IS NULL",
-    args: [codeHash],
-  });
-  if ((consume.rowsAffected ?? 0) !== 1) return { ok: false, error: "invalid_grant" }; // lost a concurrent race
-
   return {
     ok: true,
     accountId: String(row.account_id),
@@ -98,6 +102,7 @@ export async function exchangeCode(
     nonce: row.nonce == null ? null : String(row.nonce),
     authTime: Number(row.auth_time),
     family: String(row.jti_family),
+    codeHash,
   };
 }
 
@@ -166,15 +171,19 @@ export async function mintTokens(i: MintInput): Promise<MintedTokens> {
 }
 
 /** The access_token-jti INSERT as a statement (so callers can batch it with the
- *  refresh INSERT in the offline-token pair instead of two round-trips). */
+ *  refresh INSERT in the offline-token pair instead of two round-trips). With
+ *  `codeHash` it is the conditional variant (only if that code is unconsumed). */
 export function accessTokenInsert(
   i: { jti: string; accountId: string; clientId: string; scope: string[]; family: string; now: number },
+  codeHash?: string,
 ): { sql: string; args: unknown[] } {
-  return {
-    sql: `INSERT INTO access_tokens (jti, account_id, client_id, scope, family_id, issued_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
-  };
+  return codeGuard(
+    "access_tokens",
+    "jti, account_id, client_id, scope, family_id, issued_at, expires_at",
+    "?, ?, ?, ?, ?, ?, ?",
+    [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
+    codeHash,
+  );
 }
 
 /** Record the access_token jti for introspect/revoke. */
