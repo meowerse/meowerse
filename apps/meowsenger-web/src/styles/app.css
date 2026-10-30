@@ -1044,3 +1044,11 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 @media (pointer: coarse) {
   .mw-composer__input, input.mw-input, .mw-search__input, .mw-edit__input { font-size: 16px; }
 }
+
+/* --- Settings: push-notifications switch (state word + diagnostics) --- */
+.mw-setting__state { margin-left: var(--space-2); font-size: var(--text-sm); font-weight: 700; color: var(--text-secondary); }
+.mw-setting__state[data-on="1"] { color: var(--text-accent); }
+.mw-setting--push { align-items: center; }
+.mw-setting__details { font-size: var(--text-xs); }
+.mw-setting__details summary { cursor: pointer; }
+.mw-setting__diag { margin: var(--space-1) 0 0; padding-left: var(--space-4); }

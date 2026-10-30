@@ -19,6 +19,38 @@ export function pushPermission(): string {
   return pushSupported() ? Notification.permission : "unsupported";
 }
 
+/** iPhone/iPad (incl. iPadOS desktop-UA). Chrome and Safari on iOS both use WebKit. */
+export function isIos(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && (navigator.maxTouchPoints ?? 0) > 1);
+}
+
+/** Running as an installed app (Home Screen / standalone display mode). */
+export function isStandalone(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.matchMedia?.("(display-mode: standalone)").matches) return true;
+  } catch { /* no matchMedia */ }
+  return (navigator as unknown as { standalone?: boolean }).standalone === true;
+}
+
+/** Last push error code seen this page load (diagnostics only; never an endpoint/id). */
+let lastPushError: string | null = null;
+export function recordPushError(code: string | null): void { lastPushError = code; }
+
+export type PushDiagnostics = { permission: string; serviceWorker: boolean; subscription: boolean; lastError: string | null };
+
+/** Privacy-safe state snapshot for the Settings "details" line: no endpoints, no ids. */
+export async function pushDiagnostics(): Promise<PushDiagnostics> {
+  const permission = pushPermission();
+  let serviceWorker = false;
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    try { serviceWorker = !!(await navigator.serviceWorker.getRegistration())?.active; } catch { /* unavailable */ }
+  }
+  return { permission, serviceWorker, subscription: await pushSubscribed(), lastError: lastPushError };
+}
+
 /** Decode a base64url VAPID public key to the Uint8Array applicationServerKey wants. */
 export function urlBase64ToUint8Array(b64: string): Uint8Array {
   const padding = "=".repeat((4 - (b64.length % 4)) % 4);
