@@ -964,7 +964,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "delete") {
-    if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any DB access/write; no audit row
+    if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
     const info = await getAccountInfo(db, accountId);
     if (!info) return json({ error: "not_found" }, 404, cors);
     const expected = info.username ?? info.displayName ?? "";

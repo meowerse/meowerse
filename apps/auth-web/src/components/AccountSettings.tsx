@@ -115,7 +115,7 @@ export default function AccountSettings({ base }: { base: string }) {
             <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
           </>
         ) : (
-          <p className="mw-muted">account deletion is handled on request for now: email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a> from the address or telegram account you want deleted.</p>
+          <p className="mw-muted">account deletion is handled on request for now: email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a> with your username. we'll ask you to confirm from inside your account before deleting anything.</p>
         )}
       </Card>
 

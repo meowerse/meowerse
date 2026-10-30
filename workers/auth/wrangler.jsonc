@@ -50,7 +50,9 @@
     "BOT_USERNAME": "meowersebot",
     "SKIP_MIGRATIONS": "1"
     // Account self-deletion (POST /api/account/delete) is OFF unless this is "1"/"true".
-    // Left disabled until the owner activates it: "ACCOUNT_DELETE_ENABLED": "1"
+    // Left disabled. To enable, add "ACCOUNT_DELETE_ENABLED": "1" HERE in this file's vars (a dashboard-only
+    // var is overwritten by the next deploy), and only after steps B-D of docs/runbooks/account-deletion-manual.md
+    // are done and the privacy/settings copy is updated in the same PR.
   },
   // Daily housekeeping (src/housekeeping.ts): bounded deletes of expired audit/ticket/session/access-token rows and refresh-token/auth-code rows 30d past family expiry.
   "triggers": { "crons": ["17 3 * * *"] },
