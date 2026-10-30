@@ -3,6 +3,7 @@ import { sha256Hex, hmacSha256Hex } from "./crypto";
 
 export { internalConfirmString } from "@meowerse/auth-shared";
 import { randomId } from "./security";
+import { accountPresent } from "./codeguard";
 import type { DbClient } from "./types";
 
 const enc = new TextEncoder();
@@ -114,10 +115,15 @@ export async function linkTelegramToAccount(
   const existing = await findAccountByTelegram(db, tg.telegramId);
   if (existing && existing !== accountId) return { ok: false, error: "linked_elsewhere" };
   if (existing === accountId) return { ok: true };
-  await db.execute({
-    sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username, display_name, avatar_url) VALUES (?, ?, ?, ?, ?)",
-    args: [tg.telegramId, accountId, tg.username, tg.displayName, tg.avatarUrl],
+  // Conditional on the account still existing (inside the statement): a link row for a deleted
+  // account would make later Telegram logins resolve to the deleted account id.
+  const exists = accountPresent(accountId);
+  const res = await db.execute({
+    sql: `INSERT INTO telegram_links (telegram_id, account_id, telegram_username, display_name, avatar_url)
+          SELECT ?, ?, ?, ?, ? WHERE ${exists.sql}`,
+    args: [tg.telegramId, accountId, tg.username, tg.displayName, tg.avatarUrl, ...exists.args],
   });
+  if ((res.rowsAffected ?? 0) !== 1) return { ok: false, error: "account_gone" };
   await db.execute({ sql: "UPDATE accounts SET verified = 1 WHERE id = ?", args: [accountId] });
   return { ok: true };
 }

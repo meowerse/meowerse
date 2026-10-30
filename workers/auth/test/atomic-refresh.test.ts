@@ -4,7 +4,7 @@ import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
 import { createAuthCode } from "../src/token";
 import { sha256Hex } from "../src/crypto";
-import { genSigningKeys } from "./helpers";
+import { genSigningKeys, seedLiveSession } from "./helpers";
 import type { DbClient } from "../src/types";
 
 const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -27,7 +27,8 @@ async function fixture(wrap?: (db: DbClient) => DbClient, ctx?: { waitUntil: (p:
   // Issue an initial offline token pair through the real code exchange (through `db`, i.e. unwrapped real calls).
   async function initial() {
     const scope = ["openid", "offline_access"];
-    const code = await createAuthCode(real, { request: { clientId: "mw_demo", redirectUri: REDIRECT, scope, nonce: "n", codeChallenge: CHALLENGE }, accountId: "acct_system", sessionIdHash: "sh", scope, authTime: NOW, now: NOW });
+    await seedLiveSession(real, "sh", "acct_system", NOW);
+    const code = (await createAuthCode(real, { request: { clientId: "mw_demo", redirectUri: REDIRECT, scope, nonce: "n", codeChallenge: CHALLENGE }, accountId: "acct_system", sessionIdHash: "sh", scope, authTime: NOW, now: NOW }))!;
     const r = await post({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT });
     expect(r.status).toBe(200);
     const rt = ((await r.json()) as { refresh_token: string }).refresh_token;

@@ -3,7 +3,7 @@ import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import { revokeFamilyWithRetry } from "./refresh";
 import { signJwt } from "./jwt";
-import { guardedInsert, type Guard } from "./codeguard";
+import { guardedInsert, sessionLive, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
 import type { AuthorizeRequest } from "./authorize";
 
@@ -21,18 +21,22 @@ export async function atHash(accessToken: string): Promise<string> {
  * Issue a single-use authorization code bound to the request, account, and
  * session. Returns the RAW code (placed in the redirect); only its SHA-256 is
  * stored. `jti_family` ties any derived tokens for replay-driven revocation.
+ * The insert is conditional on the bound session still being live and its
+ * account existing (inside the statement, so it cannot interleave with
+ * deleteAccount); returns null when that no longer holds and nothing was written.
  */
 export async function createAuthCode(
   db: DbClient,
   i: { request: AuthorizeRequest; accountId: string; sessionIdHash: string; scope: string[]; authTime: number; now: number },
-): Promise<string> {
+): Promise<string | null> {
   const code = "code_" + randomId(32);
   const family = "fam_" + randomId(16);
-  await db.execute({
+  const live = sessionLive(i.sessionIdHash, i.accountId, i.now);
+  const res = await db.execute({
     sql: `INSERT INTO oauth_codes
       (code_hash, client_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method,
        account_id, session_id_hash, auth_time, jti_family, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, ?, ?)`,
+      SELECT ?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, ?, ? WHERE ${live.sql}`,
     args: [
       await sha256Hex(code),
       i.request.clientId,
@@ -45,8 +49,10 @@ export async function createAuthCode(
       i.authTime,
       family,
       i.now + CODE_TTL,
+      ...live.args,
     ],
   });
+  if ((res.rowsAffected ?? 0) !== 1) return null;
   return code;
 }
 
