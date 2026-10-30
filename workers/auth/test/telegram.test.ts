@@ -91,7 +91,7 @@ test("findAccountByTelegram + signInOrSignUp create vs reuse", async () => {
 
 test("linkTelegramToAccount: new link sets verified, same is idempotent, elsewhere refused", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const none = routedDb([[/SELECT account_id FROM telegram_links/, () => ({ rows: [] })]], log);
+  const none = routedDb([[/SELECT account_id FROM telegram_links/, () => ({ rows: [] })], [/INSERT INTO telegram_links/, () => ({ rows: [], rowsAffected: 1 })]], log);
   expect(await linkTelegramToAccount(none, "acct_1", { telegramId: "42", username: "u", displayName: "N", avatarUrl: null })).toEqual({ ok: true });
   expect(log.some((c) => c.sql.includes("UPDATE accounts SET verified = 1"))).toBe(true);
 

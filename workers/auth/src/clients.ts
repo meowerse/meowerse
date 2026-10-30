@@ -14,7 +14,9 @@ export async function authenticateClient(
 ): Promise<{ ok: boolean; clientType?: string; error?: string }> {
   if (!clientId) return { ok: false, error: "invalid_client" };
   const c = await db.execute({
-    sql: "SELECT client_type, status FROM oauth_clients WHERE client_id = ? AND deleted_at IS NULL",
+    // The owner must still exist (owner_account_id is NOT NULL; first-party clients are owned by acct_system).
+    sql: `SELECT client_type, status FROM oauth_clients WHERE client_id = ? AND deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM accounts WHERE id = oauth_clients.owner_account_id)`,
     args: [clientId],
   });
   const row = c.rows[0];

@@ -92,12 +92,13 @@ test("POST /api/account/delete: bad csrf 403, wrong confirm 400, correct erases 
   expect((await get(env, deps, "/api/account", sess)).status).toBe(401);
 });
 
-test("POST /api/account/delete on a session whose account already vanished → 404", async () => {
+test("POST /api/account/delete on a leftover session whose account already vanished → 401 no_session (lookupSession joins accounts)", async () => {
   const { store, env, deps, sess, csrf } = await loggedIn("neko_ghost");
   // drop the account row but keep the session valid
   store.tables.accounts = store.tables.accounts.filter((a) => a.username !== "neko_ghost");
   const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: "neko_ghost" });
-  expect(r.status).toBe(404);
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "no_session" });
 });
 
 test("POST /api/account/delete confirms against displayName for a username-less (telegram-only) account", async () => {

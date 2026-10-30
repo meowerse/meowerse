@@ -6,7 +6,7 @@ import { createAuthCode, accessTokenInsert } from "../src/token";
 import { codeUnconsumed, consumeCodeStmt } from "../src/codeguard";
 import { refreshTokenInsert } from "../src/refresh";
 import { sha256Hex } from "../src/crypto";
-import { genSigningKeys } from "./helpers";
+import { genSigningKeys, seedLiveSession } from "./helpers";
 import type { DbClient } from "../src/types";
 
 // RFC 7636 vector
@@ -23,14 +23,15 @@ async function freshDb(): Promise<DbClient> {
 const n = async (db: DbClient, sql: string, args: unknown[] = []) => Number((await db.execute({ sql: `SELECT count(*) AS n FROM ${sql}`, args })).rows[0]!.n);
 
 async function issueCode(db: DbClient, scope: string[]) {
-  const code = await createAuthCode(db, {
+  await seedLiveSession(db, "sh", "acct_system", NOW);
+  const code = (await createAuthCode(db, {
     request: { clientId: "mw_demo", redirectUri: REDIRECT, scope, nonce: "n", codeChallenge: CHALLENGE },
     accountId: "acct_system",
     sessionIdHash: "sh",
     scope,
     authTime: NOW,
     now: NOW,
-  });
+  }))!;
   const hash = await sha256Hex(code);
   const family = String((await db.execute({ sql: "SELECT jti_family FROM oauth_codes WHERE code_hash = ?", args: [hash] })).rows[0]!.jti_family);
   return { code, hash, family };
