@@ -3,8 +3,7 @@ import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import { revokeFamily } from "./refresh";
 import { signJwt } from "./jwt";
-import { codeGuard } from "./codeguard";
-export { consumeCodeStmt } from "./codeguard";
+import { guardedInsert, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
 import type { AuthorizeRequest } from "./authorize";
 
@@ -70,7 +69,7 @@ export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: b
  * verifier.
  *
  * This does NOT consume the code. Consumption happens in the SAME transaction
- * that inserts the tokens (see `codeGuard` / `consumeCodeStmt`), so "code
+ * that inserts the tokens (see `guardedInsert` / `consumeCodeStmt`), so "code
  * consumed" and "its tokens exist" become visible together. Consuming here and
  * inserting later left a window where a replay revoked an empty family and the
  * first request then inserted usable tokens into it.
@@ -172,17 +171,17 @@ export async function mintTokens(i: MintInput): Promise<MintedTokens> {
 
 /** The access_token-jti INSERT as a statement (so callers can batch it with the
  *  refresh INSERT in the offline-token pair instead of two round-trips). With
- *  `codeHash` it is the conditional variant (only if that code is unconsumed). */
+ *  `guard` it is the conditional variant (only if the guard holds). */
 export function accessTokenInsert(
   i: { jti: string; accountId: string; clientId: string; scope: string[]; family: string; now: number },
-  codeHash?: string,
+  guard?: Guard,
 ): { sql: string; args: unknown[] } {
-  return codeGuard(
+  return guardedInsert(
     "access_tokens",
     "jti, account_id, client_id, scope, family_id, issued_at, expires_at",
     "?, ?, ?, ?, ?, ?, ?",
     [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
-    codeHash,
+    guard,
   );
 }
 

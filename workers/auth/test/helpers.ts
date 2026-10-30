@@ -57,10 +57,15 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     login_tickets: [],
     audit_log: [],
   };
-  // Conditional INSERT ... SELECT ... WHERE EXISTS(unconsumed code): last arg is the code hash.
-  const guardOk = (sql: string, a: unknown[]): boolean =>
-    !/FROM oauth_codes WHERE code_hash = \? AND consumed_at IS NULL\)/.test(sql) ||
-    t.oauth_codes.some((r) => r.code_hash === a[a.length - 1] && r.consumed_at == null);
+  // Conditional INSERT ... SELECT ... WHERE EXISTS(unspent credential): last arg is its hash.
+  const guardOk = (sql: string, a: unknown[]): boolean => {
+    const last = a[a.length - 1];
+    if (/FROM oauth_codes WHERE code_hash = \? AND consumed_at IS NULL\)/.test(sql))
+      return t.oauth_codes.some((r) => r.code_hash === last && r.consumed_at == null);
+    if (/FROM refresh_tokens WHERE token_hash = \? AND used_at IS NULL\)/.test(sql))
+      return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
+    return true;
+  };
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;

@@ -25,16 +25,12 @@ function rtRow(over: Record<string, unknown> = {}) {
   };
 }
 
-test("rotateRefresh consumes once and issues a new token in the same family", async () => {
+test("rotateRefresh validates WITHOUT spending the token (the rotation batch does that)", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const routes: Route[] = [
-    [/SELECT \* FROM refresh_tokens WHERE token_hash/, () => ({ rows: [rtRow()] })],
-    [/UPDATE refresh_tokens SET used_at .* WHERE token_hash/, () => ({ rows: [], rowsAffected: 1 })],
-  ];
+  const routes: Route[] = [[/SELECT \* FROM refresh_tokens WHERE token_hash/, () => ({ rows: [rtRow()] })]];
   const res = await rotateRefresh(routedDb(routes, log), { token: "rt_x", clientId: "c", now: 1000 });
-  expect(res).toMatchObject({ ok: true, accountId: "a", family: "fam", scope: ["openid", "offline_access"] });
-  if (!res.ok) return;
-  expect(res.newRefresh.startsWith("rt_")).toBe(true);
+  expect(res).toMatchObject({ ok: true, accountId: "a", family: "fam", scope: ["openid", "offline_access"], tokenHash: await sha256Hex("rt_x") });
+  expect(log.some((x) => /UPDATE|INSERT/.test(x.sql))).toBe(false);
 });
 
 test("rotateRefresh detects reuse and revokes the family", async () => {
@@ -46,15 +42,10 @@ test("rotateRefresh detects reuse and revokes the family", async () => {
   expect(log.some((x) => x.sql.includes("UPDATE access_tokens SET revoked_at") && x.sql.includes("family_id"))).toBe(true);
 });
 
-test("rotateRefresh rejects unknown, expired, client-mismatch, and lost races", async () => {
+test("rotateRefresh rejects unknown, expired, and client-mismatch", async () => {
   expect((await rotateRefresh(routedDb([[/SELECT \* FROM refresh_tokens/, () => ({ rows: [] })]]), { token: "x", clientId: "c", now: 1000 })).ok).toBe(false);
   expect((await rotateRefresh(routedDb([[/SELECT \* FROM refresh_tokens/, () => ({ rows: [rtRow({ idle_expires_at: 5 })] })]]), { token: "x", clientId: "c", now: 1000 })).ok).toBe(false);
   expect((await rotateRefresh(routedDb([[/SELECT \* FROM refresh_tokens/, () => ({ rows: [rtRow({ client_id: "other" })] })]]), { token: "x", clientId: "c", now: 1000 })).ok).toBe(false);
-  const raced: Route[] = [
-    [/SELECT \* FROM refresh_tokens/, () => ({ rows: [rtRow()] })],
-    [/UPDATE refresh_tokens SET used_at .* WHERE token_hash/, () => ({ rows: [], rowsAffected: 0 })],
-  ];
-  expect((await rotateRefresh(routedDb(raced), { token: "x", clientId: "c", now: 1000 })).ok).toBe(false);
 });
 
 test("revokeFamily revokes refresh rows and access tokens", async () => {

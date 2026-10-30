@@ -1,7 +1,7 @@
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import type { DbClient } from "./types";
-import { codeGuard } from "./codeguard";
+import { guardedInsert, type Guard } from "./codeguard";
 
 /** Refresh-token lifetimes (spec §3): 14d idle / 30d absolute, sliding. */
 export const REFRESH_IDLE_TTL = 14 * 24 * 3600;
@@ -16,13 +16,13 @@ export const REFRESH_ABS_TTL = 30 * 24 * 3600;
  *  callers batch it with the access_token INSERT (offline-token pair). */
 export async function refreshTokenInsert(
   i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
-  codeHash?: string,
+  guard?: Guard,
 ): Promise<{ stmt: { sql: string; args: unknown[] }; token: string }> {
   const token = "rt_" + randomId(32);
   const tokenHash = await sha256Hex(token);
   return {
     token,
-    stmt: codeGuard(
+    stmt: guardedInsert(
       "refresh_tokens",
       "token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at",
       "?, ?, ?, ?, ?, ?, ?, ?",
@@ -36,7 +36,7 @@ export async function refreshTokenInsert(
         i.now + REFRESH_IDLE_TTL,
         i.absExpires ?? i.now + REFRESH_ABS_TTL,
       ],
-      codeHash,
+      guard,
     ),
   };
 }
@@ -55,7 +55,9 @@ export interface RotateOk {
   accountId: string;
   scope: string[];
   family: string;
-  newRefresh: string;
+  /** SHA-256 of the presented token: the rotation batch spends it (see `refreshUnused`). */
+  tokenHash: string;
+  absExpires: number;
 }
 /** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
 export type RotateResult =
@@ -63,11 +65,15 @@ export type RotateResult =
   | { ok: false; error: string; reuse?: boolean; accountId?: string; familyClientId?: string };
 
 /**
- * Rotate a refresh token (spec §4, §10): single-use with reuse detection. A
- * token presented after it was already used means the family is compromised →
- * revoke the whole family (refresh rows + access jtis) and reject. A valid token
- * is consumed and a new one issued in the same family, preserving the absolute
- * deadline.
+ * Validate a refresh token for rotation (spec §4, §10): single-use with reuse
+ * detection. A token presented after it was already used means the family is
+ * compromised → revoke the whole family (refresh rows + access jtis) and reject.
+ *
+ * This does NOT mark the token used. The caller spends it in the SAME write
+ * transaction that inserts the successor refresh + access rows (guarded on the
+ * old row still being unused); otherwise a reuse landing between "mark used" and
+ * "insert successors" would revoke an empty family and the successors would then
+ * be inserted into it as usable tokens.
  */
 export async function rotateRefresh(
   db: DbClient,
@@ -87,24 +93,14 @@ export async function rotateRefresh(
     return { ok: false, error: "invalid_grant" };
   }
 
-  const consume = await db.execute({
-    sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE token_hash = ? AND used_at IS NULL",
-    args: [tokenHash],
-  });
-  if ((consume.rowsAffected ?? 0) !== 1) return { ok: false, error: "invalid_grant" };
-
-  const scope = String(row.scope).split(/\s+/).filter(Boolean);
-  const family = String(row.family_id);
-  const newRefresh = await createRefreshToken(db, {
+  return {
+    ok: true,
     accountId: String(row.account_id),
-    clientId: i.clientId,
-    scope,
-    family,
-    now: i.now,
-    prevId: tokenHash,
+    scope: String(row.scope).split(/\s+/).filter(Boolean),
+    family: String(row.family_id),
+    tokenHash,
     absExpires: Number(row.absolute_expires_at),
-  });
-  return { ok: true, accountId: String(row.account_id), scope, family, newRefresh };
+  };
 }
 
 /** Revoke an entire token family — all refresh rows + access jtis. */

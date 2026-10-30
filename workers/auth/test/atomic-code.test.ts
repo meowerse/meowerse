@@ -2,7 +2,8 @@ import { test, expect } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
-import { createAuthCode, accessTokenInsert, consumeCodeStmt } from "../src/token";
+import { createAuthCode, accessTokenInsert } from "../src/token";
+import { codeUnconsumed, consumeCodeStmt } from "../src/codeguard";
 import { refreshTokenInsert } from "../src/refresh";
 import { sha256Hex } from "../src/crypto";
 import { genSigningKeys } from "./helpers";
@@ -39,8 +40,9 @@ async function issueCode(db: DbClient, scope: string[]) {
 
 async function issuingBatch(db: DbClient, hash: string, family: string) {
   const base = { accountId: "acct_system", clientId: "mw_demo", scope: ["openid", "offline_access"], family, now: NOW };
-  const { stmt } = await refreshTokenInsert(base, hash);
-  return db.batch([accessTokenInsert({ ...base, jti: "at_x" }, hash), stmt, consumeCodeStmt(hash)], "write");
+  const g = codeUnconsumed(hash);
+  const { stmt } = await refreshTokenInsert(base, g);
+  return db.batch([accessTokenInsert({ ...base, jti: "at_x" }, g), stmt, consumeCodeStmt(hash)], "write");
 }
 
 test("SQL: unconsumed code -> batch inserts access + refresh and consumes (rowsAffected 1)", async () => {

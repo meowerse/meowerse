@@ -16,8 +16,9 @@ import {
 import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
-import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, consumeCodeStmt, revokeAccessToken, introspect } from "./token";
+import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamily } from "./refresh";
+import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -393,11 +394,17 @@ async function mintResponse(
     authTime: number;
     family: string;
     issueRefresh?: boolean;
-    refreshToken?: string;
-    /** authorization_code grant: consume this code in the SAME transaction as the token inserts. */
-    codeHash?: string;
-    /** Called when the code was already consumed by another request (we are the replay loser). */
-    onReplay?: () => Promise<Response>;
+    /** Refresh rotation: carried onto the successor refresh row. */
+    prevId?: string;
+    absExpires?: number;
+    /**
+     * Single-use credential (auth code or refresh token) that authorises this
+     * issuance: `guard` conditions the inserts, `consume` spends it, both in ONE
+     * write transaction.
+     */
+    atomic: { guard: Guard; consume: Stmt };
+    /** Called when the credential was already spent by another request (we are the loser). */
+    onLost: () => Promise<Response>;
   },
 ): Promise<Response> {
   const db = deps.getDb();
@@ -422,46 +429,44 @@ async function mintResponse(
   });
   const { jti: _jti, ...body } = tokens;
   void _jti;
-  const accessStmt = accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, i.codeHash);
-  let refresh = i.refreshToken;
-  const stmts = [accessStmt];
-  if (i.issueRefresh && !refresh) {
-    // Offline-token pair: the access jti + the new refresh row are both known up
-    // front (not a CAS) → one batch instead of two INSERT round-trips.
-    const { stmt: refreshStmt, token } = await refreshTokenInsert({ accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, i.codeHash);
-    refresh = token;
-    stmts.push(refreshStmt);
-  }
-  if (i.codeHash === undefined) {
-    if (stmts.length > 1) await db.batch(stmts);
-    else await db.execute(accessStmt);
-    return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
+  const { guard, consume } = i.atomic;
+  const stmts: Stmt[] = [accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, guard)];
+  let refresh: string | undefined;
+  if (i.issueRefresh) {
+    const ins = await refreshTokenInsert(
+      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires },
+      guard,
+    );
+    refresh = ins.token;
+    stmts.push(ins.stmt);
   }
 
-  // authorization_code: token inserts + code consumption are ONE write transaction
-  // (BEGIN IMMEDIATE). The inserts are conditional on the code still being
-  // unconsumed, and the consume UPDATE is last, so either the code was unconsumed
-  // and all of it happens, or it was already consumed and none of it does. "Code
-  // consumed" and "its tokens exist" therefore become visible together, so a
-  // replay can never revoke an empty family while the first request's tokens are
-  // still to be inserted.
-  // If the batch throws, the transaction rolled back: the code stays unconsumed,
-  // nothing was issued, and the client may retry. (If COMMIT succeeded but the
-  // response was lost, the code is consumed and the tokens exist, but we still
-  // return no token; a retry takes the replay path and revokes the family.)
-  // Either way no token reaches the client. Answer 500.
+  // Token inserts + spending the credential are ONE write transaction (BEGIN
+  // IMMEDIATE). The inserts are conditional on the credential still being unspent
+  // and the consume UPDATE is last, so either it was unspent and all of it
+  // happens, or it was already spent and none of it does. "Spent" and "its tokens
+  // exist" therefore become visible together. Reasoning for reuse/replay:
+  // revokeFamily marks every unused refresh row used and revokes every access
+  // row, so a reuse that commits FIRST makes our guard fail (nothing inserted), and
+  // one that commits AFTER sees our committed rows and revokes them. A compromised
+  // family therefore never keeps usable tokens, whatever the interleaving.
+  // If the batch throws, the transaction rolled back: the credential stays
+  // unspent, nothing was issued, and the client may retry. (If COMMIT succeeded
+  // but the response was lost, the credential is spent and the tokens exist, but
+  // we still return no token; a retry takes the reuse/replay path and revokes the
+  // family.) Either way no token reaches the client. Answer 500.
   let res;
   try {
-    res = await db.batch([...stmts, consumeCodeStmt(i.codeHash)], "write");
+    res = await db.batch([...stmts, consume], "write");
   } catch {
     console.error("token_issue_failed");
     return json({ error: "server_error" }, 500, { ...cors, ...noStore });
   }
   if ((res[res.length - 1]?.rowsAffected ?? 0) !== 1) {
-    // Another request consumed the code first; this one issued nothing. Never
+    // Another request spent the credential first; this one issued nothing. Never
     // return the signed tokens. The winner's rows are already committed, so
     // revoking the family reaches them.
-    return i.onReplay ? i.onReplay() : json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+    return i.onLost();
   }
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
@@ -518,8 +523,8 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       authTime: ex.authTime,
       family: ex.family,
       issueRefresh: ex.scope.includes("offline_access"),
-      codeHash: ex.codeHash,
-      onReplay: async () => {
+      atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
+      onLost: async () => {
         await revokeFamily(db, ex.family);
         await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
@@ -543,7 +548,16 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       nonce: null,
       authTime: now(deps),
       family: rot.family,
-      refreshToken: rot.newRefresh,
+      issueRefresh: true,
+      prevId: rot.tokenHash,
+      absExpires: rot.absExpires,
+      atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
+      onLost: async () => {
+        // Lost to a concurrent rotation/reuse of the same token: treat as reuse.
+        await revokeFamily(db, rot.family);
+        await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
+        return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+      },
     });
   }
 
