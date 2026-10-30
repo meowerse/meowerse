@@ -446,7 +446,7 @@ async function mintResponse(
   // and the consume UPDATE is last, so either it was unspent and all of it
   // happens, or it was already spent and none of it does. "Spent" and "its tokens
   // exist" therefore become visible together. Reasoning for reuse/replay:
-  // revokeFamily marks every unused refresh row used and revokes every access
+  // revokeFamily (with retry) marks every unused refresh row used and revokes every access
   // row, so a reuse that commits FIRST makes our guard fail (nothing inserted), and
   // one that commits AFTER sees our committed rows and revokes them. A compromised
   // family therefore never keeps usable tokens, whatever the interleaving.
@@ -460,7 +460,7 @@ async function mintResponse(
     // The two trailing statements revoke the family INSIDE the same transaction, but
     // only if our own access insert did not run (we lost). That way "lost" and
     // "family revoked" commit together and a transient failure of the follow-up
-    // revokeFamily below cannot leave the winner's tokens usable.
+    // revoke (revokeLoserFamily) below cannot leave the winner's tokens usable.
     const lost = "NOT EXISTS (SELECT 1 FROM access_tokens WHERE jti = ?)";
     res = await db.batch(
       [
