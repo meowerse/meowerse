@@ -145,8 +145,7 @@ function isSleepHour() {
 const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
-Canonical: https://alxnko.dev/.well-known/security.txt
-Policy: https://alxnko.dev/privacy
+Policy: https://auth.alxnko.dev/privacy
 `;
 const ROBOTS_TXT = `User-agent: *
 Allow: /

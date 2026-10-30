@@ -57,7 +57,7 @@ function b64urlJson(obj: unknown): string {
 async function vapidAuth(endpoint: string, env: Env, now: number): Promise<string | null> {
   const jwkStr = env.VAPID_PRIVATE_JWK;
   const pub = env.VAPID_PUBLIC_KEY;
-  const sub = env.VAPID_SUBJECT || "mailto:admin@alxnko.eu.org";
+  const sub = env.VAPID_SUBJECT || "mailto:security@alxnko.dev";
   if (!jwkStr || !pub) return null;
   let origin: string;
   try { origin = new URL(endpoint).origin; } catch { return null; }
