@@ -222,14 +222,15 @@ describe("Conversation offline push decision", () => {
     await vi.waitFor(() => expect(pushedTo()).toEqual([EP(`${c}-carol`), EP(`${c}-dave`)]));
   });
 
-  it("(k) push fan-out is capped per message (50), logs the truncated count, and imports the VAPID key once", async () => {
+  it("(k) the push fan-out is bounded by what the event budget has left after the inbox fan-out (whole recipients), logs the truncated count, imports the VAPID key once", async () => {
     const users = Array.from({ length: 60 }, (_, i) => `u${i}`);
     const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
     const importSpy = vi.spyOn(crypto.subtle, "importKey");
     const sender = await connect(c, "sender");
     await send(sender, "hi");
-    await vi.waitFor(() => expect(pushCalls()).toHaveLength(50));
-    expect(decisionLogs()).toEqual(["push_decision targets=50 active_excluded=0", "push_decision truncated=10"]);
+    // 61 members: mirror(1) + member read(1) + 40 inbox fetches + target read(1) = 43 → 2 pushes
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(2));
+    expect(decisionLogs()).toEqual(["push_decision targets=2 active_excluded=0", "push_decision truncated=58"]);
     expect(importSpy.mock.calls.filter((a) => a[0] === "jwk")).toHaveLength(1);
     importSpy.mockRestore();
   });
@@ -253,6 +254,121 @@ describe("Conversation offline push decision", () => {
     await send(sender, "two");
     await vi.waitFor(() => expect(hits).toContain("inbox:bob"));
     await new Promise((r) => setTimeout(r, 50));
+    expect(hits).not.toContain("inbox:carol");
+  });
+
+  /** Send `n` messages at fake times and let the outcome handling settle. */
+  async function timeline(status: number, check: (c: string, sender: WebSocket, at: (ms: number) => void) => Promise<void>): Promise<string> {
+    let t = 2_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    fetchSpy.mockImplementation(async () => new Response(null, { status }));
+    try {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const sender = await connect(c, "sender");
+      await check(c, sender, (ms) => { t = 2_000_000 + ms; });
+      return c;
+    } finally { nowSpy.mockRestore(); }
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 40));
+
+  for (const status of [503, 429, 0]) {
+    it(`(m) transient ${status}: not retried within ~10 s of the failure's window start, retried after (partial backoff)`, async () => {
+      await timeline(status, async (c, sender, at) => {
+        if (status === 0) fetchSpy.mockImplementation(async () => { throw new Error("net"); });
+        await send(sender, "one"); await settle();
+        expect(pushCalls()).toHaveLength(1);
+        at(5_000); await send(sender, "two"); await settle();
+        expect(pushCalls()).toHaveLength(1); // 25 s into the shortened window: still held
+        at(11_000); await send(sender, "three");
+        await vi.waitFor(() => expect(pushCalls()).toHaveLength(2)); // eligible 10 s after the failure
+      });
+    });
+  }
+
+  it("(n) 403 prunes the endpoint (logged) and never retries it", async () => {
+    await timeline(403, async (c, sender, at) => {
+      await send(sender, "one");
+      await vi.waitFor(() => expect(logSpy.mock.calls.some((x) => String(x[0]) === "push_delivery status=403 service=fcm pruned=1")).toBe(true));
+      await settle();
+      const row = await DB.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint = ?").bind(EP(`${c}-rcpt`)).first<{ n: number }>();
+      expect(row!.n).toBe(0);
+      at(40_000); await send(sender, "two"); await settle();
+      expect(pushCalls()).toHaveLength(1);
+    });
+  });
+
+  it("(o) another 4xx keeps the full window (no retry storm) and does not prune", async () => {
+    await timeline(400, async (c, sender, at) => {
+      await send(sender, "one"); await settle();
+      at(11_000); await send(sender, "two"); await settle();
+      expect(pushCalls()).toHaveLength(1);
+      const row = await DB.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint = ?").bind(EP(`${c}-rcpt`)).first<{ n: number }>();
+      expect(row!.n).toBe(1);
+    });
+  });
+
+  it("(p) one event shares a subrequest budget: 40 inbox members + 20 push targets stay within it, cut recipients are pushed next message", async () => {
+    const users = Array.from({ length: 39 }, (_, i) => `u${i}`);
+    const subs = users.slice(0, 20);
+    const c = newChat(); await seed(c, ["sender", ...users], subs); await configureVapid(c);
+    const hits: string[] = [];
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      (inst.env as unknown as Record<string, unknown>).USER_INBOX = {
+        idFromName: (n: string) => n,
+        get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
+      };
+    });
+    const sender = await connect(c, "sender");
+    await send(sender, "one");
+    await vi.waitFor(() => expect(hits).toHaveLength(40));
+    await settle();
+    const first = pushedTo();
+    // mirror(1) + member read(1) + 40 inbox fetches + target read(1) = 43 → 2 pushes
+    expect(first).toHaveLength(2);
+    expect(1 + 1 + hits.length + 1 + first.length).toBeLessThanOrEqual(45);
+    expect(decisionLogs()).toEqual(["push_decision targets=2 active_excluded=0", "push_decision truncated=18"]);
+    hits.length = 0;
+    await send(sender, "two"); // member list cached: 1 + 40 + 1 = 42 → 3 more, none repeated
+    await settle();
+    const all = pushedTo();
+    expect(all).toHaveLength(5);
+    expect(new Set(all).size).toBe(5);
+  });
+
+  it("(q) a member read that overlaps a removal is discarded and re-read: the removed member's inbox gets nothing", async () => {
+    const c = newChat(); await seed(c, ["sender", "bob", "carol"], []);
+    const hits: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let readStarted = false;
+    let gated = false;
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      const env2 = inst.env as unknown as Record<string, unknown>;
+      env2.USER_INBOX = {
+        idFromName: (n: string) => n,
+        get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
+      };
+      const real = DB;
+      env2.DB = new Proxy(real, {
+        get(target, prop) {
+          if (prop !== "prepare") return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
+          return (sql: string) => {
+            const st = target.prepare(sql);
+            if (gated || !sql.startsWith("SELECT user_id FROM chat_members")) return st;
+            gated = true;
+            return { bind: (...a: unknown[]) => ({ all: async () => { const r = await st.bind(...a).all(); readStarted = true; await gate; return r; } }) };
+          };
+        },
+      });
+    });
+    const sender = await connect(c, "sender");
+    sender.send(JSON.stringify({ type: "send", tempId: `t${++seq}`, body: "x" }));
+    await vi.waitFor(() => expect(readStarted).toBe(true));
+    await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind(c, "carol").run();
+    await stub(c).dropUser("carol", true);
+    release();
+    await vi.waitFor(() => expect(hits).toContain("inbox:bob"));
+    await settle();
     expect(hits).not.toContain("inbox:carol");
   });
 });

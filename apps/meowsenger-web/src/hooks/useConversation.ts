@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction, type Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
-import { pushSubscribed } from "../lib/push";
+import { pushConfirmedFor } from "../lib/push";
 
 /** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
  *  edit/delete, spec §6). */
@@ -45,21 +45,21 @@ const NOTIFY_TAG = "meowsenger-msg";
 /**
  * Notify about an incoming message while the tab is backgrounded (Slice 9).
  * Conservative — only when the Notification API exists, the document is hidden, and
- * permission is already GRANTED (never auto-requests). When this device has an active
- * push subscription the service worker's push already covers it, so nothing is shown
+ * permission is already GRANTED (never auto-requests). When this device's push
+ * subscription is confirmed for this account the service worker's push already covers it, so nothing is shown
  * here (no double notification). Otherwise it goes through the SW registration with the
  * SW's tag (so duplicates collapse), falling back to a page Notification.
  */
-async function maybeNotify(title: string, body: string): Promise<void> {
+async function maybeNotify(title: string, body: string, meId: string, chatId: string): Promise<void> {
   if (typeof Notification === "undefined") return;
   if (typeof document !== "undefined" && !document.hidden) return;
   if (Notification.permission !== "granted") return;
   const text = body || "sent a message";
   try {
-    if (await pushSubscribed()) return; // the SW push covers this device
+    if (await pushConfirmedFor(meId)) return; // the SW push covers this device (confirmed for this account)
     const reg = await navigator.serviceWorker?.getRegistration();
     if (reg) {
-      await reg.showNotification(title, { body: text, tag: NOTIFY_TAG });
+      await reg.showNotification(title, { body: text, tag: NOTIFY_TAG, data: { chatId } }); // same shape as the SW's, so a tap opens the chat
       return;
     }
   } catch { /* fall through to the page notification */ }
@@ -324,7 +324,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         });
       }
       if (frame.message.senderId !== meIdRef.current) {
-        void maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body);
+        void maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body, meIdRef.current ?? "", frame.message.chatId);
       }
       onActiveMessageRef.current?.(frame.message); // realtime sidebar preview for the open chat
     } else if (frame.type === "presence_snapshot") {

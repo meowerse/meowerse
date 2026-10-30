@@ -73,6 +73,20 @@ export async function pushSubscribed(): Promise<boolean> {
   }
 }
 
+/** Is this device's push subscription CONFIRMED for `userId` (the server stored it and
+ *  the local marker names this account + endpoint)? A bare browser subscription is not
+ *  enough: it may belong to another account or never have been registered. */
+export async function pushConfirmedFor(userId: string): Promise<boolean> {
+  if (!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    return !!sub && readSynced() === `${userId}|${sub.endpoint}`;
+  } catch {
+    return false;
+  }
+}
+
 /** A push step failed after permission was granted (key fetch, subscribe, or the
  *  server refusing the subscription). `code` is the server's error code when known. */
 export class PushError extends Error {
