@@ -79,10 +79,19 @@ export interface UseConversationInput {
   onRevoked: () => void;
 }
 
+/** A definitive 403 from a history read: the caller is no longer a member of the chat. */
+function isForbidden(res: { ok: boolean; error?: { kind: string; status?: number } }): boolean {
+  return !res.ok && res.error?.kind === "http" && res.error.status === 403;
+}
+
 export interface UseConversation {
   messages: Bubble[];
   connected: boolean;
   loadingHistory: boolean;
+  historyError: boolean;
+  olderError: boolean;
+  retryHistory: () => Promise<void>;
+  retryOlder: () => Promise<void>;
   hasNewer: boolean;
   online: Set<string>;
   away: Set<string>;
@@ -119,6 +128,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const [connected, setConnected] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // The initial history load failed (network/5xx/403) — NOT the same as "no messages".
+  const [historyError, setHistoryError] = useState(false);
+  // Loading an OLDER page failed — render a retry row instead of silently stopping.
+  const [olderError, setOlderError] = useState(false);
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [away, setAway] = useState<Set<string>>(new Set());
   const [peerTyping, setPeerTyping] = useState(false);
@@ -208,8 +221,17 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!oldest) return;
     prependingRef.current = true;
     const prevHeight = el.scrollHeight;
-    const older = await loadHistory(base, chatId, oldest.id);
+    const olderRes = await loadHistory(base, chatId, oldest.id);
     if (activeRef.current !== chatId) { prependingRef.current = false; return; }
+    if (!olderRes.ok) {
+      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(); return; }
+      // Keep paging possible + show a retry row; never treat a failure as "start of chat".
+      prependingRef.current = false;
+      setOlderError(true);
+      return;
+    }
+    setOlderError(false);
+    const older = olderRes.data;
     setHasMore(older.length >= 50);
     setMessages((prev) => [...older.map((m) => ({ ...m })), ...prev]);
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
@@ -229,8 +251,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!newest) return;
     loadingNewerRef.current = true;
     try {
-      const rows = await loadHistoryAfter(base, chatId, newest.id);
+      const rowsRes = await loadHistoryAfter(base, chatId, newest.id);
       if (activeRef.current !== chatId) return;
+      if (!rowsRes.ok) return; // stay detached; the next scroll retries
+      const rows = rowsRes.data;
       if (rows.length > 0) {
         setMessages((prev) => {
           const have = new Set(prev.map((b) => b.id));
@@ -242,8 +266,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
         setHasNewer(false);
         // Catch a message that landed AFTER the historyAfter query but was suppressed
         // while detached: pull the newest page + merge (it overlaps the window's end).
-        const tail = await loadHistory(base, chatId);
-        if (activeRef.current === chatId && tail.length > 0) {
+        const tailRes = await loadHistory(base, chatId);
+        if (activeRef.current === chatId && tailRes.ok && tailRes.data.length > 0) {
+          const tail = tailRes.data;
           setMessages((prev) => {
             const have = new Set(prev.map((b) => b.id));
             return [...prev, ...tail.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
@@ -393,9 +418,18 @@ export function useConversation(input: UseConversationInput): UseConversation {
     loadingNewerRef.current = false;
     setLoadingHistory(true);
     prependingRef.current = false;
-    loadHistory(base, chatId).then((hist) => {
+    setHistoryError(false);
+    setOlderError(false);
+    loadHistory(base, chatId).then((res) => {
       if (cancelled) return;
       setLoadingHistory(false);
+      if (!res.ok) {
+        // 403 = no longer a member: close the chat with the revoked copy, no retry loop.
+        if (isForbidden(res)) { onRevokedRef.current(); return; }
+        setHistoryError(true);
+        return;
+      }
+      const hist = res.data;
       setMessages(hist.map((m) => ({ ...m })));
       setHasMore(hist.length >= 50);
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
@@ -582,8 +616,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const jumpToLatest = useCallback(async () => {
     const chatId = activeRef.current;
     if (!chatId) return;
-    const hist = await loadHistory(base, chatId);
+    const histRes = await loadHistory(base, chatId);
     if (activeRef.current !== chatId) return;
+    if (!histRes.ok) { onToastRef.current("couldn't load the latest messages. try again."); return; }
+    const hist = histRes.data;
     hasNewerRef.current = false;
     setHasNewer(false);
     setMessages(hist.map((m) => ({ ...m })));
@@ -595,10 +631,34 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (el) el.scrollTop = el.scrollHeight;
   }, [base, sendRead]);
 
+  // Retry a failed initial history load for the open chat.
+  const retryHistory = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    setHistoryError(false);
+    setLoadingHistory(true);
+    const res = await loadHistory(base, chatId);
+    if (activeRef.current !== chatId) return;
+    setLoadingHistory(false);
+    if (!res.ok) {
+      if (isForbidden(res)) { onRevokedRef.current(); return; }
+      setHistoryError(true);
+      return;
+    }
+    const hist = res.data;
+    setMessages((prev) => {
+      // A live frame may have landed while the load failed; keep it, add history.
+      const have = new Set(prev.map((b) => b.id));
+      return [...hist.filter((m) => !have.has(m.id)).map((m) => ({ ...m })), ...prev];
+    });
+    setHasMore(hist.length >= 50);
+    if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
+  }, [base, sendRead]);
+
   const armJump = useCallback((msgId: string) => { pendingJumpRef.current = msgId; }, []);
 
   return {
-    messages, connected, loadingHistory, hasNewer, online, away, peerTyping, peerLastReadAt,
+    messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, sendDelete, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,

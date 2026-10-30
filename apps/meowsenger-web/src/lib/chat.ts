@@ -2,6 +2,23 @@
 // so the __Host-mw_session cookie rides along (same-origin worker). This is the
 // only unit-tested frontend code (>=90% on src/lib/**); the React islands are
 // validated by astro check + build.
+import { request, type RequestResult } from "@meowerse/ui";
+import { notifySessionEnded } from "./sessionEnded";
+
+/**
+ * Typed read: never throws, never collapses a failure into an "empty" success.
+ * A 401 additionally raises the app-level sessionEnded signal (once per page —
+ * see sessionEnded.ts); network/timeout/5xx/403 are returned for the caller to
+ * show a retryable error while keeping its last good data.
+ */
+async function read<B, T>(url: string, pick: (body: B) => T): Promise<RequestResult<T>> {
+  const r = await request<B>(url);
+  if (!r.ok) {
+    if (r.error.kind === "unauthorized") notifySessionEnded();
+    return r;
+  }
+  return { ok: true, status: r.status, data: pick((r.data ?? {}) as B) };
+}
 
 /** A chat summary as rendered in the sidebar (mirrors the worker's ChatSummary). */
 export interface ChatSummary {
@@ -178,15 +195,9 @@ export interface Message {
   reactions?: Reaction[];
 }
 
-/** GET /api/chats — the caller's sidebar list. Empty array on any failure. */
-export async function listChats(base: string): Promise<ChatSummary[]> {
-  try {
-    const r = await fetch(`${base}/api/chats`, { credentials: "include" });
-    const d = (await r.json()) as { chats?: ChatSummary[] };
-    return d.chats ?? [];
-  } catch {
-    return [];
-  }
+/** GET /api/chats — the caller's sidebar list. A failure is a typed error, NOT []. */
+export function listChats(base: string): Promise<RequestResult<ChatSummary[]>> {
+  return read<{ chats?: ChatSummary[] }, ChatSummary[]>(`${base}/api/chats`, (d) => d.chats ?? []);
 }
 
 /** POST /api/chats { username } — open-or-create a DM. Returns the chatId or an error code. */
@@ -204,16 +215,14 @@ export async function openDirect(base: string, username: string): Promise<{ chat
   }
 }
 
-/** GET /api/chats/:id/messages?before= — a history page (ascending), oldest first. */
-export async function loadHistory(base: string, chatId: string, before?: string): Promise<Message[]> {
-  try {
-    const q = before ? `?before=${encodeURIComponent(before)}` : "";
-    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/messages${q}`, { credentials: "include" });
-    const d = (await r.json()) as { messages?: Message[] };
-    return d.messages ?? [];
-  } catch {
-    return [];
-  }
+/** GET /api/chats/:id/messages?before= — a history page (ascending), oldest first.
+ *  A failure is a typed error (never an empty page). */
+export function loadHistory(base: string, chatId: string, before?: string): Promise<RequestResult<Message[]>> {
+  const q = before ? `?before=${encodeURIComponent(before)}` : "";
+  return read<{ messages?: Message[] }, Message[]>(
+    `${base}/api/chats/${encodeURIComponent(chatId)}/messages${q}`,
+    (d) => d.messages ?? [],
+  );
 }
 
 /** GET ?around=<msgId> — a window centered on a message (deep-link jump), ascending,
@@ -232,18 +241,12 @@ export async function loadHistoryAround(
 }
 
 /** GET ?after=<msgId> — the next page of NEWER messages (forward paging in a
- *  detached window), ascending. Empty on a network error. */
-export async function loadHistoryAfter(base: string, chatId: string, afterId: string): Promise<Message[]> {
-  try {
-    const r = await fetch(
-      `${base}/api/chats/${encodeURIComponent(chatId)}/messages?after=${encodeURIComponent(afterId)}`,
-      { credentials: "include" },
-    );
-    const d = (await r.json()) as { messages?: Message[] };
-    return d.messages ?? [];
-  } catch {
-    return [];
-  }
+ *  detached window), ascending. A failure is a typed error. */
+export function loadHistoryAfter(base: string, chatId: string, afterId: string): Promise<RequestResult<Message[]>> {
+  return read<{ messages?: Message[] }, Message[]>(
+    `${base}/api/chats/${encodeURIComponent(chatId)}/messages?after=${encodeURIComponent(afterId)}`,
+    (d) => d.messages ?? [],
+  );
 }
 
 /** Fields a resolved chat carries for a shareable deep-link (mirrors the worker's
@@ -363,15 +366,12 @@ export async function createChannel(
   }
 }
 
-/** GET /api/chats/:id/members — the group roster. Empty array on any failure. */
-export async function getMembers(base: string, chatId: string): Promise<Member[]> {
-  try {
-    const r = await fetch(`${base}/api/chats/${encodeURIComponent(chatId)}/members`, { credentials: "include" });
-    const d = (await r.json()) as { members?: Member[] };
-    return d.members ?? [];
-  } catch {
-    return [];
-  }
+/** GET /api/chats/:id/members — the group roster. A failure is a typed error. */
+export function getMembers(base: string, chatId: string): Promise<RequestResult<Member[]>> {
+  return read<{ members?: Member[] }, Member[]>(
+    `${base}/api/chats/${encodeURIComponent(chatId)}/members`,
+    (d) => d.members ?? [],
+  );
 }
 
 /**
@@ -494,25 +494,44 @@ export async function searchUsers(base: string, username: string): Promise<{ cha
   return openDirect(base, username);
 }
 
+/**
+ * Shared discovery read. A definitive refusal (403/404, or a 200 `{error}` body) is
+ * returned as `{error: <code>|fallback}` (the "private or not found" card). A 401 is
+ * `{error:"unauthorized"}`; a network error / timeout / 5xx / 429 / unparseable body
+ * is `{error:"unreachable"}` — never mistaken for "private".
+ */
+async function lookup<T>(url: string, fallback: string): Promise<T | { error: string }> {
+  let r: Response;
+  try {
+    r = await fetch(url, { credentials: "include" });
+  } catch {
+    return { error: "unreachable" };
+  }
+  if (r.status === 401) return { error: "unauthorized" };
+  if (r.status >= 500 || r.status === 429 || r.status === 408) return { error: "unreachable" };
+  let d: (T & { error?: string }) | { error?: string };
+  try {
+    d = (await r.json()) as T & { error?: string };
+  } catch {
+    return r.ok ? { error: "unreachable" } : { error: fallback };
+  }
+  if ("error" in d && d.error) return { error: d.error };
+  if (!r.ok) return { error: fallback };
+  return d as T;
+}
+
 // ---- Slice 6: public discovery + open-join ---------------------------------
 
 /**
  * GET /api/chats/by-slug/:slug — resolve a chat for discovery. Returns a
  * `ChatPreview` for a public chat (to any signed-in caller) or any chat the caller
  * is a member of; `{error:"private"}` for a private-non-member or unknown slug
- * (the two are deliberately indistinguishable — no existence leak). Any network
- * failure also degrades to `{error:"private"}` (the safe, no-leak default) — the
- * lock card is shown rather than a spurious preview. The preview carries no messages.
+ * (the two are deliberately indistinguishable — no existence leak). A network error /
+ * timeout / 5xx is `{error:"unreachable"}` and a 401 `{error:"unauthorized"}` (see
+ * `lookup`) so an outage never reads as "private". The preview carries no messages.
  */
 export async function getBySlug(base: string, slug: string): Promise<ChatPreview | { error: string }> {
-  try {
-    const r = await fetch(`${base}/api/chats/by-slug/${encodeURIComponent(slug)}`, { credentials: "include" });
-    const d = (await r.json()) as ChatPreview | { error?: string };
-    if ("error" in d && d.error) return { error: d.error };
-    return d as ChatPreview;
-  } catch {
-    return { error: "private" };
-  }
+  return lookup<ChatPreview>(`${base}/api/chats/by-slug/${encodeURIComponent(slug)}`, "private");
 }
 
 /**
@@ -618,14 +637,7 @@ export async function getInviteByCode(
   base: string,
   code: string,
 ): Promise<InvitePreview | { error: string }> {
-  try {
-    const r = await fetch(`${base}/api/invite/${encodeURIComponent(code)}`, { credentials: "include" });
-    const d = (await r.json()) as InvitePreview | { error?: string };
-    if ("error" in d && d.error) return { error: d.error };
-    return d as InvitePreview;
-  } catch {
-    return { error: "bad_invite" };
-  }
+  return lookup<InvitePreview>(`${base}/api/invite/${encodeURIComponent(code)}`, "bad_invite");
 }
 
 /**

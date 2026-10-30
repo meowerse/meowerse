@@ -14,7 +14,7 @@ vi.mock("../lib/chat", async (importActual) => {
   const actual = await importActual<typeof import("../lib/chat")>();
   return {
     ...actual,
-    getMembers: vi.fn(async () => H.members),
+    getMembers: vi.fn(async () => ({ ok: true as const, status: 200, data: H.members })),
     getInvite: vi.fn(async () => ({})),
     getRequests: vi.fn(async () => []),
   };
