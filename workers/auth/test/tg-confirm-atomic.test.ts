@@ -211,3 +211,108 @@ test("overlapping confirms, VERIFY_EXISTING, winner's link removed meanwhile (un
   expect(first.status).toBe(409);
   expect(await f.n("telegram_links")).toBe(0);
 });
+
+// Invariant: a consumed ticket's account always owns a Telegram link (otherwise /tg/status would issue a Telegram session
+// for an account that no longer has that link).
+const consumedAccountHasLink = async (f: Awaited<ReturnType<typeof setup>>, ticketId: string) => {
+  const s = await f.status(ticketId);
+  return (await f.q("SELECT 1 FROM telegram_links WHERE account_id = ?", [s.account_id])).length > 0;
+};
+
+test("existing-link sign-in, link removed between the read and the batch: the claim does NOT commit for the unlinked account", async () => {
+  const f = await setup();
+  await f.account("acct_e");
+  await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (31, 'acct_e', 'old')", args: [] });
+  const t = await f.ticket("SIGNIN_OR_SIGNUP");
+  f.setBefore(async () => { await f.db.execute("DELETE FROM telegram_links WHERE account_id = 'acct_e'"); });
+  const r = await f.confirm(t.nonce, "31", "fresh");
+  expect(r.status).toBe(200); // re-read: no link any more, so it retries as a fresh sign-up
+  const s = await f.status(t.ticketId);
+  expect(s.status).toBe("consumed");
+  expect(s.account_id).not.toBe("acct_e");
+  expect(await consumedAccountHasLink(f, t.ticketId)).toBe(true);
+  expect(await f.q("SELECT account_id FROM telegram_links")).toEqual([{ account_id: s.account_id }]);
+});
+
+test("existing-link sign-in, link moved to another account between the read and the batch: signs in as the new owner", async () => {
+  const f = await setup();
+  await f.account("acct_e");
+  await f.account("acct_o");
+  await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (31, 'acct_e')", args: [] });
+  const t = await f.ticket("SIGNIN_OR_SIGNUP");
+  f.setBefore(async () => {
+    await f.db.execute("DELETE FROM telegram_links WHERE account_id = 'acct_e'");
+    await f.db.execute("INSERT INTO telegram_links (telegram_id, account_id) VALUES (31, 'acct_o')");
+  });
+  expect((await f.confirm(t.nonce, "31")).status).toBe(200);
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "consumed", account_id: "acct_o" });
+});
+
+test("VERIFY already linked to this same account, link removed between the read and the batch: no claim for a link-less account", async () => {
+  const f = await setup();
+  await f.account("acct_v");
+  await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (55, 'acct_v')", args: [] });
+  const t = await f.ticket("VERIFY_EXISTING", "acct_v");
+  f.setBefore(async () => { await f.db.execute("DELETE FROM telegram_links WHERE account_id = 'acct_v'"); });
+  const r = await f.confirm(t.nonce, "55");
+  expect(r.status).toBe(200); // re-read: link gone, the retry is a normal verify that re-links atomically
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "consumed", account_id: "acct_v" });
+  expect(await consumedAccountHasLink(f, t.ticketId)).toBe(true);
+  expect(await f.q("SELECT telegram_id FROM telegram_links")).toEqual([{ telegram_id: 55 }]);
+});
+
+test("VERIFY already linked to this same account, link moved to another account between the read and the batch: 409 linked_elsewhere, ticket pending", async () => {
+  const f = await setup();
+  await f.account("acct_v");
+  await f.account("acct_o");
+  await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (55, 'acct_v')", args: [] });
+  const t = await f.ticket("VERIFY_EXISTING", "acct_v");
+  f.setBefore(async () => {
+    await f.db.execute("DELETE FROM telegram_links WHERE account_id = 'acct_v'");
+    await f.db.execute("INSERT INTO telegram_links (telegram_id, account_id) VALUES (55, 'acct_o')");
+  });
+  const r = await f.confirm(t.nonce, "55");
+  expect(r.status).toBe(409);
+  expect(await r.json()).toEqual({ error: "linked_elsewhere" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.q("SELECT account_id FROM telegram_links")).toEqual([{ account_id: "acct_o" }]);
+});
+
+test("VERIFY on an account that already has a DIFFERENT Telegram linked: 409 already_linked, ticket pending, nothing changed", async () => {
+  const f = await setup();
+  await f.account("acct_v");
+  await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (11, 'acct_v')", args: [] });
+  const t = await f.ticket("VERIFY_EXISTING", "acct_v");
+  const r = await f.confirm(t.nonce, "55");
+  expect(r.status).toBe(409);
+  expect(await r.json()).toEqual({ error: "already_linked" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.q("SELECT telegram_id FROM telegram_links")).toEqual([{ telegram_id: 11 }]);
+  expect(await f.n("audit_log")).toBe(0);
+});
+
+test("a different Telegram linked to the account between the read and the batch: 409 already_linked (not a 500)", async () => {
+  const f = await setup();
+  await f.account("acct_v");
+  const t = await f.ticket("VERIFY_EXISTING", "acct_v");
+  f.setBefore(async () => { await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (11, 'acct_v')", args: [] }); });
+  const r = await f.confirm(t.nonce, "55");
+  expect(r.status).toBe(409);
+  expect(await r.json()).toEqual({ error: "already_linked" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+});
+
+test("two VERIFY tickets, same account and same Telegram id, concurrently: both succeed (loser via the same-account path), one link", async () => {
+  const f = await setup();
+  await f.account("acct_v");
+  const t1 = await f.ticket("VERIFY_EXISTING", "acct_v");
+  const t2 = await f.ticket("VERIFY_EXISTING", "acct_v");
+  let other: Response | undefined;
+  f.setBefore(async () => { other = await f.confirm(t2.nonce, "55"); });
+  const r = await f.confirm(t1.nonce, "55");
+  expect(other!.status).toBe(200);
+  expect(r.status).toBe(200);
+  expect(await f.q("SELECT telegram_id, account_id FROM telegram_links")).toEqual([{ telegram_id: 55, account_id: "acct_v" }]);
+  expect(await f.status(t1.ticketId)).toMatchObject({ status: "consumed", account_id: "acct_v" });
+  expect(await f.status(t2.ticketId)).toMatchObject({ status: "consumed", account_id: "acct_v" });
+});
