@@ -8,13 +8,13 @@ Auth deletion removes the **auth account only**. Meowsenger data is deleted sepa
 ## B. Verify ownership
 Accounts have no email, so email proves nothing. Display name and avatar are **not editable** anywhere today (no `UPDATE accounts SET display_name` exists in `workers/auth`), so use another in-account action that works for password and Telegram-only accounts: **regenerate recovery codes** (account page, "recovery codes", needs a live session + CSRF) which writes an audit row `recovery.regenerate`.
 
-1. Reply to the requester (ask for their username) and note the send time `T` (UTC). Tell them: "sign in, then regenerate your recovery codes and save the new ones."
+1. Reply to the requester (ask for their username) and note the send time `T` in UTC, written exactly as `YYYY-MM-DD HH:MM:SS` (the format of `audit_log.ts`; an ISO value like `2026-10-30T12:00:00Z` compares wrongly as text). Tell them: "sign in, then regenerate your recovery codes, save the new ones, and reply to this email when done." Continue only after that reply.
 2. Confirm read-only (Turso shell), using the account id from the username:
    ```sql
-   SELECT id, username, display_name FROM accounts WHERE username = :username;  -- Telegram-only: match via telegram_links.telegram_username
-   SELECT ts, event FROM audit_log WHERE account_id = :id AND event = 'recovery.regenerate' AND ts > :T ORDER BY ts DESC;
+   SELECT id, username, display_name FROM accounts WHERE username = :username;  -- Telegram-only: match via telegram_links.telegram_username; it is not unique, so continue only if exactly ONE row matches
+   SELECT ts, event FROM audit_log WHERE account_id = :id AND event = 'recovery.regenerate' AND ts > :T AND ts < datetime(:T, '+48 hours') ORDER BY ts DESC;
    ```
-   `audit_log.ts` is UTC `datetime('now')`. No row after `T` = not verified; stop. Note: regenerating invalidates their previous recovery codes (tell them).
+   `audit_log.ts` is UTC `datetime('now')`. No row in that 48-hour window = not verified; stop (ask them to do it again and restart with a new `T`). Note: regenerating invalidates their previous recovery codes (tell them).
 
 ## C. Refuse while they own OAuth clients
 ```sql
@@ -24,6 +24,7 @@ Any rows: refuse. Deletion would remove the clients and break their users' sign-
 
 ## D. Meowsenger first
 1. Requester deletes their Meowsenger data in Meowsenger settings, danger zone. This removes profile, sessions, memberships, join requests, push subscriptions and groups they solely own; **message bodies they already sent remain** in each chat's storage.
+   If the requester never used Meowsenger, all counts below are already 0 and you can continue.
 2. Verify (`users.id` is the OIDC `sub`, i.e. the auth account id; confirm for this account first). From `workers/meowsenger`, each must be 0:
    ```sh
    for t in users:id sessions:user_id chat_members:user_id join_requests:user_id push_subscriptions:user_id; do
@@ -32,7 +33,10 @@ Any rows: refuse. Deletion would remove the clients and break their users' sign-
    ```
 
 ## E. Auth deletion (one transaction, Turso shell)
-Same statements as `deleteAccount` in `workers/auth/src/accounts.ts` (keep in sync if it changes). Replace `:id`:
+Same statements as `deleteAccount` in `workers/auth/src/accounts.ts` (keep in sync if it changes).
+
+1. Record the count first: `SELECT COUNT(*) FROM accounts;`
+2. Put the block below in a file with `:id` replaced everywhere, run it once against a non-production copy of the database, then pipe the same file into the production shell (do not paste it interactively), so it runs as one transaction:
 ```sql
 BEGIN;
 DELETE FROM oauth_client_secrets WHERE client_id IN (SELECT client_id FROM oauth_clients WHERE owner_account_id = :id);
@@ -69,6 +73,7 @@ SELECT COUNT(*) FROM accounts;  -- compare with the count before; must be exactl
 ## G. What remains
 - Messages the user sent in Meowsenger chats (bodies stay in chat storage under their old id).
 - Audit rows for the account, pruned after 365 days.
+- Emoji reactions they left in chats, and `chats.created_by` on chats that still exist.
 - Turso/D1 backups until their retention window expires.
 
 ## H. Reply to the requester
