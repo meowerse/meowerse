@@ -84,6 +84,12 @@ stack, so it would have been unverified code. Exact steps for the follow-up (`pe
 
 ## Limitations of the tier-A numbers
 
+- **Dataset size is not rendered size.** The 1000-message fixture is the size of the chat's history on the mock
+  server, but `/messages` returns 50 per page (like the real worker), so a re-entry or the typing-event burst renders
+  at most the loaded pages (~50 messages unless the run scrolls back). These numbers therefore do NOT measure a
+  1000-message DOM. Long-rendered-history scenarios (scroll back through many pages, then measure re-render cost per
+  typing/presence/reaction event) belong to the rendering-optimization PRs (P3) and must be added there.
+
 - The mock does not implement `?around=` / `?after=` on `/messages` (the real worker does), does not enforce the
   session cookie (no 401/403 paths), and omits `forwarded` on inbox frames and `away` in presence snapshots. Any
   later PR that measures deep links, detached windows or auth expiry must extend the mock first.
