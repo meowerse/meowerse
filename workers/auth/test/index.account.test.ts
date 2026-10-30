@@ -48,9 +48,9 @@ test("grants: list + revoke; telegram unlink guarded by a password fallback", as
   store.tables.consents.push({ account_id: accountId, client_id: "mw_demo", scope_set_max: '["openid","profile"]', approved_scope_snapshot: '["openid","profile"]' });
 
   const list = await get(env, deps, "/api/account/grants", sess);
-  const grants = ((await list.json()) as { grants: { clientId: string; approvedScopes: string[] }[] }).grants;
+  const grants = ((await list.json()) as { grants: { clientId: string; displayName: string | null; approvedScopes: string[] }[] }).grants;
   expect(grants).toHaveLength(1);
-  expect(grants[0]).toMatchObject({ clientId: "mw_demo", approvedScopes: ["openid", "profile"] });
+  expect(grants[0]).toMatchObject({ clientId: "mw_demo", displayName: "Meowerse Demo", approvedScopes: ["openid", "profile"] });
 
   const rev = await post(env, deps, "/api/account/grants/revoke", sess, { csrf, client_id: "mw_demo" });
   expect(rev.status).toBe(200);

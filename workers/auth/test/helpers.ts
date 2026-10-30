@@ -92,8 +92,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       if (/SELECT COUNT\(\*\) AS n FROM recovery_codes/.test(sql))
         return { rows: [{ n: t.recovery_codes.filter((r) => r.account_id === a[0] && r.used_at == null).length }] };
-      if (/SELECT client_id, approved_scope_snapshot, updated_at FROM consents WHERE account_id/.test(sql))
-        return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null })) };
+      if (/SELECT c\.client_id, c\.approved_scope_snapshot, c\.updated_at, o\.display_name FROM consents c/.test(sql))
+        return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null, display_name: t.oauth_clients.find((o) => o.client_id === r.client_id)?.display_name ?? null })) };
       if (/DELETE FROM consents WHERE account_id/.test(sql)) {
         const before = t.consents.length;
         t.consents = t.consents.filter((r) => !(r.account_id === a[0] && r.client_id === a[1]));
