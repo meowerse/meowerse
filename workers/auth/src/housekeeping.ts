@@ -58,7 +58,8 @@ function sqliteTs(epochSeconds: number): string {
  *  - oauth_codes never redeemed: no family exists; expiry + RETENTION_GRACE.
  * rate_limits: windows are minutes, so a bucket idle for RATE_LIMIT_RETENTION is dead (last_at, falling back to window_start).
  * Not cleaned: login_requests (no writer), management_tokens (no expiry column).
- * Account deletion removes these rows by account_id immediately (accounts.ts), independent of this.
+ * Account deletion removes the account-keyed rows above immediately (accounts.ts), independent of this.
+ * rate_limits rows keyed stepup:<accountId> are not removed by account deletion; they age out here.
  */
 function targets(now: number): Target[] {
   const cutoff = now - HOUSEKEEPING_MARGIN;
