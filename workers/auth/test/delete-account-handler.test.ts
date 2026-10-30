@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
@@ -18,7 +18,7 @@ const count = async (db: DbClient, sql: string, args: unknown[] = []) =>
 const snapshot = async (db: DbClient) => {
   const out: Record<string, unknown> = {};
   for (const t of ["accounts", "oauth_clients", "oauth_codes", "access_tokens", "refresh_tokens", "consents", "sessions", "audit_log"])
-    out[t] = (await db.execute(`SELECT * FROM ${t} ORDER BY 1, 2`)).rows.map((r) => ({ ...r }));
+    out[t] = (await db.execute(`SELECT * FROM ${t} ORDER BY 1, 2`)).rows.map((r) => { const o = { ...r } as Record<string, unknown>; delete o.last_seen; return o; }); // last_seen is wall-clock noise
   return JSON.stringify(out);
 };
 
@@ -137,4 +137,64 @@ test("success → exactly one account.delete row with account_id, truncated ip a
   const dump = JSON.stringify((await db.execute("SELECT * FROM audit_log")).rows);
   expect(dump).not.toContain(IP);
   expect(dump).not.toContain("secret-ua");
+});
+
+test("guard race: an active client appears right before the batch → 409 owns_active_clients, nothing changed, no audit row", async () => {
+  let armedOwner: string | null = null;
+  const { db, accountId, del } = await setup((real) => ({
+    execute: real.execute.bind(real),
+    batch: async (stmts, mode) => {
+      if (armedOwner) await addClient(real, "cl_race", armedOwner, false); // created after the pre-check passed
+      return real.batch(stmts, mode);
+    },
+  }));
+  await addUserRows(db, "acct_bystander", "mw_demo");
+  armedOwner = accountId;
+  const before = await snapshot(db);
+  const r = await del();
+  expect(r.status).toBe(409);
+  expect(await r.json()).toEqual({ error: "owns_active_clients" });
+  expect(r.headers.get("Set-Cookie")).toBeNull();
+  const after = JSON.parse(await snapshot(db)) as Record<string, unknown[]>;
+  const expected = JSON.parse(before) as Record<string, unknown[]>;
+  expect(after.oauth_clients).toHaveLength(2); // mw_demo + the racing client (not hard-deleted)
+  for (const t of Object.keys(expected)) if (t !== "oauth_clients") expect(after[t]).toEqual(expected[t]);
+  expect(await count(db, "accounts WHERE id = ?", [accountId])).toBe(1);
+  expect(await count(db, "audit_log WHERE event = 'account.delete'")).toBe(0);
+});
+
+test("batch throws AND the existence probe throws → 500 server_error, nothing leaked in the log", async () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  let armed = false;
+  const { db, accountId, del } = await setup((real) => ({
+    execute: async (stmt) => {
+      if (armed && /SELECT 1 FROM accounts WHERE id/.test(typeof stmt === "string" ? stmt : stmt.sql)) throw Object.assign(new Error("probe secret-msg"), { code: "PROBE_X" });
+      return real.execute(stmt);
+    },
+    batch: async () => { if (armed) throw Object.assign(new Error("batch secret-msg"), { code: "BATCH_X" }); return []; },
+  }));
+  armed = true;
+  const r = await del();
+  expect(r.status).toBe(500);
+  expect(await r.json()).toEqual({ error: "server_error" });
+  expect(await count(db, "accounts WHERE id = ?", [accountId])).toBe(1);
+  expect(spy).toHaveBeenCalledWith("account_delete_failed", "BATCH_X");
+  expect(spy).toHaveBeenCalledWith("account_delete_probe_failed", "PROBE_X");
+  expect(JSON.stringify(spy.mock.calls)).not.toContain("secret-msg");
+  spy.mockRestore();
+});
+
+test("double submit: second delete of an already-deleted account writes no second audit row (changes() gate)", async () => {
+  const { db, accountId } = await setup();
+  const audit = { ipTrunc: "1.2.3.0/24", uaHash: "abc" };
+  await deleteAccount(db, accountId, audit);
+  expect(await count(db, "audit_log WHERE event = 'account.delete' AND account_id = ?", [accountId])).toBe(1);
+  await deleteAccount(db, accountId, audit); // concurrent loser: account already gone
+  expect(await count(db, "audit_log WHERE event = 'account.delete' AND account_id = ?", [accountId])).toBe(1);
+});
+
+test("audit_log.event is NOT NULL (the deleteAccount guard depends on it)", async () => {
+  const db = await freshDb();
+  const r = await db.execute(`SELECT "notnull" AS nn FROM pragma_table_info('audit_log') WHERE name = 'event'`);
+  expect(Number(r.rows[0]!.nn)).toBe(1);
 });

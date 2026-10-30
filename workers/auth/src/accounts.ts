@@ -262,8 +262,10 @@ export async function deleteAccount(
   stmts.push({ sql: "DELETE FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
   stmts.push({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
   // LAST: the audit row commits iff the deletion committed (same columns as recordAudit writes).
+  // `changes() = 1` (rows changed by the immediately preceding accounts DELETE) makes a concurrent
+  // double submit write no second row: only the batch that actually deleted the account audits it.
   stmts.push({
-    sql: "INSERT INTO audit_log (event, account_id, client_id, ip_trunc, ua_hash) VALUES (?, ?, ?, ?, ?)",
+    sql: "INSERT INTO audit_log (event, account_id, client_id, ip_trunc, ua_hash) SELECT ?, ?, ?, ?, ? WHERE changes() = 1",
     args: ["account.delete", accountId, null, audit.ipTrunc, audit.uaHash],
   });
   await db.batch(stmts, "write");

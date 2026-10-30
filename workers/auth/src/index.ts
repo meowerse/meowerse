@@ -917,6 +917,12 @@ async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<st
 }
 
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
+/** Error code only (never message/args, which may carry data). */
+function errCode(e: unknown): string {
+  const c = (e as { code?: unknown } | null)?.code;
+  return typeof c === "string" || typeof c === "number" ? String(c) : "unknown";
+}
+
 /** Account self-deletion is off unless ACCOUNT_DELETE_ENABLED is exactly "1" or "true". */
 function accountDeleteEnabled(env: Env): boolean {
   return env.ACCOUNT_DELETE_ENABLED === "1" || env.ACCOUNT_DELETE_ENABLED === "true";
@@ -974,13 +980,15 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     const audit = { ipTrunc: truncIp(req.headers.get("CF-Connecting-IP")), uaHash: await uaHash(req.headers.get("User-Agent")) };
     try {
       await deleteAccount(db, accountId, audit);
-    } catch {
+    } catch (e) {
+      console.error("account_delete_failed", errCode(e));
       // The response may have been lost after a commit, or the batch rolled back: ask the DB which.
       let gone = false;
       try {
         gone = !(await accountExists(db, accountId));
         if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors); // in-batch guard fired
-      } catch {
+      } catch (e2) {
+        console.error("account_delete_probe_failed", errCode(e2));
         return json({ error: "server_error" }, 500, cors);
       }
       if (!gone) return json({ error: "server_error" }, 500, cors); // rolled back: nothing deleted

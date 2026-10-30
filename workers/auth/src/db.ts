@@ -153,6 +153,7 @@ export const SCHEMA: string[] = [
   )`,
   `CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL DEFAULT (datetime('now')),
+    -- event MUST stay NOT NULL: deleteAccount's in-batch active-client guard relies on the constraint failing.
     event TEXT NOT NULL, account_id TEXT, client_id TEXT, ip_trunc TEXT, ua_hash TEXT
   )`,
   // Retention prune (ts range scan) + per-account audit lookups.
