@@ -144,9 +144,9 @@ export function postManagementToken(base: string, csrf: string): Promise<{ token
   return postJson(`${base}/api/dev/tokens`, { csrf });
 }
 
-export async function tgStatus(base: string, ticketId: string): Promise<{ ready: boolean; next?: NextStep }> {
+export async function tgStatus(base: string, ticketId: string): Promise<{ ready: boolean; next?: NextStep; error?: string }> {
   const res = await fetch(`${base}/tg/status?ticket=${encodeURIComponent(ticketId)}`, { credentials: "include" });
-  return (await res.json()) as { ready: boolean; next?: NextStep };
+  return (await res.json()) as { ready: boolean; next?: NextStep; error?: string };
 }
 
 export function listClients(base: string): Promise<{ clients?: ClientSummary[]; csrf?: string; error?: string }> {

@@ -26,8 +26,14 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     setLink(res.deepLink);
     const ticketId = res.ticketId;
     timer.current = setInterval(async () => {
-      const s = await tgStatus(base, ticketId).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep });
-      if (s.ready) { if (timer.current) clearInterval(timer.current); window.location.href = postAuthLocation(s.next, window.location.search); }
+      const s = await tgStatus(base, ticketId).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep; error?: string });
+      if (s.ready) { if (timer.current) clearInterval(timer.current); window.location.href = postAuthLocation(s.next, window.location.search); return; }
+      // A link needs this browser's live session; if it ended, stop polling and say so instead of waiting out the timeout.
+      if (s.error === "no_session" || s.error === "account_gone") {
+        if (timer.current) clearInterval(timer.current);
+        setLink(null);
+        setError("your session ended. sign in again, then link telegram.");
+      }
     }, 2000);
     setTimeout(() => timer.current && clearInterval(timer.current), 5 * 60 * 1000);
   }
@@ -41,12 +47,12 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     );
   }
   return (
-    <div className="mw-stack">
+    <form className="mw-stack" onSubmit={(e) => { e.preventDefault(); void start(); }}>
       {needPassword && (
-        <input type="password" autoComplete="current-password" aria-label="current password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        <input type="password" name="current-password" autoComplete="current-password" aria-label="current password" value={password} onChange={(e) => setPassword(e.target.value)} />
       )}
-      <Button variant="secondary" onClick={start}>{label ?? "continue with telegram"}</Button>
+      <Button type="submit" variant="secondary">{label ?? "continue with telegram"}</Button>
       {error && <p role="alert" style={{ color: "var(--text-danger)" }}>{error}</p>}
-    </div>
+    </form>
   );
 }
