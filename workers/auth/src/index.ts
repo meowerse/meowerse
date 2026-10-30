@@ -730,7 +730,7 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   let next: NonNullable<Awaited<ReturnType<typeof resolveNext>>>;
   try {
     const issued = ticket.kind === "VERIFY_EXISTING"
-      ? await rotateSession(db, rawSess ?? "", { now: now(deps) }) // keeps the original auth_time and amr
+      ? await rotateSession(db, rawSess ?? "", { now: now(deps), accountId: ticket.account_id }) // keeps the original auth_time and amr; only for the linked account
       : await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
     if (!issued) return accountGone(cors); // account deleted since the ticket was confirmed; stays claimed
     sess = issued;
