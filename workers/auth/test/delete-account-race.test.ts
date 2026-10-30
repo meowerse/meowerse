@@ -427,7 +427,8 @@ test("POST /login as a DIFFERENT account while holding A's session cookie: A's s
   expect((await run(f.db, "SELECT revoked_at FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.revoked_at).not.toBeNull();
   const aLive = await run(f.db, "SELECT COUNT(*) AS n FROM sessions WHERE account_id = ? AND revoked_at IS NULL", [f.accountId]);
   expect(Number(aLive.rows[0]!.n)).toBe(0);
-  expect(before).toBeLessThanOrEqual(NOW);
+  // A's (now revoked) row was not freshened by B's login.
+  expect(Number((await run(f.db, "SELECT auth_time FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.auth_time)).toBe(before);
 });
 
 test("POST /login as the SAME account rotates its own session (old revoked, new one for the same account)", async () => {

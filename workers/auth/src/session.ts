@@ -137,10 +137,11 @@ export async function revokeSession(db: DbClient, rawId: string): Promise<void> 
 }
 
 /**
- * Rotate the session id on every privilege transition (login, link, consent),
- * revoking the old row and issuing a fresh one for the same account. Returns
- * null if the old session is already gone or its account was deleted (caller
- * forces re-auth).
+ * Rotate the session id when `accountId` re-authenticates (today: password login),
+ * revoking the old row and issuing a fresh one for the same account. Returns null
+ * (caller issues a new session or forces re-auth) if the old session is already gone,
+ * belongs to a DIFFERENT account (it is revoked, never renewed), or its account was
+ * deleted.
  */
 export async function rotateSession(
   db: DbClient,
