@@ -1,7 +1,7 @@
 import { test, expect, vi } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA } from "../src/db";
-import { runHousekeeping, scheduledHousekeeping, HOUSEKEEPING_MARGIN, RETENTION_GRACE } from "../src/housekeeping";
+import { runHousekeeping, scheduledHousekeeping, HOUSEKEEPING_MARGIN, RETENTION_GRACE, RATE_LIMIT_RETENTION } from "../src/housekeeping";
 import { createRefreshToken, rotateRefresh, REFRESH_ABS_TTL, REFRESH_IDLE_TTL } from "../src/refresh";
 import { exchangeCode, ACCESS_TTL, CODE_TTL } from "../src/token";
 import { sha256Hex } from "../src/crypto";
@@ -286,12 +286,12 @@ test("scheduledHousekeeping logs one counts-only line; swallows errors", async (
   try {
     await scheduledHousekeeping({ getDb: () => db }, NOW);
     expect(log).toHaveBeenCalledTimes(1);
-    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 login_tickets=0 sessions=0 account_delete_confirmations=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
+    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 rate_limits=0 login_tickets=0 sessions=0 account_delete_confirmations=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
     await expect(scheduledHousekeeping({ getDb: () => { throw new Error("no db"); } }, NOW)).resolves.toBeUndefined();
     expect(err).toHaveBeenCalledWith("housekeeping_failed");
     const bad: DbClient = { execute: async () => { throw new Error("x"); }, batch: async () => [] };
     await scheduledHousekeeping({ getDb: () => bad }, NOW);
-    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
+    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,rate_limits,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
   } finally {
     log.mockRestore();
     err.mockRestore();
@@ -321,4 +321,20 @@ test("account_delete_confirmations table missing (SKIP_MIGRATIONS prod) → skip
   expect(r.failed).toEqual([]);
   expect(r.deleted.audit_log).toBe(1);
   expect("account_delete_confirmations" in r.deleted).toBe(false);
+});
+
+test("rate_limits: idle longer than 7 days deleted (NULL last_at falls back to window_start), recent and boundary kept", async () => {
+  const db = await freshDb();
+  const cut = NOW - RATE_LIMIT_RETENTION;
+  expect(RATE_LIMIT_RETENTION).toBe(7 * DAY);
+  const add = (b: string, ws: number, last: number | null) =>
+    db.execute({ sql: "INSERT INTO rate_limits (bucket, count, window_start, last_at) VALUES (?, 1, ?, ?)", args: [b, ws, last] });
+  await add("login:old", cut - 100, cut - 1);
+  await add("login:legacy-null-old", cut - 1, null);
+  await add("login:legacy-null-new", cut + 1, null);
+  await add("login:edge", cut - 50, cut);
+  await add("login:new", NOW - 60, NOW - 30);
+  const r = await runHousekeeping(db, NOW);
+  expect(r.deleted.rate_limits).toBe(2);
+  expect((await db.execute("SELECT bucket FROM rate_limits ORDER BY bucket")).rows.map((x) => x.bucket)).toEqual(["login:edge", "login:legacy-null-new", "login:new"]);
 });
