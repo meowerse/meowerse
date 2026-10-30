@@ -1,5 +1,6 @@
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
+import { accountPresent } from "./codeguard";
 import type { DbClient } from "./types";
 
 /** Idle (sliding) and absolute session lifetimes, in seconds (spec §3, §7). */
@@ -18,16 +19,23 @@ export interface IssuedSession {
   idHash: string;
 }
 
-/** Issue a session: a 256-bit opaque id (cookie) whose SHA-256 is the stored key. */
-export async function issueSession(db: DbClient, input: IssueInput): Promise<IssuedSession> {
+/**
+ * Issue a session: a 256-bit opaque id (cookie) whose SHA-256 is the stored key.
+ * The insert is conditional on the account still existing (checked inside the
+ * statement, so it cannot interleave with deleteAccount); returns null when the
+ * account is gone and nothing was written.
+ */
+export async function issueSession(db: DbClient, input: IssueInput): Promise<IssuedSession | null> {
   const rawId = randomId(32);
   const idHash = await sha256Hex(rawId);
   const csrf = randomId(24);
-  await db.execute({
+  const exists = accountPresent(input.accountId);
+  const res = await db.execute({
     sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [idHash, input.accountId, input.authTime, input.amr, csrf, input.now + IDLE_TTL, input.now + ABSOLUTE_TTL],
+          SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${exists.sql}`,
+    args: [idHash, input.accountId, input.authTime, input.amr, csrf, input.now + IDLE_TTL, input.now + ABSOLUTE_TTL, ...exists.args],
   });
+  if ((res.rowsAffected ?? 0) !== 1) return null;
   return { rawId, csrf, idHash };
 }
 
@@ -40,7 +48,8 @@ export interface SessionView {
 
 /**
  * Resolve a session cookie to its account. Returns null when the row is absent,
- * revoked, or past either expiry. On a hit, rolls the idle window forward.
+ * revoked, past either expiry, or its account no longer exists (a leftover row
+ * for a deleted account is treated as no session; same single query). On a hit, rolls the idle window forward.
  *
  * The idle-window roll is an idempotent, non-user-visible keep-alive write. When
  * an `ExecutionContext` is threaded through (prod), it is fired off the response
@@ -57,7 +66,8 @@ export async function lookupSession(
   const idHash = await sha256Hex(rawId);
   const res = await db.execute({
     sql: `SELECT account_id, auth_time, csrf_token, amr, idle_expires_at, absolute_expires_at, revoked_at
-          FROM sessions WHERE id_hash = ?`,
+          FROM sessions WHERE id_hash = ?
+            AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = sessions.account_id)`,
     args: [idHash],
   });
   const row = res.rows[0];
@@ -129,7 +139,8 @@ export async function revokeSession(db: DbClient, rawId: string): Promise<void> 
 /**
  * Rotate the session id on every privilege transition (login, link, consent),
  * revoking the old row and issuing a fresh one for the same account. Returns
- * null if the old session is already gone (caller forces re-auth).
+ * null if the old session is already gone or its account was deleted (caller
+ * forces re-auth).
  */
 export async function rotateSession(
   db: DbClient,
@@ -144,13 +155,19 @@ export async function rotateSession(
   const rawId = randomId(32);
   const idHash = await sha256Hex(rawId);
   const csrf = randomId(24);
-  await db.batch([
-    { sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE id_hash = ?", args: [oldHash] },
-    {
-      sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [idHash, view.accountId, input.authTime ?? view.authTime, view.amr ?? "pwd", csrf, input.now + IDLE_TTL, input.now + ABSOLUTE_TTL],
-    },
-  ]);
+  const exists = accountPresent(view.accountId);
+  const res = await db.batch(
+    [
+      { sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE id_hash = ?", args: [oldHash] },
+      {
+        sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+              SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${exists.sql}`,
+        args: [idHash, view.accountId, input.authTime ?? view.authTime, view.amr ?? "pwd", csrf, input.now + IDLE_TTL, input.now + ABSOLUTE_TTL, ...exists.args],
+      },
+    ],
+    "write",
+  );
+  // The account vanished between the lookup and the insert: nothing was issued (caller forces re-auth).
+  if ((res[1]?.rowsAffected ?? 0) !== 1) return null;
   return { rawId, csrf, idHash };
 }

@@ -76,14 +76,14 @@ test("createAuthCode stores sha256(code) and returns the raw code", async () => 
     nonce: "n1",
     codeChallenge: CHALLENGE,
   };
-  const code = await createAuthCode(routedDb([], log), {
+  const code = (await createAuthCode(routedDb([[/INSERT INTO oauth_codes/, () => ({ rows: [], rowsAffected: 1 })]], log), {
     request,
     accountId: "acct_1",
     sessionIdHash: "sh",
     scope: ["openid", "profile"],
     authTime: 1000,
     now: 1000,
-  });
+  }))!;
   expect(code.startsWith("code_")).toBe(true);
   const ins = log.find((c) => c.sql.includes("INSERT INTO oauth_codes"));
   expect(ins?.args[0]).toBe(await sha256Hex(code));

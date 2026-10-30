@@ -5,8 +5,8 @@ import { routedDb, type Route } from "./helpers";
 
 test("issueSession stores sha256(rawId), never the raw id", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const db = routedDb([], log);
-  const s = await issueSession(db, { accountId: "acct_1", amr: "pwd", authTime: 1000, now: 1000 });
+  const db = routedDb([[/INSERT INTO sessions/, () => ({ rows: [], rowsAffected: 1 })]], log);
+  const s = (await issueSession(db, { accountId: "acct_1", amr: "pwd", authTime: 1000, now: 1000 }))!;
   const ins = log.find((c) => c.sql.includes("INSERT INTO sessions"));
   expect(ins?.args[0]).toBe(await sha256Hex(s.rawId));
   expect(ins?.args[0]).not.toBe(s.rawId);
@@ -66,7 +66,7 @@ test("revokeSession sets revoked_at by id hash", async () => {
 
 test("rotateSession revokes old and issues new for a live session; null when stale", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const routes: Route[] = [[/SELECT account_id, auth_time/, () => ({ rows: [sessionRow()] })]];
+  const routes: Route[] = [[/SELECT account_id, auth_time/, () => ({ rows: [sessionRow()] })], [/INSERT INTO sessions/, () => ({ rows: [], rowsAffected: 1 })]];
   const rotated = await rotateSession(routedDb(routes, log), "old", { now: 2000 });
   expect(rotated).not.toBeNull();
   expect(log.some((c) => c.sql.includes("UPDATE sessions SET revoked_at"))).toBe(true);

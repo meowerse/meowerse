@@ -1,6 +1,7 @@
 import { validatePassword, genRecoveryCodes, normalizeRecoveryCode } from "@meowerse/auth-shared";
 import { hashPassword, verifyPassword, DEFAULT_PBKDF2, CHEAP_PBKDF2, type Pbkdf2Params } from "./crypto";
 import { randomId } from "./security";
+import { accountPresent } from "./codeguard";
 import type { DbClient } from "./types";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
@@ -194,17 +195,23 @@ export async function changePassword(
   return { ok: true };
 }
 
-/** Replace all recovery codes; returns the new plaintext set ONCE. */
-export async function regenerateRecoveryCodes(db: DbClient, accountId: string, params?: Pbkdf2Params): Promise<string[]> {
+/**
+ * Replace all recovery codes; returns the new plaintext set ONCE, or null when
+ * the account no longer exists (the inserts are conditional on it, inside one
+ * write batch, so nothing is written for a deleted account).
+ */
+export async function regenerateRecoveryCodes(db: DbClient, accountId: string, params?: Pbkdf2Params): Promise<string[] | null> {
   await db.execute({ sql: "DELETE FROM recovery_codes WHERE account_id = ?", args: [accountId] });
   const codes = genRecoveryCodes();
+  const exists = accountPresent(accountId);
   const inserts = await Promise.all(
     codes.map(async (code) => ({
-      sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, ?)",
-      args: [accountId, await hashPassword(normalizeRecoveryCode(code), params ?? CHEAP_PBKDF2)],
+      sql: `INSERT INTO recovery_codes (account_id, code_hash) SELECT ?, ? WHERE ${exists.sql}`,
+      args: [accountId, await hashPassword(normalizeRecoveryCode(code), params ?? CHEAP_PBKDF2), ...exists.args],
     })),
   );
-  await db.batch(inserts);
+  const res = await db.batch(inserts, "write");
+  if (res.some((r) => (r.rowsAffected ?? 0) !== 1)) return null;
   return codes;
 }
 

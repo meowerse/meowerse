@@ -47,7 +47,7 @@ test("decision scope is the live intersection with client-allowed", () => {
 
 test("grantConsent unions max, caps to allowed, returns effective scope", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const scope = await grantConsent(routedDb([], log), {
+  const scope = await grantConsent(routedDb([[/INSERT INTO consents/, () => ({ rows: [], rowsAffected: 1 })]], log), {
     accountId: "acct_1",
     clientId: "mw_demo",
     requested: ["openid", "telegram"],
