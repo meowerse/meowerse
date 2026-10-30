@@ -133,6 +133,7 @@ test("exchangeCode replay revokes the token family and fails", async () => {
   });
   expect(res).toMatchObject({ ok: false, error: "invalid_grant", replay: true });
   expect(log.some((c) => c.sql.includes("UPDATE access_tokens SET revoked_at") && c.args[0] === "fam")).toBe(true);
+  expect(log.some((c) => c.sql.includes("UPDATE refresh_tokens SET used_at") && c.args[0] === "fam")).toBe(true);
 });
 
 test("exchangeCode rejects unknown/expired/client-mismatch/redirect-mismatch/bad-pkce", async () => {

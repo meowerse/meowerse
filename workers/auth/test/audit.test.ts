@@ -238,6 +238,27 @@ test("consent.grant (allow only) -> one row with account + client; deny records 
   expect(row).toMatchObject({ event: "consent.grant", account_id: accountId, client_id: "mw_rt" });
 });
 
+test("replaying an authorization code also revokes the offline refresh token issued from it", async () => {
+  const h = await harness();
+  const { tkt, csrf, sess, accountId } = await consentFlow(h, "aud_code_replay");
+  const r3 = await h.call("/consent", { sess, cookie: `__Host-mw_tkt=${tkt}`, body: { decision: "allow", csrf } });
+  const code = new URL(((await r3.json()) as { redirect: string }).redirect).searchParams.get("code")!;
+  const exchange = { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_rt", redirect_uri: REDIRECT };
+  const r4 = await h.call("/token", { body: exchange });
+  expect(r4.status).toBe(200);
+  const refresh = ((await r4.json()) as { refresh_token: string }).refresh_token;
+  expect(refresh).toBeTruthy();
+  const row = await h.one(async () => {
+    const r5 = await h.call("/token", { body: exchange });
+    expect(r5.status).toBe(400);
+    expect(await r5.json()).toEqual({ error: "invalid_grant" });
+  });
+  expect(row).toMatchObject({ event: "token.code_replay", client_id: "mw_rt", account_id: accountId });
+  const r6 = await h.call("/token", { body: { grant_type: "refresh_token", refresh_token: refresh, client_id: "mw_rt" } });
+  expect(r6.status).toBe(400);
+  expect(await r6.json()).toEqual({ error: "invalid_grant" });
+});
+
 test("token.reuse_detected on refresh-token reuse (family revoked); ordinary rotation records nothing", async () => {
   const h = await harness();
   const { tkt, csrf, sess, accountId } = await consentFlow(h, "aud_reuse");

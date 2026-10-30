@@ -105,6 +105,9 @@ export async function rotateRefresh(
 
 /** Revoke an entire token family — all refresh rows + access jtis. */
 export async function revokeFamily(db: DbClient, family: string): Promise<void> {
-  await db.execute({ sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL", args: [family] });
-  await db.execute({ sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ?", args: [family] });
+  // One batch: either both kinds of token in the family are revoked or neither is.
+  await db.batch([
+    { sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL", args: [family] },
+    { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ?", args: [family] },
+  ]);
 }
