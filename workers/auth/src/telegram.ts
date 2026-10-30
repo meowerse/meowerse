@@ -128,6 +128,103 @@ export async function linkTelegramToAccount(
   return { ok: true };
 }
 
+export type ConfirmResult =
+  | { ok: true; accountId: string; created: boolean }
+  | { ok: false; error: "already_consumed" | "linked_elsewhere" | "account_gone" | "invalid_ticket" };
+
+/** Aborts the whole write batch when the immediately preceding statement changed no row (audit_log.event is NOT NULL). */
+const ABORT_IF_NO_CHANGE: { sql: string; args: unknown[] } = { sql: "INSERT INTO audit_log (event) SELECT NULL WHERE changes() = 0", args: [] };
+
+/**
+ * Bot confirmation of a pending Telegram ticket: claim the ticket AND write the link/account in ONE write
+ * transaction. The claim is the first statement and a `changes() = 0` guard aborts the batch right after it,
+ * so a confirmation that lost the race (or hit an expired/consumed ticket) writes nothing at all, and a link
+ * that cannot be written (telegram id taken, account gone) rolls the claim back so the user can retry.
+ */
+export async function confirmTicketWithTelegram(
+  db: DbClient,
+  ticket: { ticket_id: string; kind: TicketKind; account_id: string | null },
+  tg: TgUser,
+  now: number,
+): Promise<ConfirmResult> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const claim = (accountId: string) => [
+      {
+        // Same expiry semantics as findPendingTicketByNonce (expired = expires_at < now).
+        sql: "UPDATE login_tickets SET status = 'consumed', account_id = ? WHERE ticket_id = ? AND status = 'pending' AND expires_at >= ?",
+        args: [accountId, ticket.ticket_id, now],
+      },
+      ABORT_IF_NO_CHANGE,
+    ];
+    const existing = await findAccountByTelegram(db, tg.telegramId);
+    let accountId: string;
+    let created = false;
+    let stmts: { sql: string; args: unknown[] }[];
+    if (ticket.kind === "VERIFY_EXISTING") {
+      if (!ticket.account_id) return { ok: false, error: "invalid_ticket" };
+      accountId = ticket.account_id;
+      if (existing && existing !== accountId) return { ok: false, error: "linked_elsewhere" };
+      stmts = claim(accountId);
+      if (!existing) {
+        // Conditional on the account still existing (inside the statement): a link row for a deleted
+        // account would make later Telegram logins resolve to the deleted account id.
+        const exists = accountPresent(accountId);
+        stmts.push(
+          {
+            sql: `INSERT INTO telegram_links (telegram_id, account_id, telegram_username, display_name, avatar_url)
+                  SELECT ?, ?, ?, ?, ? WHERE ${exists.sql}`,
+            args: [tg.telegramId, accountId, tg.username, tg.displayName, tg.avatarUrl, ...exists.args],
+          },
+          ABORT_IF_NO_CHANGE,
+          { sql: "UPDATE accounts SET verified = 1 WHERE id = ?", args: [accountId] },
+        );
+      }
+    } else if (existing) {
+      accountId = existing;
+      stmts = [
+        ...claim(accountId),
+        {
+          sql: "UPDATE telegram_links SET telegram_username = ?, display_name = ?, avatar_url = ?, updated_at = datetime('now') WHERE telegram_id = ?",
+          args: [tg.username, tg.displayName, tg.avatarUrl, tg.telegramId],
+        },
+      ];
+    } else {
+      accountId = "acct_" + randomId(16);
+      created = true;
+      stmts = [
+        ...claim(accountId),
+        {
+          sql: "INSERT INTO accounts (id, username, display_name, avatar_url, verified) VALUES (?, NULL, ?, ?, 1)",
+          args: [accountId, tg.displayName, tg.avatarUrl],
+        },
+        {
+          sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username, display_name, avatar_url) VALUES (?, ?, ?, ?, ?)",
+          args: [tg.telegramId, accountId, tg.username, tg.displayName, tg.avatarUrl],
+        },
+      ];
+    }
+    try {
+      await db.batch(stmts, "write");
+      return { ok: true, accountId, created };
+    } catch (err) {
+      // Nothing was written (one transaction). Say why, from fresh reads.
+      const t = await getTicket(db, ticket.ticket_id);
+      if (!t || t.status !== "pending") return { ok: false, error: "already_consumed" };
+      if (Number((t as unknown as { expires_at: number }).expires_at) < now) return { ok: false, error: "invalid_ticket" };
+      const linked = await findAccountByTelegram(db, tg.telegramId);
+      if (ticket.kind === "VERIFY_EXISTING") {
+        if (linked && linked !== ticket.account_id) return { ok: false, error: "linked_elsewhere" };
+        const a = await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [ticket.account_id] });
+        if (a.rows.length === 0) return { ok: false, error: "account_gone" };
+      } else if (linked && attempt === 0) {
+        continue; // a concurrent sign-up linked this Telegram id first: retry as a plain sign-in
+      }
+      throw err;
+    }
+  }
+  throw new Error("tg confirm: unreachable");
+}
+
 export const TICKET_TTL = 300;
 export type TicketKind = "SIGNIN_OR_SIGNUP" | "VERIFY_EXISTING" | "RESET_APPROVAL";
 

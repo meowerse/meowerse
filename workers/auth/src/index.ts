@@ -23,10 +23,9 @@ import {
   verifyLoginWidget,
   verifyInternalConfirm,
   signInOrSignUpTelegram,
-  linkTelegramToAccount,
+  confirmTicketWithTelegram,
   createTicket,
   findPendingTicketByNonce,
-  consumeTicket,
   getTicket,
   claimTicket,
   unclaimTicket,
@@ -680,19 +679,10 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
     displayName: body.display_name || null,
     avatarUrl: body.avatar_url || null,
   };
-  let accountId: string;
-  let created = false;
-  if (ticket.kind === "VERIFY_EXISTING") {
-    if (!ticket.account_id) return json({ error: "invalid_ticket" }, 400, cors);
-    const r = await linkTelegramToAccount(db, ticket.account_id, tg);
-    if (!r.ok) return json({ error: r.error }, 409, cors);
-    accountId = ticket.account_id;
-  } else {
-    const r = await signInOrSignUpTelegram(db, tg);
-    accountId = r.accountId;
-    created = r.created;
-  }
-  if (!(await consumeTicket(db, ticket.ticket_id, accountId))) return json({ error: "already_consumed" }, 409, cors);
+  // Claim + link/account write are ONE transaction: a losing/duplicate confirmation writes nothing.
+  const r = await confirmTicketWithTelegram(db, ticket, tg, now(deps));
+  if (!r.ok) return json({ error: r.error }, r.error === "invalid_ticket" ? 400 : 409, cors);
+  const { accountId, created } = r;
   // The caller is the auth-bot Worker, not the user: its IP/UA must not be attributed to the account.
   // telegram.login is recorded in handleTgStatus (the user's own browser request).
   if (ticket.kind === "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.link", accountId }, { network: false });

@@ -72,6 +72,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
     return true;
   };
+  let lastTgChanges = 1; // emulates changes() after the ticket claim / guarded link insert (tg confirm batch)
   let lastAccountChanges = 0; // emulates changes() after `DELETE FROM accounts`
   // Only valid because deleteAccount puts the audit insert IMMEDIATELY after that delete; it is not reset by other writes.
   const exec: DbClient["execute"] = async (stmt) => {
@@ -120,6 +121,11 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.oauth_clients.filter((r) => r.owner_account_id === a[0] && r.deleted_at == null).map((r) => ({ client_id: r.client_id })) };
       if (/^SELECT 1 FROM accounts WHERE id = \?/.test(sql)) return { rows: t.accounts.filter((r) => r.id === a[0]).map(() => ({ "1": 1 })) };
       // Simulates deleteAccount's guard statement (a NOT NULL violation on real SQLite) iff an active owned client exists.
+      // tg confirm batch abort guard: a NOT NULL violation on real SQLite iff the previous statement changed no row.
+      if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE changes\(\) = 0/.test(sql)) {
+        if (lastTgChanges === 0) throw new Error("NOT NULL constraint failed: audit_log.event");
+        return { rows: [], rowsAffected: 0 };
+      }
       if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE EXISTS/.test(sql)) {
         if (t.oauth_clients.some((r) => r.owner_account_id === a[0] && r.deleted_at == null)) throw new Error("NOT NULL constraint failed: audit_log.event");
         return { rows: [], rowsAffected: 0 };
@@ -287,7 +293,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.telegram_links.filter((r) => r.account_id === a[0]) };
       if (/INSERT INTO telegram_links .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
         // link-to-existing: conditional on the account existing (a[5] = account id)
-        if (!t.accounts.some((r) => r.id === a[5])) return { rows: [], rowsAffected: 0 };
+        if (!t.accounts.some((r) => r.id === a[5])) { lastTgChanges = 0; return { rows: [], rowsAffected: 0 }; }
+        lastTgChanges = 1;
         t.telegram_links.push({ telegram_id: a[0], account_id: a[1], telegram_username: a[2], display_name: a[3], avatar_url: a[4] });
         return { rows: [], rowsAffected: 1 };
       }
@@ -321,7 +328,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
       if (/UPDATE login_tickets SET status = 'consumed'/.test(sql)) {
-        const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending");
+        const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending" && (a.length < 3 || Number(r.expires_at) >= Number(a[2])));
+        lastTgChanges = row ? 1 : 0;
         if (row) {
           row.status = "consumed";
           row.account_id = a[0];
