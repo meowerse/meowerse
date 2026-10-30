@@ -53,6 +53,19 @@ describe("AccountSettings", () => {
     expect(screen.getByRole("link", { name: "privacy@alxnko.dev" }).getAttribute("href")).toBe("mailto:privacy@alxnko.dev");
   });
 
+  it("connected apps show the app name next to its client id; id alone when the name is missing", async () => {
+    const grants = [
+      { clientId: "mw_named", displayName: "meowsenger", approvedScopes: ["openid", "profile"], updatedAt: null },
+      { clientId: "mw_unnamed", displayName: null, approvedScopes: ["openid"], updatedAt: null },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants }) : json(ACCOUNT));
+    page();
+    expect(await screen.findByText("meowsenger")).not.toBeNull();
+    expect(screen.getByText("mw_named")).not.toBeNull();
+    expect(screen.getByText("mw_unnamed")).not.toBeNull();
+    expect(screen.getAllByRole("button", { name: "revoke" })).toHaveLength(2);
+  });
+
   it("deleteEnabled absent hides the delete control", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json(ACCOUNT));
     page();
