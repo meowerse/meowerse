@@ -130,9 +130,11 @@ export function MemberDrawer({
   const noun = chat.type === "channel" ? "channel" : "group";
 
   const refresh = useCallback(async () => {
-    const list = await getMembers(base, chat.id);
-    setMembers(list);
+    const res = await getMembers(base, chat.id);
     setLoading(false);
+    if (!res.ok) return; // keep the last known roster on a failed refresh
+    const list = res.data;
+    setMembers(list);
     // Derive the caller's role from the fresh roster; only owner/admin pull the
     // request inbox (a plain member gets a 403 → []). Keyed off the list we just
     // fetched so the very first load already gets the pending count for the badge.

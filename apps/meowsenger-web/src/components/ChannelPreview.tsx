@@ -83,7 +83,10 @@ export default function ChannelPreview({ base }: { base: string }) {
       // callers bounce to login and return here (query preserved in the URL).
       const s = await getSession(base);
       if (cancelled) return;
-      if (!s.authenticated) { window.location.replace(loginUrl(base)); return; }
+      // Only a definitive 200 {authenticated:false} bounces to login; an outage / 401
+      // shows the generic card instead of redirecting (never a false logout).
+      if (!s.ok) { setState({ kind: "locked" }); return; }
+      if (!s.data.authenticated) { window.location.replace(loginUrl(base)); return; }
       if (target.mode === "invite") {
         const inv = await getInviteByCode(base, target.code);
         if (cancelled) return;

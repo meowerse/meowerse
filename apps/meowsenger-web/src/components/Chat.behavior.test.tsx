@@ -23,11 +23,15 @@ const H = vi.hoisted(() => ({
   around: null as { found: boolean; messages: Message[]; hasOlder: boolean; hasNewer: boolean } | null,
   after: [] as Message[],
   order: [] as string[],
+  // Failure injection (null ⇒ succeed): a RequestError kind per reader.
+  failChats: null as null | { kind: string; status?: number },
+  failHistory: null as null | { kind: string; status?: number },
+  failSession: null as null | { kind: string; status?: number },
   disableImpl: (async () => {}) as () => Promise<void>,
 }));
 
 vi.mock("../lib/meowsengerApi", () => ({
-  getSession: vi.fn(async () => H.session),
+  getSession: vi.fn(async () => (H.failSession ? { ok: false as const, error: H.failSession } : { ok: true as const, status: 200, data: H.session })),
   loginUrl: (b: string) => `${b}/auth/login`,
   logoutUrl: (b: string) => `${b}/auth/logout`,
 }));
@@ -36,11 +40,11 @@ vi.mock("../lib/chat", async (importActual) => {
   const actual = await importActual<typeof import("../lib/chat")>();
   return {
     ...actual, // keep the PURE helpers real: applyReaction, wsUrl, slugify
-    listChats: vi.fn(async () => H.chats),
-    loadHistory: vi.fn(async (_b: string, chatId: string) => H.history[chatId] ?? []),
+    listChats: vi.fn(async () => (H.failChats ? { ok: false as const, error: H.failChats } : { ok: true as const, status: 200, data: H.chats })),
+    loadHistory: vi.fn(async (_b: string, chatId: string) => (H.failHistory ? { ok: false as const, error: H.failHistory } : { ok: true as const, status: 200, data: H.history[chatId] ?? [] })),
     loadHistoryAround: vi.fn(async () => H.around ?? { found: false, messages: [], hasOlder: false, hasNewer: false }),
-    loadHistoryAfter: vi.fn(async () => H.after),
-    getMembers: vi.fn(async (_b: string, chatId: string) => H.members[chatId] ?? []),
+    loadHistoryAfter: vi.fn(async () => ({ ok: true as const, status: 200, data: H.after })),
+    getMembers: vi.fn(async (_b: string, chatId: string) => ({ ok: true as const, status: 200, data: H.members[chatId] ?? [] })),
     resolveChat: vi.fn(async () => ({ error: "not_found" })),
     openDirect: vi.fn(async () => ({ error: "user_not_found" })),
   };
@@ -95,6 +99,9 @@ beforeEach(() => {
   H.members = {};
   H.around = null;
   H.after = [];
+  H.failChats = null;
+  H.failHistory = null;
+  H.failSession = null;
   H.session = { authenticated: true, user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true } };
   setUrl("/app");
 });
@@ -497,5 +504,54 @@ describe("Chat island — logout drops the push subscription (cross-account priv
     await logout();
     expect(H.order).toContain("fetch:/auth/logout");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("Chat island — honest error states (no false empty)", () => {
+  it("a failed sidebar poll keeps the previous chats and shows a subtle retry (not 'no chats yet')", async () => {
+    render(<Chat base="" />);
+    await screen.findByText("Bob");
+    H.failChats = { kind: "network" };
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText("couldn't refresh chats.");
+    expect(screen.getByText("Bob")).toBeTruthy();
+    expect(screen.queryByText("no chats yet")).toBeNull();
+    // retry succeeds → the error clears
+    H.failChats = null;
+    fireEvent.click(screen.getByRole("button", { name: "retry" }));
+    await waitFor(() => expect(screen.queryByText("couldn't refresh chats.")).toBeNull());
+    expect(screen.getByText("Bob")).toBeTruthy();
+  });
+
+  it("a failed FIRST list load shows 'couldn't load chats', never 'no chats yet'", async () => {
+    H.failChats = { kind: "http", status: 500 };
+    render(<Chat base="" />);
+    await screen.findByText("couldn't load chats.");
+    expect(screen.queryByText("no chats yet")).toBeNull();
+  });
+
+  it("a genuinely empty list still shows 'no chats yet'", async () => {
+    H.chats = [];
+    render(<Chat base="" />);
+    await screen.findByText("no chats yet");
+    expect(screen.queryByText(/couldn't/)).toBeNull();
+  });
+
+  it("failed history shows 'couldn't load messages' + retry (not 'no messages yet'); retry loads them", async () => {
+    H.failHistory = { kind: "http", status: 500 };
+    await mountOpen();
+    await screen.findByText("couldn't load messages.");
+    expect(screen.queryByText(/no messages yet/)).toBeNull();
+    H.failHistory = null;
+    fireEvent.click(within(document.querySelector(".mw-chat__log") as HTMLElement).getByRole("button", { name: "retry" }));
+    await waitFor(() => expect(within(logEl()).getByText("hello there")).toBeTruthy());
+    expect(screen.queryByText("couldn't load messages.")).toBeNull();
+  });
+
+  it("genuinely empty history still shows 'no messages yet'", async () => {
+    H.history = { c1: [] };
+    await mountOpen();
+    await screen.findByText(/no messages yet/);
+    expect(screen.queryByText("couldn't load messages.")).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { ConfirmDialog, Icon } from "@meowerse/ui";
+import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
 import { getSession, loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
@@ -51,6 +51,9 @@ export default function Chat({ base }: { base: string }) {
   const [me, setMe] = useState<SessionUser | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
+  // The last sidebar refresh failed. The previous list is KEPT (never replaced by an
+  // empty state because a request failed); the sidebar shows a subtle retry instead.
+  const [chatsError, setChatsError] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   // Slice 4 — message-actions UI state.
@@ -151,14 +154,27 @@ export default function Chat({ base }: { base: string }) {
     setSelected((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
   }, []);
   const consumeReply = useCallback(() => setReplyingTo(null), []);
+  // Apply a sidebar fetch result: success replaces the list (keeping the active chat's
+  // optimistic unread=0); any failure keeps the last good list and flags a retry.
+  // Returns the fresh list, or null on failure.
+  const applyChatList = useCallback((res: RequestResult<ChatSummary[]>): ChatSummary[] | null => {
+    if (!res.ok) { setChatsError(true); return null; }
+    setChatsError(false);
+    const act = activeRef.current;
+    const cs = res.data;
+    setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
+    return cs;
+  }, []);
+  const refreshChats = useCallback(async (): Promise<ChatSummary[] | null> => applyChatList(await listChats(base)), [base, applyChatList]);
+
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
   // a member). The socket already stopped reconnecting on the `revoked` frame.
   const onRevoked = useCallback(() => {
     showToast("you're no longer a member of this chat");
     setActiveId(null);
-    void listChats(base).then(setChats);
-  }, [showToast, base]);
+    void refreshChats();
+  }, [showToast, refreshChats]);
 
   // Apply one realtime sidebar update: move the chat to the top, refresh its preview +
   // activity, and set unread (0 when it's the chat you're viewing, else a has-unread
@@ -186,15 +202,14 @@ export default function Chat({ base }: { base: string }) {
         return [updated, ...prev.filter((_, i) => i !== idx)];
       });
       if (isUnindexed) {
-        void listChats(base).then((cs) => {
-          setChats(cs);
-          if (!cs.some((c) => c.id === chatId)) {
-            window.setTimeout(() => { void listChats(base).then(setChats); }, 600);
+        void refreshChats().then((cs) => {
+          if (cs && !cs.some((c) => c.id === chatId)) {
+            window.setTimeout(() => { void refreshChats(); }, 600);
           }
         });
       }
     },
-    [base],
+    [refreshChats],
   );
   // A message in the OPEN chat arrived over its socket → update its sidebar row now.
   const onActiveMessage = useCallback(
@@ -204,7 +219,7 @@ export default function Chat({ base }: { base: string }) {
 
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
-    messages, connected, loadingHistory, hasNewer, online, away, peerTyping, peerLastReadAt,
+    messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, sendDelete, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
@@ -223,8 +238,10 @@ export default function Chat({ base }: { base: string }) {
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.
   const loadMembers = useCallback(async (chatId: string) => {
-    const list: Member[] = await getMembers(base, chatId);
+    const res = await getMembers(base, chatId);
     if (activeRef.current !== chatId) return; // switched away mid-fetch
+    if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
+    const list: Member[] = res.data;
     const map = new Map<string, SenderInfo>();
     for (const m of list) {
       map.set(m.userId, { name: m.displayName || m.username, avatarUrl: m.avatarUrl, role: m.role });
@@ -237,10 +254,10 @@ export default function Chat({ base }: { base: string }) {
   // The URL is kept in sync with the open chat (see the sync effect below) so a
   // reload / shared link lands back in the same chat (+ jumps to the message).
   useEffect(() => {
-    getSession(base).then((s) => setMe(s.user ?? null));
-    listChats(base).then((cs) => {
-      setChats(cs);
+    getSession(base).then((s) => { if (s.ok) setMe(s.data.user ?? null); });
+    refreshChats().then((cs) => {
       setLoadingChats(false);
+      if (!cs) return; // failed: sidebar shows the retryable error, no deep-link guess
       if (typeof window === "undefined") return;
       const params = new URLSearchParams(window.location.search);
       const wanted = params.get("chat");
@@ -363,10 +380,9 @@ export default function Chat({ base }: { base: string }) {
   useEffect(() => {
     let cancelled = false;
     async function refresh() {
-      const cs = await listChats(base);
+      const res = await listChats(base);
       if (cancelled) return;
-      const act = activeRef.current;
-      setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
+      applyChatList(res);
     }
     function onFocus() { void refresh(); }
     function onVisible() { if (document.visibilityState === "visible") void refresh(); }
@@ -523,25 +539,23 @@ export default function Chat({ base }: { base: string }) {
       // Generic fallback so a raw server code never leaks into the UI.
       return copy[r.error ?? ""] ?? "could not start chat";
     }
-    const cs = await listChats(base);
-    setChats(cs);
+    await refreshChats();
     setActiveId(r.chatId);
     return null;
   }
 
   // After the modal creates a group: refresh the sidebar + select the new chat.
   async function onCreatedGroup(chatId: string) {
-    const cs = await listChats(base);
-    setChats(cs);
+    await refreshChats();
     setActiveId(chatId);
   }
 
   // Refresh the sidebar list + (if the active chat is a group/channel) its roster
   // after a member-drawer mutation, without disturbing the socket/messages.
   async function refreshAfterMemberChange() {
-    const cs = await listChats(base);
+    const cs = await refreshChats();
     const act = activeRef.current;
-    setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
+    if (!cs) return;
     const actType = act ? cs.find((c) => c.id === act)?.type : undefined;
     if (act && (actType === "group" || actType === "channel")) void loadMembers(act);
   }
@@ -553,7 +567,7 @@ export default function Chat({ base }: { base: string }) {
     setDrawerOpen(false);
     setActiveId(null);
     if (left) setChats((prev) => prev.filter((c) => c.id !== left));
-    void listChats(base).then(setChats);
+    void refreshChats();
   }
 
   const onLogout = useCallback(async () => {
@@ -615,6 +629,8 @@ export default function Chat({ base }: { base: string }) {
         onSettingsClick={() => setSettingsOpen(true)}
         onLogout={onLogout}
         loading={loadingChats}
+        error={chatsError}
+        onRetry={() => { void refreshChats(); }}
       />
 
       <section className="mw-chat__main">
@@ -750,7 +766,19 @@ export default function Chat({ base }: { base: string }) {
                   ))}
                 </div>
               )}
-              {!loadingHistory && messages.length === 0 && (
+              {olderError && messages.length > 0 && (
+                <div className="mw-loaderror" role="status">
+                  <span className="mw-muted">couldn't load earlier messages.</span>{" "}
+                  <button className="mw-btn mw-btn--sm" onClick={() => { void retryOlder(); }}>retry</button>
+                </div>
+              )}
+              {!loadingHistory && historyError && messages.length === 0 && (
+                <div className="mw-emptylog" role="status">
+                  <p className="mw-emptylog__text mw-muted">couldn't load messages.</p>
+                  <button className="mw-btn mw-btn--sm" onClick={() => { void retryHistory(); }}>retry</button>
+                </div>
+              )}
+              {!loadingHistory && !historyError && messages.length === 0 && (
                 <div className="mw-emptylog">
                   <span className="mw-emptylog__glyph" aria-hidden="true">👋</span>
                   <p className="mw-emptylog__text mw-muted">no messages yet. say hi</p>

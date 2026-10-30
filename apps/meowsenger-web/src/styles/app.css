@@ -1044,3 +1044,9 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 @media (pointer: coarse) {
   .mw-composer__input, input.mw-input, .mw-search__input, .mw-edit__input { font-size: 16px; }
 }
+
+/* Unobtrusive, retryable load-error line (sidebar refresh / older history). */
+.mw-loaderror {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 12px; font-size: 0.8rem;
+}
