@@ -44,6 +44,7 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
     return false;
   }
   if (url.protocol !== "https:") return false;
+  if (url.port !== "") return false; // real push services use 443; no custom ports (SSRF to odd services)
   const host = url.hostname.toLowerCase();
   return (
     PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h)) ||
@@ -104,20 +105,46 @@ export interface PushSub {
   auth?: string | null;
 }
 
-/** Upsert (by endpoint) the caller's push subscription. */
+/** Max push subscriptions kept per user (oldest evicted on insert). */
+export const MAX_PUSH_SUBS_PER_USER = 10;
+
+/** Coarse push-service family of an endpoint, for delivery logs. NEVER log the URL
+ *  itself (it is a bearer capability for the user's device). */
+export function pushHostFamily(endpoint: string): string {
+  let host: string;
+  try { host = new URL(endpoint).hostname.toLowerCase(); } catch { return "other"; }
+  if (host === "fcm.googleapis.com") return "fcm";
+  if (/^jmt\d+\.google\.com$/.test(host)) return "jmt";
+  if (host.endsWith(".push.services.mozilla.com")) return "mozilla";
+  if (host.endsWith(".push.apple.com")) return "apple";
+  if (host.endsWith(".notify.windows.com")) return "wns";
+  return "other";
+}
+
+/** Upsert (by endpoint) the caller's push subscription, then trim the user to the
+ *  newest MAX_PUSH_SUBS_PER_USER rows. (DbClient has no batch; the trim is a second
+ *  statement — a failure between them only leaves the user briefly over the cap.) */
 export async function savePushSubscription(db: DbClient, userId: string, sub: PushSub, now: number): Promise<void> {
   if (!sub.endpoint) return;
   await db.run(
     `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
      VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
+     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at`,
     [sub.endpoint, userId, sub.p256dh ?? null, sub.auth ?? null, now],
+  );
+  await db.run(
+    `DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint NOT IN (
+       SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
+    [userId, userId, MAX_PUSH_SUBS_PER_USER],
   );
 }
 
-/** Remove a subscription by endpoint (unsubscribe, or a dead 404/410 endpoint). */
-export async function deletePushSubscription(db: DbClient, endpoint: string): Promise<void> {
-  await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+/** Remove a subscription by endpoint (a dead 404/410 endpoint). When `userId` is
+ *  given the delete is scoped to that owner (user unsubscribe: never touches another
+ *  user's row). */
+export async function deletePushSubscription(db: DbClient, endpoint: string, userId?: string): Promise<void> {
+  if (userId === undefined) await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  else await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", [endpoint, userId]);
 }
 
 /** All push endpoints to notify for a message in `chatId`, EXCLUDING the sender and

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { sendPush, savePushSubscription, deletePushSubscription, pushTargetsForChat, isAllowedPushEndpoint } from "./push";
+import { sendPush, savePushSubscription, deletePushSubscription, pushTargetsForChat, isAllowedPushEndpoint, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
 import type { DbClient, Env, Row } from "./types";
 
 let env: Env;
@@ -18,7 +18,7 @@ beforeAll(async () => {
 });
 
 function pushDb() {
-  const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown; auth: unknown }> = [];
+  const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown; auth: unknown; created_at?: number }> = [];
   const members: Array<{ chat_id: string; user_id: string }> = [];
   const db: DbClient = {
     async all(sql, p = []) {
@@ -32,13 +32,23 @@ function pushDb() {
     async first() { return undefined; },
     async run(sql, p = []) {
       if (sql.includes("INSERT INTO push_subscriptions")) {
-        const [endpoint, user_id, p256dh, auth] = p as [string, string, unknown, unknown];
+        const [endpoint, user_id, p256dh, auth, created_at] = p as [string, string, unknown, unknown, number];
         const i = subs.findIndex((s) => s.endpoint === endpoint);
-        if (i >= 0) subs[i] = { endpoint, user_id, p256dh, auth };
-        else subs.push({ endpoint, user_id, p256dh, auth });
+        if (i >= 0) subs[i] = { endpoint, user_id, p256dh, auth, created_at };
+        else subs.push({ endpoint, user_id, p256dh, auth, created_at });
+      } else if (sql.includes("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")) {
+        const i = subs.findIndex((s) => s.endpoint === p[0] && s.user_id === p[1]);
+        if (i >= 0) subs.splice(i, 1);
       } else if (sql.includes("DELETE FROM push_subscriptions WHERE endpoint")) {
         const i = subs.findIndex((s) => s.endpoint === p[0]);
         if (i >= 0) subs.splice(i, 1);
+      } else if (sql.includes("DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint NOT IN")) {
+        // Keep the newest `limit` rows (created_at DESC, insertion order DESC) of that user.
+        const [uid, , limit] = p as [string, string, number];
+        const mine = subs.map((s, idx) => ({ s, idx })).filter((x) => x.s.user_id === uid)
+          .sort((a, b) => (b.s.created_at ?? 0) - (a.s.created_at ?? 0) || b.idx - a.idx);
+        const drop = new Set(mine.slice(limit).map((x) => x.s.endpoint));
+        for (let i = subs.length - 1; i >= 0; i--) if (drop.has(subs[i].endpoint)) subs.splice(i, 1);
       }
     },
   };
@@ -57,6 +67,11 @@ describe("isAllowedPushEndpoint", () => {
     // VAPID key. Rejecting it is why prod push_subscriptions stayed empty.
     expect(isAllowedPushEndpoint("https://jmt17.google.com/fcm/send/er6x8jtPf4c:APA91bH")).toBe(true);
     expect(isAllowedPushEndpoint("https://jmt0.google.com/fcm/send/x")).toBe(true);
+  });
+  it("rejects an explicit port (SSRF to odd services on a push host)", () => {
+    expect(isAllowedPushEndpoint("https://fcm.googleapis.com:8443/fcm/send/abc")).toBe(false);
+    expect(isAllowedPushEndpoint("https://jmt17.google.com:4444/fcm/send/x")).toBe(false);
+    expect(isAllowedPushEndpoint("https://web.push.apple.com:8080/x")).toBe(false);
   });
   it("rejects other hosts, http, suffix-spoofs, and junk (SSRF guard)", () => {
     expect(isAllowedPushEndpoint("https://attacker.example/internal")).toBe(false);
@@ -111,6 +126,40 @@ describe("savePushSubscription / deletePushSubscription", () => {
     const { db, subs } = pushDb();
     await savePushSubscription(db, "u1", { endpoint: "" }, 1);
     expect(subs).toHaveLength(0);
+  });
+});
+
+describe("push subscription cap + scoped delete", () => {
+  it("keeps at most MAX_PUSH_SUBS_PER_USER rows per user, evicting the oldest", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "other", { endpoint: "o1" }, 1);
+    for (let i = 1; i <= MAX_PUSH_SUBS_PER_USER + 3; i++) await savePushSubscription(db, "u1", { endpoint: `e${i}` }, 100 + i);
+    const mine = subs.filter((s) => s.user_id === "u1").map((s) => s.endpoint).sort();
+    expect(mine).toHaveLength(MAX_PUSH_SUBS_PER_USER);
+    expect(mine).not.toContain("e1");
+    expect(mine).not.toContain("e3");
+    expect(mine).toContain("e13");
+    expect(subs.some((s) => s.endpoint === "o1")).toBe(true); // other users untouched
+  });
+  it("deletePushSubscription with a userId only deletes that user's row", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u1", { endpoint: "e1" }, 1);
+    await deletePushSubscription(db, "e1", "u2"); // not the owner
+    expect(subs).toHaveLength(1);
+    await deletePushSubscription(db, "e1", "u1");
+    expect(subs).toHaveLength(0);
+  });
+});
+
+describe("pushHostFamily (log-safe host classification)", () => {
+  it("maps endpoints to a coarse family and never echoes the URL", () => {
+    expect(pushHostFamily("https://fcm.googleapis.com/fcm/send/secret")).toBe("fcm");
+    expect(pushHostFamily("https://jmt17.google.com/fcm/send/secret")).toBe("jmt");
+    expect(pushHostFamily("https://updates.push.services.mozilla.com/wpush/v2/x")).toBe("mozilla");
+    expect(pushHostFamily("https://web.push.apple.com/x")).toBe("apple");
+    expect(pushHostFamily("https://ab1.notify.windows.com/w")).toBe("wns");
+    expect(pushHostFamily("https://elsewhere.example/x")).toBe("other");
+    expect(pushHostFamily("garbage")).toBe("other");
   });
 });
 

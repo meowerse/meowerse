@@ -220,7 +220,7 @@ export async function handlePushUnsubscribe(req: Request, db: DbClient, now: num
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   let body: { endpoint?: string };
   try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
-  if (body.endpoint) await deletePushSubscription(db, body.endpoint);
+  if (body.endpoint && typeof body.endpoint === "string") await deletePushSubscription(db, body.endpoint, me);
   return json({ ok: true }, 200, cors, NS);
 }
 

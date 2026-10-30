@@ -16,7 +16,7 @@ import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
 import Settings from "./Settings";
-import { syncPushSubscription } from "../lib/push";
+import { syncPushSubscription, disablePush } from "../lib/push";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -557,6 +557,13 @@ export default function Chat({ base }: { base: string }) {
   }
 
   const onLogout = useCallback(async () => {
+    // Drop this browser's push subscription (server row + local + marker) BEFORE the
+    // session ends, so the next account on this browser can't inherit it. Best-effort
+    // and time-boxed: logout must never hang on it.
+    await Promise.race([
+      disablePush(base).catch(() => {}),
+      new Promise<void>((r) => setTimeout(r, 3000)),
+    ]);
     await fetch(logoutUrl(base), { method: "POST", credentials: "include" });
     window.location.href = loginUrl(base);
   }, [base]);

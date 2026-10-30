@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Modal, ConfirmDialog } from "@meowerse/ui";
 import { getPrivacy, setPrivacy, deleteAccount } from "../lib/chat";
-import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, PushError } from "../lib/push";
+import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, clearLocalPush, PushError } from "../lib/push";
 
 /** Whether this browser can do Web Push at all (SSR-safe). */
 function notificationsSupported(): boolean {
@@ -91,6 +91,7 @@ export default function Settings({ base, open, onClose, userId }: { base: string
     setDeleting(true); setDeleteErr(null);
     const r = await deleteAccount(base);
     if (r.ok) {
+      await clearLocalPush().catch(() => {}); // the account's server rows are gone; drop the device side
       if (typeof window !== "undefined") window.location.href = "/";
       return; // navigating away — leave the dialog in its loading state
     }

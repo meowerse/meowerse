@@ -12,11 +12,13 @@ import { render, screen, fireEvent, waitFor } from "../test/rtl";
 const H = vi.hoisted(() => ({
   impl: (async () => "granted") as (...a: unknown[]) => Promise<string>,
   calls: [] as unknown[][],
+  cleared: 0,
 }));
 
 vi.mock("../lib/chat", async (importActual) => ({
   ...(await importActual<typeof import("../lib/chat")>()),
   getPrivacy: vi.fn(async () => ({ allowAutoGroupAdd: true })),
+  deleteAccount: vi.fn(async () => ({ ok: true })),
 }));
 vi.mock("../lib/push", async (importActual) => {
   const actual = await importActual<typeof import("../lib/push")>();
@@ -26,6 +28,7 @@ vi.mock("../lib/push", async (importActual) => {
     pushPermission: () => "granted",
     pushSubscribed: async () => false,
     enablePush: (...a: unknown[]) => { H.calls.push(a); return H.impl(...a); },
+    clearLocalPush: () => { H.cleared++; return Promise.resolve(); },
   };
 });
 
@@ -68,5 +71,16 @@ describe("Settings — notifications toggle", () => {
     render(<Settings base="https://x" open onClose={() => {}} />);
     fireEvent.click(toggle());
     expect((await screen.findByRole("alert")).textContent).toMatch(/weren't allowed/);
+  });
+});
+
+describe("Settings — account deletion", () => {
+  it("clears the local push subscription + marker once deletion succeeds", async () => {
+    H.cleared = 0;
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(screen.getByText("delete", { selector: "button.mw-danger__btn" }));
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "delete" } });
+    fireEvent.click(screen.getByText("delete my data"));
+    await waitFor(() => expect(H.cleared).toBe(1));
   });
 });

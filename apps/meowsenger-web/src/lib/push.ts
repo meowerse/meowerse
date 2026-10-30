@@ -111,16 +111,46 @@ export async function enablePush(base: string, userId?: string): Promise<string>
     await sub.unsubscribe().catch(() => {});
     throw new PushError(err);
   }
-  writeSynced(`${userId ?? ""}|${sub.endpoint}`);
+  // Never record an unknown owner: sync settles the marker once the user is known.
+  writeSynced(userId ? `${userId}|${sub.endpoint}` : null);
   return "granted";
+}
+
+/** Owner recorded in the marker ("" when unknown/malformed). */
+function markerUser(marker: string): string {
+  const i = marker.indexOf("|");
+  return i < 0 ? "" : marker.slice(0, i);
+}
+
+/** Is `code` (from postSubscription) a permanent refusal retrying can't fix? */
+function permanentError(code: string): boolean {
+  if (code === "bad_endpoint" || code === "bad_body") return true;
+  const m = /^http_(4\d\d)$/.exec(code);
+  return !!m && !["401", "408", "429"].includes(m[1]);
+}
+
+/** Drop this browser's local push subscription + the marker. No server call. */
+export async function clearLocalPush(): Promise<void> {
+  writeSynced(null);
+  if (!pushSupported()) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) await sub.unsubscribe().catch(() => {});
+  } catch { /* nothing to drop */ }
 }
 
 /**
  * Self-heal on app load: if permission is granted and this browser holds a push
  * subscription the server hasn't confirmed for `userId`, (re)send it. Covers a
- * subscription created while the server was rejecting it, a rotated endpoint, and a
- * different account signing in on this browser. Never prompts; one D1 write per new
- * (user, endpoint) pair. Returns true when a sync POST succeeded.
+ * subscription created while the server was rejecting it and a rotated endpoint.
+ * Never prompts; one D1 write per new (user, endpoint) pair. Returns true when a
+ * sync POST succeeded.
+ *
+ * Privacy: a subscription last confirmed for a DIFFERENT (or unknown/empty) owner is
+ * never re-sent for the current user — the server upsert would rebind the device to
+ * them without consent. It is dropped locally instead; the new user opts in by hand.
+ * A permanent server refusal also drops it, so Settings shows the truth.
  */
 export async function syncPushSubscription(base: string, userId: string): Promise<boolean> {
   if (!pushSupported() || Notification.permission !== "granted") return false;
@@ -129,8 +159,28 @@ export async function syncPushSubscription(base: string, userId: string): Promis
     const sub = reg ? await reg.pushManager.getSubscription() : null;
     if (!sub) return false;
     const marker = `${userId}|${sub.endpoint}`;
-    if (readSynced() === marker) return false;
-    if (await postSubscription(base, sub)) return false;
+    const current = readSynced();
+    if (current === marker) return false;
+    if (current !== null && markerUser(current) !== userId) {
+      // Another account's (or an unknown owner's) subscription on this browser.
+      writeSynced(null);
+      await sub.unsubscribe().catch(() => {});
+      await fetch(`${base}/api/push/unsubscribe`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: sub.endpoint }),
+      }).catch(() => {});
+      return false;
+    }
+    const err = await postSubscription(base, sub);
+    if (err) {
+      if (permanentError(err)) {
+        writeSynced(null);
+        await sub.unsubscribe().catch(() => {});
+      }
+      return false;
+    }
     writeSynced(marker);
     return true;
   } catch {

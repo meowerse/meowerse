@@ -1541,6 +1541,16 @@ describe("Web Push endpoints", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_endpoint" });
   });
+  it("POST /api/push/unsubscribe deletes scoped to the caller (user_id = me)", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const runs: Array<{ sql: string; p: unknown[] }> = [];
+    const spy: DbClient = { ...db, run: async (sql, p = []) => { runs.push({ sql, p }); } };
+    const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), spy, now, cors);
+    expect(res.status).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].sql).toContain("user_id = ?");
+    expect(runs[0].p).toEqual(["https://push/e1", "u1"]);
+  });
   it("POST /api/push/unsubscribe → 200 (idempotent) for a member", async () => {
     const { db } = memDb({ session: validSession("u1") });
     const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), db, now, cors);

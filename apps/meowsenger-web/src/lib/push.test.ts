@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, urlBase64ToUint8Array, syncPushSubscription, PushError } from "./push";
+import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, urlBase64ToUint8Array, syncPushSubscription, clearLocalPush, PushError } from "./push";
 
 /** A fresh in-memory localStorage per test (the unit env is plain Node). */
 function memStorage() {
@@ -164,6 +164,13 @@ describe("enablePush — failures are never silent", () => {
     await enablePush(BASE, "u1");
     expect(order[0]).toBe("ask");
   });
+  it("writes NO marker when the user is not known yet (sync settles it later)", async () => {
+    stubEnv({ permission: "granted", fetch: serverSaying(200) });
+    expect(await enablePush(BASE)).toBe("granted");
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    expect(await enablePush(BASE, "")).toBe("granted");
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+  });
   it("records the server-confirmed (user, endpoint) on success", async () => {
     stubEnv({ permission: "granted", fetch: serverSaying(200) });
     expect(await enablePush(BASE, "u1")).toBe("granted");
@@ -188,17 +195,55 @@ describe("syncPushSubscription (self-heal on app load)", () => {
     expect(await syncPushSubscription(BASE, "u1")).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it("re-sends when a different account signs in on this browser", async () => {
+  /** A subscription whose local unsubscribe is observable. */
+  function trackedSub() {
+    const t = { unsubscribed: false };
+    return { t, s: { ...sub, unsubscribe: async () => { t.unsubscribed = true; return true; } } };
+  }
+  it("does NOT re-send when a different account signs in (no cross-account rebinding)", async () => {
     localStorage.setItem("mw_push_synced", `u1|${sub.endpoint}`);
     const fetchMock = ok();
-    stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
-    expect(await syncPushSubscription(BASE, "u2")).toBe(true);
-    expect(localStorage.getItem("mw_push_synced")).toBe(`u2|${sub.endpoint}`);
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u2")).toBe(false);
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    // Only a best-effort unsubscribe — never a subscribe for u2.
+    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls).not.toContain(`${BASE}/api/push/subscribe`);
+    expect(urls).toEqual([`${BASE}/api/push/unsubscribe`]);
   });
-  it("does not mark synced when the server rejects it (retries next load)", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad_endpoint" }), { status: 400 }));
-    stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
+  it("treats an empty-user marker as an unknown owner (no rebinding)", async () => {
+    localStorage.setItem("mw_push_synced", `|${sub.endpoint}`);
+    const fetchMock = ok();
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
     expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    expect(fetchMock.mock.calls.map((c) => String((c as unknown[])[0]))).not.toContain(`${BASE}/api/push/subscribe`);
+  });
+  it("re-sends when the SAME user's endpoint rotated", async () => {
+    localStorage.setItem("mw_push_synced", "u1|https://jmt1.google.com/fcm/send/old");
+    const fetchMock = ok();
+    stubEnv({ permission: "granted", subscription: sub, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBe(`u1|${sub.endpoint}`);
+  });
+  it("drops the local subscription + marker when the server permanently refuses it", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad_endpoint" }), { status: 400 }));
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(t.unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+  });
+  it("keeps the local subscription on a transient failure (retries next load)", async () => {
+    const fetchMock = vi.fn(async () => new Response("x", { status: 503 }));
+    const { t, s } = trackedSub();
+    stubEnv({ permission: "granted", subscription: s, fetch: fetchMock });
+    expect(await syncPushSubscription(BASE, "u1")).toBe(false);
+    expect(t.unsubscribed).toBe(false);
     expect(localStorage.getItem("mw_push_synced")).toBeNull();
   });
   it("still syncs when storage is blocked (just can't remember it)", async () => {
@@ -218,6 +263,20 @@ describe("syncPushSubscription (self-heal on app load)", () => {
     expect(await syncPushSubscription(BASE, "u1")).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(requestPermission).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearLocalPush", () => {
+  it("unsubscribes locally + clears the marker without any server call", async () => {
+    let unsubscribed = false;
+    const sub = { endpoint: "https://push/e1", unsubscribe: async () => { unsubscribed = true; return true; } };
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    stubEnv({ subscription: sub, fetch: fetchMock });
+    localStorage.setItem("mw_push_synced", "u1|https://push/e1");
+    await clearLocalPush();
+    expect(unsubscribed).toBe(true);
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

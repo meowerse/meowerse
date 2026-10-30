@@ -22,6 +22,8 @@ const H = vi.hoisted(() => ({
   members: {} as Record<string, Member[]>,
   around: null as { found: boolean; messages: Message[]; hasOlder: boolean; hasNewer: boolean } | null,
   after: [] as Message[],
+  order: [] as string[],
+  disableImpl: (async () => {}) as () => Promise<void>,
 }));
 
 vi.mock("../lib/meowsengerApi", () => ({
@@ -43,6 +45,12 @@ vi.mock("../lib/chat", async (importActual) => {
     openDirect: vi.fn(async () => ({ error: "user_not_found" })),
   };
 });
+
+vi.mock("../lib/push", async (importActual) => ({
+  ...(await importActual<typeof import("../lib/push")>()),
+  syncPushSubscription: vi.fn(async () => false),
+  disablePush: vi.fn(async () => { H.order.push("disablePush"); await H.disableImpl(); }),
+}));
 
 // Imported AFTER the mocks register (vi.mock is hoisted, so this order is fine).
 import Chat from "./Chat";
@@ -465,5 +473,29 @@ describe("Chat island — realtime sidebar", () => {
     // An unexpected drop schedules a backoff reconnect → a fresh inbox socket appears.
     act(() => inbox.mockDrop());
     await waitFor(() => expect(MockWebSocket.inbox).not.toBe(inbox), { timeout: 2000 });
+  });
+});
+
+describe("Chat island — logout drops the push subscription (cross-account privacy)", () => {
+  async function logout(): Promise<void> {
+    H.order = [];
+    const fetchMock = vi.fn(async (url: string) => { H.order.push(`fetch:${url}`); return new Response("{}", { status: 200 }); });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Chat base="" />);
+    fireEvent.click(await screen.findByLabelText("log out"));
+    await waitFor(() => expect(H.order.some((o) => o === "fetch:/auth/logout")).toBe(true));
+  }
+  it("calls disablePush BEFORE the logout POST", async () => {
+    H.disableImpl = async () => {};
+    await logout();
+    expect(H.order.indexOf("disablePush")).toBeGreaterThanOrEqual(0);
+    expect(H.order.indexOf("disablePush")).toBeLessThan(H.order.indexOf("fetch:/auth/logout"));
+    vi.unstubAllGlobals();
+  });
+  it("still logs out when disablePush fails", async () => {
+    H.disableImpl = async () => { throw new Error("boom"); };
+    await logout();
+    expect(H.order).toContain("fetch:/auth/logout");
+    vi.unstubAllGlobals();
   });
 });

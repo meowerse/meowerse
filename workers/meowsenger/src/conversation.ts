@@ -3,7 +3,7 @@ import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
-import { pushTargetsForChat, sendPush, deletePushSubscription } from "./push";
+import { pushTargetsForChat, sendPush, deletePushSubscription, pushHostFamily } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -482,6 +482,9 @@ export class Conversation extends DurableObject<Env> {
     await Promise.all(
       endpoints.map(async (ep) => {
         const status = await sendPush(ep, this.env, now);
+        // Delivery observability: ONLY the push service's HTTP status and its host
+        // family — never the endpoint URL, keys, user or chat ids.
+        console.log(`push_delivery status=${status} service=${pushHostFamily(ep)}`);
         if (status === 404 || status === 410) await deletePushSubscription(this.d1(), ep).catch(() => {});
       }),
     );

@@ -169,7 +169,7 @@ body:has(.mw-chat) main.mw-container {
 .mw-dot { display: inline-block; }
 .mw-dot--on { background: var(--mw-green); }
 .mw-dot--away { background: var(--warning); } /* amber — online but all tabs backgrounded */
-.mw-dot--off { background: var(--text-muted); opacity: 0.55; }
+.mw-dot--off { background: color-mix(in srgb, var(--text-muted) 55%, var(--surface-1)); } /* muted via colour, not opacity, so the ring stays solid */
 
 /* ---- conversation pane ---------------------------------------------------- */
 .mw-chat__main { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
