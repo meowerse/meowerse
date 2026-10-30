@@ -40,32 +40,102 @@ export async function pushSubscribed(): Promise<boolean> {
   }
 }
 
+/** A push step failed after permission was granted (key fetch, subscribe, or the
+ *  server refusing the subscription). `code` is the server's error code when known. */
+export class PushError extends Error {
+  constructor(public readonly code: string) {
+    super(`push_${code}`);
+    this.name = "PushError";
+  }
+}
+
+// localStorage marker of the last subscription the SERVER confirmed, as
+// `<userId>|<endpoint>`. Lets syncPushSubscription re-send a subscription the server
+// never stored (or one bound to another account on this browser) without writing to
+// D1 on every page load.
+const SYNC_KEY = "mw_push_synced";
+function readSynced(): string | null {
+  try { return globalThis.localStorage?.getItem(SYNC_KEY) ?? null; } catch { return null; }
+}
+function writeSynced(v: string | null): void {
+  try {
+    if (v === null) globalThis.localStorage?.removeItem(SYNC_KEY);
+    else globalThis.localStorage?.setItem(SYNC_KEY, v);
+  } catch { /* storage blocked — we just re-sync next time */ }
+}
+
+/** POST a subscription to the server. Returns null on success, else an error code. */
+async function postSubscription(base: string, sub: PushSubscription): Promise<string | null> {
+  const json = sub.toJSON();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/push/subscribe`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys }),
+    });
+  } catch {
+    return "network";
+  }
+  if (res.ok) return null;
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  return body.error || `http_${res.status}`;
+}
+
 /**
- * Register the SW, request permission, subscribe with the server's VAPID key, and
- * POST the subscription. Returns the resulting Notification permission: "granted" on
- * success, "denied"/"default" if the user declined, or "unsupported".
+ * Request permission (FIRST, while the click's user activation is still live),
+ * register the SW, subscribe with the server's VAPID key, and POST the subscription.
+ * Returns the resulting Notification permission: "granted" ONLY once the server has
+ * stored the subscription, "denied"/"default" if the user declined, or "unsupported".
+ * Throws PushError when a later step fails — and in that case drops the local
+ * subscription so the UI never shows "on" for a subscription the server doesn't have.
  */
-export async function enablePush(base: string): Promise<string> {
+export async function enablePush(base: string, userId?: string): Promise<string> {
   if (!pushSupported()) return "unsupported";
   const perm = await Notification.requestPermission();
   if (perm !== "granted") return perm;
   await navigator.serviceWorker.register("/sw.js");
   const reg = await navigator.serviceWorker.ready;
   const keyRes = await fetch(`${base}/api/push/key`, { credentials: "include" });
+  if (!keyRes.ok) throw new PushError("key");
   const { key } = (await keyRes.json()) as { key?: string };
   if (!key) return "unsupported";
   const existing = await reg.pushManager.getSubscription();
   const sub =
     existing ??
     (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) as BufferSource }));
-  const json = sub.toJSON();
-  await fetch(`${base}/api/push/subscribe`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys }),
-  });
+  const err = await postSubscription(base, sub);
+  if (err) {
+    writeSynced(null);
+    await sub.unsubscribe().catch(() => {});
+    throw new PushError(err);
+  }
+  writeSynced(`${userId ?? ""}|${sub.endpoint}`);
   return "granted";
+}
+
+/**
+ * Self-heal on app load: if permission is granted and this browser holds a push
+ * subscription the server hasn't confirmed for `userId`, (re)send it. Covers a
+ * subscription created while the server was rejecting it, a rotated endpoint, and a
+ * different account signing in on this browser. Never prompts; one D1 write per new
+ * (user, endpoint) pair. Returns true when a sync POST succeeded.
+ */
+export async function syncPushSubscription(base: string, userId: string): Promise<boolean> {
+  if (!pushSupported() || Notification.permission !== "granted") return false;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (!sub) return false;
+    const marker = `${userId}|${sub.endpoint}`;
+    if (readSynced() === marker) return false;
+    if (await postSubscription(base, sub)) return false;
+    writeSynced(marker);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Unsubscribe locally + tell the server to drop the endpoint. */
@@ -81,4 +151,5 @@ export async function disablePush(base: string): Promise<void> {
     body: JSON.stringify({ endpoint: sub.endpoint }),
   }).catch(() => {});
   await sub.unsubscribe().catch(() => {});
+  writeSynced(null);
 }

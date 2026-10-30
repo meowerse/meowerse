@@ -16,6 +16,7 @@ import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
 import Settings from "./Settings";
+import { syncPushSubscription } from "../lib/push";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -123,6 +124,13 @@ export default function Chat({ base }: { base: string }) {
   // without re-running every render (it depends only on messages + loadingHistory).
   resolveNameRef.current = resolveSenderName;
   meIdRef.current = me?.id ?? null;
+
+  // Web Push self-heal: once we know who's signed in, re-send this browser's push
+  // subscription if the server hasn't confirmed it for this user (never prompts).
+  const meId = me?.id;
+  useEffect(() => {
+    if (meId) void syncPushSubscription(base, meId);
+  }, [base, meId]);
 
   // Surface a small transient note (e.g. a server rejection). Non-blocking: it
   // auto-dismisses after a few seconds and never interrupts typing.
@@ -929,7 +937,7 @@ export default function Chat({ base }: { base: string }) {
         />
       )}
 
-      <Settings base={base} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Settings base={base} userId={me?.id} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

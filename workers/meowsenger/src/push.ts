@@ -23,6 +23,12 @@ const PUSH_HOSTS = [
   ".notify.windows.com", // Edge / Windows (WNS)
 ];
 
+/** Chrome's current FCM web-push host: `pushManager.subscribe()` in Chromium now
+ *  returns `https://jmt17.google.com/fcm/send/…` instead of fcm.googleapis.com.
+ *  Matched by a full anchored pattern (jmt + digits), NOT a `.google.com` suffix, so
+ *  arbitrary google.com hosts still can't be registered as POST targets. */
+const PUSH_HOST_PATTERNS = [/^jmt\d+\.google\.com$/];
+
 /**
  * Is `endpoint` a well-formed https URL on a known push-service host? Guards the
  * subscribe path so an authenticated user can't register an arbitrary URL that the
@@ -39,7 +45,10 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
   }
   if (url.protocol !== "https:") return false;
   const host = url.hostname.toLowerCase();
-  return PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h));
+  return (
+    PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h)) ||
+    PUSH_HOST_PATTERNS.some((re) => re.test(host))
+  );
 }
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {

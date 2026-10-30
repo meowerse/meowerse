@@ -145,13 +145,27 @@ body:has(.mw-chat) main.mw-container {
 .mw-chatrow.has-unread .mw-chatrow__preview { color: var(--text-primary); font-weight: 500; }
 
 /* ---- presence dot --------------------------------------------------------- */
-/* A small status dot overlaid on the bottom-right of an avatar (sidebar + head). */
-.mw-chatrow__avatar, .mw-chat__headavatar { position: relative; flex: none; display: inline-flex; }
-.mw-chatrow__avatar .mw-dot, .mw-chat__headavatar .mw-dot {
-  position: absolute; right: -1px; bottom: -1px;
-  width: 11px; height: 11px; border-radius: var(--radius-pill);
-  border: 2px solid var(--surface-1); box-sizing: content-box;
+/* A small status dot CENTRED ON the avatar's bottom-right corner (sidebar, head,
+   account footer, member drawer — one rule). It used to sit inside the corner and,
+   with its ring, hid ~15px of a 36px picture. Now it overhangs: only a quarter of
+   it (mostly the avatar's already-rounded corner) overlaps the image. The 2px ring
+   is cut in the colour BEHIND the avatar (--mw-dot-ring, retinted per row state
+   below) so it reads as a gap, not a dark/light outline, in both themes. */
+.mw-chatrow__avatar, .mw-chat__headavatar, .mw-mrow__avatar { position: relative; flex: none; display: inline-flex; }
+.mw-chatrow__avatar .mw-dot, .mw-chat__headavatar .mw-dot, .mw-mrow__avatar .mw-dot {
+  --mw-dot-size: 8px;
+  position: absolute;
+  /* centre of the (size + 2×2px ring) box lands on the corner */
+  right: calc((var(--mw-dot-size) + 4px) / -2); bottom: calc((var(--mw-dot-size) + 4px) / -2);
+  width: var(--mw-dot-size); height: var(--mw-dot-size); border-radius: var(--radius-pill);
+  border: 2px solid var(--mw-dot-ring, var(--surface-1)); box-sizing: content-box;
+  pointer-events: none;
 }
+/* Larger avatars (md, 36px) get a slightly larger dot; sm (28px) keeps 8px. */
+.mw-chatrow__avatar:has(.mw-avatar--md) .mw-dot, .mw-chat__headavatar:has(.mw-avatar--md) .mw-dot { --mw-dot-size: 9px; }
+/* Ring follows the surface the avatar sits on. */
+.mw-chatrow:hover, .mw-mrow:hover { --mw-dot-ring: var(--surface-muted); }
+.mw-chatrow.is-active { --mw-dot-ring: color-mix(in srgb, var(--mw-green) 12%, var(--surface-1)); }
 .mw-dot { display: inline-block; }
 .mw-dot--on { background: var(--mw-green); }
 .mw-dot--away { background: var(--warning); } /* amber — online but all tabs backgrounded */
@@ -549,8 +563,7 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 /* Member row: avatar + name + role badge + trailing actions. */
 .mw-mrow { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
 .mw-mrow:hover { background: var(--surface-muted); }
-.mw-mrow__avatar { position: relative; flex: none; display: inline-flex; }
-.mw-mrow__avatar .mw-dot { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: var(--radius-pill); border: 2px solid var(--surface-1); box-sizing: content-box; }
+/* .mw-mrow__avatar + its presence dot share the avatar-dot rule under "presence dot". */
 .mw-mrow__body { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .mw-mrow__name { font-size: var(--text-sm); font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mw-mrow__you { color: var(--text-muted); font-weight: 400; }

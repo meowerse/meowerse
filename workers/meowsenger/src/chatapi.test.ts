@@ -1529,6 +1529,12 @@ describe("Web Push endpoints", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
+  it("POST /api/push/subscribe → 200 for Chrome's current jmt17.google.com FCM endpoint", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://jmt17.google.com/fcm/send/abc123", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
   it("POST /api/push/subscribe → 400 bad_endpoint for a non-push-service URL (SSRF guard)", async () => {
     const { db } = memDb({ session: validSession("u1") });
     const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://attacker.example/internal" }) }), db, now, cors);

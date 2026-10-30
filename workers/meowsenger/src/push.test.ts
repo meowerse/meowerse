@@ -52,11 +52,21 @@ describe("isAllowedPushEndpoint", () => {
     expect(isAllowedPushEndpoint("https://web.push.apple.com/xyz")).toBe(true);
     expect(isAllowedPushEndpoint("https://ab1.notify.windows.com/w/?token=t")).toBe(true);
   });
+  it("accepts Chrome's current FCM host (jmt17.google.com) — the endpoint real Chromium returns", () => {
+    // Observed 2026-10-30 from pushManager.subscribe() in Chromium 1248 with the prod
+    // VAPID key. Rejecting it is why prod push_subscriptions stayed empty.
+    expect(isAllowedPushEndpoint("https://jmt17.google.com/fcm/send/er6x8jtPf4c:APA91bH")).toBe(true);
+    expect(isAllowedPushEndpoint("https://jmt0.google.com/fcm/send/x")).toBe(true);
+  });
   it("rejects other hosts, http, suffix-spoofs, and junk (SSRF guard)", () => {
     expect(isAllowedPushEndpoint("https://attacker.example/internal")).toBe(false);
     expect(isAllowedPushEndpoint("http://fcm.googleapis.com/fcm/send/abc")).toBe(false); // not https
     expect(isAllowedPushEndpoint("https://web.push.apple.com.evil.com/x")).toBe(false); // suffix spoof
     expect(isAllowedPushEndpoint("https://fcm.googleapis.com.evil.com/x")).toBe(false); // exact-host spoof
+    expect(isAllowedPushEndpoint("https://jmt17.google.com.evil.com/fcm/send/x")).toBe(false); // jmt suffix spoof
+    expect(isAllowedPushEndpoint("https://evil.jmt17.google.com/fcm/send/x")).toBe(false); // jmt prefix spoof
+    expect(isAllowedPushEndpoint("https://jmtx.google.com/fcm/send/x")).toBe(false); // not jmt<digits>
+    expect(isAllowedPushEndpoint("https://accounts.google.com/x")).toBe(false); // not every google.com host
     expect(isAllowedPushEndpoint("not a url")).toBe(false);
     expect(isAllowedPushEndpoint("")).toBe(false);
   });
