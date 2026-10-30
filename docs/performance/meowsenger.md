@@ -84,6 +84,15 @@ stack, so it would have been unverified code. Exact steps for the follow-up (`pe
 
 ## Limitations of the tier-A numbers
 
+- The mock does not implement `?around=` / `?after=` on `/messages` (the real worker does), does not enforce the
+  session cookie (no 401/403 paths), and omits `forwarded` on inbox frames and `away` in presence snapshots. Any
+  later PR that measures deep links, detached windows or auth expiry must extend the mock first.
+- The harness sources under `apps/meowsenger-web/perf/` are outside the app's `tsconfig` include, so `lint`/`astro
+  check` do not type-check them; run the harness after protocol changes to catch drift.
+- Provenance: this baseline was produced from origin/master `9f03306` with the harness as committed on the
+  `test/meowsenger-perf-harness` branch (no product code differs); re-run `--publish` after merge to stamp a
+  merge-commit SHA.
+
 - The backend is a Bun mock: latency is `setTimeout`-injected, there is no D1/DO cost, no TLS, no HTTP/2, no real WAN
   jitter; CPU throttling uses CDP `Emulation.setCPUThrottlingRate` (4x on the phone profile), not a real phone.
 - Headless Chromium (Playwright's build) on a shared, often heavily loaded desktop: the load average is recorded in the
