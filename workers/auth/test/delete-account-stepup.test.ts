@@ -120,18 +120,22 @@ test("wrong password → 403 wrong_password + audit account.delete_stepup_fail (
   expect(await count(f.db, "account_delete_confirmations")).toBe(0);
 });
 
+// Every authenticated request slides last_seen to wall-clock datetime('now') (session.ts), so a before/after
+// snapshot taken across a second boundary would differ; compare every other session column.
+const SESSIONS_NO_TOUCH = "SELECT id_hash, account_id, auth_time, amr, csrf_token, created_at, idle_expires_at, absolute_expires_at, revoked_at FROM sessions";
+
 test("delete without a token / with a missing-or-garbage token / wrong username → nothing changes", async () => {
   const f = await setup();
   await f.addAccount("a_pw", "pwuser", PW);
   const s = await f.addSession("a_pw", "pwraw", T0);
   const tok = await f.token(s);
-  const before = JSON.stringify([(await run(f.db, "SELECT * FROM accounts")).rows, (await run(f.db, "SELECT * FROM sessions")).rows, (await run(f.db, "SELECT * FROM account_delete_confirmations")).rows, (await run(f.db, "SELECT * FROM audit_log")).rows]);
+  const before = JSON.stringify([(await run(f.db, "SELECT * FROM accounts")).rows, (await run(f.db, SESSIONS_NO_TOUCH)).rows, (await run(f.db, "SELECT * FROM account_delete_confirmations")).rows, (await run(f.db, "SELECT * FROM audit_log")).rows]);
   expect((await f.del(s, "pwuser")).status).toBe(403);
   expect((await f.del(s, "pwuser", "garbage")).status).toBe(403);
   const mm = await f.del(s, "not-the-user", tok);
   expect(mm.status).toBe(400);
   expect(await mm.json()).toEqual({ error: "confirm_mismatch" });
-  const after = JSON.stringify([(await run(f.db, "SELECT * FROM accounts")).rows, (await run(f.db, "SELECT * FROM sessions")).rows, (await run(f.db, "SELECT * FROM account_delete_confirmations")).rows, (await run(f.db, "SELECT * FROM audit_log")).rows]);
+  const after = JSON.stringify([(await run(f.db, "SELECT * FROM accounts")).rows, (await run(f.db, SESSIONS_NO_TOUCH)).rows, (await run(f.db, "SELECT * FROM account_delete_confirmations")).rows, (await run(f.db, "SELECT * FROM audit_log")).rows]);
   expect(after).toBe(before);
   // the token is still usable afterwards (mismatch consumed nothing)
   expect((await f.del(s, "pwuser", tok)).status).toBe(200);
