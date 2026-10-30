@@ -224,14 +224,29 @@ export async function countRecoveryCodes(db: DbClient, accountId: string): Promi
  * (A fresh oauth_codes / sessions INSERT is not guarded; out of scope here.) Owned-client
  * children are deleted via subqueries on `oauth_clients.owner_account_id`, so
  * nothing depends on a prior read. Children first; `oauth_clients` then
- * `accounts` last. `audit_log` rows are intentionally kept (the caller records
- * account.delete). Table names below are a fixed allow-list (never user input).
+ * `accounts` last. `audit_log` rows are intentionally kept (the account.delete row is the LAST
+ * statement of the same batch). Table names below are a fixed allow-list (never user input).
  */
-export async function deleteAccount(db: DbClient, accountId: string): Promise<void> {
+export async function deleteAccount(
+  db: DbClient,
+  accountId: string,
+  audit: { ipTrunc: string | null; uaHash: string | null } = { ipTrunc: null, uaHash: null },
+): Promise<void> {
   const owned = "(SELECT client_id FROM oauth_clients WHERE owner_account_id = ?)";
   const stmts: { sql: string; args: unknown[] }[] = [
+    // In-batch guard: an ACTIVE owned client (created after the handler's pre-check) must never be
+    // hard-deleted silently. This inserts a row with a NULL (NOT NULL) `event` only when one exists, so
+    // the constraint error aborts and rolls back the WHOLE batch. With none it inserts nothing.
+    {
+      sql: "INSERT INTO audit_log (event) SELECT NULL WHERE EXISTS (SELECT 1 FROM oauth_clients WHERE owner_account_id = ? AND deleted_at IS NULL)",
+      args: [accountId],
+    },
     { sql: `DELETE FROM oauth_client_secrets WHERE client_id IN ${owned}`, args: [accountId] },
     { sql: `DELETE FROM oauth_client_redirect_uris WHERE client_id IN ${owned}`, args: [accountId] },
+    // Owned clients are all soft-deleted here (guard above): every user's codes/tokens/consents for them are dead.
+    { sql: `DELETE FROM oauth_codes WHERE client_id IN ${owned}`, args: [accountId] },
+    { sql: `DELETE FROM access_tokens WHERE client_id IN ${owned}`, args: [accountId] },
+    { sql: `DELETE FROM refresh_tokens WHERE client_id IN ${owned}`, args: [accountId] },
     { sql: `DELETE FROM consents WHERE client_id IN ${owned}`, args: [accountId] },
   ];
   const accountKeyed = [
@@ -246,5 +261,24 @@ export async function deleteAccount(db: DbClient, accountId: string): Promise<vo
   stmts.push({ sql: "DELETE FROM management_tokens WHERE owner_account_id = ?", args: [accountId] });
   stmts.push({ sql: "DELETE FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
   stmts.push({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
+  // LAST: the audit row commits iff the deletion committed (same columns as recordAudit writes).
+  stmts.push({
+    sql: "INSERT INTO audit_log (event, account_id, client_id, ip_trunc, ua_hash) VALUES (?, ?, ?, ?, ?)",
+    args: ["account.delete", accountId, null, audit.ipTrunc, audit.uaHash],
+  });
   await db.batch(stmts, "write");
+}
+
+/** Active (not soft-deleted) clients owned by the account; deletion is refused while any exist. */
+export async function ownsActiveClients(db: DbClient, accountId: string): Promise<boolean> {
+  const r = await db.execute({
+    sql: "SELECT client_id FROM oauth_clients WHERE owner_account_id = ? AND deleted_at IS NULL",
+    args: [accountId],
+  });
+  return r.rows.length > 0;
+}
+
+export async function accountExists(db: DbClient, accountId: string): Promise<boolean> {
+  const r = await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [accountId] });
+  return r.rows.length > 0;
 }

@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
@@ -48,7 +48,7 @@ import { userinfoClaims } from "./userinfo";
 import { handleAvatar } from "./avatar";
 import { checkRateLimit } from "./ratelimit";
 import { turnstileGate } from "./turnstile";
-import { recordAudit } from "./audit";
+import { recordAudit, truncIp, uaHash } from "./audit";
 import { scheduledHousekeeping } from "./housekeeping";
 
 const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
@@ -969,8 +969,22 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     if (!info) return json({ error: "not_found" }, 404, cors);
     const expected = info.username ?? info.displayName ?? "";
     if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
-    await deleteAccount(db, accountId);
-    await recordAudit(deps, req, { event: "account.delete", accountId });
+    if (await ownsActiveClients(db, accountId)) return json({ error: "owns_active_clients" }, 409, cors);
+    // The account.delete audit row is written INSIDE the delete batch (exists iff the deletion committed).
+    const audit = { ipTrunc: truncIp(req.headers.get("CF-Connecting-IP")), uaHash: await uaHash(req.headers.get("User-Agent")) };
+    try {
+      await deleteAccount(db, accountId, audit);
+    } catch {
+      // The response may have been lost after a commit, or the batch rolled back: ask the DB which.
+      let gone = false;
+      try {
+        gone = !(await accountExists(db, accountId));
+        if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors); // in-batch guard fired
+      } catch {
+        return json({ error: "server_error" }, 500, cors);
+      }
+      if (!gone) return json({ error: "server_error" }, 500, cors); // rolled back: nothing deleted
+    }
     return json({ ok: true }, 200, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
   }
   return json({ error: "not_found" }, 404, cors);

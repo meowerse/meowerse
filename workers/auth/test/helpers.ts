@@ -108,6 +108,14 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.sessions = t.sessions.filter((r) => r.account_id !== a[0]);
         return { rows: [] };
       }
+      if (/^SELECT client_id FROM oauth_clients WHERE owner_account_id = \? AND deleted_at IS NULL/.test(sql))
+        return { rows: t.oauth_clients.filter((r) => r.owner_account_id === a[0] && r.deleted_at == null).map((r) => ({ client_id: r.client_id })) };
+      if (/^SELECT 1 FROM accounts WHERE id = \?/.test(sql)) return { rows: t.accounts.filter((r) => r.id === a[0]).map(() => ({ "1": 1 })) };
+      // delete-account in-batch guard: NOT NULL violation iff an active owned client exists
+      if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE EXISTS/.test(sql)) {
+        if (t.oauth_clients.some((r) => r.owner_account_id === a[0] && r.deleted_at == null)) throw new Error("NOT NULL constraint failed: audit_log.event");
+        return { rows: [], rowsAffected: 0 };
+      }
       if (/DELETE FROM accounts WHERE id/.test(sql)) {
         t.accounts = t.accounts.filter((r) => r.id !== a[0]);
         return { rows: [] };

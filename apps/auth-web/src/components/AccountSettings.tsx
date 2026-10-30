@@ -49,6 +49,7 @@ export default function AccountSettings({ base }: { base: string }) {
       } else if (confirm.kind === "delete") {
         const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
         if (r.ok) { clearSessionCache(); window.location.href = "/"; }
+        else if (r.error === "owns_active_clients") toast({ message: "delete or hand over your apps in the developer dashboard first", variant: "error" });
         else toast({ message: "could not delete account", variant: "error" });
       }
     } finally { setBusy(false); setConfirm(null); }
