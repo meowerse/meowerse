@@ -154,7 +154,8 @@ describe("handleListChats", () => {
     );
     const res = await handleListChats(cookieReq("https://x/api/chats", "s1"), db, now, cors);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { chats: Array<{ id: string }> };
+    const body = (await res.json()) as { viewerId: string; chats: Array<{ id: string }> };
+    expect(body.viewerId).toBe("u1");
     expect(body.chats).toHaveLength(1);
     expect(body.chats[0].id).toBe("c1");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
@@ -1508,7 +1509,94 @@ describe("handleForward", () => {
   });
 });
 
+/** memDb for caller `uid` + a push_subscriptions table shared across callers (so two
+ *  accounts can contend for one endpoint). Mirrors the owner-guarded upsert/UPDATE SQL. */
+function pushHandlerDb(uid: string, subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }>) {
+  const { db } = memDb({ session: validSession(uid) });
+  const wrapped: DbClient = {
+    ...db,
+    async first(sql, p = []) {
+      if (sql.includes("SELECT user_id FROM push_subscriptions WHERE endpoint")) {
+        const r = subs.find((x) => x.endpoint === p[0]);
+        return r ? ({ user_id: r.user_id } as Row) : undefined;
+      }
+      return db.first(sql, p);
+    },
+    async run(sql, p = []) {
+      if (sql.includes("INSERT INTO push_subscriptions")) {
+        const [endpoint, user_id, p256dh] = p as [string, string, unknown];
+        const i = subs.findIndex((x) => x.endpoint === endpoint);
+        if (i < 0) subs.push({ endpoint, user_id, p256dh });
+        else if (/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) ? subs[i].user_id === user_id : true) subs[i] = { endpoint, user_id, p256dh };
+      } else if (sql.includes("NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)")) {
+        const [endpoint, p256dh, , , prev, user_id, newEp] = p as [string, unknown, unknown, number, string, string, string];
+        const i = subs.findIndex((x) => x.endpoint === prev && x.user_id === user_id);
+        if (i >= 0 && !subs.some((x) => x.endpoint === newEp)) subs[i] = { endpoint, user_id, p256dh };
+      } else if (sql.startsWith("UPDATE push_subscriptions SET")) {
+        const [p256dh, , , endpoint, user_id] = p as [unknown, unknown, number, string, string];
+        const i = subs.findIndex((x) => x.endpoint === endpoint && x.user_id === user_id);
+        if (i >= 0) subs[i] = { endpoint, user_id, p256dh };
+      } else if (sql.includes("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")) {
+        const i = subs.findIndex((x) => x.endpoint === p[0] && x.user_id === p[1]);
+        if (i >= 0) subs.splice(i, 1);
+      }
+    },
+  };
+  return wrapped;
+}
+const subReq = (body: unknown) => cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify(body) });
+
 describe("Web Push endpoints", () => {
+  const EP = "https://fcm.googleapis.com/fcm/send/shared";
+  it("subscribe → 409 endpoint_owned when another account holds the endpoint; no transfer, nothing written", async () => {
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [];
+    expect((await handlePushSubscribe(subReq({ endpoint: EP, keys: { p256dh: "A" } }), pushHandlerDb("uA", subs), now, cors)).status).toBe(200);
+    for (const mode of [undefined, "enable", "repair"]) {
+      const res = await handlePushSubscribe(subReq({ endpoint: EP, mode, keys: { p256dh: "B" } }), pushHandlerDb("uB", subs), now, cors);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "endpoint_owned" });
+    }
+    expect(subs).toEqual([{ endpoint: EP, user_id: "uA", p256dh: "A" }]);
+  });
+  it("subscribe mode=repair never inserts: 404 not_subscribed; refreshes keys of the caller's own row", async () => {
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [];
+    const res = await handlePushSubscribe(subReq({ endpoint: EP, mode: "repair", keys: { p256dh: "A" } }), pushHandlerDb("uA", subs), now, cors);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_subscribed" });
+    expect(subs).toHaveLength(0);
+    await handlePushSubscribe(subReq({ endpoint: EP, keys: { p256dh: "A" } }), pushHandlerDb("uA", subs), now, cors);
+    const ok = await handlePushSubscribe(subReq({ endpoint: EP, mode: "repair", keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
+    expect(ok.status).toBe(200);
+    expect(subs).toEqual([{ endpoint: EP, user_id: "uA", p256dh: "A2" }]);
+  });
+  it("subscribe mode=repair + previous_endpoint rotates the caller's own row (never another account's; non-string ignored)", async () => {
+    const NEW = "https://fcm.googleapis.com/fcm/send/rotated";
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [{ endpoint: EP, user_id: "uA", p256dh: "A" }];
+    // another account cannot rotate uA's row
+    const other = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: EP, keys: { p256dh: "B" } }), pushHandlerDb("uB", subs), now, cors);
+    expect(other.status).toBe(404);
+    expect(subs).toEqual([{ endpoint: EP, user_id: "uA", p256dh: "A" }]);
+    // a non-string previous_endpoint is ignored → plain repair of a missing row → 404
+    for (const prev of [123, null]) {
+      const bad = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: prev, keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
+      expect(bad.status).toBe(404);
+    }
+    const ok = await handlePushSubscribe(subReq({ endpoint: NEW, mode: "repair", previous_endpoint: EP, keys: { p256dh: "A2" } }), pushHandlerDb("uA", subs), now, cors);
+    expect(ok.status).toBe(200);
+    expect(subs).toEqual([{ endpoint: NEW, user_id: "uA", p256dh: "A2" }]);
+  });
+  it("subscribe rejects an unknown mode with 400", async () => {
+    const res = await handlePushSubscribe(subReq({ endpoint: EP, mode: "steal" }), pushHandlerDb("uA", []), now, cors);
+    expect(res.status).toBe(400);
+  });
+  it("unsubscribe by another account cannot delete the owner's row", async () => {
+    const subs = [{ endpoint: EP, user_id: "uA", p256dh: "A" }];
+    const req = (u: string) => handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: EP }) }), pushHandlerDb(u, subs), now, cors);
+    expect((await req("uB")).status).toBe(200);
+    expect(subs).toHaveLength(1);
+    expect((await req("uA")).status).toBe(200);
+    expect(subs).toHaveLength(0);
+  });
   it("GET /api/push/key returns the VAPID public key (public, no session)", () => {
     const res = handlePushKey({ VAPID_PUBLIC_KEY: "PUBKEY" } as unknown as Parameters<typeof handlePushKey>[0], cors);
     expect(res.status).toBe(200);
@@ -1524,8 +1612,14 @@ describe("Web Push endpoints", () => {
     expect(res.status).toBe(400);
   });
   it("POST /api/push/subscribe → 200 stores the subscription (allowlisted push host)", async () => {
-    const { db } = memDb({ session: validSession("u1") });
+    const db = pushHandlerDb("u1", []);
     const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc123", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+  it("POST /api/push/subscribe → 200 for Chrome's current jmt17.google.com FCM endpoint", async () => {
+    const db = pushHandlerDb("u1", []);
+    const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://jmt17.google.com/fcm/send/abc123", keys: { p256dh: "k", auth: "a" } }) }), db, now, cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
@@ -1534,6 +1628,16 @@ describe("Web Push endpoints", () => {
     const res = await handlePushSubscribe(cookieReq("https://x/api/push/subscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://attacker.example/internal" }) }), db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_endpoint" });
+  });
+  it("POST /api/push/unsubscribe deletes scoped to the caller (user_id = me)", async () => {
+    const { db } = memDb({ session: validSession("u1") });
+    const runs: Array<{ sql: string; p: unknown[] }> = [];
+    const spy: DbClient = { ...db, run: async (sql, p = []) => { runs.push({ sql, p }); } };
+    const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), spy, now, cors);
+    expect(res.status).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].sql).toContain("user_id = ?");
+    expect(runs[0].p).toEqual(["https://push/e1", "u1"]);
   });
   it("POST /api/push/unsubscribe → 200 (idempotent) for a member", async () => {
     const { db } = memDb({ session: validSession("u1") });

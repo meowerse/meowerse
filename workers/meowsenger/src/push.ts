@@ -23,6 +23,12 @@ const PUSH_HOSTS = [
   ".notify.windows.com", // Edge / Windows (WNS)
 ];
 
+/** Chrome's current FCM web-push host: `pushManager.subscribe()` in Chromium now
+ *  returns `https://jmt17.google.com/fcm/send/…` instead of fcm.googleapis.com.
+ *  Matched by a full anchored pattern (jmt + digits), NOT a `.google.com` suffix, so
+ *  arbitrary google.com hosts still can't be registered as POST targets. */
+const PUSH_HOST_PATTERNS = [/^jmt\d+\.google\.com$/];
+
 /**
  * Is `endpoint` a well-formed https URL on a known push-service host? Guards the
  * subscribe path so an authenticated user can't register an arbitrary URL that the
@@ -38,8 +44,13 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
     return false;
   }
   if (url.protocol !== "https:") return false;
+  if (url.username !== "" || url.password !== "") return false; // no credentials in the URL
+  if (url.port !== "") return false; // real push services use 443; no custom ports (SSRF to odd services)
   const host = url.hostname.toLowerCase();
-  return PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h));
+  return (
+    PUSH_HOSTS.some((h) => (h.startsWith(".") ? host.endsWith(h) : host === h)) ||
+    PUSH_HOST_PATTERNS.some((re) => re.test(host))
+  );
 }
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
@@ -73,13 +84,18 @@ async function vapidAuth(endpoint: string, env: Env, now: number): Promise<strin
 /** Deliver one payloadless push. Returns the HTTP status (0 on a network error).
  *  201/2xx = delivered; 404/410 = the subscription is dead (caller should delete). */
 export async function sendPush(endpoint: string, env: Env, now: number, fetchFn = fetch): Promise<number> {
+  // Defense in depth: re-validate right before the request, whatever is in D1.
+  if (!isAllowedPushEndpoint(endpoint)) return 0;
   const auth = await vapidAuth(endpoint, env, now);
   if (!auth) return 0;
   try {
     const res = await fetchFn(endpoint, {
       method: "POST",
       headers: { Authorization: auth, TTL: "2419200", "Content-Length": "0", Urgency: "normal" },
+      redirect: "manual", // never follow a redirect off the allow-listed host
     });
+    // A 3xx (or an opaque redirect) is a failure: it was not followed and nothing was delivered.
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) return 0;
     return res.status;
   } catch {
     return 0;
@@ -95,32 +111,102 @@ export interface PushSub {
   auth?: string | null;
 }
 
-/** Upsert (by endpoint) the caller's push subscription. */
-export async function savePushSubscription(db: DbClient, userId: string, sub: PushSub, now: number): Promise<void> {
-  if (!sub.endpoint) return;
-  await db.run(
-    `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
-    [sub.endpoint, userId, sub.p256dh ?? null, sub.auth ?? null, now],
-  );
+/** Max push subscriptions kept per user (oldest evicted on insert). */
+export const MAX_PUSH_SUBS_PER_USER = 10;
+
+/** Coarse push-service family of an endpoint, for delivery logs. NEVER log the URL
+ *  itself (it is a bearer capability for the user's device). */
+export function pushHostFamily(endpoint: string): string {
+  let host: string;
+  try { host = new URL(endpoint).hostname.toLowerCase(); } catch { return "other"; }
+  if (host === "fcm.googleapis.com") return "fcm";
+  if (/^jmt\d+\.google\.com$/.test(host)) return "jmt";
+  if (host.endsWith(".push.services.mozilla.com")) return "mozilla";
+  if (host.endsWith(".push.apple.com")) return "apple";
+  if (host.endsWith(".notify.windows.com")) return "wns";
+  return "other";
 }
 
-/** Remove a subscription by endpoint (unsubscribe, or a dead 404/410 endpoint). */
-export async function deletePushSubscription(db: DbClient, endpoint: string): Promise<void> {
-  await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+export type SaveResult = "ok" | "owned" | "not_subscribed";
+
+/** Register / refresh the caller's push subscription WITHOUT ever changing ownership.
+ *  - mode "enable" (explicit user tap): insert, or refresh the keys of the caller's own
+ *    row. An endpoint already owned by another account is left untouched → "owned".
+ *  - mode "repair" (load-time sync): ONLY refreshes the keys of the caller's existing
+ *    row; never inserts → "not_subscribed" when there is none, "owned" when another
+ *    account holds it. A repair may carry `previousEndpoint` (rotation, see above).
+ *  The ownership guard is in the SQL (`WHERE user_id = excluded.user_id`), so a race
+ *  can't transfer a row; the follow-up read only classifies the outcome. Then the user
+ *  is trimmed to the newest MAX_PUSH_SUBS_PER_USER rows. */
+export async function savePushSubscription(
+  db: DbClient, userId: string, sub: PushSub, now: number, mode: "enable" | "repair" = "enable",
+  previousEndpoint?: string,
+): Promise<SaveResult> {
+  if (!sub.endpoint) return "not_subscribed";
+  if (mode === "repair") {
+    // Endpoint rotation: atomically MOVE the caller's OWN row from `previousEndpoint` to
+    // the new endpoint. One statement, so it can't touch another user's row (user_id
+    // guard), never inserts (needs the prior own row), and never overwrites an existing
+    // row at the new endpoint (NOT EXISTS). Anything refused falls through to the plain
+    // repair below, which classifies the outcome.
+    if (previousEndpoint && previousEndpoint !== sub.endpoint) {
+      await db.run(
+        `UPDATE push_subscriptions SET endpoint = ?, p256dh = ?, auth = ?, created_at = ?
+         WHERE endpoint = ? AND user_id = ?
+           AND NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)`,
+        [sub.endpoint, sub.p256dh ?? null, sub.auth ?? null, now, previousEndpoint, userId, sub.endpoint],
+      );
+    }
+    await db.run(
+      "UPDATE push_subscriptions SET p256dh = ?, auth = ?, created_at = ? WHERE endpoint = ? AND user_id = ?",
+      [sub.p256dh ?? null, sub.auth ?? null, now, sub.endpoint, userId],
+    );
+  } else {
+    await db.run(
+      `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at
+       WHERE push_subscriptions.user_id = excluded.user_id`,
+      [sub.endpoint, userId, sub.p256dh ?? null, sub.auth ?? null, now],
+    );
+  }
+  const row = await db.first("SELECT user_id FROM push_subscriptions WHERE endpoint = ?", [sub.endpoint]);
+  if (!row) return "not_subscribed";
+  if (String(row.user_id) !== userId) return "owned";
+  await db.run(
+    `DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint NOT IN (
+       SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
+    [userId, userId, MAX_PUSH_SUBS_PER_USER],
+  );
+  return "ok";
+}
+
+/** Remove a subscription by endpoint (a dead 404/410 endpoint). When `userId` is
+ *  given the delete is scoped to that owner (user unsubscribe: never touches another
+ *  user's row). */
+export async function deletePushSubscription(db: DbClient, endpoint: string, userId?: string): Promise<void> {
+  if (userId === undefined) await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  else await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", [endpoint, userId]);
+}
+
+/** Prune a dead (404/410) endpoint after a send that STARTED at `sentAt`. Scoped to the
+ *  exact row the send targeted (endpoint AND the user it was sent for) and only if it was
+ *  not (re)registered since the send began (`created_at < sentAt`): a fresh registration
+ *  of the same endpoint made while the send was in flight must survive. */
+export async function deleteDeadPushSubscription(db: DbClient, endpoint: string, userId: string, sentAt: number): Promise<void> {
+  await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ? AND created_at < ?", [endpoint, userId, sentAt]);
 }
 
 /** All push endpoints to notify for a message in `chatId`, EXCLUDING the sender and
  *  anyone currently connected to the room (they get it live over the socket). One
  *  D1 read via a chat_members × push_subscriptions join; the excluded set (the room's
  *  live socket users) is typically tiny, so we filter in memory rather than a big
- *  NOT IN. Returns distinct endpoints. */
+ *  NOT IN. Returns distinct endpoints with the owning user. */
 export async function pushTargetsForChat(
   db: DbClient,
   chatId: string,
   excludeUserIds: string[],
-): Promise<string[]> {
+): Promise<Array<{ endpoint: string; userId: string }>> {
   const excluded = new Set(excludeUserIds);
   const rows = await db.all(
     `SELECT ps.endpoint AS endpoint, ps.user_id AS user_id FROM push_subscriptions ps
@@ -128,10 +214,10 @@ export async function pushTargetsForChat(
      WHERE cm.chat_id = ?`,
     [chatId],
   );
-  const out = new Set<string>();
+  const out = new Map<string, string>(); // endpoint → owner (endpoint is the primary key)
   for (const r of rows as Row[]) {
     if (excluded.has(String(r.user_id))) continue;
-    out.add(String(r.endpoint));
+    out.set(String(r.endpoint), String(r.user_id));
   }
-  return [...out];
+  return [...out].map(([endpoint, userId]) => ({ endpoint, userId }));
 }

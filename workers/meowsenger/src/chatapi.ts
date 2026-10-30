@@ -56,7 +56,7 @@ export async function callerId(req: Request, db: DbClient, now: number): Promise
   return s?.userId ?? null;
 }
 
-/** GET /api/chats — the caller's sidebar list. */
+/** GET /api/chats — the caller's sidebar list, plus `viewerId` (the authenticated user, same as /api/session user.id) so a client can bind this response to an account. */
 export async function handleListChats(
   req: Request,
   db: DbClient,
@@ -65,7 +65,7 @@ export async function handleListChats(
 ): Promise<Response> {
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
-  return json({ chats: await listChats(db, me) }, 200, cors, { "Cache-Control": "no-store" });
+  return json({ viewerId: me, chats: await listChats(db, me) }, 200, cors, { "Cache-Control": "no-store" });
 }
 
 /**
@@ -203,14 +203,21 @@ export function handlePushKey(env: Env, cors: Record<string, string>): Response 
 export async function handlePushSubscribe(req: Request, db: DbClient, now: number, cors: Record<string, string>): Promise<Response> {
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
-  let body: { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+  let body: { endpoint?: string; mode?: string; previous_endpoint?: unknown; keys?: { p256dh?: string; auth?: string } };
   try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
   if (!body.endpoint || typeof body.endpoint !== "string") return json({ error: "bad_body" }, 400, cors, NS);
   // The stored endpoint is later POSTed to by the DO (server-side fetch). Reject
   // anything that isn't a real push-service URL so it can't be used as a blind SSRF
   // / outbound-request amplifier to an attacker-chosen host.
   if (!isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
-  await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now);
+  const mode = body.mode === undefined ? "enable" : body.mode;
+  if (mode !== "enable" && mode !== "repair") return json({ error: "bad_body" }, 400, cors, NS);
+  // Rotation: only meaningful for a repair; a non-string is ignored.
+  const previous = mode === "repair" && typeof body.previous_endpoint === "string" ? body.previous_endpoint : undefined;
+  const r = await savePushSubscription(db, me, { endpoint: body.endpoint, p256dh: body.keys?.p256dh, auth: body.keys?.auth }, now, mode, previous);
+  // Ownership is never transferred: an endpoint held by another account is refused.
+  if (r === "owned") return json({ error: "endpoint_owned" }, 409, cors, NS);
+  if (r === "not_subscribed") return json({ error: "not_subscribed" }, 404, cors, NS);
   return json({ ok: true }, 200, cors, NS);
 }
 
@@ -220,7 +227,7 @@ export async function handlePushUnsubscribe(req: Request, db: DbClient, now: num
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   let body: { endpoint?: string };
   try { body = (await req.json()) as typeof body; } catch { return json({ error: "bad_body" }, 400, cors, NS); }
-  if (body.endpoint) await deletePushSubscription(db, body.endpoint);
+  if (body.endpoint && typeof body.endpoint === "string") await deletePushSubscription(db, body.endpoint, me);
   return json({ ok: true }, 200, cors, NS);
 }
 
