@@ -1,4 +1,5 @@
 import { effectiveScope, isSubset } from "@meowerse/auth-shared";
+import { accountPresent } from "./codeguard";
 import type { DbClient } from "./types";
 
 export type ConsentAction = "silent" | "prompt" | "verify_upgrade";
@@ -60,23 +61,27 @@ export async function getConsent(db: DbClient, accountId: string, clientId: stri
 /**
  * Record an "Allow": widen scope_set_max by the approved scopes (capped to what
  * the client still allows), snapshot exactly what was approved, and return the
- * live effective scope to mint.
+ * live effective scope to mint. Conditional on the account still existing
+ * (inside the statement); returns null when it does not.
  */
 export async function grantConsent(
   db: DbClient,
   i: { accountId: string; clientId: string; requested: string[]; clientAllowed: string[]; priorMax: string[] | null },
-): Promise<string[]> {
+): Promise<string[] | null> {
   const newMax = Array.from(new Set([...(i.priorMax ?? []), ...i.requested])).filter((s) => i.clientAllowed.includes(s));
   const scope = effectiveScope(newMax, i.clientAllowed, i.requested);
-  await db.execute({
+  const exists = accountPresent(i.accountId);
+  const res = await db.execute({
     sql: `INSERT INTO consents (account_id, client_id, scope_set_max, approved_scope_snapshot)
-          VALUES (?, ?, ?, ?)
+          SELECT ?, ?, ?, ? WHERE ${exists.sql}
           ON CONFLICT(account_id, client_id) DO UPDATE SET
             scope_set_max = excluded.scope_set_max,
             approved_scope_snapshot = excluded.approved_scope_snapshot,
             updated_at = datetime('now')`,
-    args: [i.accountId, i.clientId, JSON.stringify(newMax), JSON.stringify(scope)],
+    args: [i.accountId, i.clientId, JSON.stringify(newMax), JSON.stringify(scope), ...exists.args],
   });
+  // 0 rows = the account is gone (deleted): nothing written, caller answers account_gone.
+  if ((res.rowsAffected ?? 0) !== 1) return null;
   return scope;
 }
 

@@ -18,7 +18,7 @@ import { issueSession, lookupSession, rotateSession, revokeSession, whoami, roll
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
-import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, type Guard, type Stmt } from "./codeguard";
+import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, accountPresent, allOf, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -134,7 +134,12 @@ async function getSigning(env: Env): Promise<Signing> {
   return signing;
 }
 
-/** Mint a code for an authenticated+consented request and return the redirect URL. */
+/** 401 for a flow whose account was deleted mid-request (never a 500). */
+function accountGone(cors: Record<string, string>): Response {
+  return json({ error: "account_gone" }, 401, cors);
+}
+
+/** Mint a code for an authenticated+consented request and return the redirect URL, or null if the session/account is gone. */
 async function mintCodeRedirect(
   deps: Deps,
   env: Env,
@@ -143,7 +148,7 @@ async function mintCodeRedirect(
   sessionIdHash: string,
   authTime: number,
   scope: string[],
-): Promise<string> {
+): Promise<string | null> {
   const code = await createAuthCode(deps.getDb(), {
     request,
     accountId,
@@ -152,6 +157,7 @@ async function mintCodeRedirect(
     authTime,
     now: now(deps),
   });
+  if (!code) return null; // session revoked/expired or account deleted since it was read
   return appendParams(request.redirectUri, { code, state: request.state, iss: issuer(env) });
 }
 
@@ -166,7 +172,7 @@ interface NextStep {
  * After login/signup, resolve what happens next given the pending authorize
  * request (in the __Host-mw_tkt cookie) and the now-authenticated session.
  */
-async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accountId: string, sessionIdHash: string, authTime: number): Promise<NextStep> {
+async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accountId: string, sessionIdHash: string, authTime: number): Promise<NextStep | null> {
   if (!tkt) return { action: "done" };
   const envlp = await verifyRequest(tkt, stateSecret(env), now(deps));
   if (!envlp) return { action: "done" };
@@ -192,6 +198,7 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
   if (decision.action === "verify_upgrade") return { action: "verify_required" };
   if (decision.action === "silent") {
     const url = await mintCodeRedirect(deps, env, request, accountId, sessionIdHash, authTime, decision.scope);
+    if (!url) return null;
     return { action: "redirect", url };
   }
   return { action: "consent", client: { name: client.displayName ?? client.clientId, logo: client.logoUrl }, scope: request.scope };
@@ -249,16 +256,18 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
     if (decision.action === "silent") {
       const idHash = await sha256Hex(cookies[`__Host-${SESS_COOKIE}`]!);
       const loc = await mintCodeRedirect(deps, env, request, session.accountId, idHash, session.authTime, decision.scope);
-      return redirect(loc, securityHeaders());
+      // null = the session/account vanished since it was read: fall through to the logged-out path.
+      if (loc) return redirect(loc, securityHeaders());
+    } else {
+      if (promptNone) {
+        const error = decision.action === "verify_upgrade" ? "interaction_required" : "consent_required";
+        return redirect(appendParams(request.redirectUri, { error, state: request.state, iss: issuer(env) }), securityHeaders());
+      }
+      // needs consent or verify-upgrade → carry the request to the UI
+      const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL }, stateSecret(env));
+      const dest = decision.action === "verify_upgrade" ? "/verify" : "/consent";
+      return redirect(`${webOrigin(env)}${dest}`, { ...securityHeaders(), "Set-Cookie": hostCookie(TKT_COOKIE, tkt, { maxAge: TKT_TTL }) });
     }
-    if (promptNone) {
-      const error = decision.action === "verify_upgrade" ? "interaction_required" : "consent_required";
-      return redirect(appendParams(request.redirectUri, { error, state: request.state, iss: issuer(env) }), securityHeaders());
-    }
-    // needs consent or verify-upgrade → carry the request to the UI
-    const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL }, stateSecret(env));
-    const dest = decision.action === "verify_upgrade" ? "/verify" : "/consent";
-    return redirect(`${webOrigin(env)}${dest}`, { ...securityHeaders(), "Set-Cookie": hostCookie(TKT_COOKIE, tkt, { maxAge: TKT_TTL }) });
   }
 
   if (promptNone) {
@@ -284,8 +293,10 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
   if (!res.ok) return json({ error: res.error }, 400, cors);
 
   const sess = await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) });
+  if (!sess) return accountGone(cors);
   const cookies = parseCookies(req.headers.get("Cookie"));
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
+  if (!next) return accountGone(cors);
   await recordAudit(deps, req, { event: "signup", accountId: res.accountId });
   return json({ ok: true, recoveryCodes: res.recoveryCodes, csrf: sess.csrf, next }, 200, {
     ...cors,
@@ -323,8 +334,10 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
     ? (await rotateSession(db, existing, { now: now(deps), authTime: now(deps) })) ??
       (await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) }))
     : await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) });
+  if (!sess) return accountGone(cors);
 
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
+  if (!next) return accountGone(cors);
   await recordAudit(deps, req, { event: "login.ok", accountId: res.accountId });
   return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
@@ -369,8 +382,10 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
     clientAllowed: client.allowedScopes,
     priorMax: consent?.scopeSetMax ?? null,
   });
+  if (!scope) return accountGone(cors);
   const idHash = await sha256Hex(cookies[`__Host-${SESS_COOKIE}`]!);
   const loc = await mintCodeRedirect(deps, env, request, session.accountId, idHash, session.authTime, scope);
+  if (!loc) return accountGone(cors);
   await recordAudit(deps, req, { event: "consent.grant", accountId: session.accountId, clientId: request.clientId });
   return json({ redirect: loc }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": clearTkt });
 }
@@ -417,7 +432,7 @@ async function mintResponse(
      */
     atomic: { guard: Guard; consume: Stmt };
     /** Called when the credential was already spent by another request (we are the loser). */
-    onLost: () => Promise<Response>;
+    onLost: (accountGone: boolean) => Promise<Response>;
   },
 ): Promise<Response> {
   const db = deps.getDb();
@@ -442,7 +457,10 @@ async function mintResponse(
   });
   const { jti: _jti, ...body } = tokens;
   void _jti;
-  const { guard, consume } = i.atomic;
+  // Second layer: also require the account to still exist, so no access/refresh token can be
+  // inserted for a deleted account even when the credential row itself survived (leftover).
+  const guard = allOf(i.atomic.guard, accountPresent(i.accountId));
+  const { consume } = i.atomic;
   const stmts: Stmt[] = [accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, guard)];
   let refresh: string | undefined;
   if (i.issueRefresh) {
@@ -488,11 +506,19 @@ async function mintResponse(
     console.error("token_issue_failed");
     return json({ error: "server_error" }, 500, { ...cors, ...noStore });
   }
-  if ((res[stmts.length]?.rowsAffected ?? 0) !== 1) {
+  if ((res[0]?.rowsAffected ?? 0) !== 1 || (res[stmts.length]?.rowsAffected ?? 0) !== 1) {
     // Another request spent the credential first; this one issued nothing. Never
     // return the signed tokens. The winner's rows are already committed, so
     // revoking the family reaches them.
-    return i.onLost();
+    // One extra read, only on the lost path: if the loss is because the account was deleted (our
+    // account guard failed) it is not a replay/reuse, so the caller must not audit it as one.
+    let accountGone = false;
+    try {
+      accountGone = (await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [i.accountId] })).rows.length === 0;
+    } catch {
+      accountGone = false; // unknown: fall back to the conservative (audited) path
+    }
+    return i.onLost(accountGone);
   }
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
@@ -568,9 +594,9 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       family: ex.family,
       issueRefresh: ex.scope.includes("offline_access"),
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
-      onLost: async () => {
+      onLost: async (accountGone) => {
         await revokeLoserFamily(db, ex.family);
-        await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
+        if (!accountGone) await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },
     });
@@ -601,10 +627,10 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       prevId: rot.tokenHash,
       absExpires: rot.absExpires,
       atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
-      onLost: async () => {
-        // Lost to a concurrent rotation/reuse of the same token: treat as reuse.
+      onLost: async (accountGone) => {
+        // Lost to a concurrent rotation/reuse of the same token: treat as reuse (unless the account is gone).
         await revokeLoserFamily(db, rot.family);
-        await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
+        if (!accountGone) await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },
     });
@@ -688,11 +714,15 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
   // Single use: only the poll that atomically claims a fresh ticket gets a session; later polls see "not ready".
   if (!(await claimTicket(db, ticketId, now(deps)))) return json({ ready: false }, 200, cors);
-  let sess: Awaited<ReturnType<typeof issueSession>>;
-  let next: Awaited<ReturnType<typeof resolveNext>>;
+  let sess: NonNullable<Awaited<ReturnType<typeof issueSession>>>;
+  let next: NonNullable<Awaited<ReturnType<typeof resolveNext>>>;
   try {
-    sess = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
-    next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+    const issued = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
+    if (!issued) return accountGone(cors); // account deleted since the ticket was confirmed; stays claimed
+    sess = issued;
+    const resolved = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+    if (!resolved) return accountGone(cors);
+    next = resolved;
   } catch (e) {
     // A transient failure after the claim must not strand the user: release it so the next poll retries.
     await unclaimTicket(db, ticketId).catch(() => {});
@@ -716,8 +746,10 @@ async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<s
   const db = deps.getDb();
   const r = await signInOrSignUpTelegram(db, v.telegram);
   const sess = await issueSession(db, { accountId: r.accountId, amr: "tg", authTime: now(deps), now: now(deps) });
+  if (!sess) return accountGone(cors);
   const cookies = parseCookies(req.headers.get("Cookie"));
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], r.accountId, sess.idHash, now(deps));
+  if (!next) return accountGone(cors);
   if (r.created) await recordAudit(deps, req, { event: "signup", accountId: r.accountId });
   await recordAudit(deps, req, { event: "telegram.login", accountId: r.accountId });
   return json({ ok: true, csrf: sess.csrf, next }, 200, {
@@ -855,6 +887,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       verifiedOnly: asBool(p.verified_only),
       allowOfflineAccess: asBool(p.offline),
     });
+    if (!res.ok && res.error === "account_gone") return accountGone(cors);
     if (res.ok) await recordAudit(deps, req, { event: "client.create", accountId: session.accountId, clientId: res.clientId });
     return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
   }
@@ -881,6 +914,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   }
   if (sub === "tokens") {
     const token = await createManagementToken(db, session.accountId, p.label);
+    if (token === null) return accountGone(cors);
     await recordAudit(deps, req, { event: "mgmt_token.create", accountId: session.accountId });
     return json({ token }, 200, { ...cors, ...securityHeaders() });
   }
@@ -965,6 +999,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   }
   if (sub === "recovery-codes") {
     const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
+    if (!recoveryCodes) return accountGone(cors);
     await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
     return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
@@ -1016,6 +1051,7 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
   if (!("error" in res) && (res.created || !res.unchanged)) {
     await recordAudit(deps, req, { event: res.created ? "client.create" : "client.update", accountId: ownerId, clientId: res.clientId });
   }
+  if ("error" in res && res.error === "account_gone") return accountGone(cors);
   return "error" in res ? json({ error: res.error }, 400, cors) : json(res, 200, { ...cors, ...securityHeaders() });
 }
 

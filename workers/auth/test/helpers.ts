@@ -19,7 +19,8 @@ export function routedDb(routes: Route[], log: { sql: string; args: unknown[] }[
     for (const [re, fn] of routes) {
       if (re.test(sql)) return fn(args) ?? { rows: [] };
     }
-    return { rows: [] };
+    // An unrouted INSERT is treated as a write that landed (guarded inserts report rowsAffected = 1).
+    return /^\s*INSERT/i.test(sql) ? { rows: [], rowsAffected: 1 } : { rows: [] };
   };
   // batch = sequential execute (each statement is still logged + routed), so
   // tests that assert on the per-statement log keep working with batched writes.
@@ -58,8 +59,13 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     audit_log: [],
   };
   // Conditional INSERT ... SELECT ... WHERE EXISTS(unspent credential): last arg is its hash.
+  // Token inserts carry a second layer (account still exists): args end [..., credentialHash, accountId].
   const guardOk = (sql: string, a: unknown[]): boolean => {
-    const last = a[a.length - 1];
+    let last = a[a.length - 1];
+    if (/FROM accounts WHERE id = \?\)/.test(sql)) {
+      if (!t.accounts.some((r) => r.id === last)) return false;
+      last = a[a.length - 2];
+    }
     if (/FROM oauth_codes WHERE code_hash = \? AND consumed_at IS NULL\)/.test(sql))
       return t.oauth_codes.some((r) => r.code_hash === last && r.consumed_at == null);
     if (/FROM refresh_tokens WHERE token_hash = \? AND used_at IS NULL\)/.test(sql))
@@ -261,6 +267,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       if (/FROM password_credentials WHERE account_id/.test(sql))
         return { rows: t.password_credentials.filter((r) => r.account_id === a[0]).map((r) => ({ phc: r.phc })) };
+      if (/INSERT INTO recovery_codes .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
+        // conditional on the account existing (a[2] = account id)
+        if (!t.accounts.some((r) => r.id === a[2])) return { rows: [], rowsAffected: 0 };
+        t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
+        return { rows: [], rowsAffected: 1 };
+      }
       if (/INSERT INTO recovery_codes/.test(sql)) {
         t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
         return { rows: [] };
@@ -273,6 +285,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.telegram_links.filter((r) => r.account_id === a[0]).map((r) => ({ telegram_id: r.telegram_id, telegram_username: r.telegram_username })) };
       if (/FROM telegram_links WHERE account_id/.test(sql))
         return { rows: t.telegram_links.filter((r) => r.account_id === a[0]) };
+      if (/INSERT INTO telegram_links .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
+        // link-to-existing: conditional on the account existing (a[5] = account id)
+        if (!t.accounts.some((r) => r.id === a[5])) return { rows: [], rowsAffected: 0 };
+        t.telegram_links.push({ telegram_id: a[0], account_id: a[1], telegram_username: a[2], display_name: a[3], avatar_url: a[4] });
+        return { rows: [], rowsAffected: 1 };
+      }
       if (/INSERT INTO telegram_links/.test(sql)) {
         t.telegram_links.push({ telegram_id: a[0], account_id: a[1], telegram_username: a[2], display_name: a[3], avatar_url: a[4] });
         return { rows: [] };
@@ -313,6 +331,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
 
       // --- sessions ---
       if (/INSERT INTO sessions/.test(sql)) {
+        // conditional on the account existing (a[7] = account id)
+        if (!t.accounts.some((r) => r.id === a[7])) return { rows: [], rowsAffected: 0 };
         t.sessions.push({
           id_hash: a[0],
           account_id: a[1],
@@ -323,7 +343,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           absolute_expires_at: a[6],
           revoked_at: null,
         });
-        return { rows: [] };
+        return { rows: [], rowsAffected: 1 };
       }
       // whoami — one-query session validation + profile + LIVE verified.
       // args: a[0] = id_hash, a[1] = now (idle), a[2] = now (absolute).
@@ -341,8 +361,9 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         const verified = t.telegram_links.some((r) => r.account_id === s.account_id) ? 1 : 0;
         return { rows: [{ username: acct.username, display_name: acct.display_name, verified }] };
       }
+      // lookupSession: a leftover session whose account is gone is treated as absent.
       if (/FROM sessions WHERE id_hash/.test(sql))
-        return { rows: t.sessions.filter((r) => r.id_hash === a[0]) };
+        return { rows: t.sessions.filter((r) => r.id_hash === a[0] && t.accounts.some((x) => x.id === r.account_id)) };
       if (/UPDATE sessions SET last_seen/.test(sql)) {
         const row = t.sessions.find((r) => r.id_hash === a[1]);
         if (row) row.idle_expires_at = a[0];
@@ -358,6 +379,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/FROM consents WHERE account_id/.test(sql))
         return { rows: t.consents.filter((r) => r.account_id === a[0] && r.client_id === a[1]) };
       if (/INSERT INTO consents/.test(sql)) {
+        // conditional on the account existing (a[4] = account id)
+        if (!t.accounts.some((r) => r.id === a[4])) return { rows: [], rowsAffected: 0 };
         const existing = t.consents.find((r) => r.account_id === a[0] && r.client_id === a[1]);
         if (existing) {
           existing.scope_set_max = a[2];
@@ -365,11 +388,20 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         } else {
           t.consents.push({ account_id: a[0], client_id: a[1], scope_set_max: a[2], approved_scope_snapshot: a[3] });
         }
-        return { rows: [] };
+        return { rows: [], rowsAffected: 1 };
       }
 
       // --- codes ---
       if (/INSERT INTO oauth_codes/.test(sql)) {
+        // conditional on the session being live with its account existing: args end [idHash, accountId, now, now]
+        const [sh, acct, nowT] = [a[11], a[12], Number(a[13])];
+        const live = t.sessions.some(
+          (r) =>
+            r.id_hash === sh && r.account_id === acct && r.revoked_at == null &&
+            Number(r.idle_expires_at) >= nowT && Number(r.absolute_expires_at) >= nowT &&
+            t.accounts.some((x) => x.id === acct),
+        );
+        if (!live) return { rows: [], rowsAffected: 0 };
         t.oauth_codes.push({
           code_hash: a[0],
           client_id: a[1],
@@ -384,7 +416,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           expires_at: a[10],
           consumed_at: null,
         });
-        return { rows: [] };
+        return { rows: [], rowsAffected: 1 };
       }
       if (/SELECT \* FROM oauth_codes WHERE code_hash/.test(sql))
         return { rows: t.oauth_codes.filter((r) => r.code_hash === a[0]) };
@@ -414,7 +446,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/INSERT INTO access_tokens/.test(sql)) {
         if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };
         t.access_tokens.push({ jti: a[0], account_id: a[1], client_id: a[2], scope: a[3], family_id: a[4], issued_at: a[5], expires_at: a[6], revoked_at: null });
-        return { rows: [] };
+        return { rows: [], rowsAffected: 1 };
       }
       if (/UPDATE access_tokens SET revoked_at .* WHERE family_id/.test(sql)) {
         for (const r of t.access_tokens) if (r.family_id === a[0]) r.revoked_at = "revoked";
@@ -442,7 +474,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           idle_expires_at: a[6],
           absolute_expires_at: a[7],
         });
-        return { rows: [] };
+        return { rows: [], rowsAffected: 1 };
       }
       if (/SELECT \* FROM refresh_tokens WHERE token_hash/.test(sql))
         return { rows: t.refresh_tokens.filter((r) => r.token_hash === a[0]) };
@@ -507,4 +539,13 @@ export async function genSigningKeys(kid = "k1", status: SigningKeyRecord["statu
   const privateJwk = await crypto.subtle.exportKey("jwk", kp.privateKey);
   const publicJwk = await crypto.subtle.exportKey("jwk", kp.publicKey);
   return [{ kid, status, privateJwk, publicJwk }];
+}
+
+/** Real-DB helper: a live session row (createAuthCode requires its session to be live). Idempotent. */
+export async function seedLiveSession(db: DbClient, idHash: string, accountId: string, now: number): Promise<void> {
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+          VALUES (?, ?, ?, 'pwd', 'csrf', ?, ?)`,
+    args: [idHash, accountId, now, now + 100_000, now + 100_000],
+  });
 }
