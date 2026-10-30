@@ -41,6 +41,7 @@
       },
       "devDependencies": {
         "@astrojs/check": "^0.9.9",
+        "@playwright/test": "1.63.0",
         "@testing-library/dom": "^10",
         "@testing-library/react": "^16",
         "@types/node": "^26.6.2",
