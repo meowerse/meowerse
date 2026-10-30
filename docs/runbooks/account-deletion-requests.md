@@ -7,7 +7,13 @@ by hand against production. The earlier manual runbook was withdrawn because its
 to a specific request and did not require fresh authentication.
 
 ## When a request arrives at privacy@alxnko.dev
-1. Reply within 7 days, from the privacy@ conversation:
+**Outbound mail is not configured.** privacy@ (like contact@ and security@) is receive-only Cloudflare Email
+Routing to the owner's mailbox; there is no sending path that shows privacy@ as the sender, and replying from the
+personal mailbox would reveal that address. Until a free, domain-authenticated sending option is set up (not
+chosen yet, nothing purchased), the owner decides per request whether to reply from the personal mailbox; the
+acknowledgment below is drafted either way.
+
+1. Acknowledge within 7 days (an internal acknowledgment target, not a promise of completed erasure):
    - we received the request and are holding it;
    - deletion will be done from inside their account, after they sign in again and confirm, once that flow is
      live, and we will tell them when;
@@ -22,9 +28,10 @@ If someone reports an account compromise instead, treat it as a security report 
 deletion request.
 
 ## What deletion will cover (reference, not a procedure)
-Auth deletion (`deleteAccount` in `workers/auth/src/accounts.ts`, one write transaction) removes the meowerse
-account: login methods, sessions, recovery codes, consents, tokens and codes, management tokens, login tickets,
-and apps the account owns.
+Auth deletion (`deleteAccount` in `workers/auth/src/accounts.ts`, one write transaction) refuses while the account
+owns any **active** OAuth app (409 `owns_active_clients`); those apps must be deleted in the developer dashboard
+first, they are never silently removed. Once allowed, it removes the meowerse account: login methods, sessions, recovery codes, consents, tokens and codes, management tokens, login tickets,
+and apps the account had already deleted (with every user's codes, tokens and consents for them).
 
 Meowsenger data is separate: the user deletes it from Meowsenger settings → danger zone, which removes their
 profile, sessions, memberships, join requests, push subscriptions and groups they solely own.
