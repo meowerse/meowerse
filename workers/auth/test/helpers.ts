@@ -74,7 +74,10 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
     return true;
   };
-  let lastConfirmChanges = 0; // emulates changes() after the delete-confirmation consume UPDATE
+  // Emulates SQLite changes() for the `INSERT INTO audit_log (event) SELECT NULL WHERE changes() = 0` abort guards:
+  // set by every guarded statement (tg ticket claim / guarded link insert, delete-confirmation consume UPDATE).
+  // Starts at 1; not reset by unrelated statements (documented fake limitation).
+  let lastChanges = 1;
   let lastAccountChanges = 0; // emulates changes() after `DELETE FROM accounts`
   // Only valid because deleteAccount puts the audit insert IMMEDIATELY after that delete; it is not reset by other writes.
   const exec: DbClient["execute"] = async (stmt) => {
@@ -143,11 +146,11 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         const row = t.account_delete_confirmations.find((r) => r.token_hash === tokenHash && r.account_id === accountId && r.session_id_hash === sessHash && r.used_at == null && Number(r.expires_at) > Number(nowTs));
         const live = t.sessions.some((r) => r.id_hash === sessHash && r.account_id === accountId && r.revoked_at == null && Number(r.idle_expires_at) >= Number(nowTs) && Number(r.absolute_expires_at) >= Number(nowTs));
         if (row && live) row.used_at = usedAt;
-        lastConfirmChanges = row && live ? 1 : 0;
-        return { rows: [], rowsAffected: lastConfirmChanges };
+        lastChanges = row && live ? 1 : 0;
+        return { rows: [], rowsAffected: lastChanges };
       }
       if (/^INSERT INTO audit_log \(event\) SELECT NULL WHERE changes\(\) = 0/.test(sql)) {
-        if (lastConfirmChanges === 0) throw Object.assign(new Error("NOT NULL constraint failed: audit_log.event"), { code: "SQLITE_CONSTRAINT_NOTNULL" });
+        if (lastChanges === 0) throw Object.assign(new Error("NOT NULL constraint failed: audit_log.event"), { code: "SQLITE_CONSTRAINT_NOTNULL" });
         return { rows: [], rowsAffected: 0 };
       }
       if (/^SELECT 1 FROM account_delete_confirmations WHERE token_hash/.test(sql)) {
@@ -322,7 +325,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.telegram_links.filter((r) => r.account_id === a[0]) };
       if (/INSERT INTO telegram_links .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
         // link-to-existing: conditional on the account existing (a[5] = account id)
-        if (!t.accounts.some((r) => r.id === a[5])) return { rows: [], rowsAffected: 0 };
+        if (!t.accounts.some((r) => r.id === a[5])) { lastChanges = 0; return { rows: [], rowsAffected: 0 }; }
+        lastChanges = 1;
         t.telegram_links.push({ telegram_id: a[0], account_id: a[1], telegram_username: a[2], display_name: a[3], avatar_url: a[4] });
         return { rows: [], rowsAffected: 1 };
       }
@@ -356,7 +360,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
       if (/UPDATE login_tickets SET status = 'consumed'/.test(sql)) {
-        const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending");
+        const row = t.login_tickets.find((r) => r.ticket_id === a[1] && r.status === "pending" && (a.length < 3 || Number(r.expires_at) >= Number(a[2])));
+        lastChanges = row ? 1 : 0;
         if (row) {
           row.status = "consumed";
           row.account_id = a[0];
