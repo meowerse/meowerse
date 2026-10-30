@@ -108,16 +108,12 @@ export async function uaHash(ua: string | null): Promise<string | null> {
   return (await sha256Hex(ua)).slice(0, 16);
 }
 
-/** Prune cadence: every Nth insert also deletes rows older than the retention window. */
-const PRUNE_EVERY = 500;
-
 /**
  * Record one audit event. NEVER throws and NEVER affects the response: any
  * failure is swallowed and logged as `audit_write_failed <event>` only. With an
  * ExecutionContext the write is scheduled via `waitUntil` (off the response
  * path); without one (tests) it is awaited so assertions are deterministic.
- * Retention without a cron: when the inserted id is a multiple of 500 the same
- * guarded task also deletes rows older than 365 days.
+ * Retention (365 days) is NOT handled here: the daily cron in housekeeping.ts prunes old rows.
  */
 export async function recordAudit(
   deps: Deps,
@@ -132,14 +128,10 @@ export async function recordAudit(
       // network:false → the request is from a service (e.g. the auth bot), not the user: store NULLs.
       const ip = network ? truncIp(req.headers.get("CF-Connecting-IP")) : null;
       const ua = network ? await uaHash(req.headers.get("User-Agent")) : null;
-      const res = await db.execute({
+      await db.execute({
         sql: "INSERT INTO audit_log (event, account_id, client_id, ip_trunc, ua_hash) VALUES (?, ?, ?, ?, ?)",
         args: [e.event, e.accountId ?? null, e.clientId ?? null, ip, ua],
       });
-      const id = Number(res.lastInsertRowid);
-      if (Number.isFinite(id) && id > 0 && id % PRUNE_EVERY === 0) {
-        await db.execute("DELETE FROM audit_log WHERE ts < datetime('now','-365 days')");
-      }
     } catch {
       console.error("audit_write_failed", e.event);
     }

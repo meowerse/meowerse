@@ -48,6 +48,7 @@ import { handleAvatar } from "./avatar";
 import { checkRateLimit } from "./ratelimit";
 import { turnstileGate } from "./turnstile";
 import { recordAudit } from "./audit";
+import { scheduledHousekeeping } from "./housekeeping";
 
 const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
 const SESS_COOKIE = "mw_sess";
@@ -999,5 +1000,10 @@ export default {
     } catch {
       return json({ error: "internal_error" }, 500, corsHeaders(request.headers.get("Origin"), env));
     }
+  },
+  /** Daily Cron Trigger (wrangler.jsonc `triggers.crons`): bounded retention sweep. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    cachedDeps ??= prodDeps(env);
+    ctx.waitUntil(scheduledHousekeeping(cachedDeps));
   },
 };

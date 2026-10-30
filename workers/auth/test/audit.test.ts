@@ -630,36 +630,11 @@ test("recordAudit with deps.ctx schedules via waitUntil and returns before the i
   expect(inserted).toEqual([["logout", "a1", null, IP_TRUNC, null]]);
 });
 
-// ---------------------------------------------------------------- prune
+// ---------------------------------------------------------------- no opportunistic prune
 
-function pruneDb(id: number) {
+test("recordAudit no longer prunes (retention moved to the daily cron)", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  const db = routedDb([[/INSERT INTO audit_log/, () => ({ rows: [], rowsAffected: 1, lastInsertRowid: id })]], log);
-  return { db, deletes: () => log.filter((l) => /^DELETE FROM audit_log WHERE ts < datetime\('now','-365 days'\)$/.test(l.sql)) };
-}
-
-test("prune: DELETE of rows older than 365 days runs when the inserted id is a multiple of 500, not otherwise", async () => {
-  const req = new Request("https://iss/x");
-  for (const [id, expected] of [[500, 1], [1000, 1], [499, 0], [501, 0], [1, 0]] as const) {
-    const p = pruneDb(id);
-    await recordAudit({ getDb: () => p.db }, req, { event: "login.ok", accountId: "a" });
-    expect(p.deletes()).toHaveLength(expected);
-  }
-});
-
-test("prune failure is swallowed (insert already done)", async () => {
-  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const db: DbClient = {
-      execute: async (s) => {
-        if (typeof s === "string") throw new Error("prune failed");
-        return { rows: [], lastInsertRowid: 500 };
-      },
-      batch: async () => [],
-    };
-    await expect(recordAudit({ getDb: () => db }, new Request("https://iss/x"), { event: "signup" })).resolves.toBeUndefined();
-    expect(spy).toHaveBeenCalledWith("audit_write_failed", "signup");
-  } finally {
-    spy.mockRestore();
-  }
+  const db = routedDb([[/INSERT INTO audit_log/, () => ({ rows: [], rowsAffected: 1, lastInsertRowid: 500 })]], log);
+  await recordAudit({ getDb: () => db }, new Request("https://iss/x"), { event: "login.ok", accountId: "a" });
+  expect(log.filter((l) => /DELETE/.test(l.sql))).toHaveLength(0);
 });
