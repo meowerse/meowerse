@@ -49,6 +49,7 @@ export default function AccountSettings({ base }: { base: string }) {
       } else if (confirm.kind === "delete") {
         const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
         if (r.ok) { clearSessionCache(); window.location.href = "/"; }
+        else if (r.error === "owns_active_clients") toast({ message: "delete your apps in the developer dashboard first", variant: "error" });
         else toast({ message: "could not delete account", variant: "error" });
       }
     } finally { setBusy(false); setConfirm(null); }
@@ -130,7 +131,7 @@ export default function AccountSettings({ base }: { base: string }) {
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
         <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
-          title="delete your account?" description="this is permanent. your login methods, sessions, app permissions, tokens and owned apps are erased. data held by other services (e.g. meowsenger) is not; delete it there separately."
+          title="delete your account?" description="this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. data held by other services (e.g. meowsenger) is not; delete it there separately."
           confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
       )}
     </div>
