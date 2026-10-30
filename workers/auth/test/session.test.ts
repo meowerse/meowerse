@@ -67,11 +67,19 @@ test("revokeSession sets revoked_at by id hash", async () => {
 test("rotateSession revokes old and issues new for a live session; null when stale", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const routes: Route[] = [[/SELECT account_id, auth_time/, () => ({ rows: [sessionRow()] })], [/INSERT INTO sessions/, () => ({ rows: [], rowsAffected: 1 })]];
-  const rotated = await rotateSession(routedDb(routes, log), "old", { now: 2000 });
+  const rotated = await rotateSession(routedDb(routes, log), "old", { now: 2000, accountId: "acct_1" });
   expect(rotated).not.toBeNull();
   expect(log.some((c) => c.sql.includes("UPDATE sessions SET revoked_at"))).toBe(true);
   expect(log.some((c) => c.sql.includes("INSERT INTO sessions"))).toBe(true);
 
-  const stale = await rotateSession(routedDb([[/SELECT account_id/, () => ({ rows: [] })]]), "old", { now: 2000 });
+  const stale = await rotateSession(routedDb([[/SELECT account_id/, () => ({ rows: [] })]]), "old", { now: 2000, accountId: "acct_1" });
   expect(stale).toBeNull();
+});
+
+test("rotateSession for a different account revokes the old session and issues nothing", async () => {
+  const log: { sql: string; args: unknown[] }[] = [];
+  const routes: Route[] = [[/SELECT account_id, auth_time/, () => ({ rows: [sessionRow()] })], [/INSERT INTO sessions/, () => ({ rows: [], rowsAffected: 1 })]];
+  expect(await rotateSession(routedDb(routes, log), "old", { now: 2000, accountId: "acct_other" })).toBeNull();
+  expect(log.some((c) => c.sql.includes("UPDATE sessions SET revoked_at"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("INSERT INTO sessions"))).toBe(false);
 });
