@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import type { Conversation } from "./conversation";
 
@@ -222,19 +222,6 @@ describe("Conversation offline push decision", () => {
     await vi.waitFor(() => expect(pushedTo()).toEqual([EP(`${c}-carol`), EP(`${c}-dave`)]));
   });
 
-  it("(k) the push fan-out is bounded by what the event budget has left after the inbox fan-out (whole recipients), logs the truncated count, imports the VAPID key once", async () => {
-    const users = Array.from({ length: 60 }, (_, i) => `u${i}`);
-    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
-    const importSpy = vi.spyOn(crypto.subtle, "importKey");
-    const sender = await connect(c, "sender");
-    await send(sender, "hi");
-    // 61 members: mirror(1) + member read(1) + 40 inbox fetches + target read(1) = 43 → 2 pushes
-    await vi.waitFor(() => expect(pushCalls()).toHaveLength(2));
-    expect(decisionLogs()).toEqual(["push_decision targets=2 active_excluded=0", "push_decision truncated=58"]);
-    expect(importSpy.mock.calls.filter((a) => a[0] === "jwk")).toHaveLength(1);
-    importSpy.mockRestore();
-  });
-
   it("(l) a removed member's inbox gets no preview right after dropUser (member cache cleared)", async () => {
     const c = newChat(); await seed(c, ["sender", "bob", "carol"], []);
     const hits: string[] = [];
@@ -307,34 +294,6 @@ describe("Conversation offline push decision", () => {
     });
   });
 
-  it("(p) one event shares a subrequest budget: 40 inbox members + 20 push targets stay within it, cut recipients are pushed next message", async () => {
-    const users = Array.from({ length: 39 }, (_, i) => `u${i}`);
-    const subs = users.slice(0, 20);
-    const c = newChat(); await seed(c, ["sender", ...users], subs); await configureVapid(c);
-    const hits: string[] = [];
-    await runInDurableObject(stub(c), async (inst: Conversation) => {
-      (inst.env as unknown as Record<string, unknown>).USER_INBOX = {
-        idFromName: (n: string) => n,
-        get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
-      };
-    });
-    const sender = await connect(c, "sender");
-    await send(sender, "one");
-    await vi.waitFor(() => expect(hits).toHaveLength(40));
-    await settle();
-    const first = pushedTo();
-    // mirror(1) + member read(1) + 40 inbox fetches + target read(1) = 43 → 2 pushes
-    expect(first).toHaveLength(2);
-    expect(1 + 1 + hits.length + 1 + first.length).toBeLessThanOrEqual(45);
-    expect(decisionLogs()).toEqual(["push_decision targets=2 active_excluded=0", "push_decision truncated=18"]);
-    hits.length = 0;
-    await send(sender, "two"); // member list cached: 1 + 40 + 1 = 42 → 3 more, none repeated
-    await settle();
-    const all = pushedTo();
-    expect(all).toHaveLength(5);
-    expect(new Set(all).size).toBe(5);
-  });
-
   it("(q) a member read that overlaps a removal is discarded and re-read: the removed member's inbox gets nothing", async () => {
     const c = newChat(); await seed(c, ["sender", "bob", "carol"], []);
     const hits: string[] = [];
@@ -370,5 +329,132 @@ describe("Conversation offline push decision", () => {
     await vi.waitFor(() => expect(hits).toContain("inbox:bob"));
     await settle();
     expect(hits).not.toContain("inbox:carol");
+  });
+
+  // ---- per-message cost metering + the follow-up (alarm) fan-out ----------------------
+  interface Meter { d1: string[]; inbox: string[]; bodies: string[]; alarms: number; release: () => void }
+  /** `hold`: alarm invocations (the runtime fires them by itself) wait until
+   *  `release()`, so the queued state can be inspected first. */
+  async function meter(c: string, hold = false): Promise<Meter> {
+    let held = hold;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const m: Meter = { d1: [], inbox: [], bodies: [], alarms: 0, release: () => { held = false; open(); } };
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      const e = inst.env as unknown as Record<string, unknown>;
+      e.USER_INBOX = {
+        idFromName: (n: string) => n,
+        get: (n: string) => ({ fetch: async (_u: string, init?: RequestInit) => { m.inbox.push(n); m.bodies.push(String(init?.body ?? "")); return new Response(null, { status: 204 }); } }),
+      };
+      e.DB = new Proxy(DB, {
+        get(t, prop) {
+          if (prop === "prepare") return (sql: string) => { m.d1.push(sql); return t.prepare(sql); };
+          const v = Reflect.get(t, prop);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+      const orig = inst.alarm.bind(inst);
+      inst.alarm = async () => { m.alarms++; if (held) await gate; return orig(); };
+    });
+    return m;
+  }
+  /** Let every (auto-fired or manual) follow-up run until nothing is queued. */
+  const drainAlarms = async (c: string) => {
+    for (let n = 0; n < 40; n++) {
+      if (!(await queued(c))) return;
+      await runDurableObjectAlarm(stub(c));
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+  const queued = (c: string) => runInDurableObject(stub(c), async (inst: Conversation) => inst.ctx.storage.get<{ push: string[]; inbox: string[] }>("fanout_overflow"));
+  const SECRET = "SECRET-BODY-xyz";
+
+  it("(k) 61-member group: every subscribed member is pushed exactly once across the original + alarm invocations; overflow inbox members get content-free invalidations; no text is persisted", async () => {
+    const users = Array.from({ length: 60 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+    const m = await meter(c, true);
+    const importSpy = vi.spyOn(crypto.subtle, "importKey");
+    const sender = await connect(c, "sender");
+    await send(sender, SECRET);
+    await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+    const q = (await queued(c))!;
+    expect(q.push.length + pushCalls().length).toBe(60); // nothing lost, nothing double-booked
+    expect(q.inbox).toHaveLength(41);
+    // the first invocation stays within the per-event subrequest budget: D1 + inbox + pushes
+    expect(m.d1.length + m.inbox.length + pushCalls().length).toBeLessThanOrEqual(45);
+    expect(pushCalls()).toHaveLength(22);
+    // no message text anywhere in DO key-value storage
+    const dump = await runInDurableObject(stub(c), async (inst: Conversation) => JSON.stringify([...(await inst.ctx.storage.list()).entries()]));
+    expect(dump).not.toContain(SECRET);
+    expect(m.inbox).toHaveLength(20); // inline previews only
+    m.release();
+    await drainAlarms(c);
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(60));
+    expect(new Set(pushedTo()).size).toBe(60); // exactly once each
+    expect(await queued(c)).toBeUndefined();
+    const invalidations = m.bodies.filter((b) => b.includes("invalidate"));
+    expect(invalidations).toHaveLength(41);
+    for (const b of invalidations) expect(JSON.parse(b)).toEqual({ chatId: c, invalidate: true });
+    expect(m.inbox).toHaveLength(61); // every member signalled exactly once
+    expect(new Set(m.inbox).size).toBe(61);
+    // VAPID key imported once per invocation that sent pushes: the original + the alarm round(s)
+    expect(importSpy.mock.calls.filter((a) => a[0] === "jwk").length).toBeLessThanOrEqual(1 + m.alarms);
+    importSpy.mockRestore();
+    console.info(`COST 61-member: d1=${m.d1.length} inbox_fetches=${m.inbox.length} pushes=${pushCalls().length} alarms=${m.alarms}`);
+  });
+
+  it("(p) 40 inbox members + 20 push targets: pushes are served first inline, inbox previews are capped at 20 and the other 20 members get invalidations from the alarm", async () => {
+    const users = Array.from({ length: 39 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users.slice(0, 20)); await configureVapid(c);
+    const m = await meter(c, true);
+    const sender = await connect(c, "sender");
+    await send(sender, "one");
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(20)); // all pushed in the first invocation
+    await vi.waitFor(async () => expect((await queued(c))?.inbox).toHaveLength(20));
+    expect(m.inbox).toHaveLength(20);
+    m.release();
+    await drainAlarms(c);
+    expect(m.inbox).toHaveLength(40);
+    expect(pushCalls()).toHaveLength(20);
+  });
+
+  it("(r) a member removed while follow-up work is queued gets neither a push nor an invalidation", async () => {
+    const users = Array.from({ length: 60 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+    const m = await meter(c, true);
+    const sender = await connect(c, "sender");
+    await send(sender, "hi");
+    await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+    const q = (await queued(c))!;
+    const victim = q.push.find((u) => q.inbox.includes(`${u}`)) ?? q.push[0]!;
+    await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind(c, victim).run();
+    await stub(c).dropUser(victim, true);
+    const q2 = (await queued(c))!;
+    expect(q2.push).not.toContain(victim);
+    expect(q2.inbox).not.toContain(victim);
+    m.release();
+    await drainAlarms(c);
+    expect(pushedTo()).not.toContain(EP(`${c}-${victim}`));
+    expect(m.inbox).not.toContain(`inbox:${victim}`);
+  });
+
+  it("(s) per-message cost: DM and 10-member group", async () => {
+    for (const [label, n] of [["DM", 1], ["10-member group", 9]] as const) {
+      const users = Array.from({ length: n }, (_, i) => `${label[0]}${n}x${i}`);
+      const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+      const m = await meter(c);
+      const before = pushCalls().length;
+      const sender = await connect(c, "sender");
+      await send(sender, "hi");
+      await vi.waitFor(() => expect(pushCalls().length - before).toBe(n));
+      await drainAlarms(c);
+      await new Promise((r) => setTimeout(r, 30));
+      console.info(`COST ${label}: d1=${m.d1.length} inbox_fetches=${m.inbox.length} pushes=${pushCalls().length - before} alarms=${m.alarms}`);
+      expect(m.alarms).toBe(0);
+      expect(m.inbox).toHaveLength(n + 1);
+      // mirror write + member read + push-target read (+ nothing else)
+      expect(m.d1).toHaveLength(3);
+      fetchSpy.mockClear();
+    }
   });
 });

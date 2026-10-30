@@ -444,6 +444,24 @@ describe("Chat island — realtime sidebar", () => {
     expect(names[0]).toContain("Carol");
   });
 
+  it("a content-free inbox invalidation refetches the chat list instead of blanking a preview", async () => {
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
+    H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => {
+      const i = MockWebSocket.inbox;
+      if (!i) throw new Error("inbox socket not opened");
+      return i;
+    });
+    act(() => inbox.mockOpen());
+    // The server relists c2 with a fresh preview; the signal itself carries none.
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "fresh from server", lastActivity: 900 })];
+    emit(inbox, { type: "chat_update", chatId: "c2", invalidate: true });
+    await waitFor(() => expect(screen.getByText("fresh from server")).toBeTruthy());
+    expect(screen.queryByText("old")).toBeNull();
+  });
+
   it("an inbox delta for a message sent by the caller themselves does NOT mark the chat as unread", async () => {
     H.chats = [
       dm(),

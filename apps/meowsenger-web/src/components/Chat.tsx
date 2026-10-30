@@ -238,8 +238,15 @@ export default function Chat({ base }: { base: string }) {
   // preview + unread dot, without waiting for the poll. (The open chat updates via
   // onActiveMessage above; the inbox DO excludes members who are in the room.)
   const onInboxDelta = useCallback(
-    (d: InboxDelta) => applySidebarDelta(d.chatId, d.preview, d.at, d.senderId, d.chatId === activeRef.current),
-    [applySidebarDelta, activeRef],
+    (d: InboxDelta) => {
+      if (d.invalidate) {
+        // Content-free signal (large rooms): no preview to apply, so refetch the list.
+        void refreshChats();
+        return;
+      }
+      applySidebarDelta(d.chatId, d.preview, d.at, d.senderId, d.chatId === activeRef.current);
+    },
+    [applySidebarDelta, activeRef, refreshChats],
   );
   useInbox(base, me != null, onInboxDelta);
 
