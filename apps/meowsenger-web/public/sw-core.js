@@ -52,7 +52,8 @@
    *  - /api/session 401/403, authenticated:false, no user id, or another account → purge, show nothing
    *  - /api/session 5xx / 429 / other non-OK / unreadable body / network error → show nothing,
    *    KEEP the subscription and the opt-in (transient)
-   *  - identity verified → /api/chats; failure or nothing unread → show nothing
+   *  - identity verified → /api/chats; its `viewerId` must equal the opted-in id (re-read from the
+   *    store before showing) else purge + show nothing; failure or nothing unread → show nothing
    */
   async function decidePush(deps) {
     var store = deps.store, fetchFn = deps.fetchFn, registration = deps.registration;
@@ -82,6 +83,16 @@
       var res = await fetchFn("/api/chats", { credentials: "include", cache: "no-store" });
       if (!res || !res.ok) return { show: false, reason: "chats_failed" };
       var data = await res.json();
+      // /api/session and /api/chats are separate requests: the browser may have switched
+      // accounts between them. Bind the list to the opted-in account via its viewerId, and
+      // re-read the opt-in (a logout/disable may have cleared it meanwhile) right before showing.
+      var viewer = data && typeof data.viewerId === "string" && data.viewerId ? data.viewerId : null;
+      var current = null;
+      try { current = await store.get(); } catch (e) { current = null; }
+      if (!viewer || !current || viewer !== current) {
+        await purge(store, registration);
+        return { show: false, reason: !current ? "no_opt_in" : "account_mismatch" };
+      }
       var unread = (data.chats || [])
         .filter(function (c) { return (c.unreadCount || 0) > 0; })
         .sort(function (a, b) { return (b.lastActivity || 0) - (a.lastActivity || 0); });

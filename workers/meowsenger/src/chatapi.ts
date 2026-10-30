@@ -56,7 +56,7 @@ export async function callerId(req: Request, db: DbClient, now: number): Promise
   return s?.userId ?? null;
 }
 
-/** GET /api/chats — the caller's sidebar list. */
+/** GET /api/chats — the caller's sidebar list, plus `viewerId` (the authenticated user, same as /api/session user.id) so a client can bind this response to an account. */
 export async function handleListChats(
   req: Request,
   db: DbClient,
@@ -65,7 +65,7 @@ export async function handleListChats(
 ): Promise<Response> {
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
-  return json({ chats: await listChats(db, me) }, 200, cors, { "Cache-Control": "no-store" });
+  return json({ viewerId: me, chats: await listChats(db, me) }, 200, cors, { "Cache-Control": "no-store" });
 }
 
 /**

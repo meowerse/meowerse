@@ -23,7 +23,7 @@ function swReg() {
   return { t, registration: { pushManager: { getSubscription: async () => sub } } };
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const CHATS = { chats: [{ id: "c1", name: "Secret chat", lastMessage: "private text", unreadCount: 2, lastActivity: 5 }] };
+const CHATS = { viewerId: "uA", chats: [{ id: "c1", name: "Secret chat", lastMessage: "private text", unreadCount: 2, lastActivity: 5 }] };
 
 /** fetch stub: session → `session`, chats → `chats`; records the URLs hit. */
 function net(session: () => Response | Promise<Response>, chats: () => Response | Promise<Response> = () => json(CHATS)) {
@@ -134,8 +134,35 @@ describe("decidePush — identity gate", () => {
     const throwing = vi.fn(async (u: string) => { if (u === "/api/chats") throw new Error("x"); return json({ authenticated: true, user: { id: "uA" } }); });
     expect((await core.decidePush({ store: memStore("uA"), fetchFn: throwing, registration })).show).toBe(false);
   });
+  it("account switch between the two requests (session says A, /api/chats answers for B): no preview, purged", async () => {
+    const store = memStore("uA");
+    const { t, registration } = swReg();
+    const { fetchFn, urls } = net(signedIn("uA"), () => json({ ...CHATS, viewerId: "uB" }));
+    const d = await core.decidePush({ store, fetchFn, registration });
+    expect(d).toMatchObject({ show: false, reason: "account_mismatch" });
+    expect(urls).toEqual(["/api/session", "/api/chats"]);
+    expect(t.unsubscribed).toBe(1);
+    expect(store.value()).toBeNull();
+  });
+  it("/api/chats without a viewerId → no preview, purged", async () => {
+    for (const body of [{ chats: CHATS.chats }, { ...CHATS, viewerId: "" }, { ...CHATS, viewerId: 7 }]) {
+      const store = memStore("uA");
+      const { t, registration } = swReg();
+      const d = await core.decidePush({ store, fetchFn: net(signedIn("uA"), () => json(body)).fetchFn, registration });
+      expect(d.show).toBe(false);
+      expect(t.unsubscribed).toBe(1);
+      expect(store.value()).toBeNull();
+    }
+  });
+  it("opt-in cleared between the two fetches (logout / disable) → no preview", async () => {
+    const store = memStore("uA");
+    const { registration } = swReg();
+    const { fetchFn } = net(signedIn("uA"), () => { void store.clear(); return json(CHATS); });
+    const d = await core.decidePush({ store, fetchFn, registration });
+    expect(d).toMatchObject({ show: false, reason: "no_opt_in" });
+  });
   it("coalesces several unread chats like before", async () => {
-    const chats = () => json({ chats: [
+    const chats = () => json({ viewerId: "uA", chats: [
       { id: "c1", name: "A", lastMessage: "old", unreadCount: 1, lastActivity: 1 },
       { id: "c2", peerUsername: "bob", lastMessage: "new", unreadCount: 3, lastActivity: 9 },
     ] });

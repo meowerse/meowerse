@@ -154,7 +154,8 @@ describe("handleListChats", () => {
     );
     const res = await handleListChats(cookieReq("https://x/api/chats", "s1"), db, now, cors);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { chats: Array<{ id: string }> };
+    const body = (await res.json()) as { viewerId: string; chats: Array<{ id: string }> };
+    expect(body.viewerId).toBe("u1");
     expect(body.chats).toHaveLength(1);
     expect(body.chats[0].id).toBe("c1");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
