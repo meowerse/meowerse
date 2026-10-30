@@ -1,66 +1,135 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import { Card } from "@meowerse/ui";
+import LegalTable from "../components/LegalTable.astro";
+import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/legal";
 ---
 <Layout title="privacy · meowerse">
   <div class="mw-prose">
     <h1>privacy policy</h1>
-    <p class="mw-muted">Last updated 2026-07-03. Meowerse accounts is operated by an individual (alxnko) on a best-effort basis. This describes exactly what the service does with your data — nothing more.</p>
+    <p class="mw-muted">One page for every meowverse service: meow.alxnko.dev, alxnko.dev, meowerse accounts (auth), Meowsenger, meow-sim and the Minecraft server. Version {POLICY_VERSION}.</p>
 
-    <Card title="what we collect">
+    <!-- The joke is an aside, shown once, followed at once by the punchline and the real list. Never a disclosure. -->
+    <aside class="joke" aria-label="a joke, followed by the truth">
+      <p class="joke__line">We highly value your privacy 💚</p>
+      <p class="joke__line">We share your data with 1,000,000 trusted partners*</p>
+      <p class="joke__punch">*Just kidding. We can barely afford our servers.</p>
+    </aside>
+    <p><strong>Here is the real list of who gets what, and why.</strong></p>
+
+    <!-- Analytics, the consent banner, the membership and the my-data page are not live. Their rows and sections are added
+         in the SAME release that turns each feature on, never before. -->
+    <LegalTable caption="who gets your data, why, what and when" head={["partner", "why", "what they get", "when"]} rows={PARTNERS.map((p) => [p.partner, p.why, p.gets, p.when])} />
+    <p class="mw-muted">The Minecraft server and its plugins run on a separate machine from a separate project; this page covers them at a high level plus the facts below. Cloudflare appears in several rows because it provides several things.</p>
+
+    <h2>apps that sign you in</h2>
+    <p>Other apps can ask to sign you in with your meowerse account. They are recipients of your data too, and they come in several kinds (see the table), which are different from the infrastructure companies in the table above.</p>
+    <LegalTable caption="kinds of recipients: infrastructure providers, first-party apps, our own apps and third-party apps" head={["kind", "who", "consent", "what they get", "your control"]} rows={APP_KINDS.map((k) => [k.kind, k.who, k.consent, k.gets, k.control])} />
+    <p>What an app can be told is limited by the scopes it is registered for and, for third-party apps, that you approved:</p>
+    <LegalTable caption="what each scope releases to an app" head={["scope", "what the app gets", "note"]} rows={SCOPES.map((r) => [r.scope, r.gets, r.note])} />
+    <p class="mw-muted">Apps never receive your password, recovery codes or session cookie. An app that asks for offline access keeps access until its refresh token expires or you revoke it.</p>
+
+    <h2>what each service keeps</h2>
+
+    <Card title="meowerse accounts (auth.alxnko.dev)">
       <ul>
-        <li>Your username, and an optional display name and avatar URL.</li>
-        <li>Your password — stored only as a salted PBKDF2-SHA256 hash (600,000 iterations). We never store or log it in plain text.</li>
-        <li>Eight one-time recovery codes, stored hashed.</li>
-        <li>If you link Telegram: your Telegram id, username, display name, and avatar URL. Your "verified" status is derived from whether a Telegram link exists.</li>
-        <li>Timestamps for account creation and updates.</li>
+        <li>Your username, optional display name and avatar link, and account timestamps. Account data is kept until the account is deleted.</li>
+        <li>Your password, only as a salted PBKDF2-SHA256 hash (600,000 iterations), and eight one-time recovery codes, stored hashed.</li>
+        <li>If you link Telegram: your Telegram ID, username, display name and avatar link. "Verified" is derived from whether a link exists.</li>
+        <li>Sessions: a <code class="mono" data-case="preserve">__Host-</code> cookie (HttpOnly, Secure, SameSite=Lax) holding a random ID; only its hash is stored. Sessions last at most 30 days (14 days idle). Logging out marks the session revoked but does not delete its row: every session row, revoked or idle, is deleted a day after its 30-day limit, so up to about 31 days after you signed in.</li>
+        <li>Apps you approved (consents), plus authorization codes, access tokens (15 minutes) and refresh tokens, stored as hashes or IDs. Authorization codes last 60 seconds. Refresh-token records are kept for 30 days after they expire, and codes that were used for about 60 days past their own expiry (a refresh token's 30-day life, the 15-minute access token, plus 30 days), so reuse and replay can be detected; unused codes are kept 30 days. A daily cleanup then deletes them. Access tokens and sign-in tickets are deleted a day after they expire.</li>
+        <li>Abuse-prevention counters. They are keyed on an unsalted SHA-256 hash of your IP address plus the action (sign-up, sign-in, authorize, token, Telegram sign-in start and status, avatar), or on your account (re-confirmation). The raw IP is not stored in them, but a hash of an IP address can be worked out by anyone who tries every address, so this is pseudonymous, not anonymous. Counters are deleted by a daily cleanup after about 7 days without activity (up to about 8). The re-confirmation (step-up) counter is not removed when an account is deleted; it ages out the same way.</li>
+        <li>A security audit log of sign-ups, sign-ins (and failures), logouts, password and recovery-code changes, Telegram link/unlink, app consent changes, token reuse and app-management events. Each entry holds the event, your account ID, the app ID where relevant, a <strong>truncated</strong> IP (the last part of an IPv4 address, or all but the first 48 bits of an IPv6 address, is dropped) and a short hash of your browser's User-Agent. Never passwords, tokens or full IPs. Entries are deleted after 365 days.</li>
+        <li>The public address <code class="mono" data-case="preserve">/avatar/&lt;account id&gt;</code> fetches your current Telegram photo from Telegram on demand and serves it to anyone who has your account ID (it is cached for up to 6 hours). If you have not linked Telegram it serves nothing.</li>
+        <li>No email address is collected, no SMS is sent and no outbound email is sent by the accounts service.</li>
+        <li><strong>Backups:</strong> our database provider, Turso, keeps point-in-time backups. We are on Turso's free plan, whose restore window is 1 day. Deleted rows can persist in those backups until the window ends.</li>
       </ul>
     </Card>
 
-    <Card title="security & session data">
+    <Card title="Meowsenger (meowsenger.alxnko.dev)">
       <ul>
-        <li>A session is a cookie holding a random id whose hash is stored server-side; the cookie is <code class="mono" data-case="preserve">__Host-</code> prefixed, HttpOnly, Secure, and SameSite=Lax.</li>
-        <li>OAuth authorization codes and tokens are stored as hashes/ids with short lifetimes.</li>
-        <li>Abuse-prevention counters are keyed on a <strong>hashed</strong> IP (at signup) or <strong>hashed</strong> username (at login). We do not store your raw IP address.</li>
+        <li>Your profile (a cached copy of your username, display name and avatar), your chats, memberships and roles, join requests, read state, and messages with their edits, replies, forwards and reactions. Kept until deleted, as described below.</li>
+        <li><strong>Not end-to-end encrypted.</strong> Messages are encrypted in transit (HTTPS), but our servers read message content to deliver it, to keep chat history (including for people who join a chat later), to run in-chat search, and to show previews in your chat list.</li>
+        <li><strong>Deleting a message:</strong> you can delete your own message only within 24 hours of sending it; after that only a group owner or admin can delete it. Deleting blanks the text at once and the row itself is removed about 24 hours later. Reactions on a deleted message are purged along with the message row. The record of who created a chat is not removed by deleting a message.</li>
+        <li><strong>Chat list preview:</strong> the chat list keeps a separate copy of the latest message (the first 140 characters) in the database. It is replaced by the next message and is not cleared when that message is deleted. It also keeps the sender's ID.</li>
+        <li><strong>Leaving:</strong> leaving or deleting a chat removes your membership. If the owner leaves and anyone remains, ownership passes to another member (an admin first). When the last member of a group or channel leaves, the chat disappears from the list, but its stored message log is not wiped today and stays on our servers. Direct chats are never deleted: both people are ordinary members, so leaving removes only your membership and the chat, its latest-message preview and its creator record stay.</li>
+        <li><strong>Last seen:</strong> we save when you were last connected; people you have a direct chat with can see it. We also store whether others may add you to groups without asking (a setting you control).</li>
+        <li>Push subscriptions (your browser's push address and keys) if you turn notifications on; removed when you turn them off or delete your Meowsenger data. Signing out also tries to remove it; if that request fails, it stays until the push service reports it as expired.</li>
+        <li>Meowsenger sessions use the same kind of <code class="mono" data-case="preserve">__Host-</code> cookie as above. Presence and typing are live-only and never written to a database.</li>
+        <li><strong>Deleting your Meowsenger data</strong> (settings, danger zone) removes your profile, sessions, push subscriptions, join requests and your chat memberships. Chats are not deleted, except that a group or channel is removed when its last member leaves; direct chats stay (ownership of a group passes to another member if anyone remains). Messages you already sent stay in their chats, shown by a bare ID, as do your reactions.</li>
+        <li><strong>Backups:</strong> Cloudflare D1 Time Travel keeps point-in-time history of the Meowsenger database for 7 days. Messages live in SQLite-backed Cloudflare Durable Objects, which can be restored to any point in the past 30 days (developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), so deleted messages may remain recoverable in backups for up to 30 days.</li>
       </ul>
     </Card>
 
-    <Card title="what we share with apps">
-      <p>Only with your explicit, per-scope consent — and you can revoke it any time from your account:</p>
+    <Card title="meow.alxnko.dev and alxnko.dev">
       <ul>
-        <li><code class="mono" data-case="preserve">openid</code> — an opaque account identifier (no personal information).</li>
-        <li><code class="mono" data-case="preserve">profile</code> — your username, display name, and avatar.</li>
-        <li><code class="mono" data-case="preserve">telegram</code> — your Telegram id and username.</li>
-        <li><code class="mono" data-case="preserve">verified</code> — whether your account is verified (true/false).</li>
+        <li>Static sites. No accounts, no cookies, no tracking. The only things stored in your browser are display preferences such as light/dark and sound (local storage); alxnko.dev also keeps its terminal's command history there. All of it stays on your device.</li>
+        <li>Cloudflare serves them and sees each request, as in the table.</li>
       </ul>
     </Card>
 
-    <Card title="what we do not do">
+    <Card title="meow-sim (sim.alxnko.dev)">
       <ul>
-        <li>No email address is collected, and we send no email.</li>
-        <li>No SMS, no analytics, no advertising, no third-party trackers or cookies.</li>
-        <li>We never sell or share your data beyond the processors below.</li>
+        <li>A read-only spectator view: no account and no cookies. The server streams public simulation state and accepts only your map viewport.</li>
+        <li>It keeps your connection address in memory only while you are connected, to limit connections per address; a refused connection can write that address to the server's log. Nothing about you is written to a database.</li>
       </ul>
     </Card>
 
-    <Card title="processors">
+    <Card title="Minecraft server (mc.alxnko.dev)">
       <ul>
-        <li>Turso — the database that stores your account data.</li>
-        <li>Cloudflare — hosts the workers and pages, and keeps short-lived edge request logs.</li>
-        <li>Telegram — only involved if you use Telegram sign-in or verification.</li>
+        <li>The Minecraft server runs on a machine at the operator's home, not behind Cloudflare, from a separate project. Connecting to it reveals your IP address to that machine. The server runs in offline mode (<code class="mono" data-case="preserve">online-mode=false</code>): it does not check your name with Mojang, which is why it has its own login.</li>
+        <li>The server logs the IP address you connect from (<code class="mono" data-case="preserve">log-ips=true</code>), along with chat and commands, in log files kept on that machine. There is no retention limit today: logs going back to 2026-09-19 are still kept.</li>
+        <li>The login plugin (AuthMe) stores your username, a bcrypt hash of your password, the IP address you last logged in from, the IP address you registered from, last position in the game, and login and registration times. Registration asks for a username and password only; no email is requested and the server sends no email, although AuthMe has an optional <code class="mono" data-case="preserve">/email</code> command that stores an address if a player chooses to use it.</li>
+        <li>Simple Voice Chat relays voice through the server (UDP port 24454) to nearby players or your voice-chat group (any distance). The server does not record voice; the setting that lets players' own clients record voice (<code class="mono" data-case="preserve">allow_recording</code>) is on, so another player's recording is outside our control.</li>
+        <li>SkinsRestorer sends your Minecraft username to Mojang / MineSkin to fetch your skin. Plugin statistics go to bStats (built into most of the server's plugins) and FastStats (inside NexusCore, whose error reports may contain player names), as in the table.</li>
+        <li><strong>Backups:</strong> the operator keeps offline copies of the world and plugin data (including AuthMe's database with the hashes and IP addresses above). They are not deleted on a schedule.</li>
+        <li>Server rules and details live on the server.</li>
       </ul>
     </Card>
 
-    <Card title="retention & your rights">
-      <ul>
-        <li>Sessions last at most 30 days; access tokens minutes; authorization codes 60 seconds.</li>
-        <li>Your account data is kept until you delete your account or unlink Telegram.</li>
-        <li>You can view your data on your account page, revoke app access, and unlink Telegram.</li>
-        <!-- KEEP IN SYNC: this deletion text must change in the SAME PR that enables ACCOUNT_DELETE_ENABLED (self-service deletion). -->
-        <li>Account deletion is not self-service yet: email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a> with your username and we record your request. Nothing is deleted from an email; once in-account deletion is live you confirm it from inside your account, and we will let you know. Deleting your meowerse account erases your auth account data (login methods, sessions, app permissions, tokens) but not data held by other services such as Meowsenger, which you delete separately in Meowsenger; security audit entries are kept for up to 365 days.</li>
-      </ul>
-    </Card>
+    <!-- TODAY-ONLY: this "analytics today" block states the current state, not a promise. The release that adds analytics
+         (the consent-gated providers and our own anonymous counts) REPLACES it with an "Anonymous
+         measurement" section, adds the consent banner and partner rows (after the Cloudflare rows above), and the membership section. -->
+    <h2>analytics today</h2>
+    <p>Today we run no analytics and load no third-party trackers or advertising scripts. If that changes, this page, the partner table and the consent choices change in the same release, before anything is switched on.</p>
 
-    <p class="mw-muted">Questions or data requests? Email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a>.</p>
+    <h2>what we never do</h2>
+    <ul>
+      <li>Sell your data.</li>
+      <li>Show ads.</li>
+      <li>Read your chats for analytics.</li>
+      <li>Track you across sites.</li>
+    </ul>
+
+    <h2>your controls</h2>
+    <ul>
+      <li>Delete your Meowsenger data in Meowsenger's own settings (danger zone). There is no export screen yet: ask at <a href={`mailto:${CONTACTS.privacy}`}>{CONTACTS.privacy}</a> for a copy.</li>
+      <li>Revoke any app's access and unlink Telegram on your <a href="/account">account page</a>.</li>
+      <!-- KEEP IN SYNC: this deletion text must change in the SAME PR that enables ACCOUNT_DELETE_ENABLED (self-service deletion). -->
+      <li>Account deletion is not self-service yet: email <a href={`mailto:${CONTACTS.privacy}`}>{CONTACTS.privacy}</a> with your username and we record your request. Nothing is deleted from an email; once in-account deletion is live you confirm it from inside your account, and we will let you know. Deleting your meowerse account erases your auth account data (login methods, sessions, app permissions, tokens) but not data held by other services such as Meowsenger, which you delete separately; security audit entries are kept for up to 365 days.</li>
+    </ul>
+
+    <h2>who is responsible, and why we may use your data</h2>
+    <ul>
+      <li><strong>Controller:</strong> alxnko, operator of the meowverse services. Contact: <a href={`mailto:${CONTACTS.privacy}`}>{CONTACTS.privacy}</a>.</li>
+      <li><strong>Providing accounts, chat and the other services you use:</strong> needed to run the service you asked for (contract).</li>
+      <li><strong>Hosting and request logs, security logs, abuse counters, and keeping group messages after you delete your data:</strong> our legitimate interest in a working, safe service and in not breaking other people's conversations.</li>
+      <li><strong>Emails you send us:</strong> our legitimate interest in answering you. privacy@, security@ and contact@ only receive mail; a reply may come from a different address (the operator's own), so check that it is really a reply to your message. Messages are forwarded to and kept in the operator's Gmail mailbox, with no automatic deletion today.</li>
+      <li><strong>Optional features you switch on</strong> (Telegram link, notifications): your choice (consent); you can switch them off.</li>
+      <li><strong>Retention:</strong> as listed per service above.</li>
+      <li><strong>Your rights:</strong> access, correction, export, deletion and objection, as applicable where you live. Ask at {CONTACTS.privacy}. You may also complain to your local data protection supervisory authority.</li>
+      <li><strong>International transfers:</strong> Cloudflare, Google, Turso (Ireland), Hetzner, Telegram, browser push services, Mojang / MineSkin, bStats and the other plugin services operate outside or across your country, and the Minecraft server is hosted in the operator's home, so your data may be processed abroad. We rely on those providers' standard terms.</li>
+      <li><strong>Children:</strong> 16 is the minimum age to have an account by our policy, but we do not verify age today. This age is subject to legal review and is not an exemption from local rules, which vary by country.</li>
+      <li><strong>Changes:</strong> this is policy {POLICY_VERSION}. We will change the version and date when it changes.</li>
+    </ul>
+
+    <p class="mw-muted">Questions or data requests (these addresses receive mail only): <a href={`mailto:${CONTACTS.privacy}`}>{CONTACTS.privacy}</a>. Security reports: <a href={`mailto:${CONTACTS.security}`}>{CONTACTS.security}</a>. General: <a href={`mailto:${CONTACTS.general}`}>{CONTACTS.general}</a>. See also the <a href="/terms">terms</a>.</p>
   </div>
 </Layout>
+
+<style>
+  .joke { margin: 0; padding: var(--sp-3) var(--sp-4); border-inline-start: 3px solid var(--c-line-strong); background: var(--c-surface); border-radius: var(--r-s); font-size: var(--fs-2); color: var(--c-fg-muted); font-style: italic; }
+  .joke p { margin: 0; }
+  .joke p + p { margin-top: var(--sp-1); }
+  .joke__punch { font-style: normal; font-weight: 600; color: var(--c-fg); }
+</style>
