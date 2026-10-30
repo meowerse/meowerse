@@ -86,10 +86,13 @@ describe("shared privacy page copy", () => {
 
 describe("shared privacy page: recipients, retention and honest state", () => {
   it("separates infrastructure, first-party apps and third-party apps, with scopes and what they release", () => {
-    expect(APP_KINDS.map((k) => k.kind).join("|")).toMatch(/Infrastructure.*First-party.*Third-party/);
+    expect(APP_KINDS.map((k) => k.kind).join("|")).toMatch(/Infrastructure.*First-party.*Our own apps.*Third-party/);
     const fp = APP_KINDS.find((k) => k.kind.startsWith("First-party"))!;
-    expect(fp.who).toContain("Meowsenger");
+    expect(fp.who).toContain("none today");
     expect(fp.consent).toContain("silently");
+    const ours = APP_KINDS.find((k) => k.kind === "Our own apps")!;
+    expect(ours.who).toContain("Meowsenger");
+    expect(ours.consent).toContain("consent screen");
     const tp = APP_KINDS.find((k) => k.kind.startsWith("Third-party"))!;
     expect(tp.consent).toContain("consent screen");
     expect(tp.who).toContain("our approval");

@@ -44,11 +44,12 @@ export interface AppKind {
 }
 
 // Apps that sign you in with your meowerse account. Checked against workers/auth: consent.ts (first_party =>
-// silent), userinfo.ts + token.ts (claims), db.ts (first_party is admin-set in the database; the only seeded
+// silent; in production no client has first_party=1 as of 2026-10-30, Meowsenger included), userinfo.ts + token.ts (claims), db.ts (first_party is admin-set in the database; the only seeded
 // client, mw_demo, is third-party), workers/meowsenger/auth.config.ts (Meowsenger's registration).
 export const APP_KINDS: readonly AppKind[] = [
   { kind: "Infrastructure providers", who: "Cloudflare, Turso, Hetzner and the others in the table above", consent: "not apps: they run the service for us", gets: "only what the table above lists", control: "see the table" },
-  { kind: "First-party apps (ours)", who: "Meowsenger (meowsenger.alxnko.dev), run by us. First-party status is set only by us, in the database, never through the public app registration", consent: "a first-party app is authorized silently, with no consent screen", gets: "the scopes the app is registered for (Meowsenger: openid, profile, verified, plus offline access so you stay signed in)", control: "revoke on your account page, or sign out" },
+  { kind: "First-party apps (ours)", who: "none today. The service supports marking our own apps first-party (only we can, in the database, never through the public app registration), but no app is marked that way, so Meowsenger and our other apps ask for your approval like any other app", consent: "a first-party app would be authorized silently, with no consent screen; we will update this policy before marking any app first-party", gets: "the scopes the app is registered for", control: "revoke on your account page, or sign out" },
+  { kind: "Our own apps", who: "Meowsenger (meowsenger.alxnko.dev), run by us", consent: "you see the consent screen and approve it, like a third-party app", gets: "openid, profile, verified, plus offline access so you stay signed in", control: "revoke on your account page at any time" },
   { kind: "Third-party apps (anyone else, if we approve them)", who: "apps run by other people. Each needs our approval before it can ask you", consent: "you see a consent screen listing what the app asks for and must approve it", gets: "only the scopes you approved", control: "revoke on your account page at any time. These apps are independent controllers: what they do with data after you approve is governed by their own privacy policy, not this one" },
 ];
 

@@ -24,7 +24,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
 
     <h2>apps that sign you in</h2>
     <p>Other apps can ask to sign you in with your meowerse account. They are recipients of your data too, and they come in two kinds, which are different from the infrastructure companies in the table above.</p>
-    <LegalTable caption="kinds of recipients: infrastructure providers, first-party apps and third-party apps" head={["kind", "who", "consent", "what they get", "your control"]} rows={APP_KINDS.map((k) => [k.kind, k.who, k.consent, k.gets, k.control])} />
+    <LegalTable caption="kinds of recipients: infrastructure providers, first-party apps, our own apps and third-party apps" head={["kind", "who", "consent", "what they get", "your control"]} rows={APP_KINDS.map((k) => [k.kind, k.who, k.consent, k.gets, k.control])} />
     <p>What an app can be told is limited by the scopes it is registered for and, for third-party apps, that you approved:</p>
     <LegalTable caption="what each scope releases to an app" head={["scope", "what the app gets", "note"]} rows={SCOPES.map((r) => [r.scope, r.gets, r.note])} />
     <p class="mw-muted">Apps never receive your password, recovery codes or session cookie. With offline access an app keeps access until its tokens expire or you revoke it.</p>
