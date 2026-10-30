@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { sendPush, savePushSubscription, deletePushSubscription, pushTargetsForChat, isAllowedPushEndpoint, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
+import { sendPush, savePushSubscription, deletePushSubscription, deleteDeadPushSubscription, pushTargetsForChat, isAllowedPushEndpoint, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
 import type { DbClient, Env, Row } from "./types";
 
 let env: Env;
@@ -52,6 +52,9 @@ function pushDb() {
         const [p256dh, auth, created_at, endpoint, user_id] = p as [unknown, unknown, number, string, string];
         const i = subs.findIndex((s) => s.endpoint === endpoint && s.user_id === user_id);
         if (i >= 0) subs[i] = { endpoint, user_id, p256dh, auth, created_at };
+      } else if (sql.includes("AND created_at < ?")) {
+        const i = subs.findIndex((s) => s.endpoint === p[0] && s.user_id === p[1] && (s.created_at ?? 0) < (p[2] as number));
+        if (i >= 0) subs.splice(i, 1);
       } else if (sql.includes("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")) {
         const i = subs.findIndex((s) => s.endpoint === p[0] && s.user_id === p[1]);
         if (i >= 0) subs.splice(i, 1);
@@ -222,6 +225,30 @@ describe("push subscription cap + scoped delete", () => {
   });
 });
 
+describe("deleteDeadPushSubscription (cleanup vs fresh re-registration)", () => {
+  it("prunes the row the send targeted when it predates the send", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u1", { endpoint: "e1" }, 100);
+    await deleteDeadPushSubscription(db, "e1", "u1", 200);
+    expect(subs).toHaveLength(0);
+  });
+  it("keeps a registration made after the send started (overlapping cleanup vs re-register)", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u1", { endpoint: "e1" }, 100);
+    const sentAt = 200; // send starts; push service answers 410 slowly …
+    await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "fresh" }, 250, "repair"); // … user re-registers meanwhile
+    await deleteDeadPushSubscription(db, "e1", "u1", sentAt); // late cleanup
+    expect(subs).toHaveLength(1);
+    expect(subs[0].p256dh).toBe("fresh");
+  });
+  it("never deletes another user's row for that endpoint", async () => {
+    const { db, subs } = pushDb();
+    await savePushSubscription(db, "u2", { endpoint: "e1" }, 100);
+    await deleteDeadPushSubscription(db, "e1", "u1", 200);
+    expect(subs).toHaveLength(1);
+  });
+});
+
 describe("pushHostFamily (log-safe host classification)", () => {
   it("maps endpoints to a coarse family and never echoes the URL", () => {
     expect(pushHostFamily("https://fcm.googleapis.com/fcm/send/secret")).toBe("fcm");
@@ -244,8 +271,8 @@ describe("pushTargetsForChat", () => {
       { endpoint: "e3", user_id: "u3", p256dh: null, auth: null },
     );
     // Exclude the sender (u1) + a connected user (u2) → only u3's endpoint.
-    expect(await pushTargetsForChat(db, "c1", ["u1", "u2"])).toEqual(["e3"]);
+    expect(await pushTargetsForChat(db, "c1", ["u1", "u2"])).toEqual([{ endpoint: "e3", userId: "u3" }]);
     // No exclusions → all three.
-    expect((await pushTargetsForChat(db, "c1", [])).sort()).toEqual(["e1", "e2", "e3"]);
+    expect((await pushTargetsForChat(db, "c1", [])).map((t) => t.endpoint).sort()).toEqual(["e1", "e2", "e3"]);
   });
 });

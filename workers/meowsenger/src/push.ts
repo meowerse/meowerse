@@ -175,16 +175,24 @@ export async function deletePushSubscription(db: DbClient, endpoint: string, use
   else await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", [endpoint, userId]);
 }
 
+/** Prune a dead (404/410) endpoint after a send that STARTED at `sentAt`. Scoped to the
+ *  exact row the send targeted (endpoint AND the user it was sent for) and only if it was
+ *  not (re)registered since the send began (`created_at < sentAt`): a fresh registration
+ *  of the same endpoint made while the send was in flight must survive. */
+export async function deleteDeadPushSubscription(db: DbClient, endpoint: string, userId: string, sentAt: number): Promise<void> {
+  await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ? AND created_at < ?", [endpoint, userId, sentAt]);
+}
+
 /** All push endpoints to notify for a message in `chatId`, EXCLUDING the sender and
  *  anyone currently connected to the room (they get it live over the socket). One
  *  D1 read via a chat_members × push_subscriptions join; the excluded set (the room's
  *  live socket users) is typically tiny, so we filter in memory rather than a big
- *  NOT IN. Returns distinct endpoints. */
+ *  NOT IN. Returns distinct endpoints with the owning user. */
 export async function pushTargetsForChat(
   db: DbClient,
   chatId: string,
   excludeUserIds: string[],
-): Promise<string[]> {
+): Promise<Array<{ endpoint: string; userId: string }>> {
   const excluded = new Set(excludeUserIds);
   const rows = await db.all(
     `SELECT ps.endpoint AS endpoint, ps.user_id AS user_id FROM push_subscriptions ps
@@ -192,10 +200,10 @@ export async function pushTargetsForChat(
      WHERE cm.chat_id = ?`,
     [chatId],
   );
-  const out = new Set<string>();
+  const out = new Map<string, string>(); // endpoint → owner (endpoint is the primary key)
   for (const r of rows as Row[]) {
     if (excluded.has(String(r.user_id))) continue;
-    out.add(String(r.endpoint));
+    out.set(String(r.endpoint), String(r.user_id));
   }
-  return [...out];
+  return [...out].map(([endpoint, userId]) => ({ endpoint, userId }));
 }
