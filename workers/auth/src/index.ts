@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
@@ -960,6 +960,9 @@ function accountDeleteEnabled(env: Env): boolean {
   return env.ACCOUNT_DELETE_ENABLED === "1" || env.ACCOUNT_DELETE_ENABLED === "true";
 }
 
+/** Auth newer than this (seconds) counts as "fresh" for the delete step-up. */
+const STEPUP_FRESH_SECONDS = 300;
+
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
@@ -1003,24 +1006,58 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
     return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
+  if (sub === "delete/start") {
+    if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
+    const t = now(deps);
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    // Fresh authentication: a recent login (auth_time is the real login time, kept across rotation) OR the current password.
+    if (t - session.authTime > STEPUP_FRESH_SECONDS) {
+      if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
+      const pw = p.current_password ?? "";
+      if (!pw) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
+      const rl = await checkRateLimit(db, `stepup:${accountId}`, { limit: 5, windowSec: 900, now: t });
+      if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+      const v = await verifyAccountPassword(db, accountId, pw);
+      if (v !== "ok") {
+        await recordAudit(deps, req, { event: "account.delete_stepup_fail", accountId });
+        return json({ error: "wrong_password" }, 403, cors);
+      }
+    }
+    const rawSession = cookies[`__Host-${SESS_COOKIE}`] ?? "";
+    const token = randomId(32);
+    const issued = await issueDeleteConfirmation(db, { accountId, sessionIdHash: await sha256Hex(rawSession), tokenHash: await sha256Hex(token), now: t });
+    if (!issued) return accountGone(cors);
+    return json({ confirm_token: token, expires_in: DELETE_CONFIRM_TTL }, 200, { ...cors, ...securityHeaders() });
+  }
   if (sub === "delete") {
     if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
     const info = await getAccountInfo(db, accountId);
     if (!info) return json({ error: "not_found" }, 404, cors);
     const expected = info.username ?? info.displayName ?? "";
     if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
+    const token = p.confirm_token ?? "";
+    if (!token) return json({ error: "confirm_invalid" }, 403, cors);
+    const confirmation = { tokenHash: await sha256Hex(token), sessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? ""), now: now(deps) };
     if (await ownsActiveClients(db, accountId)) return json({ error: "owns_active_clients" }, 409, cors);
-    // The account.delete audit row is written INSIDE the delete batch (exists iff the deletion committed).
+    // The token is consumed and the account.delete audit row is written INSIDE the delete batch (exists iff the deletion committed).
     const audit = { ipTrunc: truncIp(req.headers.get("CF-Connecting-IP")), uaHash: await uaHash(req.headers.get("User-Agent")) };
     try {
-      await deleteAccount(db, accountId, audit);
+      await deleteAccount(db, accountId, audit, confirmation);
     } catch (e) {
       console.error("account_delete_failed", errCode(e));
-      // The response may have been lost after a commit, or the batch rolled back: ask the DB which.
+      const constraint = String(errCode(e)).startsWith("SQLITE_CONSTRAINT");
+      // A constraint error means THIS batch rolled back (an in-batch guard fired): it never committed, so even if the
+      // account is gone (a racing request won) this request did not delete it. Any other error may be a lost response.
       let gone = false;
       try {
         gone = !(await accountExists(db, accountId));
-        if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors); // in-batch guard fired
+        if (constraint) {
+          if (gone || !(await deleteConfirmationUsable(db, accountId, confirmation))) return json({ error: "confirm_invalid" }, 403, cors);
+          if (await ownsActiveClients(db, accountId)) return json({ error: "owns_active_clients" }, 409, cors);
+          return json({ error: "server_error" }, 500, cors);
+        }
+        if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors);
       } catch (e2) {
         console.error("account_delete_probe_failed", errCode(e2));
         return json({ error: "server_error" }, 500, cors);

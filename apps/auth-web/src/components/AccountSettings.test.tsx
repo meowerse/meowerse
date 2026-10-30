@@ -86,6 +86,7 @@ describe("AccountSettings", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const u = String(url);
       if (u.endsWith("/grants")) return json({ grants: [] });
+      if (u.endsWith("/api/account/delete/start")) return json({ confirm_token: "tok" });
       if (u.endsWith("/api/account/delete")) return json({ error: "owns_active_clients" }, 409);
       return json({ ...ACCOUNT, deleteEnabled: true });
     });
@@ -97,5 +98,75 @@ describe("AccountSettings", () => {
     fireEvent.click(buttons[buttons.length - 1]!);
     await waitFor(() => expect(screen.getByText("delete your apps in the developer dashboard first")).not.toBeNull());
     expect(screen.queryByText("could not delete account")).toBeNull();
+  });
+
+  const openDelete = async () => {
+    await screen.findByText("alxnko");
+    fireEvent.click(screen.getByRole("button", { name: "delete account" }));
+    fireEvent.change(await screen.findByLabelText("type alxnko to confirm"), { target: { value: "alxnko" } });
+  };
+  const clickDelete = () => { const b = screen.getAllByRole("button", { name: "delete account" }); fireEvent.click(b[b.length - 1]!); };
+
+  it("fresh auth: start then delete, the delete carries the confirm token", async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/grants")) return json({ grants: [] });
+      if (init?.method === "POST") calls.push({ url: u, body: JSON.parse(String(init.body)) });
+      if (u.endsWith("/delete/start")) return json({ confirm_token: "tok1" });
+      if (u.endsWith("/api/account/delete")) return json({ error: "confirm_invalid" }, 403);
+      return json({ ...ACCOUNT, deleteEnabled: true });
+    });
+    page();
+    await openDelete();
+    clickDelete();
+    await waitFor(() => expect(screen.getByText("the confirmation expired — try again")).not.toBeNull());
+    expect(calls.map((c) => c.url.split("/api/account")[1])).toEqual(["/delete/start", "/delete"]);
+    expect(calls[1]!.body).toEqual({ csrf: "c", confirm: "alxnko", confirm_token: "tok1" });
+  });
+
+  it("stale auth with a password: asks for the password, then retries start with it", async () => {
+    const starts: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/grants")) return json({ grants: [] });
+      if (u.endsWith("/delete/start")) {
+        const b = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        starts.push(b);
+        return b.current_password ? json({ confirm_token: "tok2" }) : json({ error: "step_up_required", reauth: "password" }, 401);
+      }
+      if (u.endsWith("/api/account/delete")) return json({ error: "owns_active_clients" }, 409);
+      return json({ ...ACCOUNT, hasPassword: true, deleteEnabled: true });
+    });
+    page();
+    await openDelete();
+    clickDelete();
+    const pw = await screen.findByLabelText("your password");
+    fireEvent.change(pw, { target: { value: "hunter2hunter2" } });
+    clickDelete();
+    await waitFor(() => expect(screen.getByText("delete your apps in the developer dashboard first")).not.toBeNull());
+    expect(starts).toEqual([{ csrf: "c" }, { csrf: "c", current_password: "hunter2hunter2" }]);
+  });
+
+  it("stale auth on a Telegram-only account: offers sign in again with telegram (/login?reauth=delete)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith("/grants")) return json({ grants: [] });
+      if (u.endsWith("/delete/start")) return json({ error: "step_up_required", reauth: "telegram" }, 401);
+      return json({ ...ACCOUNT, deleteEnabled: true });
+    });
+    page();
+    await openDelete();
+    clickDelete();
+    const btn = await screen.findByRole("button", { name: "sign in again with telegram" });
+    expect(btn.closest("a")?.getAttribute("href")).toBe("/login?reauth=delete");
+  });
+
+  it("returning from re-auth (?reauth=delete) reopens the delete dialog once", async () => {
+    window.history.replaceState(null, "", "/account?reauth=delete");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json({ ...ACCOUNT, deleteEnabled: true }));
+    page();
+    expect(await screen.findByLabelText("type alxnko to confirm")).not.toBeNull();
+    expect(window.location.search).toBe("");
   });
 });

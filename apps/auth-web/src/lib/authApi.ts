@@ -105,8 +105,17 @@ export function postAccountPassword(base: string, csrf: string, current: string,
 export function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {
   return getJson(`${base}/api/account/grants`);
 }
-export function deleteAccount(base: string, csrf: string, confirm: string): Promise<{ ok?: boolean; error?: string }> {
-  return postJson(`${base}/api/account/delete`, { csrf, confirm });
+/** Step 1 of account deletion: prove fresh authentication (recent login, or the current password) and get a single-use token. */
+export function startAccountDelete(
+  base: string,
+  csrf: string,
+  currentPassword?: string,
+): Promise<{ confirm_token?: string; expires_in?: number; error?: string; reauth?: "password" | "telegram" }> {
+  return postJson(`${base}/api/account/delete/start`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
+}
+/** Step 2: delete, presenting the typed username and the token from {@link startAccountDelete}. */
+export function deleteAccount(base: string, csrf: string, confirm: string, confirmToken: string): Promise<{ ok?: boolean; error?: string }> {
+  return postJson(`${base}/api/account/delete`, { csrf, confirm, confirm_token: confirmToken });
 }
 export function revokeGrant(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/account/grants/revoke`, { csrf, client_id: clientId });
@@ -153,4 +162,22 @@ export function nextLocation(next: NextStep | undefined): string {
   if (next.action === "consent") return "/consent";
   if (next.action === "verify_required") return "/verify";
   return "/account";
+}
+
+/** The only `reauth` purpose the sign-in pages honour (allowlist: anything else is ignored, so no open redirect). */
+export const REAUTH_DELETE = "delete";
+
+/** True when `search` (a location.search string) asks to resume the account-deletion dialog after re-authenticating. */
+export function wantsDeleteReauth(search: string): boolean {
+  return new URLSearchParams(search).get("reauth") === REAUTH_DELETE;
+}
+
+/**
+ * Where to go after signing in. Normally {@link nextLocation}; but a sign-in started from the delete dialog
+ * (`?reauth=delete`) that would land on /account returns there with the same marker so the dialog reopens.
+ * Never builds a location from user input: only the fixed same-origin path below.
+ */
+export function postAuthLocation(next: NextStep | undefined, search: string): string {
+  const loc = nextLocation(next);
+  return loc === "/account" && wantsDeleteReauth(search) ? `/account?reauth=${REAUTH_DELETE}` : loc;
 }

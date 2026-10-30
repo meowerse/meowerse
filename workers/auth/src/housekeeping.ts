@@ -60,6 +60,8 @@ function targets(now: number): Target[] {
     { key: "login_tickets", table: "login_tickets", where: "expires_at < ?", args: [now - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
     // lookupSession/whoami reject on absolute expiry; the row is dead one day past it.
     { key: "sessions", table: "sessions", where: "absolute_expires_at < ?", args: [cutoff] },
+    // Delete confirmations live 5 min; used/expired rows are dead one day past expiry.
+    { key: "account_delete_confirmations", table: "account_delete_confirmations", where: "expires_at < ?", args: [cutoff] },
     // introspect() returns inactive for expired or missing rows alike (ACCESS_TTL is 15 min).
     { key: "access_tokens", table: "access_tokens", where: "expires_at < ?", args: [cutoff] },
     {

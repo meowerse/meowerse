@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Button } from "@meowerse/ui";
-import { tgStart, tgStatus, nextLocation, type NextStep } from "../lib/authApi";
+import { tgStart, tgStatus, postAuthLocation, type NextStep } from "../lib/authApi";
 
 export default function TelegramButton({ base, kind, label }: { base: string; kind?: "VERIFY_EXISTING"; label?: string }) {
   const [link, setLink] = useState<string | null>(null);
@@ -15,7 +15,7 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     const ticketId = res.ticketId;
     timer.current = setInterval(async () => {
       const s = await tgStatus(base, ticketId).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep });
-      if (s.ready) { if (timer.current) clearInterval(timer.current); window.location.href = nextLocation(s.next); }
+      if (s.ready) { if (timer.current) clearInterval(timer.current); window.location.href = postAuthLocation(s.next, window.location.search); }
     }, 2000);
     setTimeout(() => timer.current && clearInterval(timer.current), 5 * 60 * 1000);
   }

@@ -215,7 +215,8 @@ test("password.change only on success; recovery.regenerate; consent.revoke; tele
 
   expect(await h.one(() => h.call("/api/account/telegram/unlink", { sess, body: { csrf } }))).toMatchObject({ event: "telegram.unlink", account_id: accountId });
 
-  expect(await h.one(() => h.call("/api/account/delete", { sess, body: { csrf, confirm: "aud_acct" } }))).toMatchObject({ event: "account.delete", account_id: accountId });
+  const confirmToken = ((await (await h.call("/api/account/delete/start", { sess, body: { csrf } })).json()) as { confirm_token: string }).confirm_token;
+  expect(await h.one(() => h.call("/api/account/delete", { sess, body: { csrf, confirm: "aud_acct", confirm_token: confirmToken } }))).toMatchObject({ event: "account.delete", account_id: accountId });
 });
 
 async function consentFlow(h: Awaited<ReturnType<typeof harness>>, username: string) {

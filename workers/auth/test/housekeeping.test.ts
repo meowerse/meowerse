@@ -67,6 +67,25 @@ test("sessions: absolute expiry + 1 day margin", async () => {
   expect((await db.execute("SELECT id_hash FROM sessions ORDER BY id_hash")).rows.map((x) => x.id_hash)).toEqual(["s_edge", "s_live"]);
 });
 
+test("account_delete_confirmations: expiry + 1 day margin (used or not), bounded batch", async () => {
+  const db = await freshDb();
+  await db.execute("INSERT INTO accounts (id, username) VALUES ('a1','alice')");
+  const cut = NOW - HOUSEKEEPING_MARGIN;
+  const add = (h: string, exp: number, used: number | null) =>
+    db.execute({ sql: "INSERT INTO account_delete_confirmations (token_hash, account_id, session_id_hash, created_at, expires_at, used_at) VALUES (?, 'a1', 's', 0, ?, ?)", args: [h, exp, used] });
+  await add("old_unused", cut - 1, null);
+  await add("old_used", cut - 1, 5);
+  await add("at_cutoff", cut, null);
+  await add("live", NOW + 100, null);
+  const r = await runHousekeeping(db, NOW);
+  expect(r.deleted.account_delete_confirmations).toBe(2);
+  expect(await ids(db, "token_hash", "account_delete_confirmations")).toEqual(["at_cutoff", "live"]);
+  await add("o1", cut - 5, null); await add("o2", cut - 6, null); await add("o3", cut - 7, null);
+  const capped = await runHousekeeping(db, NOW, { batchSize: 1, maxBatches: 2 });
+  expect(capped.deleted.account_delete_confirmations).toBe(2);
+  expect(await count(db, "account_delete_confirmations")).toBe(3);
+});
+
 test("access_tokens: expiry + 1 day margin", async () => {
   const db = await freshDb();
   const cut = NOW - HOUSEKEEPING_MARGIN;
@@ -267,12 +286,12 @@ test("scheduledHousekeeping logs one counts-only line; swallows errors", async (
   try {
     await scheduledHousekeeping({ getDb: () => db }, NOW);
     expect(log).toHaveBeenCalledTimes(1);
-    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 login_tickets=0 sessions=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
+    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 login_tickets=0 sessions=0 account_delete_confirmations=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
     await expect(scheduledHousekeeping({ getDb: () => { throw new Error("no db"); } }, NOW)).resolves.toBeUndefined();
     expect(err).toHaveBeenCalledWith("housekeeping_failed");
     const bad: DbClient = { execute: async () => { throw new Error("x"); }, batch: async () => [] };
     await scheduledHousekeeping({ getDb: () => bad }, NOW);
-    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,login_tickets,sessions,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
+    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
   } finally {
     log.mockRestore();
     err.mockRestore();

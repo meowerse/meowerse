@@ -159,6 +159,16 @@ export const SCHEMA: string[] = [
   // Retention prune (ts range scan) + per-account audit lookups.
   `CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, ts)`,
+  // Single-use, session-bound, 5-minute step-up confirmation for account self-deletion (only the token's SHA-256 is stored).
+  `CREATE TABLE IF NOT EXISTS account_delete_confirmations (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    session_id_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_delete_confirm_account ON account_delete_confirmations(account_id)`,
 ];
 
 /**
@@ -226,6 +236,10 @@ export function prodDeps(env: Env): Deps {
  *     CREATE INDEX IF NOT EXISTS idx_oauth_codes_exp ON oauth_codes(expires_at);"
  *
  * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
+ *
+ * PROD ONE-SHOT (account self-deletion step-up table, additive, idempotent): see the CREATE TABLE /
+ * CREATE INDEX for `account_delete_confirmations` in SCHEMA above; apply both by hand before enabling
+ * ACCOUNT_DELETE_ENABLED.
  */
 
 /** Run every migration statement once per Deps object (once per isolate). */
