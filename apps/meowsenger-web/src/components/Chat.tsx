@@ -561,12 +561,12 @@ export default function Chat({ base }: { base: string }) {
     // session ends, so the next account on this browser can't inherit it. Best-effort
     // and time-boxed: logout must never hang on it.
     await Promise.race([
-      disablePush(base).catch(() => {}),
+      disablePush(base, meId ?? undefined).catch(() => {}),
       new Promise<void>((r) => setTimeout(r, 3000)),
     ]);
     await fetch(logoutUrl(base), { method: "POST", credentials: "include" });
     window.location.href = loginUrl(base);
-  }, [base]);
+  }, [base, meId]);
 
   const peerOnline = peerId != null && online.has(peerId);
   // Online but all their tabs are backgrounded → "away".

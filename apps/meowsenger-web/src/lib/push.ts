@@ -50,22 +50,38 @@ export class PushError extends Error {
 }
 
 // localStorage marker of the last subscription the SERVER confirmed, as
-// `<userId>|<endpoint>`. Lets syncPushSubscription re-send a subscription the server
-// never stored (or one bound to another account on this browser) without writing to
-// D1 on every page load.
+// `<userId>|<endpoint>`. It records "this account opted in on this browser". An ABSENT
+// or foreign marker means ownership is UNKNOWN: sync then only ever asks the server to
+// repair (never create) and drops the local subscription if that is refused.
 const SYNC_KEY = "mw_push_synced";
-function readSynced(): string | null {
-  try { return globalThis.localStorage?.getItem(SYNC_KEY) ?? null; } catch { return null; }
+// Endpoint whose server-side removal has not been confirmed yet (`<userId>|<endpoint>`).
+// The local subscription is already gone by then; this lets the same account retry.
+const PENDING_KEY = "mw_push_pending_unsub";
+function readKey(k: string): string | null {
+  try { return globalThis.localStorage?.getItem(k) ?? null; } catch { return null; }
 }
-function writeSynced(v: string | null): void {
+function writeKey(k: string, v: string | null): void {
   try {
-    if (v === null) globalThis.localStorage?.removeItem(SYNC_KEY);
-    else globalThis.localStorage?.setItem(SYNC_KEY, v);
+    if (v === null) globalThis.localStorage?.removeItem(k);
+    else globalThis.localStorage?.setItem(k, v);
   } catch { /* storage blocked — we just re-sync next time */ }
 }
+const readSynced = () => readKey(SYNC_KEY);
+const writeSynced = (v: string | null) => writeKey(SYNC_KEY, v);
 
-/** POST a subscription to the server. Returns null on success, else an error code. */
-async function postSubscription(base: string, sub: PushSubscription): Promise<string | null> {
+/** Tell the service worker which account opted in (id only) — or clear it (null). The
+ *  worker refuses to show previews unless the signed-in account matches this id. */
+async function setSwOptIn(userId: string | null): Promise<void> {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const target = reg?.active ?? navigator.serviceWorker.controller;
+    target?.postMessage({ type: "mw-optin", userId });
+  } catch { /* the worker also self-purges on an identity mismatch */ }
+}
+
+/** POST a subscription to the server. Returns null on success, else an error code.
+ *  `mode` "enable" is an explicit user action; "repair" only refreshes an own row. */
+async function postSubscription(base: string, sub: PushSubscription, mode: "enable" | "repair"): Promise<string | null> {
   const json = sub.toJSON();
   let res: Response;
   try {
@@ -73,7 +89,7 @@ async function postSubscription(base: string, sub: PushSubscription): Promise<st
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys }),
+      body: JSON.stringify({ endpoint: sub.endpoint, keys: json.keys, mode }),
     });
   } catch {
     return "network";
@@ -84,35 +100,48 @@ async function postSubscription(base: string, sub: PushSubscription): Promise<st
 }
 
 /**
- * Request permission (FIRST, while the click's user activation is still live),
- * register the SW, subscribe with the server's VAPID key, and POST the subscription.
+ * EXPLICIT user action only (the Settings toggle tap). Request permission (FIRST, while
+ * the click's user activation is still live), register the SW, subscribe with the
+ * server's VAPID key, and POST the subscription (mode "enable"). If the server says the
+ * endpoint belongs to another account (409 endpoint_owned) the local subscription is
+ * dropped and a FRESH one is requested once (a fresh endpoint is never owned).
  * Returns the resulting Notification permission: "granted" ONLY once the server has
  * stored the subscription, "denied"/"default" if the user declined, or "unsupported".
- * Throws PushError when a later step fails — and in that case drops the local
- * subscription so the UI never shows "on" for a subscription the server doesn't have.
+ * Throws PushError when a later step fails — dropping the local subscription so the UI
+ * never shows "on" for a subscription the server doesn't have.
  */
 export async function enablePush(base: string, userId?: string): Promise<string> {
   if (!pushSupported()) return "unsupported";
+  // The opted-in account must be known: the marker + the SW's identity gate key off it.
+  if (!userId) throw new PushError("unauthorized");
   const perm = await Notification.requestPermission();
   if (perm !== "granted") return perm;
+  const owner = userId;
   await navigator.serviceWorker.register("/sw.js");
   const reg = await navigator.serviceWorker.ready;
   const keyRes = await fetch(`${base}/api/push/key`, { credentials: "include" });
   if (!keyRes.ok) throw new PushError("key");
   const { key } = (await keyRes.json()) as { key?: string };
   if (!key) return "unsupported";
-  const existing = await reg.pushManager.getSubscription();
-  const sub =
-    existing ??
-    (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) as BufferSource }));
-  const err = await postSubscription(base, sub);
+  const subscribeFresh = () =>
+    reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) as BufferSource });
+  let sub = (await reg.pushManager.getSubscription()) ?? (await subscribeFresh());
+  let err = await postSubscription(base, sub, "enable");
+  if (err === "endpoint_owned") {
+    // This browser still holds another account's subscription: discard it, get our own.
+    writeSynced(null);
+    await sub.unsubscribe().catch(() => {});
+    sub = await subscribeFresh();
+    err = await postSubscription(base, sub, "enable");
+  }
   if (err) {
     writeSynced(null);
     await sub.unsubscribe().catch(() => {});
+    await setSwOptIn(null);
     throw new PushError(err);
   }
-  // Never record an unknown owner: sync settles the marker once the user is known.
-  writeSynced(userId ? `${userId}|${sub.endpoint}` : null);
+  writeSynced(`${owner}|${sub.endpoint}`);
+  await setSwOptIn(owner);
   return "granted";
 }
 
@@ -122,17 +151,11 @@ function markerUser(marker: string): string {
   return i < 0 ? "" : marker.slice(0, i);
 }
 
-/** Is `code` (from postSubscription) a permanent refusal retrying can't fix? */
-function permanentError(code: string): boolean {
-  if (code === "bad_endpoint" || code === "bad_body") return true;
-  const m = /^http_(4\d\d)$/.exec(code);
-  return !!m && !["401", "408", "429"].includes(m[1]);
-}
-
-/** Drop this browser's local push subscription + the marker. No server call. */
+/** Drop this browser's local push subscription + the marker + the SW's opt-in. No server call. */
 export async function clearLocalPush(): Promise<void> {
   writeSynced(null);
   if (!pushSupported()) return;
+  await setSwOptIn(null);
   try {
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = reg ? await reg.pushManager.getSubscription() : null;
@@ -140,19 +163,37 @@ export async function clearLocalPush(): Promise<void> {
   } catch { /* nothing to drop */ }
 }
 
+/** Best-effort scoped server removal; true when the server confirmed. */
+async function serverUnsubscribe(base: string, endpoint: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/api/push/unsubscribe`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
 /**
- * Self-heal on app load: if permission is granted and this browser holds a push
- * subscription the server hasn't confirmed for `userId`, (re)send it. Covers a
- * subscription created while the server was rejecting it and a rotated endpoint.
- * Never prompts; one D1 write per new (user, endpoint) pair. Returns true when a
- * sync POST succeeded.
- *
- * Privacy: a subscription last confirmed for a DIFFERENT (or unknown/empty) owner is
- * never re-sent for the current user — the server upsert would rebind the device to
- * them without consent. It is dropped locally instead; the new user opts in by hand.
- * A permanent server refusal also drops it, so Settings shows the truth.
+ * Self-heal on app load. NEVER creates a server registration: it only asks the server
+ * to repair (mode "repair": refresh the keys of an existing row owned by this account)
+ * and returns true when that succeeded. Consent integrity: browser permission is not
+ * Meowsenger opt-in, and a missing/foreign marker means ownership is unknown.
+ *  - marker for ANOTHER account → drop the local subscription (+ marker + SW opt-in).
+ *  - no marker / own marker → repair; 404 not_subscribed, 409 endpoint_owned or any
+ *    permanent refusal → drop the local subscription so the toggle shows the truth
+ *    (the user re-enables by tapping). Transient failures keep it for the next load.
+ * Also retries a pending (unconfirmed) server removal left by an interrupted logout.
  */
 export async function syncPushSubscription(base: string, userId: string): Promise<boolean> {
+  const pending = readKey(PENDING_KEY);
+  if (pending !== null) {
+    if (markerUser(pending) === userId) {
+      if (await serverUnsubscribe(base, pending.slice(pending.indexOf("|") + 1))) writeKey(PENDING_KEY, null);
+    } else writeKey(PENDING_KEY, null); // another account's: only they could remove it; the dead endpoint is pruned on 404/410
+  }
   if (!pushSupported() || Notification.permission !== "granted") return false;
   try {
     const reg = await navigator.serviceWorker.getRegistration();
@@ -161,45 +202,59 @@ export async function syncPushSubscription(base: string, userId: string): Promis
     const marker = `${userId}|${sub.endpoint}`;
     const current = readSynced();
     if (current === marker) return false;
-    if (current !== null && markerUser(current) !== userId) {
-      // Another account's (or an unknown owner's) subscription on this browser.
+    const drop = async () => {
       writeSynced(null);
+      await setSwOptIn(null);
       await sub.unsubscribe().catch(() => {});
-      await fetch(`${base}/api/push/unsubscribe`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endpoint: sub.endpoint }),
-      }).catch(() => {});
+    };
+    if (current !== null && markerUser(current) !== userId) {
+      await drop(); // another account's (or an unknown owner's) subscription on this browser
       return false;
     }
-    const err = await postSubscription(base, sub);
+    const err = await postSubscription(base, sub, "repair");
     if (err) {
-      if (permanentError(err)) {
-        writeSynced(null);
-        await sub.unsubscribe().catch(() => {});
-      }
+      if (err === "not_subscribed" || err === "endpoint_owned" || permanentError(err)) await drop();
       return false;
     }
     writeSynced(marker);
+    await setSwOptIn(userId);
     return true;
   } catch {
     return false;
   }
 }
 
-/** Unsubscribe locally + tell the server to drop the endpoint. */
-export async function disablePush(base: string): Promise<void> {
-  if (!pushSupported()) return;
-  const reg = await navigator.serviceWorker.getRegistration();
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
-  if (!sub) return;
-  await fetch(`${base}/api/push/unsubscribe`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint: sub.endpoint }),
-  }).catch(() => {});
-  await sub.unsubscribe().catch(() => {});
+/** Is `code` (from postSubscription) a permanent refusal retrying can't fix? */
+function permanentError(code: string): boolean {
+  if (code === "bad_endpoint" || code === "bad_body") return true;
+  const m = /^http_(4\d\d)$/.exec(code);
+  return !!m && !["401", "408", "429"].includes(m[1]);
+}
+
+/**
+ * Opt out / logout. Order matters: the LOCAL side goes first — marker cleared, the
+ * service worker's opted-in id cleared, the browser subscription unsubscribed — so a
+ * stalled or failed network call can never leave a live local subscription. Only then
+ * the server removal (scoped to the signed-in account) is attempted; if it isn't
+ * confirmed it is remembered and retried when the same account next loads (and the dead
+ * endpoint is pruned server-side on the next 404/410 anyway).
+ */
+export async function disablePush(base: string, userId?: string): Promise<void> {
+  const marker = readSynced();
   writeSynced(null);
+  if (!pushSupported()) return;
+  await setSwOptIn(null);
+  let endpoint: string | null = null;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      endpoint = sub.endpoint;
+      await sub.unsubscribe().catch(() => {});
+    }
+  } catch { /* nothing to drop */ }
+  if (!endpoint) return;
+  const owner = userId || (marker ? markerUser(marker) : "");
+  writeKey(PENDING_KEY, `${owner}|${endpoint}`);
+  if (await serverUnsubscribe(base, endpoint)) writeKey(PENDING_KEY, null);
 }

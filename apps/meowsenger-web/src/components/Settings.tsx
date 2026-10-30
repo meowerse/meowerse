@@ -82,7 +82,7 @@ export default function Settings({ base, open, onClose, userId }: { base: string
   async function disableNotifications() {
     if (notifBusy) return;
     setNotifBusy(true);
-    try { await disablePush(base); setSubscribed(false); } finally { setNotifBusy(false); }
+    try { await disablePush(base, userId); setSubscribed(false); } finally { setNotifBusy(false); }
   }
 
   // Slice 9 — delete the caller's meowsenger data, then (on success) redirect home.
