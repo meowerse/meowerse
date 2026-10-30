@@ -5,7 +5,7 @@
  * toggle showed "on" while the server stored nothing.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "../test/rtl";
+import { render, screen, fireEvent, waitFor, within } from "../test/rtl";
 
 // A plain function, not vi.fn: a vi.fn whose implementation rejects reports the
 // rejection as a test failure even though the component catches it.
@@ -170,5 +170,18 @@ describe("Settings — account deletion", () => {
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "delete" } });
     fireEvent.click(screen.getByText("delete my data"));
     await waitFor(() => expect(H.cleared).toBe(1));
+  });
+});
+
+describe("Settings — footer links", () => {
+  it("links privacy, terms, about and the meowerse account page from inside the app", () => {
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    const nav = screen.getByRole("navigation", { name: /about meowsenger/ });
+    const href = (name: string) => within(nav).getByRole("link", { name }).getAttribute("href");
+    expect(href("privacy")).toBe("/privacy");
+    expect(href("terms")).toBe("/terms");
+    expect(href("about")).toBe("/about");
+    expect(href("meowerse account")).toBe("https://auth.alxnko.dev/account");
+    expect(within(nav).getAllByRole("link").every((a) => !a.hasAttribute("target"))).toBe(true);
   });
 });

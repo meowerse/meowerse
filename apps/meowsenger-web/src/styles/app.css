@@ -688,6 +688,10 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 
 /* Settings modal: a label+hint row with a trailing on/off switch. */
 .mw-settings { width: min(440px, 100%); }
+.mw-settings__links { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin-top: var(--space-4); font-size: var(--text-xs); }
+.mw-settings__links a { color: inherit; text-decoration: underline; text-underline-offset: 2px; border-radius: var(--radius-sm, 4px); }
+.mw-settings__links a:hover { color: var(--text-primary); }
+.mw-settings__links a:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
 .mw-setting { display: flex; align-items: flex-start; gap: var(--space-3); }
 .mw-setting__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .mw-setting__label { font-size: var(--text-base); font-weight: 500; color: var(--text-primary); }

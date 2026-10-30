@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Modal, ConfirmDialog } from "@meowerse/ui";
 import { getPrivacy, setPrivacy, deleteAccount } from "../lib/chat";
 import { clearLocalPush } from "../lib/push";
+import { accountUrl } from "../lib/accountUrl";
 import NotificationsSetting from "./NotificationsSetting";
 
 /**
@@ -97,6 +98,14 @@ export default function Settings({ base, open, onClose, userId }: { base: string
           </div>
           {deleteErr && <p className="mw-chat__err" role="alert">{deleteErr}</p>}
         </div>
+
+        {/* /app renders without the site footer, so the legal pages are linked here. */}
+        <nav className="mw-settings__links mw-muted" aria-label="about meowsenger">
+          <a href="/privacy">privacy</a>
+          <a href="/terms">terms</a>
+          <a href="/about">about</a>
+          <a href={accountUrl()}>meowerse account</a>
+        </nav>
       </Modal>
 
       <ConfirmDialog
