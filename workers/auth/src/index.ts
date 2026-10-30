@@ -457,12 +457,25 @@ async function mintResponse(
   // family.) Either way no token reaches the client. Answer 500.
   let res;
   try {
-    res = await db.batch([...stmts, consume], "write");
+    // The two trailing statements revoke the family INSIDE the same transaction, but
+    // only if our own access insert did not run (we lost). That way "lost" and
+    // "family revoked" commit together and a transient failure of the follow-up
+    // revokeFamily below cannot leave the winner's tokens usable.
+    const lost = "NOT EXISTS (SELECT 1 FROM access_tokens WHERE jti = ?)";
+    res = await db.batch(
+      [
+        ...stmts,
+        consume,
+        { sql: `UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL AND ${lost}`, args: [i.family, tokens.jti] },
+        { sql: `UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ? AND revoked_at IS NULL AND ${lost}`, args: [i.family, tokens.jti] },
+      ],
+      "write",
+    );
   } catch {
     console.error("token_issue_failed");
     return json({ error: "server_error" }, 500, { ...cors, ...noStore });
   }
-  if ((res[res.length - 1]?.rowsAffected ?? 0) !== 1) {
+  if ((res[stmts.length]?.rowsAffected ?? 0) !== 1) {
     // Another request spent the credential first; this one issued nothing. Never
     // return the signed tokens. The winner's rows are already committed, so
     // revoking the family reaches them.

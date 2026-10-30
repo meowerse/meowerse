@@ -155,3 +155,29 @@ test("(R-C2) batch throws before reaching the DB: 500, old token untouched", asy
   expect((await f.refresh(rt)).status).toBe(500);
   expect(await usableRefresh(f.real, family)).toBe(1);
 });
+
+test("(R-E) loser's family revoke is part of its own transaction: survives a failing follow-up revokeFamily", async () => {
+  let inner: (() => Promise<Response>) | undefined;
+  let armed = false;
+  let failRevoke = false;
+  const f = await fixture((db) => ({
+    execute: (s) => db.execute(s),
+    batch: async (stmts, mode) => {
+      const sql = firstSql(stmts[0]!);
+      if (armed && /INSERT INTO access_tokens/.test(sql)) {
+        armed = false;
+        await inner!(); // winner commits first
+        failRevoke = true;
+      }
+      // the follow-up revokeFamily (2 stmts, first is the family refresh UPDATE) fails transiently
+      if (failRevoke && stmts.length === 2 && /UPDATE refresh_tokens SET used_at/.test(sql)) throw new Error("transient");
+      return db.batch(stmts, mode);
+    },
+  }));
+  const { rt, family } = await f.initial();
+  inner = () => f.refresh(rt);
+  armed = true;
+  await expect(f.refresh(rt)).rejects.toThrow("transient");
+  expect(await usableRefresh(f.real, family)).toBe(0);
+  expect(await usableAccess(f.real, family)).toBe(0);
+});
