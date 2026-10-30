@@ -41,6 +41,14 @@
 /404*
   X-Robots-Tag: noindex
 
+# Service worker + its imported identity-gate script: always revalidate so a fix
+# reaches browsers promptly (importScripts'd files use the HTTP cache by default).
+# One Cache-Control per path, per the caveat above.
+/sw.js
+  Cache-Control: no-cache
+/sw-core.js
+  Cache-Control: no-cache
+
 # Crawler files (static assets, never the Worker): an hour, one Cache-Control each.
 /sitemap.xml
   Cache-Control: public, max-age=3600

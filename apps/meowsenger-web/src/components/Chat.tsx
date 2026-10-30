@@ -16,6 +16,7 @@ import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
 import Settings from "./Settings";
+import { syncPushSubscription, disablePush } from "../lib/push";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -123,6 +124,13 @@ export default function Chat({ base }: { base: string }) {
   // without re-running every render (it depends only on messages + loadingHistory).
   resolveNameRef.current = resolveSenderName;
   meIdRef.current = me?.id ?? null;
+
+  // Web Push self-heal: once we know who's signed in, re-send this browser's push
+  // subscription if the server hasn't confirmed it for this user (never prompts).
+  const meId = me?.id;
+  useEffect(() => {
+    if (meId) void syncPushSubscription(base, meId);
+  }, [base, meId]);
 
   // Surface a small transient note (e.g. a server rejection). Non-blocking: it
   // auto-dismisses after a few seconds and never interrupts typing.
@@ -549,9 +557,16 @@ export default function Chat({ base }: { base: string }) {
   }
 
   const onLogout = useCallback(async () => {
+    // Drop this browser's push subscription (server row + local + marker) BEFORE the
+    // session ends, so the next account on this browser can't inherit it. Best-effort
+    // and time-boxed: logout must never hang on it.
+    await Promise.race([
+      disablePush(base, meId ?? undefined).catch(() => {}),
+      new Promise<void>((r) => setTimeout(r, 3000)),
+    ]);
     await fetch(logoutUrl(base), { method: "POST", credentials: "include" });
     window.location.href = loginUrl(base);
-  }, [base]);
+  }, [base, meId]);
 
   const peerOnline = peerId != null && online.has(peerId);
   // Online but all their tabs are backgrounded → "away".
@@ -929,7 +944,7 @@ export default function Chat({ base }: { base: string }) {
         />
       )}
 
-      <Settings base={base} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Settings base={base} userId={me?.id} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

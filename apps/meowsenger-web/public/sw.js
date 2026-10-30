@@ -2,12 +2,21 @@
 //
 // Payloadless design: the push carries no data; it just wakes this worker. We then
 // (a) skip entirely if an app tab is focused/visible (the live WebSocket already
-// delivered the message), else (b) fetch the chat list ourselves — same-origin, so
-// the session cookie rides along — and show ONE coalesced notification for what's
-// unread. Clicking it focuses the app and deep-links to the chat.
+// delivered the message), (b) verify the signed-in account is the one that opted in,
+// and only then (c) fetch the chat list ourselves — same-origin, so the session cookie
+// rides along — and show ONE coalesced notification for what's unread. Clicking it focuses the app and deep-links to the chat.
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+
+importScripts("/sw-core.js");
+const store = self.mwPushCore.makeIdbStore(self.indexedDB);
+
+// The page tells us which account opted in (id only, no tokens) at enable time and
+// clears it on logout / disable / account deletion.
+self.addEventListener("message", (event) => {
+  event.waitUntil(self.mwPushCore.handleMessage(event.data, store).catch(() => {}));
+});
 
 self.addEventListener("push", (event) => {
   event.waitUntil(handlePush());
@@ -18,33 +27,17 @@ async function handlePush() {
   const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   if (wins.some((c) => c.focused || c.visibilityState === "visible")) return;
 
-  let title = "meowsenger";
-  let body = "new message";
-  let chatId = "";
-  try {
-    const res = await fetch("/api/chats", { credentials: "include" });
-    if (res.ok) {
-      const data = await res.json();
-      const unread = (data.chats || [])
-        .filter((c) => (c.unreadCount || 0) > 0)
-        .sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
-      if (unread.length === 0) return; // nothing unread (already read elsewhere) → stay quiet
-      const top = unread[0];
-      chatId = top.id || "";
-      title = top.name || top.peerDisplayName || top.peerUsername || "meowsenger";
-      body = top.lastMessage || "new message";
-      const total = unread.reduce((n, c) => n + (c.unreadCount || 0), 0);
-      if (unread.length > 1) body = `${body} · ${total} unread in ${unread.length} chats`;
-    }
-  } catch {
-    /* SW offline → fall through to the generic notification */
-  }
-
-  await self.registration.showNotification(title, {
-    body,
+  // Identity gate: show a preview ONLY when the signed-in account is the one that opted
+  // in on this browser. Otherwise nothing is shown (see sw-core.js). Note: Chrome, if it
+  // receives a push and we show nothing, displays its own generic "site updated in the
+  // background" notice — it carries no Meowsenger data, which is the intended failure mode.
+  const d = await self.mwPushCore.decidePush({ store, fetchFn: fetch.bind(self), registration: self.registration });
+  if (!d.show) return;
+  await self.registration.showNotification(d.title, {
+    body: d.body,
     tag: "meowsenger-msg", // coalesce a burst into a single notification
     renotify: true,
-    data: { chatId },
+    data: { chatId: d.chatId },
   });
 }
 

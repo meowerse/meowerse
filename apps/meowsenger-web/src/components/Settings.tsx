@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Modal, ConfirmDialog } from "@meowerse/ui";
 import { getPrivacy, setPrivacy, deleteAccount } from "../lib/chat";
-import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush } from "../lib/push";
+import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, clearLocalPush, PushError } from "../lib/push";
 
 /** Whether this browser can do Web Push at all (SSR-safe). */
 function notificationsSupported(): boolean {
@@ -15,7 +15,7 @@ function notificationsSupported(): boolean {
  * data (type-to-confirm via @meowerse/ui ConfirmDialog → clears the session → redirect
  * home). The auth account is separate and unaffected. Reuses the @meowerse/ui Modal.
  */
-export default function Settings({ base, open, onClose }: { base: string; open: boolean; onClose: () => void }) {
+export default function Settings({ base, open, onClose, userId }: { base: string; open: boolean; onClose: () => void; userId?: string }) {
   const [allow, setAllow] = useState<boolean | null>(null); // null = loading
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -25,6 +25,8 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
   // Whether an active push subscription exists (drives on/off), + an in-flight flag.
   const [subscribed, setSubscribed] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
+  // Why turning notifications on failed (shown under the row), or null.
+  const [notifErr, setNotifErr] = useState<string | null>(null);
   // Slice 9 — the type-to-confirm delete dialog + its in-flight/error state.
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -34,7 +36,7 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setAllow(null); setErr(null); setDeleteErr(null);
+    setAllow(null); setErr(null); setDeleteErr(null); setNotifErr(null);
     const perm = pushPermission();
     setNotifPerm(perm === "unsupported" ? null : (perm as NotificationPermission));
     void pushSubscribed().then((s) => { if (!cancelled) setSubscribed(s); });
@@ -56,13 +58,23 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
   // state. Turning it off unsubscribes locally + on the server.
   async function enableNotifications() {
     if (!notificationsSupported() || notifBusy) return;
-    setNotifBusy(true);
+    setNotifBusy(true); setNotifErr(null);
     try {
-      const result = await enablePush(base);
+      const result = await enablePush(base, userId);
       if (result !== "unsupported") setNotifPerm(result as NotificationPermission);
       if (result === "granted") setSubscribed(true);
-    } catch {
+      else if (result === "unsupported") setNotifErr("notifications aren't available right now — try again later.");
+      else if (result === "default") setNotifErr("notifications weren't allowed — tap again and choose allow.");
+    } catch (e) {
+      // Never fail silently: a swallowed server rejection is how push looked "on"
+      // while the server stored nothing.
+      setSubscribed(false);
       setNotifPerm(pushPermission() as NotificationPermission);
+      setNotifErr(
+        e instanceof PushError && e.code === "unauthorized"
+          ? "your session expired — log in again, then turn notifications on."
+          : "couldn't turn on notifications — try again. if it keeps failing, your browser may block push (e.g. private window, or push services disabled).",
+      );
     } finally {
       setNotifBusy(false);
     }
@@ -70,7 +82,7 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
   async function disableNotifications() {
     if (notifBusy) return;
     setNotifBusy(true);
-    try { await disablePush(base); setSubscribed(false); } finally { setNotifBusy(false); }
+    try { await disablePush(base, userId); setSubscribed(false); } finally { setNotifBusy(false); }
   }
 
   // Slice 9 — delete the caller's meowsenger data, then (on success) redirect home.
@@ -79,6 +91,7 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
     setDeleting(true); setDeleteErr(null);
     const r = await deleteAccount(base);
     if (r.ok) {
+      await clearLocalPush().catch(() => {}); // the account's server rows are gone; drop the device side
       if (typeof window !== "undefined") window.location.href = "/";
       return; // navigating away — leave the dialog in its loading state
     }
@@ -141,6 +154,7 @@ export default function Settings({ base, open, onClose }: { base: string; open: 
             )}
           </div>
         )}
+        {notifErr && <p className="mw-chat__err" role="alert">{notifErr}</p>}
 
         {/* Slice 9 — danger zone: delete the caller's meowsenger data. */}
         <div className="mw-danger">
