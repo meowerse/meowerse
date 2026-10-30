@@ -162,8 +162,13 @@ export default function Chat({ base }: { base: string }) {
   // Apply a sidebar fetch result: success replaces the list (keeping the active chat's
   // optimistic unread=0); any failure keeps the last good list and flags a retry.
   // Returns the fresh list, or null on failure.
-  const applyChatList = useCallback((res: RequestResult<ChatSummary[]>): ChatSummary[] | null => {
-    if (!res.ok) { setChatsError(true); return null; }
+  // `quiet` (background invalidation refetch): a failure never raises the banner when a
+  // list is already shown — the next poll/focus/invalidation retries. A FIRST load that
+  // fails still flags the error (honest states: never a false "no chats yet").
+  const hasListRef = useRef(false);
+  const applyChatList = useCallback((res: RequestResult<ChatSummary[]>, quiet = false): ChatSummary[] | null => {
+    if (!res.ok) { if (!quiet || !hasListRef.current) setChatsError(true); return null; }
+    hasListRef.current = true;
     setChatsError(false);
     const act = activeRef.current;
     const cs = res.data;
@@ -173,7 +178,32 @@ export default function Chat({ base }: { base: string }) {
     setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
     return cs;
   }, []);
-  const refreshChats = useCallback(async (): Promise<ChatSummary[] | null> => applyChatList(await listChats(base)), [base, applyChatList]);
+  // Every list fetch takes a start sequence; a response is applied only if no NEWER
+  // fetch has already been applied, so an out-of-order (older) list never overwrites a
+  // fresher one.
+  const listSeqRef = useRef({ started: 0, applied: 0 });
+  const fetchList = useCallback(async (quiet = false): Promise<ChatSummary[] | null> => {
+    const seq = ++listSeqRef.current.started;
+    const res = await listChats(base);
+    if (seq < listSeqRef.current.applied) return null; // superseded by a newer applied list
+    if (res.ok) listSeqRef.current.applied = seq;
+    return applyChatList(res, quiet);
+  }, [base, applyChatList]);
+  const refreshChats = useCallback((): Promise<ChatSummary[] | null> => fetchList(false), [fetchList]);
+  // A burst of content-free invalidations runs at most ONE refetch in flight plus ONE
+  // trailing refetch (the trailing one sees everything that arrived meanwhile).
+  const invalidateRef = useRef({ inFlight: false, trailing: false });
+  const refetchOnInvalidate = useCallback(async (): Promise<void> => {
+    const g = invalidateRef.current;
+    if (g.inFlight) { g.trailing = true; return; }
+    g.inFlight = true;
+    try {
+      do {
+        g.trailing = false;
+        await fetchList(true).catch(() => null);
+      } while (g.trailing);
+    } finally { g.inFlight = false; }
+  }, [fetchList]);
 
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
@@ -241,12 +271,12 @@ export default function Chat({ base }: { base: string }) {
     (d: InboxDelta) => {
       if (d.invalidate) {
         // Content-free signal (large rooms): no preview to apply, so refetch the list.
-        void refreshChats();
+        void refetchOnInvalidate();
         return;
       }
       applySidebarDelta(d.chatId, d.preview, d.at, d.senderId, d.chatId === activeRef.current);
     },
-    [applySidebarDelta, activeRef, refreshChats],
+    [applySidebarDelta, activeRef, refetchOnInvalidate],
   );
   useInbox(base, me != null, onInboxDelta);
 
@@ -410,9 +440,8 @@ export default function Chat({ base }: { base: string }) {
   useEffect(() => {
     let cancelled = false;
     async function refresh() {
-      const res = await listChats(base);
       if (cancelled) return;
-      applyChatList(res);
+      await fetchList(false);
     }
     function onFocus() { void refresh(); }
     function onVisible() { if (document.visibilityState === "visible") void refresh(); }
@@ -427,7 +456,7 @@ export default function Chat({ base }: { base: string }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [base, activeRef]);
+  }, [base, activeRef, fetchList]);
 
   // Reply/edit/delete route through the hook; ownership + windows are UX gating only.
   function sendWith(body: string) {

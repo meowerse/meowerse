@@ -111,7 +111,7 @@ export default function Settings({ base, open, onClose, userId }: { base: string
       <ConfirmDialog
         open={confirmDelete}
         title="delete my meowsenger data"
-        description="this erases your meowsenger memberships, groups you solely own, and your meowsenger profile, then logs you out. it can't be undone. your auth account stays."
+        description="this removes you from all your chats and erases your meowsenger profile, then logs you out. a group you own passes to an admin, or else its oldest member, and is deleted only if no one is left. messages you sent stay. it can't be undone. your auth account stays."
         confirmPhrase="delete"
         confirmLabel="delete my data"
         variant="danger"

@@ -67,6 +67,7 @@ vi.mock("../lib/push", async (importActual) => ({
 import Chat from "./Chat";
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
+import { listChats } from "../lib/chat";
 
 function dm(over: Partial<ChatSummary> = {}): ChatSummary {
   return {
@@ -460,6 +461,73 @@ describe("Chat island — realtime sidebar", () => {
     emit(inbox, { type: "chat_update", chatId: "c2", invalidate: true });
     await waitFor(() => expect(screen.getByText("fresh from server")).toBeTruthy());
     expect(screen.queryByText("old")).toBeNull();
+  });
+
+  describe("invalidation refetch coalescing", () => {
+    type ListRes = Awaited<ReturnType<typeof listChats>>;
+    const okList = (rows: ChatSummary[]): ListRes => ({ ok: true as const, status: 200, data: rows });
+    function deferred() {
+      let resolve!: (v: ListRes) => void;
+      const promise = new Promise<ListRes>((r) => { resolve = r; });
+      return { promise, resolve };
+    }
+    async function mountWithInbox(): Promise<MockWebSocket> {
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
+      await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      const inbox = await waitFor(() => {
+        const i = MockWebSocket.inbox;
+        if (!i) throw new Error("inbox socket not opened");
+        return i;
+      });
+      act(() => inbox.mockOpen());
+      return inbox;
+    }
+    const invalidate = (ws: MockWebSocket) => emit(ws, { type: "chat_update", chatId: "c2", invalidate: true });
+    const row = (preview: string) => dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: preview, lastActivity: 900 });
+
+    it("a burst of invalidations runs one fetch in flight plus one trailing fetch", async () => {
+      const inbox = await mountWithInbox();
+      const mock = vi.mocked(listChats);
+      const base = mock.mock.calls.length;
+      const d1 = deferred(); const d2 = deferred();
+      mock.mockImplementationOnce(() => d1.promise).mockImplementationOnce(() => d2.promise);
+      for (let i = 0; i < 8; i++) invalidate(inbox);
+      expect(mock.mock.calls.length - base).toBe(1); // only one concurrent listChats
+      d1.resolve(okList([dm(), row("first")]));
+      await waitFor(() => expect(mock.mock.calls.length - base).toBe(2)); // exactly one trailing call
+      d2.resolve(okList([dm(), row("trailing")]));
+      await waitFor(() => expect(screen.getByText("trailing")).toBeTruthy());
+      expect(mock.mock.calls.length - base).toBe(2);
+    });
+
+    it("an older response that arrives after a newer one is never applied", async () => {
+      const inbox = await mountWithInbox();
+      const mock = vi.mocked(listChats);
+      const older = deferred(); const newer = deferred();
+      mock.mockImplementationOnce(() => older.promise); // started first (invalidation)
+      invalidate(inbox);
+      mock.mockImplementationOnce(() => newer.promise); // started second (window focus poll)
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      newer.resolve(okList([dm(), row("NEWER")]));
+      await waitFor(() => expect(screen.getByText("NEWER")).toBeTruthy());
+      older.resolve(okList([dm(), row("OLDER")]));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(screen.queryByText("OLDER")).toBeNull();
+      expect(screen.getByText("NEWER")).toBeTruthy();
+    });
+
+    it("a single failed background refetch keeps the list and raises no error banner", async () => {
+      const inbox = await mountWithInbox();
+      const mock = vi.mocked(listChats);
+      const base = mock.mock.calls.length;
+      mock.mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "network" } }) as ListRes);
+      invalidate(inbox);
+      await waitFor(() => expect(mock.mock.calls.length - base).toBe(1));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(screen.queryByText("couldn't refresh chats.")).toBeNull();
+      expect(screen.getByText("Carol")).toBeTruthy(); // list still shown
+    });
   });
 
   it("an inbox delta for a message sent by the caller themselves does NOT mark the chat as unread", async () => {
