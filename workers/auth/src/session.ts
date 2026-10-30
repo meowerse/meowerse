@@ -145,10 +145,18 @@ export async function revokeSession(db: DbClient, rawId: string): Promise<void> 
 export async function rotateSession(
   db: DbClient,
   oldRawId: string,
-  input: { now: number; authTime?: number },
+  input: { now: number; authTime?: number; accountId: string },
 ): Promise<IssuedSession | null> {
   const view = await lookupSession(db, oldRawId, input.now);
   if (!view) return null;
+  // Rotation keeps the OLD session's account, so it is only valid when the caller just
+  // authenticated that same account. Logging in as a different account must never renew
+  // (and freshen auth_time on) the previous account's session: revoke it and let the caller
+  // issue a new session for the account that actually authenticated.
+  if (view.accountId !== input.accountId) {
+    await revokeSession(db, oldRawId);
+    return null;
+  }
   // The old-row revoke and the new-row insert are both known up front (no
   // read-decide-write), so fire them as ONE batch instead of two round-trips.
   const oldHash = await sha256Hex(oldRawId);
