@@ -276,7 +276,8 @@ export async function disablePush(base: string, userId?: string): Promise<void> 
   const marker = readSynced();
   writeSynced(null);
   if (!pushSupported()) return;
-  await setSwOptIn(null);
+  // Drop the browser subscription FIRST, so a slow IndexedDB write can never keep it alive
+  // past the logout time box; then clear the service worker's opted-in account.
   let endpoint: string | null = null;
   try {
     const reg = await navigator.serviceWorker.getRegistration();
@@ -286,6 +287,7 @@ export async function disablePush(base: string, userId?: string): Promise<void> 
       await sub.unsubscribe().catch(() => {});
     }
   } catch { /* nothing to drop */ }
+  await setSwOptIn(null);
   if (!endpoint) return;
   const owner = userId || (marker ? markerUser(marker) : "");
   const entry = `${owner}|${endpoint}`;
