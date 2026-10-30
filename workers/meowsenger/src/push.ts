@@ -217,6 +217,8 @@ export async function pushTargetsForChat(
   db: DbClient,
   chatId: string,
   excludeUserIds: string[],
+  /** Optional out-param: receives the excluded users that DO have a subscription here. */
+  skipped?: Set<string>,
 ): Promise<Array<{ endpoint: string; userId: string }>> {
   const excluded = new Set(excludeUserIds);
   const rows = await db.all(
@@ -227,7 +229,7 @@ export async function pushTargetsForChat(
   );
   const out = new Map<string, string>(); // endpoint → owner (endpoint is the primary key)
   for (const r of rows as Row[]) {
-    if (excluded.has(String(r.user_id))) continue;
+    if (excluded.has(String(r.user_id))) { skipped?.add(String(r.user_id)); continue; }
     out.set(String(r.endpoint), String(r.user_id));
   }
   return [...out].map(([endpoint, userId]) => ({ endpoint, userId }));

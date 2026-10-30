@@ -18,6 +18,17 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
 const sockets: WebSocket[] = [];
 
+/** Typed access to the DO internals the tests poke (they are `protected`/`private` in
+ *  production; the production types stay as they are). */
+interface DoInternals {
+  env: Record<string, unknown>;
+  ctx: DurableObjectState;
+  internalBudget: number;
+  alarm(): Promise<void>;
+  lastPush: Map<string, number>;
+}
+const internals = (inst: Conversation): DoInternals => inst as unknown as DoInternals;
+
 beforeAll(async () => {
   await DB.exec("CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, last_activity INTEGER NOT NULL, last_message TEXT, last_sender_id TEXT, direct_key TEXT UNIQUE)");
   await DB.exec("CREATE TABLE IF NOT EXISTS chat_members (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', unread_count INTEGER NOT NULL DEFAULT 0, last_read_at INTEGER, joined_at INTEGER NOT NULL, PRIMARY KEY (chat_id, user_id))");
@@ -55,7 +66,7 @@ async function seed(chatId: string, users: string[], subscribed: string[]): Prom
 function stub(chatId: string): DurableObjectStub<Conversation> { return CONVERSATION.get(CONVERSATION.idFromName(chatId)); }
 async function configureVapid(chatId: string): Promise<void> {
   await runInDurableObject(stub(chatId), async (inst: Conversation) => {
-    Object.assign(inst.env as unknown as Record<string, string>, vapid);
+    Object.assign(internals(inst).env as Record<string, string>, vapid);
   });
 }
 async function connect(chatId: string, userId: string): Promise<WebSocket> {
@@ -89,7 +100,7 @@ async function send(sender: WebSocket, body: string): Promise<void> {
   sender.send(JSON.stringify({ type: "send", tempId: `t${++seq}`, body }));
   await vi.waitFor(() => expect(decisionLogs().length).toBeGreaterThan(before), { timeout: 3000 });
 }
-const allDecisionLogs = (): string[] => logSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("push_decision"));
+const allDecisionLogs = (): string[] => logSpy.mock.calls.map((c: unknown[]) => String(c[0])).filter((l: string) => l.startsWith("push_decision"));
 /** The decision lines; per-invocation outcome summaries are asserted separately. */
 const decisionLogs = (): string[] => allDecisionLogs().filter((l) => !l.startsWith("push_decision outcome"));
 const outcomeLogs = (): string[] => allDecisionLogs().filter((l) => l.startsWith("push_decision outcome"));
@@ -172,8 +183,8 @@ describe("Conversation offline push decision", () => {
     await connect(c, "watcher");
     await send(sender, "hi");
     await vi.waitFor(() => expect(pushCalls()).toHaveLength(1));
-    await vi.waitFor(() => expect(logSpy.mock.calls.some((x) => String(x[0]).startsWith("push_delivery"))).toBe(true));
-    const lines = logSpy.mock.calls.map((x) => String(x[0])).filter((l) => l.startsWith("push_"));
+    await vi.waitFor(() => expect(logSpy.mock.calls.some((x: unknown[]) => String(x[0]).startsWith("push_delivery"))).toBe(true));
+    const lines = logSpy.mock.calls.map((x: unknown[]) => String(x[0])).filter((l: string) => l.startsWith("push_"));
     expect(lines.length).toBeGreaterThanOrEqual(2);
     for (const l of lines) {
       for (const secret of [c, "sender", "rcpt", "watcher", "secret-endpoint", "https://"]) expect(l).not.toContain(secret);
@@ -229,7 +240,7 @@ describe("Conversation offline push decision", () => {
     const c = newChat(); await seed(c, ["sender", "bob", "carol"], []);
     const hits: string[] = [];
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      (inst.env as unknown as Record<string, unknown>).USER_INBOX = {
+      (internals(inst).env).USER_INBOX = {
         idFromName: (n: string) => n,
         get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
       };
@@ -278,7 +289,7 @@ describe("Conversation offline push decision", () => {
   it("(n) 403 prunes the endpoint (logged) and never retries it", async () => {
     await timeline(403, async (c, sender, at) => {
       await send(sender, "one");
-      await vi.waitFor(() => expect(logSpy.mock.calls.some((x) => String(x[0]) === "push_delivery status=403 service=fcm pruned=1")).toBe(true));
+      await vi.waitFor(() => expect(logSpy.mock.calls.some((x: unknown[]) => String(x[0]) === "push_delivery status=403 service=fcm pruned=1")).toBe(true));
       await settle();
       const row = await DB.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint = ?").bind(EP(`${c}-rcpt`)).first<{ n: number }>();
       expect(row!.n).toBe(0);
@@ -305,7 +316,7 @@ describe("Conversation offline push decision", () => {
     let readStarted = false;
     let gated = false;
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      const env2 = inst.env as unknown as Record<string, unknown>;
+      const env2 = internals(inst).env;
       env2.USER_INBOX = {
         idFromName: (n: string) => n,
         get: (n: string) => ({ fetch: async () => { hits.push(n); return new Response(null, { status: 204 }); } }),
@@ -344,7 +355,7 @@ describe("Conversation offline push decision", () => {
     const gate = new Promise<void>((r) => { open = r; });
     const m: Meter = { d1: [], inbox: [], bodies: [], alarms: 0, holdInvalidations: null, release: () => { held = false; open(); } };
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      const e = inst.env as unknown as Record<string, unknown>;
+      const e = internals(inst).env;
       e.USER_INBOX = {
         idFromName: (n: string) => n,
         get: (n: string) => ({ fetch: async (_u: string, init?: RequestInit) => { const b = String(init?.body ?? ""); if (m.holdInvalidations && b.includes("invalidate")) await m.holdInvalidations; m.inbox.push(n); m.bodies.push(b); return new Response(null, { status: 204 }); } }),
@@ -356,8 +367,8 @@ describe("Conversation offline push decision", () => {
           return typeof v === "function" ? v.bind(t) : v;
         },
       });
-      const orig = inst.alarm.bind(inst);
-      inst.alarm = async () => { m.alarms++; if (held) await gate; return orig(); };
+      const orig = internals(inst).alarm.bind(inst);
+      internals(inst).alarm = async () => { m.alarms++; if (held) await gate; return orig(); };
     });
     return m;
   }
@@ -369,10 +380,11 @@ describe("Conversation offline push decision", () => {
       await new Promise((r) => setTimeout(r, 10));
     }
   };
-  const queued = (c: string) => runInDurableObject(stub(c), async (inst: Conversation) => inst.ctx.storage.get<{ push: string[]; inbox: string[] }>("fanout_overflow"));
+  interface Queued { push: string[]; inbox: string[]; attempts?: Record<string, number>; notBefore?: Record<string, number>; rounds?: number; total?: number }
+  const queued = (c: string) => runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.get<Queued>("fanout_overflow"));
   const SECRET = "SECRET-BODY-xyz";
   /** Test-only: lower the per-invocation internal (DO fetch) budget of one room. */
-  const setInternal = (c: string, n: number) => runInDurableObject(stub(c), async (inst: Conversation) => { (inst as unknown as { internalBudget: number }).internalBudget = n; });
+  const setInternal = (c: string, n: number) => runInDurableObject(stub(c), async (inst: Conversation) => { internals(inst).internalBudget = n; });
 
   it("(k) 61 push targets: 42 pushed inline (external budget), the rest by ONE alarm round; every target pushed exactly once; all 62 members get inline previews; no text persisted; queue gone", async () => {
     const users = Array.from({ length: 61 }, (_, i) => `u${i}`);
@@ -391,7 +403,7 @@ describe("Conversation offline push decision", () => {
     expect(pushCalls()).toHaveLength(42);
     expect(q.push).toHaveLength(19);
     // no message text anywhere in DO key-value storage
-    const dump = await runInDurableObject(stub(c), async (inst: Conversation) => JSON.stringify([...(await inst.ctx.storage.list()).entries()]));
+    const dump = await runInDurableObject(stub(c), async (inst: Conversation) => JSON.stringify([...(await internals(inst).ctx.storage.list()).entries()]));
     expect(dump).not.toContain(SECRET);
     const d1First = m.d1.length;
     m.release();
@@ -403,7 +415,7 @@ describe("Conversation offline push decision", () => {
     expect(m.inbox).toHaveLength(62); // the alarm sent no further inbox traffic
     expect(m.d1.length - d1First).toBe(1); // alarm round: ONE target read
     expect(m.alarms).toBeGreaterThanOrEqual(1);
-    expect(importSpy.mock.calls.filter((a) => a[0] === "jwk").length).toBeLessThanOrEqual(1 + m.alarms);
+    expect(importSpy.mock.calls.filter((a: unknown[]) => a[0] === "jwk").length).toBeLessThanOrEqual(1 + m.alarms);
     importSpy.mockRestore();
     console.info(`COST 61-push-target room: d1=${m.d1.length} inbox_fetches=${m.inbox.length} pushes=${pushCalls().length} alarms=${m.alarms}`);
   });
@@ -467,15 +479,15 @@ describe("Conversation offline push decision", () => {
     await vi.waitFor(async () => expect((await queued(c))?.inbox).toHaveLength(10));
     const T0 = Date.now() - 1000;
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      const sql = inst.ctx.storage.sql;
+      const sql = internals(inst).ctx.storage.sql;
       sql.exec("INSERT INTO messages (id, sender_id, body, created_at, is_deleted, deleted_at) VALUES ('old', 'x', '', 1, 1, ?)", Date.now() - 25 * 3600_000);
       sql.exec("INSERT INTO messages (id, sender_id, body, created_at, is_deleted, deleted_at) VALUES ('new', 'x', '', 2, 1, ?)", T0);
     });
     m.release();
     await drainAlarms(c);
     const state = await runInDurableObject(stub(c), async (inst: Conversation) => ({
-      ids: inst.ctx.storage.sql.exec("SELECT id FROM messages WHERE id IN ('old','new')").toArray().map((r) => String(r.id)),
-      alarm: await inst.ctx.storage.getAlarm(),
+      ids: internals(inst).ctx.storage.sql.exec("SELECT id FROM messages WHERE id IN ('old','new')").toArray().map((r) => String(r.id)),
+      alarm: await internals(inst).ctx.storage.getAlarm(),
     }));
     expect(state.ids).toEqual(["new"]); // expired row purged by the same alarm
     expect(await queued(c)).toBeUndefined();
@@ -491,16 +503,16 @@ describe("Conversation offline push decision", () => {
     const id = (JSON.parse(await sentFrame) as { message: { id: string } }).message.id;
     const soon = Date.now() + 60_000;
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      await inst.ctx.storage.put("fanout_overflow", { chatId: c, push: [], inbox: ["rcpt"], rounds: 0, seq: 1 });
-      await inst.ctx.storage.setAlarm(soon);
+      await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: [], inbox: ["rcpt"], rounds: 0, seq: 1 });
+      await internals(inst).ctx.storage.setAlarm(soon);
     });
     const deleted = waitFor(sender, (t) => t.includes('"deleted"'));
     sender.send(JSON.stringify({ type: "delete", id }));
     await deleted;
     await new Promise((r) => setTimeout(r, 30));
-    const alarm = await runInDurableObject(stub(c), async (inst: Conversation) => inst.ctx.storage.getAlarm());
+    const alarm = await runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.getAlarm());
     expect(alarm).toBe(soon);
-    await runInDurableObject(stub(c), async (inst: Conversation) => { await inst.ctx.storage.deleteAlarm(); await inst.ctx.storage.delete("fanout_overflow"); });
+    await runInDurableObject(stub(c), async (inst: Conversation) => { await internals(inst).ctx.storage.deleteAlarm(); await internals(inst).ctx.storage.delete("fanout_overflow"); });
   });
 
   it("(w) a follow-up that throws re-queues with rounds+1 (not orphaned) and is bounded: dropped after the max rounds, logged with counts only, key gone", async () => {
@@ -513,29 +525,221 @@ describe("Conversation offline push decision", () => {
     await vi.waitFor(async () => expect((await queued(c))?.inbox).toHaveLength(10));
     // every D1 call from now on fails
     await runInDurableObject(stub(c), async (inst: Conversation) => {
-      (inst.env as unknown as Record<string, unknown>).DB = { prepare: () => { throw new Error("d1 down"); } };
+      (internals(inst).env).DB = { prepare: () => { throw new Error("d1 down"); } };
     });
     m.release();
-    await vi.waitFor(() => expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(true), { timeout: 5000 });
+    // the failed run backs off 10 s (re-armed at now+10s, never immediately)
+    await vi.waitFor(() => expect(allDecisionLogs().filter((l) => l.startsWith("push_decision overflow_error"))).toHaveLength(1));
+    const alarmAt = await vi.waitFor(async () => {
+      const a = await runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.getAlarm());
+      expect(a).not.toBeNull();
+      return a!;
+    });
+    expect(alarmAt - Date.now()).toBeGreaterThan(8_000);
+    await drainAlarms(c);
     expect(allDecisionLogs()).toContain("push_decision overflow_dropped push=0 inbox=10");
     expect(allDecisionLogs().filter((l) => l.startsWith("push_decision overflow_error")).length).toBe(5);
     expect(await queued(c)).toBeUndefined();
-    expect(m.alarms).toBeLessThanOrEqual(6);
   });
 
-  it("(x) a busy group cannot monopolize the DO: 300 push targets are served in bounded rounds, the rest dropped (logged), queue key gone", async () => {
+  it("(x) a busy group is served to the end: 300 push targets -> everyone pushed exactly once over progress rounds, queue key gone", async () => {
     const users = Array.from({ length: 300 }, (_, i) => `u${i}`);
     const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
     const m = await meter(c);
     const sender = await connect(c, "sender");
     await send(sender, "one");
-    await vi.waitFor(() => expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(true), { timeout: 8000 });
-    await drainAlarms(c);
-    expect(m.alarms).toBeLessThanOrEqual(6);
-    expect(pushCalls().length).toBeLessThanOrEqual(42 + 5 * 44);
-    expect(pushCalls().length).toBeGreaterThan(42);
-    expect(allDecisionLogs().find((l) => l.startsWith("push_decision overflow_dropped"))).toMatch(/^push_decision overflow_dropped push=\d+ inbox=0$/);
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(300), { timeout: 15000 });
+    await vi.waitFor(async () => expect(await queued(c)).toBeUndefined(), { timeout: 5000 });
+    expect(new Set(pushedTo()).size).toBe(300); // exactly once each
+    expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(false);
+    // each round is bounded by the external budget: 42 inline, then <= 44 per alarm round
+    expect(m.alarms).toBeGreaterThanOrEqual(6);
+    console.info(`COST 300-push-target room: d1=${m.d1.length} inbox_fetches=${m.inbox.length} pushes=${pushCalls().length} alarms=${m.alarms}`);
+  });
+
+  /** Alarm control for tests that must not race the runtime's own alarm firing: the
+   *  auto-fired alarm becomes a no-op, `runAlarm` runs one real invocation. */
+  async function manualAlarms(c: string): Promise<() => Promise<void>> {
+    let manual = false;
+    let orig!: () => Promise<void>;
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      orig = internals(inst).alarm.bind(inst);
+      internals(inst).alarm = async () => { if (manual) await orig(); };
+    });
+    // Run the real handler directly (runDurableObjectAlarm only fires a scheduled alarm).
+    return async () => {
+      manual = true;
+      try { await runInDurableObject(stub(c), async () => { await orig(); }); } finally { manual = false; }
+    };
+  }
+  const withFakeTime = async (start: number, body: (at: (ms: number) => void) => Promise<void>) => {
+    let t = start;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    try { await body((ms) => { t = start + ms; }); } finally { nowSpy.mockRestore(); }
+  };
+
+  it("(af) no-progress bound: a push round that keeps failing is retried MAX_FOLLOWUPS (5) times, then dropped and logged; key gone", async () => {
+    const users = Array.from({ length: 61 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+    const runAlarm = await manualAlarms(c);
+    const sender = await connect(c, "sender");
+    await send(sender, "one");
+    await vi.waitFor(async () => expect((await queued(c))?.push).toHaveLength(19));
+    const sentInline = pushCalls().length;
+    // every push round now throws (the target read fails)
+    // NB: a DO's `env` is shared across the isolate, so the binding MUST be restored.
+    const setDb = (db: unknown) => runInDurableObject(stub(c), async (inst: Conversation) => { internals(inst).env.DB = db; });
+    await setDb({ prepare: (sql: string) => { if (sql.includes("push_subscriptions")) throw new Error("d1 down"); return DB.prepare(sql); } });
+    try {
+      for (let i = 0; i < 7 && (await queued(c)); i++) await runAlarm();
+    } finally { await setDb(DB); }
+    expect(allDecisionLogs().filter((l) => l.startsWith("push_decision overflow_error"))).toHaveLength(5);
+    expect(allDecisionLogs()).toContain("push_decision overflow_dropped push=19 inbox=0");
     expect(await queued(c)).toBeUndefined();
+    expect(pushCalls()).toHaveLength(sentInline); // nothing was sent by the failing rounds
+  });
+
+  it("(ag) transient 503 then 201: retried once after >= 10 s, delivered exactly once, queue key gone", async () => {
+    await withFakeTime(3_000_000, async (at) => {
+      let n = 0;
+      fetchSpy.mockImplementation(async () => new Response(null, { status: ++n === 1 ? 503 : 201 }));
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+      const q = (await queued(c))!;
+      expect(q.push).toEqual(["rcpt"]);
+      expect(q.attempts).toEqual({ rcpt: 1 });
+      expect(q.notBefore).toEqual({ rcpt: 3_000_000 + 10_000 });
+      expect(pushCalls()).toHaveLength(1);
+      at(5_000); await runAlarm(); // too early: nothing is attempted, still queued
+      expect(pushCalls()).toHaveLength(1);
+      expect(await queued(c)).toBeTruthy();
+      expect(outcomeLogs().at(-1)).toMatch(/attempted=0 .*suppressed_active=n\/a/); // one line even when nothing was attempted
+      at(10_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(2);
+      expect(await queued(c)).toBeUndefined();
+      expect(outcomeLogs().at(-1)).toContain("accepted=1");
+      expect(outcomeLogs().at(-1)).toMatch(/suppressed_active=\d+/); // measured by the exclusion query, never a false 0
+      at(60_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(2); // delivered once
+    });
+  });
+
+  it("(ah) transient 503 on every attempt: exactly 3 attempts, then dropped and logged (counts only), key gone", async () => {
+    await withFakeTime(4_000_000, async (at) => {
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 503 }));
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+      at(10_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(2);
+      expect((await queued(c))?.attempts).toEqual({ rcpt: 2 });
+      at(20_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(3);
+      expect(await queued(c)).toBeUndefined();
+      expect(outcomeLogs().at(-1)).toContain("dropped=1");
+      at(40_000); await runAlarm(); at(60_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(3); // never a 4th
+      for (const l of allDecisionLogs()) for (const secret of [c, "rcpt", "https://"]) expect(l).not.toContain(secret);
+    });
+  });
+
+  it("(ai) a permanent 4xx (400) is never retried or queued", async () => {
+    await withFakeTime(5_000_000, async (at) => {
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 400 }));
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one"); await settle();
+      expect(await queued(c)).toBeUndefined();
+      at(30_000); await runAlarm();
+      expect(pushCalls()).toHaveLength(1);
+    });
+  });
+
+  it("(aa) no push fetch starts before the D1 mirror write resolves (the SW reads /api/chats)", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      internals(inst).env.DB = new Proxy(DB, {
+        get(t, prop) {
+          if (prop !== "prepare") { const v = Reflect.get(t, prop); return typeof v === "function" ? v.bind(t) : v; }
+          return (sql: string) => {
+            const st = t.prepare(sql);
+            if (!sql.startsWith("UPDATE chats SET last_message")) return st;
+            return {
+              bind: (...a: unknown[]) => new Proxy(st.bind(...a), {
+                get(b, p) {
+                  const v = Reflect.get(b, p);
+                  return typeof v === "function" ? async (...x: unknown[]) => { await gate; return v.apply(b, x); } : v;
+                },
+              }),
+            };
+          };
+        },
+      });
+    });
+    const sender = await connect(c, "sender");
+    await send(sender, "hi"); // the push decision (targets=1) is made...
+    await settle(); await settle();
+    expect(decisionLogs()).toEqual(["push_decision targets=1 active_excluded=0"]);
+    expect(pushCalls()).toHaveLength(0); // ...but nothing is sent while the mirror write is pending
+    release();
+    await vi.waitFor(() => expect(pushedTo()).toEqual([EP(`${c}-rcpt`)]));
+    await runInDurableObject(stub(c), async (inst: Conversation) => { internals(inst).env.DB = DB; }); // env is shared: restore
+  });
+
+  it("(ab) if fanPush throws after reserving, the debounce reservation is released so the next message still pushes", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+    const sender = await connect(c, "sender");
+    const real = logSpy.getMockImplementation();
+    logSpy.mockImplementation((...a: unknown[]) => { if (String(a[0]).startsWith("push_delivery")) throw new Error("log sink down"); return real?.(...a); });
+    await send(sender, "one");
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(1));
+    await settle();
+    logSpy.mockImplementation((...a: unknown[]) => real?.(...a));
+    await send(sender, "two"); // inside the 30 s window: only pushed because the reservation was released
+    await vi.waitFor(() => expect(pushCalls()).toHaveLength(2));
+  });
+
+  it("(ac) a member re-queued by a NEW message during a follow-up run is kept (seq changed), not settled away", async () => {
+    const users = Array.from({ length: 39 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], []); await configureVapid(c);
+    await setInternal(c, 30);
+    const m = await meter(c, true);
+    const sender = await connect(c, "sender");
+    await send(sender, "one"); // the last 10 members queued
+    await vi.waitFor(async () => expect((await queued(c))?.inbox).toHaveLength(10));
+    const tail = (await queued(c))!.inbox;
+    let open!: () => void;
+    m.holdInvalidations = new Promise<void>((r) => { open = r; });
+    m.release();
+    await vi.waitFor(() => expect(m.alarms).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 30)); // the run is parked in its gated invalidation fetches
+    const seqBefore = (await runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.get<{ seq: number }>("fanout_overflow")))!.seq;
+    await send(sender, "two"); // same members beyond the budget again: the SAME ids are re-queued
+    await vi.waitFor(async () => expect((await runInDurableObject(stub(c), async (inst: Conversation) => internals(inst).ctx.storage.get<{ seq: number }>("fanout_overflow")))!.seq).toBeGreaterThan(seqBefore));
+    m.holdInvalidations = null;
+    open();
+    await drainAlarms(c);
+    expect(await queued(c)).toBeUndefined();
+    const inv = m.inbox.filter((_, i) => m.bodies[i]!.includes("invalidate"));
+    for (const u of tail) expect(inv.filter((x) => x === `inbox:${u}`)).toHaveLength(2); // once per message's run
+  });
+
+  it("(ad) suppressed_active counts only SUBSCRIBED active recipients (consistent with eligible)", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt", "lurker"], ["rcpt"]); await configureVapid(c);
+    const sender = await connect(c, "sender");
+    await connect(c, "lurker"); // active but not subscribed
+    await send(sender, "hi");
+    await vi.waitFor(() => expect(outcomeLogs()).toHaveLength(1));
+    expect(outcomeLogs()[0]).toContain("eligible=1 attempted=1");
+    expect(outcomeLogs()[0]).toContain("suppressed_active=0");
   });
 
   it("(y) outcome counts: accepted / transient / permanent / debounced / active are reported separately (counts only)", async () => {
@@ -548,7 +752,7 @@ describe("Conversation offline push decision", () => {
     await connect(c, "watcher");
     await send(sender, "hi");
     await vi.waitFor(() => expect(outcomeLogs()).toHaveLength(1));
-    expect(outcomeLogs()[0]).toBe("push_decision outcome eligible=3 attempted=3 accepted=1 transient_failed=1 permanent_failed=1 suppressed_active=1 suppressed_debounce=0 deferred=0");
+    expect(outcomeLogs()[0]).toBe("push_decision outcome eligible=3 attempted=3 accepted=1 transient_failed=1 permanent_failed=1 dropped=0 suppressed_active=1 suppressed_debounce=0 deferred=0");
     await send(sender, "again");
     await vi.waitFor(() => expect(outcomeLogs()).toHaveLength(2));
     expect(outcomeLogs()[1]).toContain("attempted=0");

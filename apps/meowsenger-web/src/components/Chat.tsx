@@ -182,9 +182,10 @@ export default function Chat({ base }: { base: string }) {
   // fetch has already been applied, so an out-of-order (older) list never overwrites a
   // fresher one.
   const listSeqRef = useRef({ started: 0, applied: 0 });
-  const fetchList = useCallback(async (quiet = false): Promise<ChatSummary[] | null> => {
+  const fetchList = useCallback(async (quiet = false, isStale?: () => boolean): Promise<ChatSummary[] | null> => {
     const seq = ++listSeqRef.current.started;
     const res = await listChats(base);
+    if (isStale?.()) return null; // unmounted / base changed while in flight: apply nothing
     if (seq < listSeqRef.current.applied) return null; // superseded by a newer applied list
     if (res.ok) listSeqRef.current.applied = seq;
     return applyChatList(res, quiet);
@@ -441,7 +442,9 @@ export default function Chat({ base }: { base: string }) {
     let cancelled = false;
     async function refresh() {
       if (cancelled) return;
-      await fetchList(false);
+      // fetchList's sequence guard drops out-of-order lists; `cancelled` also stops a
+      // response that lands after unmount or a base change from being applied.
+      await fetchList(false, () => cancelled);
     }
     function onFocus() { void refresh(); }
     function onVisible() { if (document.visibilityState === "visible") void refresh(); }
