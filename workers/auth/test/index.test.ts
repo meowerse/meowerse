@@ -44,7 +44,7 @@ test("serves security.txt; robots.txt and sitemap.xml are static assets, not Wor
   const { env, deps } = await fixture();
   const s = await handle(new Request("https://iss/.well-known/security.txt"), env, deps);
   expect(s.status).toBe(200);
-  expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+  expect(await s.text()).toContain("Contact: mailto:security@alxnko.dev");
   expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
   // apps/auth-web/public/robots.txt and the postbuild dist/sitemap.xml are served by Cloudflare

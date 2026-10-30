@@ -55,7 +55,7 @@ const TKT_TTL = 900; // signed authorize request object lifetime (seconds)
 const SESS_COOKIE = "mw_sess";
 const TKT_COOKIE = "mw_tkt";
 
-const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
 Canonical: https://auth.alxnko.dev/.well-known/security.txt

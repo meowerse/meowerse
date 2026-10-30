@@ -66,7 +66,7 @@ async function writeThrottle(env: Env, req: Request): Promise<boolean> {
   return success;
 }
 
-const SECURITY_TXT = `Contact: mailto:Alexnekokyn@gmail.com
+const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
 Canonical: https://meowsenger.alxnko.dev/.well-known/security.txt

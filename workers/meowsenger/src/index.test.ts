@@ -23,7 +23,7 @@ describe("router", () => {
   it("serves security.txt; robots.txt and sitemap.xml are static assets, not Worker routes", async () => {
     const s = await handle(new Request("https://meowsenger-api.alxnko.dev/.well-known/security.txt"), env, deps);
     expect(s.status).toBe(200);
-    expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+    expect(await s.text()).toContain("Contact: mailto:security@alxnko.dev");
     expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
     // apps/meowsenger-web/public/robots.txt and the postbuild dist/sitemap.xml are served by
