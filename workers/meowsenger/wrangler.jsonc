@@ -26,7 +26,7 @@
     // Web Push (VAPID). The PUBLIC key + subject are public; the PRIVATE key is a
     // secret set once via `wrangler secret put VAPID_PRIVATE_JWK`.
     "VAPID_PUBLIC_KEY": "BKUWUCdMbpAxBrJdzMMiCvHIokH8F8e-DA3bgIwz9tmFlxMDWQOx9LXhHnhXTc6F7mVviScV9Kcvc5SOzqAg4vo",
-    "VAPID_SUBJECT": "mailto:aleksandrnyrko@gmail.com"
+    "VAPID_SUBJECT": "mailto:security@alxnko.dev"
   },
   "d1_databases": [
     { "binding": "DB", "database_name": "meowsenger", "database_id": "d287edf4-c3c8-4328-9c47-14094f08ca42" }
