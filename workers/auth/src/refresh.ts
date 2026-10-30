@@ -62,7 +62,7 @@ export interface RotateOk {
 /** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
 export type RotateResult =
   | RotateOk
-  | { ok: false; error: string; reuse?: boolean; revokeFailed?: boolean; accountId?: string; familyClientId?: string };
+  | { ok: false; error: string; reuse?: boolean; revokeFailed?: boolean; family?: string; accountId?: string; familyClientId?: string };
 
 /**
  * Validate a refresh token for rotation (spec §4, §10): single-use with reuse
@@ -91,7 +91,7 @@ export async function rotateRefresh(
     } catch {
       // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
       console.error("family_revoke_failed");
-      return { ok: false, error: "server_error", revokeFailed: true, ...ids };
+      return { ok: false, error: "server_error", revokeFailed: true, family: String(row.family_id), ...ids };
     }
     return { ok: false, error: "invalid_grant", ...ids };
   }
@@ -121,15 +121,26 @@ export async function revokeFamily(db: DbClient, family: string): Promise<void> 
 
 const REVOKE_BACKOFF_MS = [0, 50, 200];
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * Background retry after the in-request attempts all failed (scheduled with
+ * ctx.waitUntil, so it outlives the 5xx response; total < the 30 s waitUntil budget).
+ * Covers a short database outage that ends after the request gave up.
+ */
+export const REVOKE_BACKGROUND_BACKOFF_MS = [1000, 4000, 12000];
 
 /**
  * `revokeFamily` with bounded retry (3 attempts, 0/50/200 ms backoff) so one
  * transient database error does not leave a replayed/compromised family live.
  * Rethrows the last error if every attempt fails. `sleep` is injectable for tests.
  */
-export async function revokeFamilyWithRetry(db: DbClient, family: string, sleep: (ms: number) => Promise<void> = realSleep): Promise<void> {
+export async function revokeFamilyWithRetry(
+  db: DbClient,
+  family: string,
+  sleep: (ms: number) => Promise<void> = realSleep,
+  backoff: readonly number[] = REVOKE_BACKOFF_MS,
+): Promise<void> {
   let last: unknown;
-  for (const delay of REVOKE_BACKOFF_MS) {
+  for (const delay of backoff) {
     if (delay > 0) await sleep(delay);
     try {
       await revokeFamily(db, family);

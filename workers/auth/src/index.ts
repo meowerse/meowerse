@@ -17,7 +17,7 @@ import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo,
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
-import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry } from "./refresh";
+import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
 import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
@@ -199,6 +199,20 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
 }
 
 // --- Route handlers ---------------------------------------------------------
+
+/**
+ * The in-request revoke attempts all failed: keep trying in the background
+ * (ctx.waitUntil) so a short database outage that ends after the 5xx still
+ * revokes the replayed/compromised family. Without a ctx (tests) nothing is scheduled.
+ */
+function scheduleBackgroundRevoke(deps: Deps, db: DbClient, family: string | undefined): void {
+  if (!family || !deps.ctx) return;
+  deps.ctx.waitUntil(
+    revokeFamilyWithRetry(db, family, undefined, REVOKE_BACKGROUND_BACKOFF_MS).catch(() => {
+      console.error("family_revoke_background_failed");
+    }),
+  );
+}
 
 async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   // Cheap in-worker second line behind the edge WAF (same shape as /token).
@@ -540,7 +554,10 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       if (ex.replay) {
         await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId ?? null, clientId: ex.codeClientId ?? clientId });
       }
-      if (ex.revokeFailed) return json({ error: "server_error" }, 500, { ...cors, ...noStore });
+      if (ex.revokeFailed) {
+        scheduleBackgroundRevoke(deps, db, ex.family);
+        return json({ error: "server_error" }, 500, { ...cors, ...noStore });
+      }
       return json({ error: ex.error }, 400, { ...cors, ...noStore });
     }
     return mintResponse(env, deps, cors, noStore, {
@@ -568,7 +585,10 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       if (rot.reuse) {
         await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId ?? null, clientId: rot.familyClientId ?? clientId });
       }
-      if (rot.revokeFailed) return json({ error: "server_error" }, 500, { ...cors, ...noStore });
+      if (rot.revokeFailed) {
+        scheduleBackgroundRevoke(deps, db, rot.family);
+        return json({ error: "server_error" }, 500, { ...cors, ...noStore });
+      }
       return json({ error: rot.error }, 400, { ...cors, ...noStore });
     }
     return mintResponse(env, deps, cors, noStore, {

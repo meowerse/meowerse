@@ -60,7 +60,7 @@ export interface ExchangeOk {
   /** SHA-256 of the code; the issuing batch consumes the row by this key. */
   codeHash: string;
 }
-export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; revokeFailed?: boolean; accountId?: string; codeClientId?: string };
+export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; revokeFailed?: boolean; family?: string; accountId?: string; codeClientId?: string };
 
 /**
  * Validate an authorization code (spec §5, §8, §10/#3). A presentation of an
@@ -92,7 +92,7 @@ export async function exchangeCode(
     } catch {
       // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
       console.error("family_revoke_failed");
-      return { ok: false, error: "server_error", revokeFailed: true, ...ids };
+      return { ok: false, error: "server_error", revokeFailed: true, family: String(row.jti_family), ...ids };
     }
     return { ok: false, error: "invalid_grant", ...ids };
   }

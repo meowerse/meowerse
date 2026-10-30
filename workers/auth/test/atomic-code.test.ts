@@ -76,12 +76,12 @@ test("SQL: unknown code hash -> nothing inserted", async () => {
 
 // ------------------------------------------------------------ handler-level races
 
-async function fixture(wrap?: (db: DbClient) => DbClient) {
+async function fixture(wrap?: (db: DbClient) => DbClient, ctx?: { waitUntil: (p: Promise<unknown>) => void }) {
   const real = await freshDb();
   const db = wrap ? wrap(real) : real;
   const keys = await genSigningKeys();
   const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow", STATE_SECRET: "s", CORS_ORIGINS: "https://web" };
-  const deps = { getDb: () => db, clock: () => NOW };
+  const deps = { getDb: () => db, clock: () => NOW, ctx };
   const post = (body: Record<string, string>) =>
     handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.5" }, body: JSON.stringify(body) }), env as never, deps as never);
   const exchange = (code: string) => post({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT });
@@ -278,5 +278,21 @@ test("(G) sequential code replay: revokeFamily fails 3 times -> 500 fail-closed,
   expect(r.status).toBe(500);
   expect(await r.json()).toEqual({ error: "server_error" });
   expect(fr.st.calls).toBe(3);
+  expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
+});
+
+test("(H) sequential code replay: in-request revokes all fail, background retry revokes once the DB recovers", async () => {
+  const fr = failRevokes(3);
+  const pending: Promise<unknown>[] = [];
+  const f = await fixture(fr.wrap, { waitUntil: (p) => pending.push(p) });
+  const { code } = await issueCode(f.real, ["openid", "offline_access"]);
+  const first = await f.exchange(code);
+  expect(first.status).toBe(200);
+  const rt = ((await first.json()) as { refresh_token: string }).refresh_token;
+  const r = await f.exchange(code);
+  expect(r.status).toBe(500);
+  await Promise.all(pending);
+  expect(fr.st.calls).toBe(4); // 3 in-request failures + 1 successful background attempt
+  expect((await f.refresh(rt)).status).toBe(400);
   expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
 });
