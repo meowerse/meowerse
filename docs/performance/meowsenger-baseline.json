@@ -1,0 +1,366 @@
+{
+  "meta": {
+    "sha": "9f033064bf576de7c5ced7022ac5bab58d80ca35",
+    "dirty": true,
+    "date": "2026-10-30T13:38:56.629Z",
+    "browser": "Chromium 153.0.8010.12",
+    "playwright": "1.63.0",
+    "cpu": "AMD Ryzen 5 240 w/ Radeon 760M Graphics",
+    "cores": 12,
+    "os": "7.3.0-5-cachyos",
+    "loadStart": [
+      13.8,
+      22,
+      24.6
+    ],
+    "loadEnd": [
+      17.3,
+      13.7,
+      17.5
+    ],
+    "apiMs": 150,
+    "wsMs": 120,
+    "runs": 5,
+    "warm": 20,
+    "leak": 50,
+    "throttling": {
+      "network": "none (latency injected by the mock server per route)",
+      "cpu": {
+        "desktop": 1,
+        "phone": 4
+      }
+    }
+  },
+  "bundle": {
+    "eagerJs": [
+      {
+        "file": "client.DKvnRPH4.js",
+        "raw": 180580,
+        "gzip": 56559
+      },
+      {
+        "file": "AppShell.C2d8dir7.js",
+        "raw": 76553,
+        "gzip": 19927
+      },
+      {
+        "file": "chat.CfY101fB.js",
+        "raw": 20525,
+        "gzip": 6476
+      },
+      {
+        "file": "react-dom.8nq12Ben.js",
+        "raw": 11032,
+        "gzip": 3927
+      }
+    ],
+    "eagerJsGzip": 86889,
+    "eagerJsRaw": 288690,
+    "css": [
+      {
+        "file": "Layout.DRzqk8lZ.css",
+        "raw": 63866,
+        "gzip": 11296
+      }
+    ],
+    "cssGzip": 11296,
+    "allJs": [
+      {
+        "file": "client.DKvnRPH4.js",
+        "raw": 180580,
+        "gzip": 56559
+      },
+      {
+        "file": "AppShell.C2d8dir7.js",
+        "raw": 76553,
+        "gzip": 19927
+      },
+      {
+        "file": "chat.CfY101fB.js",
+        "raw": 20525,
+        "gzip": 6476
+      },
+      {
+        "file": "react-dom.8nq12Ben.js",
+        "raw": 11032,
+        "gzip": 3927
+      },
+      {
+        "file": "ChannelPreview.DcrjhLXG.js",
+        "raw": 5568,
+        "gzip": 1691
+      }
+    ],
+    "allJsGzip": 88580,
+    "htmlGzip": 2600,
+    "fontsPreloadedBytes": 0
+  },
+  "aggregate": {
+    "desktop": {
+      "reentryWarmMs": {
+        "p50": 171.2,
+        "p95": 199.9,
+        "perRunP50": [
+          170.6,
+          179.1,
+          171.8,
+          171.1,
+          171.2
+        ],
+        "n": 100
+      },
+      "coldOpenMs": {
+        "p50": 172.4,
+        "p95": 202.1,
+        "perRunP50": [
+          173.8,
+          190.9,
+          172.2,
+          171.7,
+          172.4
+        ],
+        "n": 20
+      },
+      "waitFlashesPerWarmSwitch": 1,
+      "waitFlashesPerColdOpen": 1,
+      "waitDwellMsPerWarmSwitch": 117.5,
+      "httpPerWarmSwitch": {
+        "messages": 1.5,
+        "members": 0.4
+      },
+      "httpPerColdOpen": {
+        "messages": 1.4,
+        "members": 0.5
+      },
+      "httpBoot": {
+        "session": 2,
+        "chats": 1
+      },
+      "chatSocketsOpenedPerSwitch": 1,
+      "reopenAfterBackMs": {
+        "p50": 174.8,
+        "p95": 186.5,
+        "flashes": 1
+      },
+      "keyboard": {
+        "focusKeptRuns": 0,
+        "sameComposerNodeRuns": 5,
+        "draftKeptRuns": 5
+      },
+      "concurrentEvents": {
+        "runs": 5,
+        "editAppliedRuns": 5,
+        "deleteAppliedRuns": 5,
+        "reactionAppliedRuns": 5,
+        "liveExactlyOnceRuns": 5,
+        "switchMsMedian": 171.1
+      },
+      "bootRowsVisibleMs": 384,
+      "wsAtBoot": {
+        "inbox": 1,
+        "chat": 0
+      },
+      "inpMs": {
+        "clickP75": 24,
+        "clickMax": 32,
+        "keyP75": 16,
+        "keyMax": 24,
+        "allP75": 16,
+        "n": 143
+      },
+      "cls": {
+        "boot": 0,
+        "bootMax": 0,
+        "switches": 4.593921746399177
+      },
+      "longTasksPerWarmRun": {
+        "n": 0,
+        "totalMs": 0,
+        "maxMs": 70,
+        "loafBlockingMs": 0
+      },
+      "burst1000": {
+        "longTasksMedian": 0,
+        "maxMs": 0
+      },
+      "probes": {
+        "tabReturnListChatsMedian": 2,
+        "tabReturnMaxConcurrentChats": 2,
+        "sidebarEmptyOnFailedPollRuns": 5,
+        "messagesLostAcrossForcedCloseMedian": 5,
+        "lostAckCopiesMax": 1,
+        "cspViolations": 0
+      },
+      "leak": {
+        "heapDeltaMB": 0.4,
+        "heapDeltaMBMax": 0.7,
+        "heapBaseMB": 3.3,
+        "nodesDelta": 0,
+        "listenersDelta": 0,
+        "winDocListenersDelta": 0,
+        "openSocketsEndMax": 2,
+        "chatSocketsOpenedMedian": 53
+      }
+    },
+    "phone": {
+      "reentryWarmMs": {
+        "p50": 208.5,
+        "p95": 275.5,
+        "perRunP50": [
+          192.2,
+          195.8,
+          208.6,
+          208.5,
+          259.1
+        ],
+        "n": 100
+      },
+      "coldOpenMs": {
+        "p50": 257.7,
+        "p95": 348.8,
+        "perRunP50": [
+          203.7,
+          257.7,
+          218.9,
+          265,
+          296.1
+        ],
+        "n": 20
+      },
+      "waitFlashesPerWarmSwitch": 1,
+      "waitFlashesPerColdOpen": 1,
+      "waitDwellMsPerWarmSwitch": 110.1,
+      "httpPerWarmSwitch": {
+        "messages": 1.5,
+        "members": 0.4
+      },
+      "httpPerColdOpen": {
+        "messages": 1.5,
+        "members": 0.5
+      },
+      "httpBoot": {
+        "session": 2,
+        "chats": 1
+      },
+      "chatSocketsOpenedPerSwitch": 1,
+      "reopenAfterBackMs": {
+        "p50": 38.7,
+        "p95": 219.4,
+        "flashes": 1
+      },
+      "keyboard": {
+        "focusKeptRuns": 0,
+        "sameComposerNodeRuns": 5,
+        "draftKeptRuns": 5
+      },
+      "concurrentEvents": {
+        "runs": 5,
+        "editAppliedRuns": 5,
+        "deleteAppliedRuns": 5,
+        "reactionAppliedRuns": 5,
+        "liveExactlyOnceRuns": 5,
+        "switchMsMedian": 210.9
+      },
+      "bootRowsVisibleMs": 589,
+      "wsAtBoot": {
+        "inbox": 1,
+        "chat": 0
+      },
+      "inpMs": {
+        "clickP75": 48,
+        "clickMax": 112,
+        "keyP75": 16,
+        "keyMax": 72,
+        "allP75": 24,
+        "n": 187
+      },
+      "cls": {
+        "boot": 0,
+        "bootMax": 0,
+        "switches": 8.045837890387652
+      },
+      "longTasksPerWarmRun": {
+        "n": 3,
+        "totalMs": 350,
+        "maxMs": 246,
+        "loafBlockingMs": 183.1
+      },
+      "burst1000": {
+        "longTasksMedian": 0,
+        "maxMs": 59
+      },
+      "probes": {
+        "tabReturnListChatsMedian": 2,
+        "tabReturnMaxConcurrentChats": 2,
+        "sidebarEmptyOnFailedPollRuns": 5,
+        "messagesLostAcrossForcedCloseMedian": 5,
+        "lostAckCopiesMax": 1,
+        "cspViolations": 0
+      },
+      "leak": {
+        "heapDeltaMB": 0.4,
+        "heapDeltaMBMax": 0.4,
+        "heapBaseMB": 3.3,
+        "nodesDelta": 0,
+        "listenersDelta": 0,
+        "winDocListenersDelta": 0,
+        "openSocketsEndMax": 2,
+        "chatSocketsOpenedMedian": 53
+      }
+    }
+  },
+  "latencySweep": {
+    "desktop": {
+      "80": {
+        "warmP50": 97.3,
+        "warmP95": 111.3,
+        "coldP50": 103.2,
+        "coldP95": 121.1,
+        "flashes": 1,
+        "n": 60
+      },
+      "150": {
+        "warmP50": 176.3,
+        "warmP95": 263.7,
+        "coldP50": 196,
+        "coldP95": 258.3,
+        "flashes": 1,
+        "n": 60
+      },
+      "300": {
+        "warmP50": 325.3,
+        "warmP95": 394.9,
+        "coldP50": 348.4,
+        "coldP95": 372.3,
+        "flashes": 1,
+        "n": 60
+      }
+    },
+    "phone": {
+      "80": {
+        "warmP50": 257.2,
+        "warmP95": 321.2,
+        "coldP50": 284.8,
+        "coldP95": 398.3,
+        "flashes": 1,
+        "n": 60
+      },
+      "150": {
+        "warmP50": 280.6,
+        "warmP95": 410,
+        "coldP50": 235.6,
+        "coldP95": 529.4,
+        "flashes": 1,
+        "n": 60
+      },
+      "300": {
+        "warmP50": 432.3,
+        "warmP95": 562.8,
+        "coldP50": 458.9,
+        "coldP95": 504.6,
+        "flashes": 1,
+        "n": 60
+      }
+    }
+  }
+}
