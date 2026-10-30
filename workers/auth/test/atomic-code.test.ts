@@ -205,3 +205,78 @@ test("(C2) failure INSIDE the real transaction rolls back the access insert and 
   await f.real.execute("DROP TRIGGER boom");
   expect((await f.exchange(code)).status).toBe(200);
 });
+
+/** Fail the first `times` standalone revokeFamily batches (2 stmts, first = family refresh UPDATE). */
+const firstSql = (s: string | { sql: string }) => (typeof s === "string" ? s : s.sql);
+const failRevokes = (times: number) => {
+  const st = { left: times, calls: 0 };
+  const wrap = (db: DbClient): DbClient => ({
+    execute: (s) => db.execute(s),
+    batch: async (stmts, mode) => {
+      if (stmts.length === 2 && /UPDATE refresh_tokens SET used_at/.test(firstSql(stmts[0]!))) {
+        st.calls++;
+        if (st.left > 0) {
+          st.left--;
+          throw new Error("transient");
+        }
+      }
+      return db.batch(stmts, mode);
+    },
+  });
+  return { st, wrap };
+};
+
+test("(E) code loser: follow-up revokeFamily keeps failing -> still 400, one audit row, no usable tokens", async () => {
+  let inner: (() => Promise<Response>) | undefined;
+  let armed = false;
+  const fr = failRevokes(Infinity);
+  const f = await fixture((db) => {
+    const w = fr.wrap(db);
+    return {
+      execute: (s) => w.execute(s),
+      batch: async (stmts, mode) => {
+        if (armed && /INSERT INTO access_tokens/.test(firstSql(stmts[0]!))) {
+          armed = false;
+          await inner!(); // winner commits first
+        }
+        return w.batch(stmts, mode);
+      },
+    };
+  });
+  const { code, family } = await issueCode(f.real, ["openid", "offline_access"]);
+  inner = () => f.exchange(code);
+  armed = true;
+  const r = await f.exchange(code);
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
+  expect(fr.st.calls).toBe(3);
+  expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
+  expect(await usableAccess(f.real, family)).toBe(0);
+  expect(await usableRefresh(f.real, family)).toBe(0);
+});
+
+test("(F) sequential code replay: revokeFamily fails twice then succeeds -> family revoked, 400, one audit row", async () => {
+  const fr = failRevokes(2);
+  const f = await fixture(fr.wrap);
+  const { code, family } = await issueCode(f.real, ["openid", "offline_access"]);
+  expect((await f.exchange(code)).status).toBe(200);
+  const r = await f.exchange(code);
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
+  expect(fr.st.calls).toBe(3);
+  expect(await usableAccess(f.real, family)).toBe(0);
+  expect(await usableRefresh(f.real, family)).toBe(0);
+  expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
+});
+
+test("(G) sequential code replay: revokeFamily fails 3 times -> 500 fail-closed, audit row still written", async () => {
+  const fr = failRevokes(3);
+  const f = await fixture(fr.wrap);
+  const { code } = await issueCode(f.real, ["openid", "offline_access"]);
+  expect((await f.exchange(code)).status).toBe(200);
+  const r = await f.exchange(code);
+  expect(r.status).toBe(500);
+  expect(await r.json()).toEqual({ error: "server_error" });
+  expect(fr.st.calls).toBe(3);
+  expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
+});

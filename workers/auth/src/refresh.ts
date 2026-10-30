@@ -62,7 +62,7 @@ export interface RotateOk {
 /** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
 export type RotateResult =
   | RotateOk
-  | { ok: false; error: string; reuse?: boolean; accountId?: string; familyClientId?: string };
+  | { ok: false; error: string; reuse?: boolean; revokeFailed?: boolean; accountId?: string; familyClientId?: string };
 
 /**
  * Validate a refresh token for rotation (spec §4, §10): single-use with reuse
@@ -85,8 +85,15 @@ export async function rotateRefresh(
   if (!row) return { ok: false, error: "invalid_grant" };
 
   if (row.used_at != null) {
-    await revokeFamily(db, String(row.family_id));
-    return { ok: false, error: "invalid_grant", reuse: true, accountId: String(row.account_id), familyClientId: String(row.client_id) };
+    const ids = { reuse: true, accountId: String(row.account_id), familyClientId: String(row.client_id) };
+    try {
+      await revokeFamilyWithRetry(db, String(row.family_id));
+    } catch {
+      // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
+      console.error("family_revoke_failed");
+      return { ok: false, error: "server_error", revokeFailed: true, ...ids };
+    }
+    return { ok: false, error: "invalid_grant", ...ids };
   }
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
   if (Number(row.idle_expires_at) < i.now || Number(row.absolute_expires_at) < i.now) {
@@ -110,4 +117,26 @@ export async function revokeFamily(db: DbClient, family: string): Promise<void> 
     { sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL", args: [family] },
     { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ?", args: [family] },
   ]);
+}
+
+const REVOKE_BACKOFF_MS = [0, 50, 200];
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * `revokeFamily` with bounded retry (3 attempts, 0/50/200 ms backoff) so one
+ * transient database error does not leave a replayed/compromised family live.
+ * Rethrows the last error if every attempt fails. `sleep` is injectable for tests.
+ */
+export async function revokeFamilyWithRetry(db: DbClient, family: string, sleep: (ms: number) => Promise<void> = realSleep): Promise<void> {
+  let last: unknown;
+  for (const delay of REVOKE_BACKOFF_MS) {
+    if (delay > 0) await sleep(delay);
+    try {
+      await revokeFamily(db, family);
+      return;
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
 }

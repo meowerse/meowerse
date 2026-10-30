@@ -378,6 +378,22 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
 
+      // --- in-batch conditional family revoke (mintResponse): like real SQLite, only applies when
+      //     this request's own guarded access insert did NOT happen (a[1] = its jti). Must precede
+      //     the generic routes below, which would otherwise swallow/over-apply it.
+      if (/^UPDATE (refresh|access)_tokens SET .* WHERE family_id = \? .*NOT EXISTS \(SELECT 1 FROM access_tokens WHERE jti = \?\)/.test(sql)) {
+        const lost = !t.access_tokens.some((r) => r.jti === a[1]);
+        let n = 0;
+        if (lost) {
+          if (/^UPDATE refresh_tokens/.test(sql)) {
+            for (const r of t.refresh_tokens) if (r.family_id === a[0] && r.used_at == null) (r.used_at = "used", n++);
+          } else {
+            for (const r of t.access_tokens) if (r.family_id === a[0] && r.revoked_at == null) (r.revoked_at = "revoked", n++);
+          }
+        }
+        return { rows: [], rowsAffected: n };
+      }
+
       // --- access tokens ---
       if (/INSERT INTO access_tokens/.test(sql)) {
         if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };

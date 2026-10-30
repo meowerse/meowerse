@@ -177,7 +177,55 @@ test("(R-E) loser's family revoke is part of its own transaction: survives a fai
   const { rt, family } = await f.initial();
   inner = () => f.refresh(rt);
   armed = true;
-  await expect(f.refresh(rt)).rejects.toThrow("transient");
+  const r = await f.refresh(rt);
+  expect(r.status).toBe(400); // the in-batch revoke already committed: still invalid_grant, not 500
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
   expect(await usableRefresh(f.real, family)).toBe(0);
   expect(await usableAccess(f.real, family)).toBe(0);
+  expect(await n(f.real, "audit_log WHERE event = 'token.reuse_detected'")).toBe(1);
+});
+
+/** Fail the first `times` standalone revokeFamily batches (2 stmts, first = family refresh UPDATE). */
+const failRevokes = (times: number) => {
+  const st = { left: times, calls: 0 };
+  const wrap = (db: DbClient): DbClient => ({
+    execute: (s) => db.execute(s),
+    batch: async (stmts, mode) => {
+      if (stmts.length === 2 && /UPDATE refresh_tokens SET used_at/.test(firstSql(stmts[0]!))) {
+        st.calls++;
+        if (st.left > 0) {
+          st.left--;
+          throw new Error("transient");
+        }
+      }
+      return db.batch(stmts, mode);
+    },
+  });
+  return { st, wrap };
+};
+
+test("(R-F) sequential reuse: revokeFamily fails twice then succeeds -> family revoked, 400, one audit row", async () => {
+  const fr = failRevokes(2);
+  const f = await fixture(fr.wrap);
+  const { rt, family } = await f.initial();
+  expect((await f.refresh(rt)).status).toBe(200); // rotate; rt is now spent
+  const r = await f.refresh(rt); // reuse
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
+  expect(fr.st.calls).toBe(3);
+  expect(await usableRefresh(f.real, family)).toBe(0);
+  expect(await usableAccess(f.real, family)).toBe(0);
+  expect(await n(f.real, "audit_log WHERE event = 'token.reuse_detected'")).toBe(1);
+});
+
+test("(R-G) sequential reuse: revokeFamily fails 3 times -> 500 fail-closed, audit row still written", async () => {
+  const fr = failRevokes(3);
+  const f = await fixture(fr.wrap);
+  const { rt } = await f.initial();
+  expect((await f.refresh(rt)).status).toBe(200);
+  const r = await f.refresh(rt);
+  expect(r.status).toBe(500);
+  expect(await r.json()).toEqual({ error: "server_error" });
+  expect(fr.st.calls).toBe(3);
+  expect(await n(f.real, "audit_log WHERE event = 'token.reuse_detected'")).toBe(1);
 });

@@ -1,4 +1,4 @@
-import type { Env } from "./types";
+import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
 import { corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
 import { sha256Hex } from "./crypto";
@@ -17,7 +17,7 @@ import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo,
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
-import { refreshTokenInsert, rotateRefresh, revokeFamily } from "./refresh";
+import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry } from "./refresh";
 import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
@@ -506,6 +506,19 @@ async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, 
   return rl.allowed;
 }
 
+/**
+ * Race-loser follow-up. The in-batch revoke already committed with the loss, so a
+ * failure here is non-fatal: log (no secrets) and let the caller still audit and
+ * answer invalid_grant.
+ */
+async function revokeLoserFamily(db: DbClient, family: string): Promise<void> {
+  try {
+    await revokeFamilyWithRetry(db, family);
+  } catch {
+    console.error("family_revoke_followup_failed");
+  }
+}
+
 async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
@@ -522,10 +535,12 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   if (p.grant_type === "authorization_code") {
     const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
     if (!ex.ok) {
-      // Replay of an already-consumed code already revoked every token of its family inside exchangeCode.
+      // Replay of an already-consumed code: exchangeCode revoked the family (with retry) before returning.
+      // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
       if (ex.replay) {
         await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId ?? null, clientId: ex.codeClientId ?? clientId });
       }
+      if (ex.revokeFailed) return json({ error: "server_error" }, 500, { ...cors, ...noStore });
       return json({ error: ex.error }, 400, { ...cors, ...noStore });
     }
     return mintResponse(env, deps, cors, noStore, {
@@ -538,7 +553,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       issueRefresh: ex.scope.includes("offline_access"),
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
       onLost: async () => {
-        await revokeFamily(db, ex.family);
+        await revokeLoserFamily(db, ex.family);
         await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },
@@ -548,10 +563,12 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
     if (!rot.ok) {
-      // Refresh-token reuse already revoked the whole family inside rotateRefresh.
+      // Refresh-token reuse: rotateRefresh revoked the family (with retry) before returning.
+      // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
       if (rot.reuse) {
         await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId ?? null, clientId: rot.familyClientId ?? clientId });
       }
+      if (rot.revokeFailed) return json({ error: "server_error" }, 500, { ...cors, ...noStore });
       return json({ error: rot.error }, 400, { ...cors, ...noStore });
     }
     return mintResponse(env, deps, cors, noStore, {
@@ -567,7 +584,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
       onLost: async () => {
         // Lost to a concurrent rotation/reuse of the same token: treat as reuse.
-        await revokeFamily(db, rot.family);
+        await revokeLoserFamily(db, rot.family);
         await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },

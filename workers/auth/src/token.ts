@@ -1,7 +1,7 @@
 import { TYP, TOKEN_USE, sha256, b64urlEncode, verifyPkceS256 } from "@meowerse/auth-shared";
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
-import { revokeFamily } from "./refresh";
+import { revokeFamilyWithRetry } from "./refresh";
 import { signJwt } from "./jwt";
 import { guardedInsert, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
@@ -60,7 +60,7 @@ export interface ExchangeOk {
   /** SHA-256 of the code; the issuing batch consumes the row by this key. */
   codeHash: string;
 }
-export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; accountId?: string; codeClientId?: string };
+export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; revokeFailed?: boolean; accountId?: string; codeClientId?: string };
 
 /**
  * Validate an authorization code (spec §5, §8, §10/#3). A presentation of an
@@ -86,8 +86,15 @@ export async function exchangeCode(
   if (row.consumed_at != null) {
     // RFC 6749 §4.1.2: a replayed code revokes every token issued from it, including
     // the offline refresh token, which shares the code's family.
-    await revokeFamily(db, String(row.jti_family));
-    return { ok: false, error: "invalid_grant", replay: true, accountId: String(row.account_id), codeClientId: String(row.client_id) };
+    const ids = { replay: true, accountId: String(row.account_id), codeClientId: String(row.client_id) };
+    try {
+      await revokeFamilyWithRetry(db, String(row.jti_family));
+    } catch {
+      // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
+      console.error("family_revoke_failed");
+      return { ok: false, error: "server_error", revokeFailed: true, ...ids };
+    }
+    return { ok: false, error: "invalid_grant", ...ids };
   }
   if (Number(row.expires_at) < i.now) return { ok: false, error: "invalid_grant" };
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
