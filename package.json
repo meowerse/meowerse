@@ -10,7 +10,8 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "perf:meowsenger": "bun run --filter @meowerse/meowsenger-web perf:baseline"
   },
   "devDependencies": {
     "turbo": "^2.11.2",
