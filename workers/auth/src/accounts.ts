@@ -215,28 +215,35 @@ export async function countRecoveryCodes(db: DbClient, accountId: string): Promi
 }
 
 /**
- * Erase an account and everything it owns. `DbClient` has no `.batch()` and
- * cross-execute transactions don't hold over Turso HTTP, so we delete
- * sequentially, children first and the `accounts` row LAST — a partial failure
- * leaves the account intact and a retry completes it. Table names below are a
- * fixed allow-list (never user input), so the string interpolation is safe.
+ * Erase an account and everything it owns, ATOMICALLY: every DELETE runs in ONE
+ * `db.batch(..., "write")` transaction (BEGIN IMMEDIATE), so a mid-sequence
+ * failure rolls the whole erasure back and a concurrent token issuance is
+ * serialized against it. The guarded token inserts (INSERT ... SELECT WHERE
+ * EXISTS(code unconsumed / refresh unused)) cannot write once this transaction
+ * has removed the account's oauth_codes / refresh_tokens rows. Owned-client
+ * children are deleted via subqueries on `oauth_clients.owner_account_id`, so
+ * nothing depends on a prior read. Children first; `oauth_clients` then
+ * `accounts` last. `audit_log` rows are intentionally kept (the caller records
+ * account.delete). Table names below are a fixed allow-list (never user input).
  */
 export async function deleteAccount(db: DbClient, accountId: string): Promise<void> {
-  const owned = await db.execute({ sql: "SELECT client_id FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
-  for (const row of owned.rows) {
-    const cid = String(row.client_id);
-    await db.execute({ sql: "DELETE FROM oauth_client_secrets WHERE client_id = ?", args: [cid] });
-    await db.execute({ sql: "DELETE FROM oauth_client_redirect_uris WHERE client_id = ?", args: [cid] });
-    await db.execute({ sql: "DELETE FROM consents WHERE client_id = ?", args: [cid] });
-  }
+  const owned = "(SELECT client_id FROM oauth_clients WHERE owner_account_id = ?)";
+  const stmts: { sql: string; args: unknown[] }[] = [
+    { sql: `DELETE FROM oauth_client_secrets WHERE client_id IN ${owned}`, args: [accountId] },
+    { sql: `DELETE FROM oauth_client_redirect_uris WHERE client_id IN ${owned}`, args: [accountId] },
+    { sql: `DELETE FROM consents WHERE client_id IN ${owned}`, args: [accountId] },
+  ];
   const accountKeyed = [
     "recovery_codes", "password_credentials", "telegram_links", "sessions",
-    "consents", "access_tokens", "refresh_tokens", "management_tokens",
+    "consents", "access_tokens", "refresh_tokens",
     "oauth_codes", "login_requests", "login_tickets",
   ];
   for (const tbl of accountKeyed) {
-    await db.execute({ sql: `DELETE FROM ${tbl} WHERE account_id = ?`, args: [accountId] });
+    stmts.push({ sql: `DELETE FROM ${tbl} WHERE account_id = ?`, args: [accountId] });
   }
-  await db.execute({ sql: "DELETE FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
-  await db.execute({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
+  // management_tokens is keyed by owner_account_id (no account_id column).
+  stmts.push({ sql: "DELETE FROM management_tokens WHERE owner_account_id = ?", args: [accountId] });
+  stmts.push({ sql: "DELETE FROM oauth_clients WHERE owner_account_id = ?", args: [accountId] });
+  stmts.push({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
+  await db.batch(stmts, "write");
 }
