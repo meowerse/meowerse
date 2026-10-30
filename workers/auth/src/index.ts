@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
@@ -651,6 +651,12 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   if (kind === "VERIFY_EXISTING") {
     const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
     if (!session) return json({ error: "no_session" }, 401, cors);
+    // Linking mutates the account's login methods: CSRF-protected and gated on fresh authentication.
+    if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+    const info = await getAccountInfo(db, session.accountId);
+    if (!info) return json({ error: "no_session" }, 401, cors);
+    const stale = await requireFreshAuth(req, deps, cors, session, session.accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     accountId = session.accountId;
   }
   const ownerSecret = randomId(32);
@@ -702,12 +708,20 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   // owner mismatch / unconsumed → "not ready" (never leak; ticket_id grants nothing)
   if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash)) return json({ ready: false }, 200, cors);
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
+  // Linking is not authentication: the continuing session must be the live one for this account, and keeps its auth_time/amr.
+  const rawSess = cookies[`__Host-${SESS_COOKIE}`];
+  if (ticket.kind === "VERIFY_EXISTING") {
+    const cur = await lookupSession(db, rawSess, now(deps));
+    if (!cur || cur.accountId !== ticket.account_id) return json({ error: "no_session" }, 401, cors); // unclaimed
+  }
   // Single use: only the poll that atomically claims a fresh ticket gets a session; later polls see "not ready".
   if (!(await claimTicket(db, ticketId, now(deps)))) return json({ ready: false }, 200, cors);
   let sess: NonNullable<Awaited<ReturnType<typeof issueSession>>>;
   let next: NonNullable<Awaited<ReturnType<typeof resolveNext>>>;
   try {
-    const issued = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
+    const issued = ticket.kind === "VERIFY_EXISTING"
+      ? await rotateSession(db, rawSess ?? "", { now: now(deps), accountId: ticket.account_id }) // keeps the original auth_time and amr; only for the linked account
+      : await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
     if (!issued) return accountGone(cors); // account deleted since the ticket was confirmed; stays claimed
     sess = issued;
     const resolved = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
@@ -950,6 +964,43 @@ function accountDeleteEnabled(env: Env): boolean {
   return env.ACCOUNT_DELETE_ENABLED === "1" || env.ACCOUNT_DELETE_ENABLED === "true";
 }
 
+/** Auth newer than this (seconds) counts as "fresh" for the delete step-up. */
+const STEPUP_FRESH_SECONDS = 300;
+
+/**
+ * Server-verified fresh authentication for sensitive actions: a recent real login (auth_time is the true login time,
+ * kept across rotation and Telegram linking) OR the account's current password, behind the shared `stepup:<accountId>`
+ * rate limit. Returns an error Response, or null when fresh.
+ */
+async function requireFreshAuth(
+  req: Request,
+  deps: Deps,
+  cors: Record<string, string>,
+  session: { authTime: number },
+  accountId: string,
+  info: { hasPassword: boolean },
+  password: string,
+  failEvent?: "account.delete_stepup_fail",
+): Promise<Response | null> {
+  const t = now(deps);
+  if (t - session.authTime <= STEPUP_FRESH_SECONDS) return null;
+  if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
+  if (!password) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
+  const db = deps.getDb();
+  if (!(await stepUpAllowed(db, accountId, t))) return json({ error: "rate_limited" }, 429, cors);
+  const v = await verifyAccountPassword(db, accountId, password);
+  if (v !== "ok") {
+    if (failEvent) await recordAudit(deps, req, { event: failEvent, accountId });
+    return json({ error: "wrong_password" }, 403, cors);
+  }
+  return null;
+}
+
+/** Shared per-account bucket for every current-password check (5 attempts / 15 min), taken BEFORE the PBKDF2 work. */
+async function stepUpAllowed(db: ReturnType<Deps["getDb"]>, accountId: string, t: number): Promise<boolean> {
+  return (await checkRateLimit(db, `stepup:${accountId}`, { limit: 5, windowSec: 900, now: t })).allowed;
+}
+
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
@@ -971,6 +1022,8 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
 
   if (sub === "password") {
+    // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
+    if (!(await stepUpAllowed(db, accountId, now(deps)))) return json({ error: "rate_limited" }, 429, cors);
     const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
@@ -993,24 +1046,48 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
     return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
+  if (sub === "delete/start") {
+    if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
+    const t = now(deps);
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return json({ error: "not_found" }, 404, cors);
+    // Fresh authentication: a recent login (auth_time is the real login time, kept across rotation) OR the current password.
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "", "account.delete_stepup_fail");
+    if (stale) return stale;
+    const rawSession = cookies[`__Host-${SESS_COOKIE}`] ?? "";
+    const token = randomId(32);
+    const issued = await issueDeleteConfirmation(db, { accountId, sessionIdHash: await sha256Hex(rawSession), tokenHash: await sha256Hex(token), now: t });
+    if (!issued) return accountGone(cors);
+    return json({ confirm_token: token, expires_in: DELETE_CONFIRM_TTL }, 200, { ...cors, ...securityHeaders() });
+  }
   if (sub === "delete") {
     if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
     const info = await getAccountInfo(db, accountId);
     if (!info) return json({ error: "not_found" }, 404, cors);
     const expected = info.username ?? info.displayName ?? "";
     if ((p.confirm ?? "") !== expected) return json({ error: "confirm_mismatch" }, 400, cors);
+    const token = p.confirm_token ?? "";
+    if (!token) return json({ error: "confirm_invalid" }, 403, cors);
+    const confirmation = { tokenHash: await sha256Hex(token), sessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? ""), now: now(deps) };
     if (await ownsActiveClients(db, accountId)) return json({ error: "owns_active_clients" }, 409, cors);
-    // The account.delete audit row is written INSIDE the delete batch (exists iff the deletion committed).
+    // The token is consumed and the account.delete audit row is written INSIDE the delete batch (exists iff the deletion committed).
     const audit = { ipTrunc: truncIp(req.headers.get("CF-Connecting-IP")), uaHash: await uaHash(req.headers.get("User-Agent")) };
     try {
-      await deleteAccount(db, accountId, audit);
+      await deleteAccount(db, accountId, audit, confirmation);
     } catch (e) {
       console.error("account_delete_failed", errCode(e));
-      // The response may have been lost after a commit, or the batch rolled back: ask the DB which.
+      const constraint = String(errCode(e)).startsWith("SQLITE_CONSTRAINT");
+      // A constraint error means THIS batch rolled back (an in-batch guard fired): it never committed, so even if the
+      // account is gone (a racing request won) this request did not delete it. Any other error may be a lost response.
       let gone = false;
       try {
         gone = !(await accountExists(db, accountId));
-        if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors); // in-batch guard fired
+        if (constraint) {
+          if (gone || !(await deleteConfirmationUsable(db, accountId, confirmation))) return json({ error: "confirm_invalid" }, 403, cors);
+          if (await ownsActiveClients(db, accountId)) return json({ error: "owns_active_clients" }, 409, cors);
+          return json({ error: "server_error" }, 500, cors);
+        }
+        if (!gone && (await ownsActiveClients(db, accountId))) return json({ error: "owns_active_clients" }, 409, cors);
       } catch (e2) {
         console.error("account_delete_probe_failed", errCode(e2));
         return json({ error: "server_error" }, 500, cors);

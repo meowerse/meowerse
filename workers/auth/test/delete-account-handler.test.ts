@@ -4,7 +4,7 @@ import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
 import { deleteAccount } from "../src/accounts";
 import { sha256Hex } from "../src/crypto";
-import { genSigningKeys, cookieValue } from "./helpers";
+import { genSigningKeys, cookieValue, seedDeleteConfirmation } from "./helpers";
 import type { DbClient } from "../src/types";
 
 async function freshDb(): Promise<DbClient> {
@@ -34,11 +34,14 @@ async function setup(wrap?: (db: DbClient) => DbClient) {
   const { csrf } = (await su.json()) as { csrf: string };
   const sess = cookieValue(su.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const accountId = String((await run(db, "SELECT id FROM accounts WHERE username = 'victim'")).rows[0]!.id);
+  // A fresh login (auth_time == clock) can start deletion without a password; the token is obtained up front.
+  const st = await handle(new Request("https://iss/api/account/delete/start", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}` }, body: JSON.stringify({ csrf }) }), env as never, deps as never);
+  const token = ((await st.json()) as { confirm_token: string }).confirm_token;
   const del = () =>
     handle(new Request("https://iss/api/account/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}`, "CF-Connecting-IP": IP, "User-Agent": UA },
-      body: JSON.stringify({ csrf, confirm: "victim" }),
+      body: JSON.stringify({ csrf, confirm: "victim", confirm_token: token }),
     }), env as never, deps as never);
   return { db, accountId, del };
 }
@@ -76,8 +79,9 @@ test("owning an active client → 409 owns_active_clients, every row unchanged, 
 test("in-batch guard: deleteAccount itself rolls back everything when an active owned client exists", async () => {
   const { db, accountId } = await setup();
   await addClient(db, "cl_race", accountId, false); // as if created between the handler pre-check and the batch
+  const confirm = await seedDeleteConfirmation(db, accountId);
   const before = await snapshot(db);
-  await expect(deleteAccount(db, accountId, { ipTrunc: null, uaHash: null })).rejects.toThrow();
+  await expect(deleteAccount(db, accountId, { ipTrunc: null, uaHash: null }, confirm)).rejects.toThrow();
   expect(await snapshot(db)).toBe(before);
 });
 
@@ -171,7 +175,7 @@ test("batch throws AND the existence probe throws → 500 server_error, nothing 
       if (armed && /SELECT 1 FROM accounts WHERE id/.test(typeof stmt === "string" ? stmt : stmt.sql)) throw Object.assign(new Error("probe secret-msg"), { code: "PROBE_X" });
       return real.execute(stmt);
     },
-    batch: async () => { if (armed) throw Object.assign(new Error("batch secret-msg"), { code: "BATCH_X" }); return []; },
+    batch: async (stmts, mode) => { if (armed) throw Object.assign(new Error("batch secret-msg"), { code: "BATCH_X" }); return real.batch(stmts, mode); },
   }));
   armed = true;
   const r = await del();
@@ -187,9 +191,10 @@ test("batch throws AND the existence probe throws → 500 server_error, nothing 
 test("double submit: second delete of an already-deleted account writes no second audit row (changes() gate)", async () => {
   const { db, accountId } = await setup();
   const audit = { ipTrunc: "1.2.3.0/24", uaHash: "abc" };
-  await deleteAccount(db, accountId, audit);
+  const confirm = await seedDeleteConfirmation(db, accountId);
+  await deleteAccount(db, accountId, audit, confirm);
   expect(await count(db, "audit_log WHERE event = 'account.delete' AND account_id = ?", [accountId])).toBe(1);
-  await deleteAccount(db, accountId, audit); // concurrent loser: account already gone
+  await expect(deleteAccount(db, accountId, audit, confirm)).rejects.toThrow(); // concurrent loser: token already consumed, account gone
   expect(await count(db, "audit_log WHERE event = 'account.delete' AND account_id = ?", [accountId])).toBe(1);
 });
 

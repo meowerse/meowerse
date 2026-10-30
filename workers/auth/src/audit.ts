@@ -28,6 +28,7 @@ export type AuditEvent =
   | "client.delete"
   | "client.secret_rotate"
   | "mgmt_token.create"
+  | "account.delete_stepup_fail"
   | "account.delete";
 
 const HEX4 = /^[0-9a-fA-F]{1,4}$/;

@@ -6,7 +6,8 @@
     "dev": "astro dev",
     "build": "astro build && bun scripts/postbuild.ts",
     "lint": "astro check",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "perf:baseline": "bun perf/run.ts"
   },
   "dependencies": {
     "@meowerse/ui": "workspace:*",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
+    "@playwright/test": "1.63.0",
     "@testing-library/dom": "^10",
     "@testing-library/react": "^16",
     "@types/node": "^26.6.2",

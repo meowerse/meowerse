@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, StatusLine, clearSessionCache } from "@meowerse/ui";
-import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, type AccountInfo, type Grant } from "../lib/authApi";
+import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
 export default function AccountSettings({ base }: { base: string }) {
   const toast = useToast();
@@ -12,6 +12,8 @@ export default function AccountSettings({ base }: { base: string }) {
   const [codes, setCodes] = useState<string[] | null>(null);
   const [confirm, setConfirm] = useState<null | { kind: "revoke" | "unlink" | "regen" | "delete"; clientId?: string }>(null);
   const [busy, setBusy] = useState(false);
+  const [needPassword, setNeedPassword] = useState(false); // server said our login is stale and this account has a password
+  const [needTelegram, setNeedTelegram] = useState(false); // stale login on a Telegram-only account: sign in again
 
   function reload() {
     setError("");
@@ -23,6 +25,13 @@ export default function AccountSettings({ base }: { base: string }) {
   }
   useEffect(reload, [base]);
 
+  // Back from "sign in again" (/login?reauth=delete → /account?reauth=delete): reopen the dialog once, then drop the marker.
+  useEffect(() => {
+    if (!acct?.deleteEnabled || !wantsDeleteReauth(window.location.search)) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    setConfirm({ kind: "delete" });
+  }, [acct?.deleteEnabled]);
+
   async function changePassword(e: FormEvent) {
     e.preventDefault();
     if (!acct) return;
@@ -31,8 +40,38 @@ export default function AccountSettings({ base }: { base: string }) {
     else toast({ message: r.error === "wrong_password" ? "current password is wrong" : "could not change password", variant: "error" });
   }
 
+  /** Delete flow: fresh-auth step-up (token), then the delete itself. Keeps the dialog open only when a password is needed/wrong. */
+  async function runDelete(password?: string) {
+    if (!acct) return;
+    setBusy(true);
+    let close = true;
+    try {
+      const st = await startAccountDelete(base, acct.csrf, password);
+      if (!st.confirm_token) {
+        if (st.error === "step_up_required" && st.reauth === "telegram") setNeedTelegram(true);
+        else if (st.error === "step_up_required") { setNeedPassword(true); close = false; toast({ message: "enter your password to continue", variant: "error" }); }
+        else if (st.error === "wrong_password") { close = false; toast({ message: "password is wrong", variant: "error" }); }
+        else if (st.error === "rate_limited") toast({ message: "too many attempts — try again later", variant: "error" });
+        else toast({ message: "could not delete account", variant: "error" });
+        return;
+      }
+      const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "", st.confirm_token);
+      if (r.ok) { clearSessionCache(); window.location.href = "/"; }
+      else if (r.error === "owns_active_clients") toast({ message: "delete your apps in the developer dashboard first", variant: "error" });
+      else if (r.error === "confirm_mismatch") toast({ message: "that doesn't match your username", variant: "error" });
+      else if (r.error === "confirm_invalid") toast({ message: "the confirmation expired — try again", variant: "error" });
+      else toast({ message: "could not delete account", variant: "error" });
+    } catch {
+      toast({ message: "could not delete account", variant: "error" });
+    } finally {
+      setBusy(false);
+      if (close) { setConfirm(null); setNeedPassword(false); }
+    }
+  }
+
   async function runConfirm(password?: string) {
     if (!acct || !confirm) return;
+    if (confirm.kind === "delete") return runDelete(password);
     setBusy(true);
     try {
       if (confirm.kind === "revoke" && confirm.clientId) {
@@ -46,11 +85,6 @@ export default function AccountSettings({ base }: { base: string }) {
       } else if (confirm.kind === "regen") {
         const r = await regenerateRecoveryCodes(base, acct.csrf);
         if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
-      } else if (confirm.kind === "delete") {
-        const r = await deleteAccount(base, acct.csrf, acct.username ?? acct.displayName ?? "");
-        if (r.ok) { clearSessionCache(); window.location.href = "/"; }
-        else if (r.error === "owns_active_clients") toast({ message: "delete your apps in the developer dashboard first", variant: "error" });
-        else toast({ message: "could not delete account", variant: "error" });
       }
     } finally { setBusy(false); setConfirm(null); }
   }
@@ -117,6 +151,12 @@ export default function AccountSettings({ base }: { base: string }) {
           <>
             <p className="mw-muted">deleting your meowerse account is permanent. it erases your auth account data, but not data held by other services such as meowsenger.</p>
             <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
+            {needTelegram && (
+              <Alert variant="error">
+                for your security, sign in again before deleting your account. use the telegram account linked to {acct.username ?? acct.displayName ?? "this account"}.{" "}
+                <a href="/login?reauth=delete"><Button size="sm" variant="secondary">sign in again with telegram</Button></a>
+              </Alert>
+            )}
           </>
         ) : (
           <p className="mw-muted">account deletion is handled on request for now: email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a> with your username. we'll ask you to confirm from inside your account before deleting anything.</p>
@@ -133,7 +173,7 @@ export default function AccountSettings({ base }: { base: string }) {
       <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
-        <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+        <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
           title="delete your account?" description="this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. data held by other services (e.g. meowsenger) is not; delete it there separately."
           confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
       )}
