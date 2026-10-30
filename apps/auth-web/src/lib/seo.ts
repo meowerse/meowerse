@@ -14,8 +14,8 @@ export const PAGES = {
     "/": "One meowerse account for every meowerse app: sign in with a username or Telegram and choose what each app may see.",
     "/about/": "What meowerse accounts is: single sign-on for the meowerse apps, with optional Telegram verification and per-app consent.",
     "/docs/": "Connect an app to meowerse accounts: a standard OpenID Connect provider with PKCE, ES256-signed tokens and an SDK.",
-    "/privacy/": "The meowerse accounts privacy policy: exactly what the service does with your data.",
-    "/terms/": "The meowerse accounts terms of use.",
+    "/privacy/": "One privacy policy for every meowverse service: who receives your data, what each service keeps and for how long, as true today.",
+    "/terms/": "One set of terms of use for every meowverse service, with a section for each.",
   },
   private: ["/login/", "/signup/", "/consent/", "/verify/", "/error/", "/account/", "/developers/", "/dashboard/", "/404"],
 } as const satisfies SeoPages;

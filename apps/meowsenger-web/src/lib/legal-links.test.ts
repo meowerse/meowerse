@@ -11,6 +11,11 @@ describe("meowsenger /privacy and /terms point at the shared pages", () => {
     expect(p).toContain('href="https://auth.alxnko.dev/terms"');
     expect(p).toContain("Not end-to-end encrypted");
     expect(p).not.toContain("1,000,000");
+    expect(p).toContain("within 24 hours");
+    expect(p).toContain("stored message log is not wiped today");
+    expect(p).toContain("passes to another member");
+    expect(p).not.toContain("solely own");
+    expect(p).toContain("receives mail only");
   });
   it("terms summarizes and links to the shared terms and policy", () => {
     const t = page("terms.astro");

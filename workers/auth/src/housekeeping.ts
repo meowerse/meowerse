@@ -10,6 +10,8 @@ export const HOUSEKEEPING_MARGIN = 86400;
 export const AUDIT_RETENTION_DAYS = 365;
 /** Evidence kept past a token family's absolute expiry (refresh reuse / code replay detection). */
 export const RETENTION_GRACE = 30 * 86400;
+/** rate_limits rows (pseudonymous IP-hash / account buckets) are deleted this long after their last hit. */
+export const RATE_LIMIT_RETENTION = 7 * 86400;
 /** Rows deleted per statement, and max statements per table per run (=> 10k rows/table/run). */
 export const BATCH_SIZE = 500;
 export const MAX_BATCHES = 20;
@@ -54,7 +56,8 @@ function sqliteTs(epochSeconds: number): string {
  *  - oauth_codes consumed: the family it created expires <= code expiry + REFRESH_ABS_TTL and its
  *    access tokens die <= ACCESS_TTL later; keep until that + RETENTION_GRACE.
  *  - oauth_codes never redeemed: no family exists; expiry + RETENTION_GRACE.
- * Not cleaned: login_requests (no writer), rate_limits / management_tokens (no expiry column).
+ * rate_limits: windows are minutes, so a bucket idle for RATE_LIMIT_RETENTION is dead (last_at, falling back to window_start).
+ * Not cleaned: login_requests (no writer), management_tokens (no expiry column).
  * Account deletion removes these rows by account_id immediately (accounts.ts), independent of this.
  */
 function targets(now: number): Target[] {
@@ -62,6 +65,7 @@ function targets(now: number): Target[] {
   const familyCutoff = now - RETENTION_GRACE;
   return [
     { key: "audit_log", table: "audit_log", where: "ts < ?", args: [sqliteTs(now - AUDIT_RETENTION_DAYS * 86400)] },
+    { key: "rate_limits", table: "rate_limits", where: "COALESCE(last_at, window_start) < ?", args: [now - RATE_LIMIT_RETENTION] },
     { key: "login_tickets", table: "login_tickets", where: "expires_at < ?", args: [now - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
     // lookupSession/whoami reject on absolute expiry; the row is dead one day past it.
     { key: "sessions", table: "sessions", where: "absolute_expires_at < ?", args: [cutoff] },
