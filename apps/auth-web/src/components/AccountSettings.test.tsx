@@ -160,6 +160,7 @@ describe("AccountSettings", () => {
     clickDelete();
     const btn = await screen.findByRole("button", { name: "sign in again with telegram" });
     expect(btn.closest("a")?.getAttribute("href")).toBe("/login?reauth=delete");
+    expect(screen.getByRole("alert").textContent).toContain("linked to alxnko"); // a different Telegram account must be obvious
   });
 
   it("returning from re-auth (?reauth=delete) reopens the delete dialog once", async () => {

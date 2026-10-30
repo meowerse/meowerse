@@ -311,3 +311,14 @@ test("default export scheduled() hands the sweep to ctx.waitUntil", async () => 
     err.mockRestore();
   }
 });
+
+test("account_delete_confirmations table missing (SKIP_MIGRATIONS prod) → skipped, not failed; the other targets still run", async () => {
+  const db = await freshDb();
+  await db.execute("DROP TABLE account_delete_confirmations");
+  await addAudit(db, 1, NOW - 366 * DAY);
+  const r = await runHousekeeping(db, NOW);
+  expect(r.skipped).toEqual(["account_delete_confirmations"]);
+  expect(r.failed).toEqual([]);
+  expect(r.deleted.audit_log).toBe(1);
+  expect("account_delete_confirmations" in r.deleted).toBe(false);
+});

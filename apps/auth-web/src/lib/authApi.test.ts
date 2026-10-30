@@ -132,8 +132,8 @@ test("dashboard mutation helpers + tg kind + granular consent scopes", async () 
   expect(mt.mock.calls[0][0]).toBe("http://x/api/dev/tokens");
 
   const tg = mockJson({ ticketId: "t", deepLink: "d" });
-  await tgStart("http://x", "VERIFY_EXISTING");
-  expect(JSON.parse(tg.mock.calls[0][1].body)).toEqual({ kind: "VERIFY_EXISTING" });
+  await tgStart("http://x", "VERIFY_EXISTING", { csrf: "c1", currentPassword: "pw" });
+  expect(JSON.parse(tg.mock.calls[0][1].body)).toEqual({ kind: "VERIFY_EXISTING", csrf: "c1", current_password: "pw" });
 
   const cons = mockJson({ redirect: "https://app/cb" });
   await postConsent("http://x", "allow", "c", ["openid", "profile"]);

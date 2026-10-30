@@ -272,9 +272,10 @@ export async function issueDeleteConfirmation(
 
 /** Read-only probe (after a failed delete batch): is this confirmation still usable for this account + session? */
 export async function deleteConfirmationUsable(db: DbClient, accountId: string, c: DeleteConfirmation): Promise<boolean> {
+  const live = sessionLive(c.sessionIdHash, accountId, c.now);
   const r = await db.execute({
-    sql: "SELECT 1 FROM account_delete_confirmations WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ?",
-    args: [c.tokenHash, accountId, c.sessionIdHash, c.now],
+    sql: `SELECT 1 FROM account_delete_confirmations WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ? AND ${live.sql}`,
+    args: [c.tokenHash, accountId, c.sessionIdHash, c.now, ...live.args],
   });
   return r.rows.length > 0;
 }
@@ -298,23 +299,24 @@ export async function deleteAccount(
   db: DbClient,
   accountId: string,
   audit: { ipTrunc: string | null; uaHash: string | null } = { ipTrunc: null, uaHash: null },
-  confirm?: DeleteConfirmation,
+  confirm: DeleteConfirmation,
 ): Promise<void> {
   const owned = "(SELECT client_id FROM oauth_clients WHERE owner_account_id = ?)";
   const stmts: { sql: string; args: unknown[] }[] = [];
-  // Single-use confirmation, consumed atomically INSIDE the batch (the handler ALWAYS passes it): the UPDATE
+  // Single-use confirmation, consumed atomically INSIDE the batch (REQUIRED): the UPDATE
   // wins only for an unused, unexpired token bound to this account AND this session; the next statement then
   // aborts the whole batch (NOT NULL violation) when it changed nothing. Two racing requests with the same
   // token serialize on the write transaction, so exactly one consumes it.
-  if (confirm) {
-    stmts.push(
-      {
-        sql: "UPDATE account_delete_confirmations SET used_at = ? WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ?",
-        args: [confirm.now, confirm.tokenHash, accountId, confirm.sessionIdHash, confirm.now],
-      },
-      { sql: "INSERT INTO audit_log (event) SELECT NULL WHERE changes() = 0", args: [] },
-    );
-  }
+  // The UPDATE also requires the session to still be live (unrevoked, unexpired, account present): a logout in
+  // another tab between the handler's lookup and this batch makes it change nothing.
+  const live = sessionLive(confirm.sessionIdHash, accountId, confirm.now);
+  stmts.push(
+    {
+      sql: `UPDATE account_delete_confirmations SET used_at = ? WHERE token_hash = ? AND account_id = ? AND session_id_hash = ? AND used_at IS NULL AND expires_at > ? AND ${live.sql}`,
+      args: [confirm.now, confirm.tokenHash, accountId, confirm.sessionIdHash, confirm.now, ...live.args],
+    },
+    { sql: "INSERT INTO audit_log (event) SELECT NULL WHERE changes() = 0", args: [] },
+  );
   stmts.push(
     // In-batch guard: an ACTIVE owned client (created after the handler's pre-check) must never be
     // hard-deleted silently. This inserts a row with a NULL (NOT NULL) `event` only when one exists, so

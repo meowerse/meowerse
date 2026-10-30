@@ -2,6 +2,7 @@ import { test, expect } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { deleteAccount } from "../src/accounts";
+import { deleteAccountForTest, seedDeleteConfirmation } from "./helpers";
 import { accessTokenInsert } from "../src/token";
 import { codeUnconsumed, refreshUnused } from "../src/codeguard";
 import { refreshTokenInsert } from "../src/refresh";
@@ -67,7 +68,7 @@ test("(a) deleteAccount empties every table for the account; other accounts unto
   const before = await rowsFor(db, "acct_v");
   for (const v of Object.values(before)) expect(v).toBeGreaterThan(0);
 
-  await deleteAccount(db, "acct_v");
+  await deleteAccountForTest(db, "acct_v");
 
   for (const v of Object.values(await rowsFor(db, "acct_v"))) expect(v).toBe(0);
   expect(await rowsFor(db, "acct_o")).toEqual(bystander);
@@ -77,15 +78,16 @@ test("(a) deleteAccount empties every table for the account; other accounts unto
 test("(b) a failing DELETE inside the batch rolls everything back and throws", async () => {
   const db = await twoAccounts();
   await db.execute("CREATE TRIGGER boom BEFORE DELETE ON refresh_tokens BEGIN SELECT RAISE(ABORT, 'boom'); END");
+  const confirm = await seedDeleteConfirmation(db, "acct_v");
   const before = await rowsFor(db, "acct_v");
-  await expect(deleteAccount(db, "acct_v")).rejects.toThrow();
+  await expect(deleteAccount(db, "acct_v", undefined, confirm)).rejects.toThrow();
   expect(await rowsFor(db, "acct_v")).toEqual(before);
   for (const v of Object.values(before)) expect(v).toBeGreaterThan(0);
 });
 
 test("(c) guarded token issuance attempted after deletion inserts nothing", async () => {
   const db = await twoAccounts();
-  await deleteAccount(db, "acct_v");
+  await deleteAccountForTest(db, "acct_v");
   const base = { accountId: "acct_v", clientId: "mw_demo", scope: ["openid", "offline_access"], family: "f_acct_v", now: 1000 };
 
   // authorization-code path

@@ -237,9 +237,19 @@ export function prodDeps(env: Env): Deps {
  *
  * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
  *
- * PROD ONE-SHOT (account self-deletion step-up table, additive, idempotent): see the CREATE TABLE /
- * CREATE INDEX for `account_delete_confirmations` in SCHEMA above; apply both by hand before enabling
- * ACCOUNT_DELETE_ENABLED.
+ * PROD ONE-SHOT (account self-deletion step-up table; additive, idempotent, safe to re-run). Apply BEFORE
+ * enabling ACCOUNT_DELETE_ENABLED. Until then the cron prune of this table is skipped (housekeeping checks
+ * sqlite_master and reports it as `skipped`, not `failed`):
+ *
+ *   turso db shell <db> "CREATE TABLE IF NOT EXISTS account_delete_confirmations (
+ *     token_hash TEXT PRIMARY KEY,
+ *     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+ *     session_id_hash TEXT NOT NULL,
+ *     created_at INTEGER NOT NULL,
+ *     expires_at INTEGER NOT NULL,
+ *     used_at INTEGER
+ *   );
+ *   CREATE INDEX IF NOT EXISTS idx_delete_confirm_account ON account_delete_confirmations(account_id);"
  */
 
 /** Run every migration statement once per Deps object (once per isolate). */

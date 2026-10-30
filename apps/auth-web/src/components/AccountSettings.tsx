@@ -153,7 +153,7 @@ export default function AccountSettings({ base }: { base: string }) {
             <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
             {needTelegram && (
               <Alert variant="error">
-                for your security, sign in again before deleting your account.{" "}
+                for your security, sign in again before deleting your account. use the telegram account linked to {acct.username ?? acct.displayName ?? "this account"}.{" "}
                 <a href="/login?reauth=delete"><Button size="sm" variant="secondary">sign in again with telegram</Button></a>
               </Alert>
             )}

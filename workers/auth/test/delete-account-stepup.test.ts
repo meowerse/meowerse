@@ -274,3 +274,17 @@ test("start requires session + CSRF", async () => {
   expect((await f.call("/api/account/delete/start", { ...s, csrf: "WRONG" }, {})).status).toBe(403);
   expect((await f.call("/api/account/delete/start", { raw: "nope", csrf: "x" }, {})).status).toBe(401);
 });
+
+test("logout in another tab between lookup and batch → the consuming UPDATE sees a dead session: no deletion, token unused", async () => {
+  const f = await setup();
+  await f.addAccount("a_pw", "pwuser", PW);
+  const s = await f.addSession("a_pw", "pwraw", T0);
+  const tok = await f.token(s);
+  f.onBatch(async () => { await run(f.db, "UPDATE sessions SET revoked_at = datetime('now') WHERE id_hash = ?", [await sha256Hex("pwraw")]); });
+  const r = await f.del(s, "pwuser", tok);
+  expect(r.status).toBe(403);
+  expect(await r.json()).toEqual({ error: "confirm_invalid" });
+  expect(await count(f.db, "accounts WHERE id = 'a_pw'")).toBe(1);
+  expect(await count(f.db, "account_delete_confirmations WHERE used_at IS NULL")).toBe(1);
+  expect(await count(f.db, "audit_log WHERE event = 'account.delete'")).toBe(0);
+});

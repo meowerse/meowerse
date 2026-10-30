@@ -652,6 +652,12 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   if (kind === "VERIFY_EXISTING") {
     const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
     if (!session) return json({ error: "no_session" }, 401, cors);
+    // Linking mutates the account's login methods: CSRF-protected and gated on fresh authentication.
+    if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
+    const info = await getAccountInfo(db, session.accountId);
+    if (!info) return json({ error: "no_session" }, 401, cors);
+    const stale = await requireFreshAuth(req, deps, cors, session, session.accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     accountId = session.accountId;
   }
   const ownerSecret = randomId(32);
@@ -712,12 +718,20 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   // owner mismatch / unconsumed → "not ready" (never leak; ticket_id grants nothing)
   if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash)) return json({ ready: false }, 200, cors);
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
+  // Linking is not authentication: the continuing session must be the live one for this account, and keeps its auth_time/amr.
+  const rawSess = cookies[`__Host-${SESS_COOKIE}`];
+  if (ticket.kind === "VERIFY_EXISTING") {
+    const cur = await lookupSession(db, rawSess, now(deps));
+    if (!cur || cur.accountId !== ticket.account_id) return json({ error: "no_session" }, 401, cors); // unclaimed
+  }
   // Single use: only the poll that atomically claims a fresh ticket gets a session; later polls see "not ready".
   if (!(await claimTicket(db, ticketId, now(deps)))) return json({ ready: false }, 200, cors);
   let sess: NonNullable<Awaited<ReturnType<typeof issueSession>>>;
   let next: NonNullable<Awaited<ReturnType<typeof resolveNext>>>;
   try {
-    const issued = await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
+    const issued = ticket.kind === "VERIFY_EXISTING"
+      ? await rotateSession(db, rawSess ?? "", { now: now(deps) }) // keeps the original auth_time and amr
+      : await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
     if (!issued) return accountGone(cors); // account deleted since the ticket was confirmed; stays claimed
     sess = issued;
     const resolved = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
@@ -963,6 +977,40 @@ function accountDeleteEnabled(env: Env): boolean {
 /** Auth newer than this (seconds) counts as "fresh" for the delete step-up. */
 const STEPUP_FRESH_SECONDS = 300;
 
+/**
+ * Server-verified fresh authentication for sensitive actions: a recent real login (auth_time is the true login time,
+ * kept across rotation and Telegram linking) OR the account's current password, behind the shared `stepup:<accountId>`
+ * rate limit. Returns an error Response, or null when fresh.
+ */
+async function requireFreshAuth(
+  req: Request,
+  deps: Deps,
+  cors: Record<string, string>,
+  session: { authTime: number },
+  accountId: string,
+  info: { hasPassword: boolean },
+  password: string,
+  failEvent?: "account.delete_stepup_fail",
+): Promise<Response | null> {
+  const t = now(deps);
+  if (t - session.authTime <= STEPUP_FRESH_SECONDS) return null;
+  if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
+  if (!password) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
+  const db = deps.getDb();
+  if (!(await stepUpAllowed(db, accountId, t))) return json({ error: "rate_limited" }, 429, cors);
+  const v = await verifyAccountPassword(db, accountId, password);
+  if (v !== "ok") {
+    if (failEvent) await recordAudit(deps, req, { event: failEvent, accountId });
+    return json({ error: "wrong_password" }, 403, cors);
+  }
+  return null;
+}
+
+/** Shared per-account bucket for every current-password check (5 attempts / 15 min), taken BEFORE the PBKDF2 work. */
+async function stepUpAllowed(db: ReturnType<Deps["getDb"]>, accountId: string, t: number): Promise<boolean> {
+  return (await checkRateLimit(db, `stepup:${accountId}`, { limit: 5, windowSec: 900, now: t })).allowed;
+}
+
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
@@ -984,6 +1032,8 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (!validateCsrf(p.csrf ?? "", session.csrf)) return json({ error: "bad_csrf" }, 403, cors);
 
   if (sub === "password") {
+    // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
+    if (!(await stepUpAllowed(db, accountId, now(deps)))) return json({ error: "rate_limited" }, 429, cors);
     const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
@@ -1012,18 +1062,8 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     const info = await getAccountInfo(db, accountId);
     if (!info) return json({ error: "not_found" }, 404, cors);
     // Fresh authentication: a recent login (auth_time is the real login time, kept across rotation) OR the current password.
-    if (t - session.authTime > STEPUP_FRESH_SECONDS) {
-      if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
-      const pw = p.current_password ?? "";
-      if (!pw) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
-      const rl = await checkRateLimit(db, `stepup:${accountId}`, { limit: 5, windowSec: 900, now: t });
-      if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
-      const v = await verifyAccountPassword(db, accountId, pw);
-      if (v !== "ok") {
-        await recordAudit(deps, req, { event: "account.delete_stepup_fail", accountId });
-        return json({ error: "wrong_password" }, 403, cors);
-      }
-    }
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "", "account.delete_stepup_fail");
+    if (stale) return stale;
     const rawSession = cookies[`__Host-${SESS_COOKIE}`] ?? "";
     const token = randomId(32);
     const issued = await issueDeleteConfirmation(db, { accountId, sessionIdHash: await sha256Hex(rawSession), tokenHash: await sha256Hex(token), now: t });

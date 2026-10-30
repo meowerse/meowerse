@@ -24,7 +24,12 @@ export interface HousekeepingResult {
   deleted: Record<string, number>;
   /** Tables whose deletion threw (the others still ran). */
   failed: string[];
+  /** Optional tables not yet created in this database (not an error). */
+  skipped: string[];
 }
+
+/** Tables added after the manual prod migration baseline; pruning them is skipped silently while absent. */
+const OPTIONAL_TABLES = new Set(["account_delete_confirmations"]);
 
 interface Target {
   /** Result/failure key (a table may have more than one target). */
@@ -103,8 +108,23 @@ async function deleteBounded(db: DbClient, t: Target, batchSize: number, maxBatc
 export async function runHousekeeping(db: DbClient, now: number, opts: HousekeepingOpts = {}): Promise<HousekeepingResult> {
   const batchSize = opts.batchSize ?? BATCH_SIZE;
   const maxBatches = opts.maxBatches ?? MAX_BATCHES;
-  const result: HousekeepingResult = { deleted: {}, failed: [] };
+  const result: HousekeepingResult = { deleted: {}, failed: [], skipped: [] };
+  // Production runs SKIP_MIGRATIONS=1, so tables added after the last manual migration may not exist yet.
+  // Optional targets are skipped (reported in `skipped`, not `failed`) when sqlite_master has no such table.
+  let present: Set<string> | null = null;
   for (const t of targets(now)) {
+    if (OPTIONAL_TABLES.has(t.table)) {
+      try {
+        present ??= new Set((await db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map((r) => String(r.name)));
+      } catch {
+        result.failed.push(t.key);
+        continue;
+      }
+      if (!present.has(t.table)) {
+        result.skipped.push(t.key);
+        continue;
+      }
+    }
     result.deleted[t.key] = 0;
     try {
       await deleteBounded(db, t, batchSize, maxBatches, (n) => (result.deleted[t.key]! += n));
@@ -120,7 +140,7 @@ export async function scheduledHousekeeping(deps: Deps, now: number = Math.floor
   try {
     const r = await runHousekeeping(deps.getDb(), now);
     const counts = Object.entries(r.deleted).map(([k, v]) => `${k}=${v}`).join(" ");
-    console.log(`housekeeping ${counts}${r.failed.length ? ` failed=${r.failed.join(",")}` : ""}`);
+    console.log(`housekeeping ${counts}${r.skipped.length ? ` skipped=${r.skipped.join(",")}` : ""}${r.failed.length ? ` failed=${r.failed.join(",")}` : ""}`);
   } catch {
     console.error("housekeeping_failed");
   }

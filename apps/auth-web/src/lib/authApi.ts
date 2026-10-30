@@ -63,9 +63,15 @@ export interface ClientSummary {
   status: string;
 }
 
-export async function tgStart(base: string, kind?: "VERIFY_EXISTING"): Promise<{ ticketId?: string; deepLink?: string; error?: string }> {
-  const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kind ? { kind } : {}) });
-  return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string };
+export async function tgStart(
+  base: string,
+  kind?: "VERIFY_EXISTING",
+  auth?: { csrf: string; currentPassword?: string },
+): Promise<{ ticketId?: string; deepLink?: string; error?: string; reauth?: string }> {
+  // VERIFY_EXISTING (linking) requires the session CSRF token and fresh authentication (recent login or current password).
+  const body = kind ? { kind, ...(auth ? { csrf: auth.csrf, ...(auth.currentPassword ? { current_password: auth.currentPassword } : {}) } : {}) } : {};
+  const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string; reauth?: string };
 }
 
 // --- account self-service ---
