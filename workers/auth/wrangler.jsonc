@@ -50,7 +50,7 @@
     "BOT_USERNAME": "meowersebot",
     "SKIP_MIGRATIONS": "1"
   },
-  // Daily housekeeping (src/housekeeping.ts): bounded deletes of expired audit/ticket/session/access-token rows.
+  // Daily housekeeping (src/housekeeping.ts): bounded deletes of expired audit/ticket/session/access-token rows and refresh-token/auth-code rows 30d past family expiry.
   "triggers": { "crons": ["17 3 * * *"] },
   // Custom domain — Cloudflare provisions cert + DNS.
   "routes": [

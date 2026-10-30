@@ -8,9 +8,9 @@ import { ACCESS_TTL } from "./token";
 export const HOUSEKEEPING_MARGIN = 86400;
 /** audit_log retention window. */
 export const AUDIT_RETENTION_DAYS = 365;
-/** Rows deleted per statement, and max statements per table per run (=> 10k rows/table/run). */
 /** Evidence kept past a token family's absolute expiry (refresh reuse / code replay detection). */
 export const RETENTION_GRACE = 30 * 86400;
+/** Rows deleted per statement, and max statements per table per run (=> 10k rows/table/run). */
 export const BATCH_SIZE = 500;
 export const MAX_BATCHES = 20;
 

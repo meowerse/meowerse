@@ -150,7 +150,7 @@ test("refresh_tokens: batching deletes a whole family even when it spans batches
   const r = await runHousekeeping(db, NOW, { batchSize: 1, maxBatches: 100 });
   expect(r.deleted.refresh_tokens).toBe(5);
   expect((await ids(db, "token_hash", "refresh_tokens")).sort()).toEqual(["keep_0", "keep_1", "keep_2", "keep_3", "keep_4"]);
-  // capped run: partial progress stays all-or-nothing per family only because rows share expiry; cap respected
+  // capped run: 2 batches x 2 rows = 4 deleted, the remaining row goes on the next run
   const db2 = await freshDb();
   for (let i = 0; i < 5; i++) await addRefresh(db2, `d_${i}`, "fam_d", FAM_CUT - 10, { used: true });
   const r2 = await runHousekeeping(db2, NOW, { batchSize: 2, maxBatches: 2 });
