@@ -29,13 +29,29 @@ function pushDb() {
       }
       return [];
     },
-    async first() { return undefined; },
+    async first(sql, p = []) {
+      if (sql.includes("SELECT user_id FROM push_subscriptions WHERE endpoint")) {
+        const r = subs.find((s) => s.endpoint === p[0]);
+        return r ? ({ user_id: r.user_id } as Row) : undefined;
+      }
+      return undefined;
+    },
     async run(sql, p = []) {
       if (sql.includes("INSERT INTO push_subscriptions")) {
         const [endpoint, user_id, p256dh, auth, created_at] = p as [string, string, unknown, unknown, number];
         const i = subs.findIndex((s) => s.endpoint === endpoint);
+        if (i >= 0) {
+          // Mirrors `ON CONFLICT … DO UPDATE … WHERE push_subscriptions.user_id = excluded.user_id`.
+          if (/DO UPDATE SET[^]*WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) && subs[i].user_id === user_id) {
+            subs[i] = { endpoint, user_id, p256dh, auth, created_at };
+          } else if (!/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql)) {
+            subs[i] = { endpoint, user_id, p256dh, auth, created_at }; // unguarded upsert (would transfer)
+          }
+        } else subs.push({ endpoint, user_id, p256dh, auth, created_at });
+      } else if (sql.startsWith("UPDATE push_subscriptions SET")) {
+        const [p256dh, auth, created_at, endpoint, user_id] = p as [unknown, unknown, number, string, string];
+        const i = subs.findIndex((s) => s.endpoint === endpoint && s.user_id === user_id);
         if (i >= 0) subs[i] = { endpoint, user_id, p256dh, auth, created_at };
-        else subs.push({ endpoint, user_id, p256dh, auth, created_at });
       } else if (sql.includes("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")) {
         const i = subs.findIndex((s) => s.endpoint === p[0] && s.user_id === p[1]);
         if (i >= 0) subs.splice(i, 1);
@@ -73,6 +89,11 @@ describe("isAllowedPushEndpoint", () => {
     expect(isAllowedPushEndpoint("https://jmt17.google.com:4444/fcm/send/x")).toBe(false);
     expect(isAllowedPushEndpoint("https://web.push.apple.com:8080/x")).toBe(false);
   });
+  it("rejects credentials (userinfo) in the URL", () => {
+    expect(isAllowedPushEndpoint("https://user:pw@fcm.googleapis.com/fcm/send/abc")).toBe(false);
+    expect(isAllowedPushEndpoint("https://user@jmt17.google.com/fcm/send/abc")).toBe(false);
+    expect(isAllowedPushEndpoint("https://:pw@web.push.apple.com/x")).toBe(false);
+  });
   it("rejects other hosts, http, suffix-spoofs, and junk (SSRF guard)", () => {
     expect(isAllowedPushEndpoint("https://attacker.example/internal")).toBe(false);
     expect(isAllowedPushEndpoint("http://fcm.googleapis.com/fcm/send/abc")).toBe(false); // not https
@@ -91,40 +112,90 @@ describe("sendPush", () => {
   it("POSTs a VAPID Authorization header + payloadless body and returns the status", async () => {
     let seen: { url: unknown; init: RequestInit } | undefined;
     const fetchFn = (async (url: string, init: RequestInit) => { seen = { url, init }; return { status: 201 } as Response; }) as unknown as typeof fetch;
-    const status = await sendPush("https://push.example/abc", env, Date.now(), fetchFn);
+    const status = await sendPush("https://fcm.googleapis.com/fcm/send/abc", env, Date.now(), fetchFn);
     expect(status).toBe(201);
-    expect(seen?.url).toBe("https://push.example/abc");
+    expect(seen?.url).toBe("https://fcm.googleapis.com/fcm/send/abc");
     expect(seen?.init.method).toBe("POST");
     const h = seen?.init.headers as Record<string, string>;
     expect(h.Authorization).toMatch(/^vapid t=[^.]+\.[^.]+\.[^.]+, k=.+/); // header.claims.sig, k=<pub>
     expect(h["Content-Length"]).toBe("0");
   });
   it("returns 0 when VAPID isn't configured", async () => {
-    const status = await sendPush("https://push.example/abc", {} as Env, Date.now(), (async () => ({ status: 201 }) as Response) as unknown as typeof fetch);
+    const status = await sendPush("https://fcm.googleapis.com/fcm/send/abc", {} as Env, Date.now(), (async () => ({ status: 201 }) as Response) as unknown as typeof fetch);
     expect(status).toBe(0);
   });
   it("returns 0 for a malformed endpoint", async () => {
     expect(await sendPush("not-a-url", env, Date.now(), (async () => ({ status: 201 }) as Response) as unknown as typeof fetch)).toBe(0);
   });
+  it("never follows redirects: passes redirect:manual and treats 301/302 as failure", async () => {
+    for (const status of [301, 302, 307]) {
+      const calls: Array<{ url: string; init: RequestInit }> = [];
+      const fetchFn = (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        // A fetch that honours redirect:"follow" would chase this; with "manual" we just see the 3xx.
+        return { status, type: "basic", headers: new Headers({ Location: "http://169.254.169.254/" }) } as unknown as Response;
+      }) as unknown as typeof fetch;
+      expect(await sendPush("https://fcm.googleapis.com/fcm/send/abc", env, Date.now(), fetchFn)).toBe(0);
+      expect(calls).toHaveLength(1); // not followed
+      expect(calls[0].init.redirect).toBe("manual");
+    }
+  });
+  it("treats an opaque redirect response as failure", async () => {
+    const fetchFn = (async () => ({ status: 0, type: "opaqueredirect" }) as unknown as Response) as unknown as typeof fetch;
+    expect(await sendPush("https://fcm.googleapis.com/fcm/send/abc", env, Date.now(), fetchFn)).toBe(0);
+  });
+  it("re-validates the endpoint before sending: http, port, userinfo, foreign host → no request", async () => {
+    let n = 0;
+    const fetchFn = (async () => { n++; return { status: 201 } as Response; }) as unknown as typeof fetch;
+    for (const ep of [
+      "http://fcm.googleapis.com/fcm/send/abc",
+      "https://fcm.googleapis.com:8443/fcm/send/abc",
+      "https://user:pw@fcm.googleapis.com/fcm/send/abc",
+      "https://user@fcm.googleapis.com/fcm/send/abc",
+      "https://attacker.example/x",
+    ]) expect(await sendPush(ep, env, Date.now(), fetchFn)).toBe(0);
+    expect(n).toBe(0);
+  });
   it("returns 0 on a network error", async () => {
-    expect(await sendPush("https://push.example/abc", env, Date.now(), (async () => { throw new Error("net"); }) as unknown as typeof fetch)).toBe(0);
+    expect(await sendPush("https://fcm.googleapis.com/fcm/send/abc", env, Date.now(), (async () => { throw new Error("net"); }) as unknown as typeof fetch)).toBe(0);
   });
 });
 
 describe("savePushSubscription / deletePushSubscription", () => {
-  it("upserts by endpoint, then deletes", async () => {
+  it("refreshes keys for the owner; never transfers ownership to another account", async () => {
     const { db, subs } = pushDb();
-    await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k", auth: "a" }, 1);
+    expect(await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k", auth: "a" }, 1)).toBe("ok");
+    expect(await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k2", auth: "a2" }, 2)).toBe("ok");
     expect(subs).toHaveLength(1);
-    await savePushSubscription(db, "u2", { endpoint: "e1" }, 2); // same endpoint → update user
+    expect(subs[0]).toMatchObject({ user_id: "u1", p256dh: "k2", auth: "a2", created_at: 2 });
+    expect(await savePushSubscription(db, "u2", { endpoint: "e1", p256dh: "EVIL", auth: "EVIL" }, 3)).toBe("owned");
     expect(subs).toHaveLength(1);
-    expect(subs[0].user_id).toBe("u2");
+    expect(subs[0]).toMatchObject({ user_id: "u1", p256dh: "k2", auth: "a2", created_at: 2 }); // nothing written
+    expect(await savePushSubscription(db, "u2", { endpoint: "e1" }, 4, "repair")).toBe("owned");
+    expect(subs[0].user_id).toBe("u1");
     await deletePushSubscription(db, "e1");
     expect(subs).toHaveLength(0);
   });
+  it("repair mode never inserts, only refreshes the caller's own row", async () => {
+    const { db, subs } = pushDb();
+    expect(await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k", auth: "a" }, 1, "repair")).toBe("not_subscribed");
+    expect(subs).toHaveLength(0);
+    await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k", auth: "a" }, 1);
+    expect(await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "k9", auth: "a9" }, 5, "repair")).toBe("ok");
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({ user_id: "u1", p256dh: "k9", auth: "a9" });
+  });
+  it("the enable upsert SQL carries the ownership guard and never sets user_id", async () => {
+    const seen: string[] = [];
+    const { db } = pushDb();
+    await savePushSubscription({ ...db, run: async (sql, p) => { seen.push(sql); return db.run(sql, p); } }, "u1", { endpoint: "e1" }, 1);
+    const up = seen.find((q) => q.includes("INSERT INTO push_subscriptions"))!;
+    expect(up).toMatch(/WHERE push_subscriptions\.user_id = excluded\.user_id/);
+    expect(up).not.toMatch(/SET\s+user_id/);
+  });
   it("ignores an empty endpoint", async () => {
     const { db, subs } = pushDb();
-    await savePushSubscription(db, "u1", { endpoint: "" }, 1);
+    expect(await savePushSubscription(db, "u1", { endpoint: "" }, 1)).toBe("not_subscribed");
     expect(subs).toHaveLength(0);
   });
 });

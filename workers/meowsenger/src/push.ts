@@ -44,6 +44,7 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
     return false;
   }
   if (url.protocol !== "https:") return false;
+  if (url.username !== "" || url.password !== "") return false; // no credentials in the URL
   if (url.port !== "") return false; // real push services use 443; no custom ports (SSRF to odd services)
   const host = url.hostname.toLowerCase();
   return (
@@ -83,13 +84,18 @@ async function vapidAuth(endpoint: string, env: Env, now: number): Promise<strin
 /** Deliver one payloadless push. Returns the HTTP status (0 on a network error).
  *  201/2xx = delivered; 404/410 = the subscription is dead (caller should delete). */
 export async function sendPush(endpoint: string, env: Env, now: number, fetchFn = fetch): Promise<number> {
+  // Defense in depth: re-validate right before the request, whatever is in D1.
+  if (!isAllowedPushEndpoint(endpoint)) return 0;
   const auth = await vapidAuth(endpoint, env, now);
   if (!auth) return 0;
   try {
     const res = await fetchFn(endpoint, {
       method: "POST",
       headers: { Authorization: auth, TTL: "2419200", "Content-Length": "0", Urgency: "normal" },
+      redirect: "manual", // never follow a redirect off the allow-listed host
     });
+    // A 3xx (or an opaque redirect) is a failure: it was not followed and nothing was delivered.
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) return 0;
     return res.status;
   } catch {
     return 0;
@@ -121,22 +127,44 @@ export function pushHostFamily(endpoint: string): string {
   return "other";
 }
 
-/** Upsert (by endpoint) the caller's push subscription, then trim the user to the
- *  newest MAX_PUSH_SUBS_PER_USER rows. (DbClient has no batch; the trim is a second
- *  statement — a failure between them only leaves the user briefly over the cap.) */
-export async function savePushSubscription(db: DbClient, userId: string, sub: PushSub, now: number): Promise<void> {
-  if (!sub.endpoint) return;
-  await db.run(
-    `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at`,
-    [sub.endpoint, userId, sub.p256dh ?? null, sub.auth ?? null, now],
-  );
+export type SaveResult = "ok" | "owned" | "not_subscribed";
+
+/** Register / refresh the caller's push subscription WITHOUT ever changing ownership.
+ *  - mode "enable" (explicit user tap): insert, or refresh the keys of the caller's own
+ *    row. An endpoint already owned by another account is left untouched → "owned".
+ *  - mode "repair" (load-time sync): ONLY refreshes the keys of the caller's existing
+ *    row; never inserts → "not_subscribed" when there is none, "owned" when another
+ *    account holds it.
+ *  The ownership guard is in the SQL (`WHERE user_id = excluded.user_id`), so a race
+ *  can't transfer a row; the follow-up read only classifies the outcome. Then the user
+ *  is trimmed to the newest MAX_PUSH_SUBS_PER_USER rows. */
+export async function savePushSubscription(
+  db: DbClient, userId: string, sub: PushSub, now: number, mode: "enable" | "repair" = "enable",
+): Promise<SaveResult> {
+  if (!sub.endpoint) return "not_subscribed";
+  if (mode === "repair") {
+    await db.run(
+      "UPDATE push_subscriptions SET p256dh = ?, auth = ?, created_at = ? WHERE endpoint = ? AND user_id = ?",
+      [sub.p256dh ?? null, sub.auth ?? null, now, sub.endpoint, userId],
+    );
+  } else {
+    await db.run(
+      `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at
+       WHERE push_subscriptions.user_id = excluded.user_id`,
+      [sub.endpoint, userId, sub.p256dh ?? null, sub.auth ?? null, now],
+    );
+  }
+  const row = await db.first("SELECT user_id FROM push_subscriptions WHERE endpoint = ?", [sub.endpoint]);
+  if (!row) return "not_subscribed";
+  if (String(row.user_id) !== userId) return "owned";
   await db.run(
     `DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint NOT IN (
        SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
     [userId, userId, MAX_PUSH_SUBS_PER_USER],
   );
+  return "ok";
 }
 
 /** Remove a subscription by endpoint (a dead 404/410 endpoint). When `userId` is
