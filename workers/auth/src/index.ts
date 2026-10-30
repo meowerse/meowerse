@@ -915,7 +915,6 @@ async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<st
   );
 }
 
-/** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 /** Error code only (never message/args, which may carry data). */
 function errCode(e: unknown): string {
   const c = (e as { code?: unknown } | null)?.code;
@@ -927,6 +926,7 @@ function accountDeleteEnabled(env: Env): boolean {
   return env.ACCOUNT_DELETE_ENABLED === "1" || env.ACCOUNT_DELETE_ENABLED === "true";
 }
 
+/** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));

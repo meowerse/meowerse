@@ -67,6 +67,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     return true;
   };
   let lastAccountChanges = 0; // emulates changes() after `DELETE FROM accounts`
+  // Only valid because deleteAccount puts the audit insert IMMEDIATELY after that delete; it is not reset by other writes.
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;
