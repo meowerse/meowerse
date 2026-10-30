@@ -55,14 +55,24 @@ function openInApp(chatId: string) {
 
 type State =
   | { kind: "loading" }
-  | { kind: "locked" } // private / not found / bad link / dead invite
+  | { kind: "locked" } // private / not found / bad link / dead invite (definitive 403/404 only)
+  | { kind: "unreachable" } // network / timeout / 5xx — retryable, says nothing about access
+  | { kind: "ended" } // 401 — the session ended
   | { kind: "preview"; preview: ChatPreview }
   // `code` is the original invite code — the accept route is keyed on the CODE
   // (POST /api/invite/:code/accept), not the previewed chat id.
   | { kind: "invite"; preview: InvitePreview; code: string };
 
+/** Map a discovery-read error code to a card: only a definitive refusal is "locked". */
+function failState(code: string): State {
+  if (code === "unreachable") return { kind: "unreachable" };
+  if (code === "unauthorized") return { kind: "ended" };
+  return { kind: "locked" };
+}
+
 export default function ChannelPreview({ base }: { base: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
+  const [attempt, setAttempt] = useState(0);
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
   // The kind from the link (channel|group) — used for the Join/Subscribe copy
@@ -76,6 +86,7 @@ export default function ChannelPreview({ base }: { base: string }) {
   useEffect(() => {
     let cancelled = false;
     const target = readTarget();
+    setState({ kind: "loading" });
     if (!target) { setState({ kind: "locked" }); return; }
     if (target.mode === "slug") setLinkKind(target.kind);
     (async () => {
@@ -85,18 +96,18 @@ export default function ChannelPreview({ base }: { base: string }) {
       if (cancelled) return;
       // Only a definitive 200 {authenticated:false} bounces to login; an outage / 401
       // shows the generic card instead of redirecting (never a false logout).
-      if (!s.ok) { setState({ kind: "locked" }); return; }
+      if (!s.ok) { setState({ kind: s.error.kind === "unauthorized" ? "ended" : "unreachable" }); return; }
       if (!s.data.authenticated) { window.location.replace(loginUrl(base)); return; }
       if (target.mode === "invite") {
         const inv = await getInviteByCode(base, target.code);
         if (cancelled) return;
-        if ("error" in inv) { setState({ kind: "locked" }); return; }
+        if ("error" in inv) { setState(failState(inv.error)); return; }
         setState({ kind: "invite", preview: inv, code: target.code });
         return;
       }
       const r = await getBySlug(base, target.slug);
       if (cancelled) return;
-      if ("error" in r) { setState({ kind: "locked" }); return; }
+      if ("error" in r) { setState(failState(r.error)); return; }
       // Already a member → skip the preview and go straight into the chat.
       if (r.isMember) { openInApp(r.id); return; }
       // Private+slug with a prior approval → the request was accepted; auto-open.
@@ -105,7 +116,7 @@ export default function ChannelPreview({ base }: { base: string }) {
       setState({ kind: "preview", preview: r });
     })();
     return () => { cancelled = true; };
-  }, [base]);
+  }, [base, attempt]);
 
   async function onJoin(preview: ChatPreview) {
     if (joining) return;
@@ -153,6 +164,30 @@ export default function ChannelPreview({ base }: { base: string }) {
         <div className="mw-discover__card mw-discover__card--loading">
           <Spinner size="lg" label="loading chat" />
           <p className="mw-muted">loading…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.kind === "unreachable") {
+    return (
+      <div className="mw-discover">
+        <div className="mw-discover__card">
+          <h1 className="mw-discover__title">can't reach meowsenger</h1>
+          <p className="mw-muted" role="status">we couldn't check this link. check your connection and try again.</p>
+          <button className="mw-btn mw-btn--secondary mw-btn--md" onClick={() => setAttempt((n) => n + 1)}>retry</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.kind === "ended") {
+    return (
+      <div className="mw-discover">
+        <div className="mw-discover__card">
+          <h1 className="mw-discover__title">your session ended</h1>
+          <p className="mw-muted" role="alert">your session ended. sign in again to keep going.</p>
+          <a className="mw-btn mw-btn--primary mw-btn--md" href={loginUrl(base)}>sign in</a>
         </div>
       </div>
     );

@@ -494,25 +494,44 @@ export async function searchUsers(base: string, username: string): Promise<{ cha
   return openDirect(base, username);
 }
 
+/**
+ * Shared discovery read. A definitive refusal (403/404, or a 200 `{error}` body) is
+ * returned as `{error: <code>|fallback}` (the "private or not found" card). A 401 is
+ * `{error:"unauthorized"}`; a network error / timeout / 5xx / 429 / unparseable body
+ * is `{error:"unreachable"}` — never mistaken for "private".
+ */
+async function lookup<T>(url: string, fallback: string): Promise<T | { error: string }> {
+  let r: Response;
+  try {
+    r = await fetch(url, { credentials: "include" });
+  } catch {
+    return { error: "unreachable" };
+  }
+  if (r.status === 401) return { error: "unauthorized" };
+  if (r.status >= 500 || r.status === 429 || r.status === 408) return { error: "unreachable" };
+  let d: (T & { error?: string }) | { error?: string };
+  try {
+    d = (await r.json()) as T & { error?: string };
+  } catch {
+    return r.ok ? { error: "unreachable" } : { error: fallback };
+  }
+  if ("error" in d && d.error) return { error: d.error };
+  if (!r.ok) return { error: fallback };
+  return d as T;
+}
+
 // ---- Slice 6: public discovery + open-join ---------------------------------
 
 /**
  * GET /api/chats/by-slug/:slug — resolve a chat for discovery. Returns a
  * `ChatPreview` for a public chat (to any signed-in caller) or any chat the caller
  * is a member of; `{error:"private"}` for a private-non-member or unknown slug
- * (the two are deliberately indistinguishable — no existence leak). Any network
- * failure also degrades to `{error:"private"}` (the safe, no-leak default) — the
- * lock card is shown rather than a spurious preview. The preview carries no messages.
+ * (the two are deliberately indistinguishable — no existence leak). A network error /
+ * timeout / 5xx is `{error:"unreachable"}` and a 401 `{error:"unauthorized"}` (see
+ * `lookup`) so an outage never reads as "private". The preview carries no messages.
  */
 export async function getBySlug(base: string, slug: string): Promise<ChatPreview | { error: string }> {
-  try {
-    const r = await fetch(`${base}/api/chats/by-slug/${encodeURIComponent(slug)}`, { credentials: "include" });
-    const d = (await r.json()) as ChatPreview | { error?: string };
-    if ("error" in d && d.error) return { error: d.error };
-    return d as ChatPreview;
-  } catch {
-    return { error: "private" };
-  }
+  return lookup<ChatPreview>(`${base}/api/chats/by-slug/${encodeURIComponent(slug)}`, "private");
 }
 
 /**
@@ -618,14 +637,7 @@ export async function getInviteByCode(
   base: string,
   code: string,
 ): Promise<InvitePreview | { error: string }> {
-  try {
-    const r = await fetch(`${base}/api/invite/${encodeURIComponent(code)}`, { credentials: "include" });
-    const d = (await r.json()) as InvitePreview | { error?: string };
-    if ("error" in d && d.error) return { error: d.error };
-    return d as InvitePreview;
-  } catch {
-    return { error: "bad_invite" };
-  }
+  return lookup<InvitePreview>(`${base}/api/invite/${encodeURIComponent(code)}`, "bad_invite");
 }
 
 /**

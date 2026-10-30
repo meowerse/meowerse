@@ -16,6 +16,7 @@ import { ForwardModal } from "./ForwardModal";
 import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
 import Settings from "./Settings";
+import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/push";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
@@ -55,6 +56,10 @@ export default function Chat({ base }: { base: string }) {
   // empty state because a request failed); the sidebar shows a subtle retry instead.
   const [chatsError, setChatsError] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const deepLinkDoneRef = useRef(false);
+  const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
+  // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
+  const draftRef = useRef("");
 
   // Slice 4 — message-actions UI state.
   const [replyingTo, setReplyingTo] = useState<Bubble | null>(null); // armed reply
@@ -162,6 +167,9 @@ export default function Chat({ base }: { base: string }) {
     setChatsError(false);
     const act = activeRef.current;
     const cs = res.data;
+    // The ?chat=/?m= deep link runs ONCE, on the FIRST successful list (initial load,
+    // a sidebar retry or a poll) — a failed first load must not drop it for good.
+    if (!deepLinkDoneRef.current) { deepLinkDoneRef.current = true; deepLinkRef.current(cs); }
     setChats(act ? cs.map((c) => (c.id === act ? { ...c, unreadCount: 0 } : c)) : cs);
     return cs;
   }, []);
@@ -249,39 +257,54 @@ export default function Chat({ base }: { base: string }) {
     setMemberMap(map);
   }, [base, activeRef]);
 
-  // Load who-am-i + the sidebar list once, then honor a deep-link in the URL:
-  //   /app?chat=<idOrSlug>[&m=<messageId>]
-  // The URL is kept in sync with the open chat (see the sync effect below) so a
-  // reload / shared link lands back in the same chat (+ jumps to the message).
+  // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the
+  // FIRST successful chat list (see applyChatList). The URL is kept in sync with the
+  // open chat (see the sync effect below) so a reload / shared link lands back in the
+  // same chat (+ jumps to the message).
+  deepLinkRef.current = (cs: ChatSummary[]) => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const wanted = params.get("chat");
+    const msg = params.get("m");
+    if (!wanted) return;
+    const mine = cs.find((c) => c.id === wanted);
+    if (mine) {
+      if (msg) armJump(msg);
+      setActiveId(wanted);
+      return;
+    }
+    // Not in the caller's list — could be a slug, or a chat they can join.
+    void resolveChat(base, wanted).then((r) => {
+      if (r.error || !r.id) { showToast("you don't have access to this chat"); return; }
+      if (r.isMember) { if (msg) armJump(msg); setActiveId(r.id); return; }
+      if (r.slug) {
+        const key = r.type === "channel" ? "c" : "g";
+        window.location.assign(`/join?${key}=${encodeURIComponent(r.slug)}${msg ? `&m=${encodeURIComponent(msg)}` : ""}`);
+      } else {
+        showToast("you don't have access to this chat");
+      }
+    }).catch(() => showToast("you don't have access to this chat"));
+  };
+
+  // Load who-am-i + the sidebar list once (a failure keeps the sidebar retry; the
+  // deep link then runs on the first successful list).
   useEffect(() => {
     getSession(base).then((s) => { if (s.ok) setMe(s.data.user ?? null); });
-    refreshChats().then((cs) => {
-      setLoadingChats(false);
-      if (!cs) return; // failed: sidebar shows the retryable error, no deep-link guess
-      if (typeof window === "undefined") return;
-      const params = new URLSearchParams(window.location.search);
-      const wanted = params.get("chat");
-      const msg = params.get("m");
-      if (!wanted) return;
-      const mine = cs.find((c) => c.id === wanted);
-      if (mine) {
-        if (msg) armJump(msg);
-        setActiveId(wanted);
-        return;
-      }
-      // Not in the caller's list — could be a slug, or a chat they can join.
-      void resolveChat(base, wanted).then((r) => {
-        if (r.error || !r.id) { showToast("you don't have access to this chat"); return; }
-        if (r.isMember) { if (msg) armJump(msg); setActiveId(r.id); return; }
-        if (r.slug) {
-          const key = r.type === "channel" ? "c" : "g";
-          window.location.assign(`/join?${key}=${encodeURIComponent(r.slug)}${msg ? `&m=${encodeURIComponent(msg)}` : ""}`);
-        } else {
-          showToast("you don't have access to this chat");
-        }
-      }).catch(() => showToast("you don't have access to this chat"));
+    refreshChats().then(() => setLoadingChats(false));
+  }, [base, refreshChats]);
+
+  // Hand the session-ended banner the unsent draft + whether a send was un-acked.
+  // Memory only; no message bodies of any other message leave this component.
+  const messagesRefForEnd = useRef(messages);
+  messagesRefForEnd.current = messages;
+  useEffect(() => {
+    const src = () => ({
+      draft: draftRef.current,
+      pendingSend: messagesRefForEnd.current.some((m) => m.pending),
     });
-  }, [base, armJump, showToast]);
+    setSnapshotSource(src);
+    return () => setSnapshotSource(null);
+  }, []);
 
   // Keep the address bar in sync with the open chat, so a reload / copied link
   // returns here. replaceState (not push) — chat switches aren't history entries.
@@ -767,14 +790,14 @@ export default function Chat({ base }: { base: string }) {
                 </div>
               )}
               {olderError && messages.length > 0 && (
-                <div className="mw-loaderror" role="status">
-                  <span className="mw-muted">couldn't load earlier messages.</span>{" "}
+                <div className="mw-loaderror">
+                  <span className="mw-muted" role="status">couldn't load earlier messages.</span>{" "}
                   <button className="mw-btn mw-btn--sm" onClick={() => { void retryOlder(); }}>retry</button>
                 </div>
               )}
               {!loadingHistory && historyError && messages.length === 0 && (
-                <div className="mw-emptylog" role="status">
-                  <p className="mw-emptylog__text mw-muted">couldn't load messages.</p>
+                <div className="mw-emptylog">
+                  <p className="mw-emptylog__text mw-muted" role="status">couldn't load messages.</p>
                   <button className="mw-btn mw-btn--sm" onClick={() => { void retryHistory(); }}>retry</button>
                 </div>
               )}
@@ -912,6 +935,7 @@ export default function Chat({ base }: { base: string }) {
                 disabled={!connected}
                 replyTo={replyDraft}
                 onCancelReply={() => setReplyingTo(null)}
+                onDraftChange={(t) => { draftRef.current = t; }}
               />
             )}
           </>

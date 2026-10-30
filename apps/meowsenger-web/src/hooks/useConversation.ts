@@ -79,6 +79,11 @@ export interface UseConversationInput {
   onRevoked: () => void;
 }
 
+/** A definitive 403 from a history read: the caller is no longer a member of the chat. */
+function isForbidden(res: { ok: boolean; error?: { kind: string; status?: number } }): boolean {
+  return !res.ok && res.error?.kind === "http" && res.error.status === 403;
+}
+
 export interface UseConversation {
   messages: Bubble[];
   connected: boolean;
@@ -219,6 +224,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const olderRes = await loadHistory(base, chatId, oldest.id);
     if (activeRef.current !== chatId) { prependingRef.current = false; return; }
     if (!olderRes.ok) {
+      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(); return; }
       // Keep paging possible + show a retry row; never treat a failure as "start of chat".
       prependingRef.current = false;
       setOlderError(true);
@@ -417,7 +423,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
     loadHistory(base, chatId).then((res) => {
       if (cancelled) return;
       setLoadingHistory(false);
-      if (!res.ok) { setHistoryError(true); return; }
+      if (!res.ok) {
+        // 403 = no longer a member: close the chat with the revoked copy, no retry loop.
+        if (isForbidden(res)) { onRevokedRef.current(); return; }
+        setHistoryError(true);
+        return;
+      }
       const hist = res.data;
       setMessages(hist.map((m) => ({ ...m })));
       setHasMore(hist.length >= 50);
@@ -629,7 +640,11 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const res = await loadHistory(base, chatId);
     if (activeRef.current !== chatId) return;
     setLoadingHistory(false);
-    if (!res.ok) { setHistoryError(true); return; }
+    if (!res.ok) {
+      if (isForbidden(res)) { onRevokedRef.current(); return; }
+      setHistoryError(true);
+      return;
+    }
     const hist = res.data;
     setMessages((prev) => {
       // A live frame may have landed while the load failed; keep it, add history.

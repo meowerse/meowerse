@@ -40,8 +40,15 @@ vi.mock("../lib/chat", async (importActual) => {
   const actual = await importActual<typeof import("../lib/chat")>();
   return {
     ...actual, // keep the PURE helpers real: applyReaction, wsUrl, slugify
-    listChats: vi.fn(async () => (H.failChats ? { ok: false as const, error: H.failChats } : { ok: true as const, status: 200, data: H.chats })),
-    loadHistory: vi.fn(async (_b: string, chatId: string) => (H.failHistory ? { ok: false as const, error: H.failHistory } : { ok: true as const, status: 200, data: H.history[chatId] ?? [] })),
+    // Like the real `read`, a 401 raises the app-level session-ended signal.
+    listChats: vi.fn(async () => {
+      if (H.failChats) { if (H.failChats.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failChats }; }
+      return { ok: true as const, status: 200, data: H.chats };
+    }),
+    loadHistory: vi.fn(async (_b: string, chatId: string) => {
+      if (H.failHistory) { if (H.failHistory.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failHistory }; }
+      return { ok: true as const, status: 200, data: H.history[chatId] ?? [] };
+    }),
     loadHistoryAround: vi.fn(async () => H.around ?? { found: false, messages: [], hasOlder: false, hasNewer: false }),
     loadHistoryAfter: vi.fn(async () => ({ ok: true as const, status: 200, data: H.after })),
     getMembers: vi.fn(async (_b: string, chatId: string) => ({ ok: true as const, status: 200, data: H.members[chatId] ?? [] })),
@@ -58,6 +65,8 @@ vi.mock("../lib/push", async (importActual) => ({
 
 // Imported AFTER the mocks register (vi.mock is hoisted, so this order is fine).
 import Chat from "./Chat";
+import AppShell from "./AppShell";
+import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 
 function dm(over: Partial<ChatSummary> = {}): ChatSummary {
   return {
@@ -102,6 +111,7 @@ beforeEach(() => {
   H.failChats = null;
   H.failHistory = null;
   H.failSession = null;
+  resetSessionEnded();
   H.session = { authenticated: true, user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true } };
   setUrl("/app");
 });
@@ -553,5 +563,94 @@ describe("Chat island — honest error states (no false empty)", () => {
     await mountOpen();
     await screen.findByText(/no messages yet/);
     expect(screen.queryByText("couldn't load messages.")).toBeNull();
+  });
+});
+
+describe("Chat island — deep link survives a failed first list load", () => {
+  it("applies ?chat= once the sidebar retry succeeds", async () => {
+    H.failChats = { kind: "http", status: 500 };
+    setUrl("/app?chat=c1");
+    render(<Chat base="" />);
+    await screen.findByText("couldn't load chats.");
+    expect(MockWebSocket.room).toBeUndefined();
+    H.failChats = null;
+    fireEvent.click(screen.getByRole("button", { name: "retry" }));
+    await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("hello there")).toBeTruthy());
+  });
+});
+
+describe("Chat island — history 403", () => {
+  it("shows the no-longer-a-member copy and closes the chat (no retry row)", async () => {
+    H.failHistory = { kind: "http", status: 403 };
+    await mountOpen();
+    await screen.findByText("you're no longer a member of this chat");
+    expect(screen.queryByText("couldn't load messages.")).toBeNull();
+  });
+});
+
+describe("Chat island — session ended (real Chat under AppShell)", () => {
+  async function mountShell(): Promise<MockWebSocket> {
+    setUrl("/app?chat=c1");
+    render(<AppShell base="" />);
+    await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("hello there")).toBeTruthy());
+    return MockWebSocket.room;
+  }
+
+  it("a 401 from a poll swaps in the banner, hands back the draft with a working copy, and drops other content", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const ws = await mountShell();
+    open(ws);
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "my unsent thought" } });
+    H.failChats = { kind: "unauthorized", status: 401 };
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/your session ended/);
+    // other chat content is gone from the DOM
+    expect(screen.queryByText("hello there")).toBeNull();
+    expect(document.body.textContent).not.toContain("hello there");
+    expect(document.body.textContent).not.toContain("Bob");
+    // the draft is shown read-only, flagged as not sent, with copy
+    const box = screen.getByLabelText(/your unsent message/) as HTMLTextAreaElement;
+    expect(box.value).toBe("my unsent thought");
+    expect(box.readOnly).toBe(true);
+    expect(screen.queryByText(/may not have been sent/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("my unsent thought"));
+    await screen.findByText("copied");
+    // never persisted
+    expect(JSON.stringify({ ...localStorage })).not.toContain("my unsent thought");
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain("my unsent thought");
+  });
+
+  it("a send still pending at 401 shows the 'may not have been sent' warning (no draft box when empty)", async () => {
+    const ws = await mountShell();
+    open(ws);
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "in flight" } });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(document.querySelector(".is-pending")).toBeTruthy());
+    H.failChats = { kind: "unauthorized", status: 401 };
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/a message may not have been sent/);
+    expect(screen.queryByLabelText(/your unsent message/)).toBeNull();
+    expect(document.body.textContent).not.toContain("in flight");
+    expect(document.activeElement?.textContent).toBe("sign in");
+  });
+
+  it("a 401 from the history read also ends the session and clears the rendered messages", async () => {
+    const ws = await mountShell();
+    open(ws);
+    H.failHistory = { kind: "unauthorized", status: 401 };
+    // switch to a fresh load of history via the retry path: jump-to-latest is not
+    // reachable here, so reload the chat selection by remounting through the sidebar.
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol" })];
+    H.history = { ...H.history, c2: [] };
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    fireEvent.click(await screen.findByText("Carol"));
+    await screen.findByText(/your session ended/);
+    expect(document.body.textContent).not.toContain("hello there");
   });
 });

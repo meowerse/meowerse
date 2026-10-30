@@ -144,8 +144,8 @@ export function ChatSidebar({
           </div>
         )}
         {error && (
-          <div className="mw-loaderror" role="status">
-            <span className="mw-muted">{chats.length === 0 ? "couldn't load chats." : "couldn't refresh chats."}</span>{" "}
+          <div className="mw-loaderror">
+            <span className="mw-muted" role="status">{chats.length === 0 ? "couldn't load chats." : "couldn't refresh chats."}</span>{" "}
             <button className="mw-btn mw-btn--sm" onClick={onRetry}>retry</button>
           </div>
         )}

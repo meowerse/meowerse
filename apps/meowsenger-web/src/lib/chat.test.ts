@@ -398,8 +398,26 @@ describe("getBySlug", () => {
     stubFetch({ error: "private" });
     expect(await getBySlug(BASE, "secret")).toEqual({ error: "private" });
   });
-  it("degrades to {error:'private'} on a network error (safe, no-leak default)", async () => {
+  it("reports a network error as {error:'unreachable'} (never 'private')", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+  });
+  it.each([500, 503, 429, 408])("reports a %i as unreachable", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+  });
+  it("reports a 401 as unauthorized", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unauthorized" });
+  });
+  it.each([403, 404])("keeps a definitive %i as the fallback 'private' (even with an empty body)", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "private" });
+  });
+  it("treats an unparseable body as unreachable on 200 and private on 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 200 })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 404 })));
     expect(await getBySlug(BASE, "x")).toEqual({ error: "private" });
   });
 });
@@ -496,8 +514,12 @@ describe("getInviteByCode", () => {
     stubFetch({ error: "bad_invite" });
     expect(await getInviteByCode(BASE, "dead")).toEqual({ error: "bad_invite" });
   });
-  it("degrades to {error:'bad_invite'} on a network error", async () => {
+  it("reports a network error as unreachable and a 401 as unauthorized", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getInviteByCode(BASE, "x")).toEqual({ error: "unreachable" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    expect(await getInviteByCode(BASE, "x")).toEqual({ error: "unauthorized" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
     expect(await getInviteByCode(BASE, "x")).toEqual({ error: "bad_invite" });
   });
 });
