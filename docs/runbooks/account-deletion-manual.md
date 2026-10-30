@@ -1,5 +1,14 @@
 # Manual account deletion (auth + Meowsenger)
 
+> **NOT AUTHORIZED FOR IRREVERSIBLE DELETION (2026-10-30).** The ownership check in section B (a
+> `recovery.regenerate` audit row in a time window) is not bound to a specific deletion request and does not
+> require fresh authentication, so it cannot prove the account owner asked for deletion. Do not delete any
+> account with this runbook. Deletion requests to privacy@alxnko.dev are acknowledged and queued until the
+> in-account flow ships: a single-use, account-bound, expiring confirmation created inside the signed-in account
+> after fresh password/Telegram authentication (hardening step D). Never ask anyone to send recovery codes by
+> email. The SQL in section E has also not been proven transactional through the Turso shell; the in-app flow
+> uses the tested `deleteAccount` batch instead. Kept as a reference for what deletion touches and what remains.
+
 ## A. When this applies
 `ACCOUNT_DELETE_ENABLED` is off (default): `POST /api/account/delete` returns 503 `deletion_unavailable` and the account page tells users to email `privacy@alxnko.dev` (Cloudflare Email Routing, working mailbox). Do the steps below by hand. To enable self-service instead, add `"ACCOUNT_DELETE_ENABLED": "1"` to `workers/auth/wrangler.jsonc` vars and update the privacy copy in the same PR.
 
