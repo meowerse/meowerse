@@ -212,7 +212,9 @@ describe("privacy copy stays anchored to the code it describes", () => {
     expect(repo("workers/meowsenger/src/oidc.ts")).toMatch(/const SCOPES = "openid profile verified";/);
   });
   it("registered apps are active immediately (no review), as the third-party row says", () => {
-    expect(repo("workers/auth/src/dashboard.ts")).toContain("0, 'active'");
+    // createClient's INSERT lists "first_party, status" last and binds them to the literals 0, 'active'.
+    expect(repo("workers/auth/src/dashboard.ts")).toMatch(/first_party, status",\s*\n\s*"[^"]*0, 'active'"/);
+    expect(privacy).not.toContain("built into many plugins");
     expect(APP_KINDS.find((k) => k.kind.startsWith("Third-party"))!.who).toMatch(/do not review/);
   });
   it("rate-limit retention is 7 days in housekeeping, matching the page", () => {
