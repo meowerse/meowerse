@@ -102,7 +102,7 @@ test("lookupSession read, deleteAccount, then issueSession writes 0 rows and ret
 test("rotateSession: account deleted between its session read and its insert -> null, no new session", async () => {
   const f = await setup();
   f.onNextSessionRead(f.deleteNow);
-  expect(await rotateSession(f.wrapped, f.sess, { now: NOW })).toBeNull();
+  expect(await rotateSession(f.wrapped, f.sess, { now: NOW, accountId: f.accountId })).toBeNull();
   expect(await count(f.db, "accounts WHERE id = ?", [f.accountId])).toBe(0);
   expect(await count(f.db, "sessions WHERE account_id = ?", [f.accountId])).toBe(0);
 });
@@ -407,4 +407,37 @@ test("signup: resolveNext returning nothing (new account deleted before the sile
   expect(await r.json()).toEqual({ error: "account_gone" });
   expect(await count(f.db, "oauth_codes")).toBe(0);
   expect(await count(f.db, "accounts WHERE username = 'newbie'")).toBe(0);
+});
+
+// ------------------------------------------------------------ login while another account's cookie is present
+
+test("POST /login as a DIFFERENT account while holding A's session cookie: A's session is revoked, the new session belongs to B (never a fresh A session)", async () => {
+  const f = await setup(); // signed up as "victim" (A), f.sess is A's session
+  const b = await f.call("/signup", { body: { username: "other_b", password: "accttest1234" } });
+  expect(b.status).toBe(200);
+  const bId = String((await run(f.db, "SELECT id FROM accounts WHERE username = 'other_b'")).rows[0]!.id);
+  const before = Number((await run(f.db, "SELECT auth_time FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.auth_time);
+
+  const r = await f.call("/login", { sess: f.sess, body: { username: "other_b", password: "accttest1234" } });
+  expect(r.status).toBe(200);
+  const newSess = cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  const newRow = (await run(f.db, "SELECT account_id FROM sessions WHERE id_hash = ?", [await sha256Hex(newSess)])).rows[0]!;
+  expect(String(newRow.account_id)).toBe(bId);
+  // A's old session is revoked and no session for A was created or freshened by B's login.
+  expect((await run(f.db, "SELECT revoked_at FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.revoked_at).not.toBeNull();
+  const aLive = await run(f.db, "SELECT COUNT(*) AS n FROM sessions WHERE account_id = ? AND revoked_at IS NULL", [f.accountId]);
+  expect(Number(aLive.rows[0]!.n)).toBe(0);
+  // A's (now revoked) row was not freshened by B's login.
+  expect(Number((await run(f.db, "SELECT auth_time FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.auth_time)).toBe(before);
+});
+
+test("POST /login as the SAME account rotates its own session (old revoked, new one for the same account)", async () => {
+  const f = await setup();
+  const r = await f.call("/login", { sess: f.sess, body: { username: "victim", password: "accttest1234" } });
+  expect(r.status).toBe(200);
+  const newSess = cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  expect(newSess).not.toBe(f.sess);
+  const newRow = (await run(f.db, "SELECT account_id FROM sessions WHERE id_hash = ?", [await sha256Hex(newSess)])).rows[0]!;
+  expect(String(newRow.account_id)).toBe(f.accountId);
+  expect((await run(f.db, "SELECT revoked_at FROM sessions WHERE id_hash = ?", [f.idHash])).rows[0]!.revoked_at).not.toBeNull();
 });

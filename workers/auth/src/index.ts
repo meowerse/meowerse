@@ -331,7 +331,7 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   const cookies = parseCookies(req.headers.get("Cookie"));
   const existing = cookies[`__Host-${SESS_COOKIE}`];
   const sess = existing
-    ? (await rotateSession(db, existing, { now: now(deps), authTime: now(deps) })) ??
+    ? (await rotateSession(db, existing, { now: now(deps), authTime: now(deps), accountId: res.accountId })) ??
       (await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) }))
     : await issueSession(db, { accountId: res.accountId, amr: "pwd", authTime: now(deps), now: now(deps) });
   if (!sess) return accountGone(cors);
