@@ -1,10 +1,14 @@
 # Account deletion requests (intake only)
 
-**Status (2026-10-30): no irreversible deletion is performed from an email request.** Self-service deletion
-(`POST /api/account/delete`) is disabled (`ACCOUNT_DELETE_ENABLED` unset) until hardening steps B–D ship and the
-owner separately approves turning it on. There is no approved manual deletion procedure; do not run deletion SQL
-by hand against production. The earlier manual runbook was withdrawn because its ownership check was not bound
-to a specific request and did not require fresh authentication.
+**Status (2026-10-30): hardening steps B–D are built; deletion is still disabled pending owner approval, and no
+irreversible deletion is performed from an email request.** Self-service deletion (`POST /api/account/delete`)
+stays off (`ACCOUNT_DELETE_ENABLED` unset) until the owner separately approves turning it on; the
+`account_delete_confirmations` table must also be created in production first (SQL in `workers/auth/src/db.ts`,
+"PROD ONE-SHOT"). Step D requires server-verified fresh authentication (a login within 5 minutes, or the current
+password) and a single-use, account- and session-bound, 5-minute confirmation consumed atomically in the delete
+batch. Until deletion is approved and enabled, the intake procedure below is unchanged. There is no approved manual
+deletion procedure; do not run deletion SQL by hand against production. The earlier manual runbook was withdrawn
+because its ownership check was not bound to a specific request and did not require fresh authentication.
 
 ## When a request arrives at privacy@alxnko.dev
 **Outbound mail is not configured.** privacy@ (like contact@ and security@) is receive-only Cloudflare Email

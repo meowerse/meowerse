@@ -62,8 +62,8 @@ test("deep-link: start → HMAC bot confirm → owner-bound status issues a sess
   expect(cookieValue(status.headers.get("Set-Cookie"), "__Host-mw_sess")).toBeTruthy();
 });
 
-async function startVerify(env: unknown, deps: unknown, sess: string) {
-  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}` }, body: JSON.stringify({ kind: "VERIFY_EXISTING" }) }), env as never, deps as never);
+async function startVerify(env: unknown, deps: unknown, sess: string, csrf: string) {
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}` }, body: JSON.stringify({ kind: "VERIFY_EXISTING", csrf }) }), env as never, deps as never);
   const sb = (await start.json()) as { ticketId: string; deepLink: string };
   return { ticketId: sb.ticketId, nonce: new URL(sb.deepLink).searchParams.get("start")!, owner: cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
 }
@@ -77,16 +77,18 @@ test("verify-existing links Telegram to a logged-in account; a second account �
   const { env, deps } = await fixture();
   // account A (password) + session
   const suA = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "neko_ve", password: "abcdefghijkl" }) }), env as never, deps as never);
+  const csrfA = ((await suA.json()) as { csrf: string }).csrf;
   const sessA = cookieValue(suA.headers.get("Set-Cookie"), "__Host-mw_sess")!;
-  const vA = await startVerify(env, deps, sessA);
+  const vA = await startVerify(env, deps, sessA, csrfA);
   expect((await confirm(env, deps, vA.nonce, "55")).status).toBe(200);
   const stA = await handle(new Request(`https://iss/tg/status?ticket=${vA.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${vA.owner}; __Host-mw_sess=${sessA}` } }), env as never, deps as never);
   expect(((await stA.json()) as { ready: boolean }).ready).toBe(true);
 
   // account B tries to claim the SAME telegram id → linked_elsewhere
   const suB = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "neko_ve2", password: "abcdefghijkl" }) }), env as never, deps as never);
+  const csrfB = ((await suB.json()) as { csrf: string }).csrf;
   const sessB = cookieValue(suB.headers.get("Set-Cookie"), "__Host-mw_sess")!;
-  const vB = await startVerify(env, deps, sessB);
+  const vB = await startVerify(env, deps, sessB, csrfB);
   expect((await confirm(env, deps, vB.nonce, "55")).status).toBe(409);
 });
 

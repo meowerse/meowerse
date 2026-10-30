@@ -120,7 +120,7 @@ test("deriveVerified reflects a live telegram link", async () => {
 test("deleteAccount deletes owned-client children + all account-keyed rows, accounts LAST", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const db = routedDb([], log);
-  await deleteAccount(db, "acct_x");
+  await deleteAccount(db, "acct_x", undefined, { tokenHash: "t", sessionIdHash: "s", now: 1000 });
   const deletes = log.map((l) => l.sql.replace(/\s+/g, " ").trim()).filter((s) => s.startsWith("DELETE"));
   // owned-client children present
   expect(deletes.some((s) => /oauth_client_secrets WHERE client_id/.test(s))).toBe(true);
@@ -137,7 +137,7 @@ test("deleteAccount deletes owned-client children + all account-keyed rows, acco
 
 test("deleteAccount emits child deletes via owner subqueries (no prior read), accounts LAST", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
-  await deleteAccount(routedDb([], log), "acct_solo");
+  await deleteAccount(routedDb([], log), "acct_solo", undefined, { tokenHash: "t", sessionIdHash: "s", now: 1000 });
   const deletes = log.map((l) => l.sql.replace(/\s+/g, " ").trim()).filter((s) => s.startsWith("DELETE"));
   expect(log.some((l) => l.sql.startsWith("SELECT"))).toBe(false);
   expect(deletes[0]).toMatch(/oauth_client_secrets WHERE client_id IN \(SELECT client_id FROM oauth_clients WHERE owner_account_id = \?\)/);

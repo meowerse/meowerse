@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import {
   deleteAccount,
+  startAccountDelete,
+  postAuthLocation,
   postSignup,
   postLogin,
   postConsent,
@@ -130,8 +132,8 @@ test("dashboard mutation helpers + tg kind + granular consent scopes", async () 
   expect(mt.mock.calls[0][0]).toBe("http://x/api/dev/tokens");
 
   const tg = mockJson({ ticketId: "t", deepLink: "d" });
-  await tgStart("http://x", "VERIFY_EXISTING");
-  expect(JSON.parse(tg.mock.calls[0][1].body)).toEqual({ kind: "VERIFY_EXISTING" });
+  await tgStart("http://x", "VERIFY_EXISTING", { csrf: "c1", currentPassword: "pw" });
+  expect(JSON.parse(tg.mock.calls[0][1].body)).toEqual({ kind: "VERIFY_EXISTING", csrf: "c1", current_password: "pw" });
 
   const cons = mockJson({ redirect: "https://app/cb" });
   await postConsent("http://x", "allow", "c", ["openid", "profile"]);
@@ -156,10 +158,25 @@ describe("authApi status-aware GET", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
     expect(await getAccount("https://api")).toEqual({ error: "http" });
   });
-  it("deleteAccount posts csrf + confirm", async () => {
+  it("deleteAccount posts csrf + confirm + confirm_token", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    await deleteAccount("https://api", "csrf1", "neko");
+    await deleteAccount("https://api", "csrf1", "neko", "tok");
     const body = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
-    expect(body).toEqual({ csrf: "csrf1", confirm: "neko" });
+    expect(body).toEqual({ csrf: "csrf1", confirm: "neko", confirm_token: "tok" });
+  });
+  it("startAccountDelete posts to /delete/start, sending current_password only when given", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ confirm_token: "t" }), { status: 200 }));
+    await startAccountDelete("https://api", "c");
+    await startAccountDelete("https://api", "c", "pw");
+    expect(String(spy.mock.calls[0][0])).toBe("https://api/api/account/delete/start");
+    expect(JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string)).toEqual({ csrf: "c" });
+    expect(JSON.parse((spy.mock.calls[1][1] as RequestInit).body as string)).toEqual({ csrf: "c", current_password: "pw" });
+  });
+  it("postAuthLocation: only the literal reauth=delete returns to /account?reauth=delete; nothing user-supplied is echoed", () => {
+    expect(postAuthLocation(undefined, "?reauth=delete")).toBe("/account?reauth=delete");
+    expect(postAuthLocation(undefined, "?reauth=https://evil.example")).toBe("/account");
+    expect(postAuthLocation(undefined, "?reauth=delete&next=//evil.example")).toBe("/account?reauth=delete");
+    expect(postAuthLocation(undefined, "")).toBe("/account");
+    expect(postAuthLocation({ action: "consent" }, "?reauth=delete")).toBe("/consent");
   });
 });

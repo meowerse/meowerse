@@ -215,7 +215,8 @@ test("password.change only on success; recovery.regenerate; consent.revoke; tele
 
   expect(await h.one(() => h.call("/api/account/telegram/unlink", { sess, body: { csrf } }))).toMatchObject({ event: "telegram.unlink", account_id: accountId });
 
-  expect(await h.one(() => h.call("/api/account/delete", { sess, body: { csrf, confirm: "aud_acct" } }))).toMatchObject({ event: "account.delete", account_id: accountId });
+  const confirmToken = ((await (await h.call("/api/account/delete/start", { sess, body: { csrf } })).json()) as { confirm_token: string }).confirm_token;
+  expect(await h.one(() => h.call("/api/account/delete", { sess, body: { csrf, confirm: "aud_acct", confirm_token: confirmToken } }))).toMatchObject({ event: "account.delete", account_id: accountId });
 });
 
 async function consentFlow(h: Awaited<ReturnType<typeof harness>>, username: string) {
@@ -341,8 +342,8 @@ async function tgStartFull(h: Awaited<ReturnType<typeof harness>>, body: unknown
 
 test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records signup (no network) and telegram.login only at /tg/status (user network)", async () => {
   const h = await harness();
-  const { sess, accountId } = await h.signup("aud_tg");
-  const nonce = await tgStart(h, { kind: "VERIFY_EXISTING" }, sess);
+  const { sess, csrf, accountId } = await h.signup("aud_tg");
+  const nonce = await tgStart(h, { kind: "VERIFY_EXISTING", csrf }, sess);
   const before = h.rows().length;
   expect((await tgConfirm(h, nonce, "55")).status).toBe(200);
   expect(h.rows()).toHaveLength(before + 1);
@@ -386,9 +387,9 @@ test("telegram.link failure (linked elsewhere, 409) records nothing", async () =
   const h = await harness();
   const a = await h.signup("aud_tga");
   const b = await h.signup("aud_tgb");
-  expect((await tgConfirm(h, await tgStart(h, { kind: "VERIFY_EXISTING" }, a.sess), "88")).status).toBe(200);
+  expect((await tgConfirm(h, await tgStart(h, { kind: "VERIFY_EXISTING", csrf: a.csrf }, a.sess), "88")).status).toBe(200);
   const n = h.rows().length;
-  expect((await tgConfirm(h, await tgStart(h, { kind: "VERIFY_EXISTING" }, b.sess), "88")).status).toBe(409);
+  expect((await tgConfirm(h, await tgStart(h, { kind: "VERIFY_EXISTING", csrf: b.csrf }, b.sess), "88")).status).toBe(409);
   expect(h.rows()).toHaveLength(n);
 });
 
