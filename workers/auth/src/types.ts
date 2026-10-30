@@ -17,6 +17,8 @@ export interface Env {
   INTERNAL_HMAC_KEY?: string;
   WRITE_BUDGET_PER_MIN?: string;
   SKIP_MIGRATIONS?: string;
+  /** "1"/"true" enables POST /api/account/delete; anything else/unset ⇒ 503 deletion_unavailable. */
+  ACCOUNT_DELETE_ENABLED?: string;
   /** Cloudflare Turnstile secret (bot protection on /signup + /login). Unset ⇒ disabled. */
   TURNSTILE_SECRET_KEY?: string;
   /** Static-assets binding (the Astro auth UI). Cloudflare serves matching assets

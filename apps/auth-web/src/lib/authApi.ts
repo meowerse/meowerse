@@ -78,6 +78,7 @@ export interface AccountInfo {
   telegram: { linked: boolean; username: string | null };
   recoveryRemaining: number;
   csrf: string;
+  deleteEnabled?: boolean;
   error?: string;
 }
 export interface Grant {

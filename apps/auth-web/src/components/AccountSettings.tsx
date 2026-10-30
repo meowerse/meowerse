@@ -109,8 +109,14 @@ export default function AccountSettings({ base }: { base: string }) {
       </Card>
 
       <Card title="danger zone">
-        <p className="mw-muted">deleting your account is permanent and removes all your data and apps.</p>
-        <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
+        {acct.deleteEnabled ? (
+          <>
+            <p className="mw-muted">deleting your meowerse account is permanent. it erases your auth account data, but not data held by other services such as meowsenger.</p>
+            <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
+          </>
+        ) : (
+          <p className="mw-muted">account deletion is handled on request for now: email <a href="mailto:privacy@alxnko.dev">privacy@alxnko.dev</a> with your username. we'll ask you to confirm from inside your account before deleting anything.</p>
+        )}
       </Card>
 
       <p><a href="/logout" onClick={() => clearSessionCache()}><Button variant="secondary">sign out</Button></a></p>
@@ -122,9 +128,11 @@ export default function AccountSettings({ base }: { base: string }) {
         title="unlink telegram?" description="you'll lose your verified status and telegram sign-in." confirmLabel="unlink" variant="danger" loading={busy} />
       <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
-      <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
-        title="delete your account?" description="this is permanent. all your data, connected apps, and owned apps are erased."
-        confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
+      {acct.deleteEnabled && (
+        <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+          title="delete your account?" description="this is permanent. your login methods, sessions, app permissions, tokens and owned apps are erased. data held by other services (e.g. meowsenger) is not; delete it there separately."
+          confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
+      )}
     </div>
   );
 }

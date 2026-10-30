@@ -917,6 +917,11 @@ async function handleSession(req: Request, env: Env, deps: Deps, cors: Record<st
 }
 
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
+/** Account self-deletion is off unless ACCOUNT_DELETE_ENABLED is exactly "1" or "true". */
+function accountDeleteEnabled(env: Env): boolean {
+  return env.ACCOUNT_DELETE_ENABLED === "1" || env.ACCOUNT_DELETE_ENABLED === "true";
+}
+
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
@@ -927,7 +932,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "" && req.method === "GET") {
     const detail = await getAccountDetail(db, accountId); // profile + verified + telegram + recovery in ONE query
     if (!detail) return json({ error: "not_found" }, 404, cors);
-    return json({ ...detail, csrf: session.csrf }, 200, { ...cors, ...securityHeaders() });
+    return json({ ...detail, csrf: session.csrf, deleteEnabled: accountDeleteEnabled(env) }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "grants" && req.method === "GET") {
     return json({ grants: await listGrants(db, accountId) }, 200, { ...cors, ...securityHeaders() });
@@ -959,6 +964,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "delete") {
+    if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
     const info = await getAccountInfo(db, accountId);
     if (!info) return json({ error: "not_found" }, 404, cors);
     const expected = info.username ?? info.displayName ?? "";

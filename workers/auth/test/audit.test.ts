@@ -85,6 +85,7 @@ async function harness(opts: { wrap?: (db: DbClient) => DbClient; ctx?: Executio
     WEB_ORIGIN: "https://web",
     RESOURCE_AUD: "https://api.meow",
     STATE_SECRET: "s",
+    ACCOUNT_DELETE_ENABLED: "1",
     CORS_ORIGINS: "https://web",
     BOT_USERNAME: "meow_bot",
     INTERNAL_HMAC_KEY: "ikey",

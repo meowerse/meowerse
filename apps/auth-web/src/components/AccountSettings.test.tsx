@@ -43,4 +43,29 @@ describe("AccountSettings", () => {
     page();
     expect(await screen.findByText(/to manage your account/)).not.toBeNull();
   });
+
+  it("deleteEnabled false hides the delete button and shows the email-request line", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json({ ...ACCOUNT, deleteEnabled: false }));
+    page();
+    await screen.findByText("alxnko");
+    expect(screen.queryByRole("button", { name: "delete account" })).toBeNull();
+    expect(screen.getByText(/account deletion is handled on request for now/)).not.toBeNull();
+    expect(screen.getByRole("link", { name: "privacy@alxnko.dev" }).getAttribute("href")).toBe("mailto:privacy@alxnko.dev");
+  });
+
+  it("deleteEnabled absent hides the delete control", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json(ACCOUNT));
+    page();
+    await screen.findByText("alxnko");
+    expect(screen.queryByRole("button", { name: "delete account" })).toBeNull();
+    expect(screen.getByText(/handled on request for now/)).not.toBeNull();
+  });
+
+  it("deleteEnabled true keeps the delete button", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json({ ...ACCOUNT, deleteEnabled: true }));
+    page();
+    await screen.findByText("alxnko");
+    expect(screen.getByRole("button", { name: "delete account" })).not.toBeNull();
+    expect(screen.queryByText(/handled on request for now/)).toBeNull();
+  });
 });
