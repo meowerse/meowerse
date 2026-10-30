@@ -6,7 +6,7 @@ export type Contact = { label: string; href: string; icon: string };
 
 /** the author's default contact set, used when ContactLinks is given no contacts of its own. */
 export const DEFAULT_CONTACTS: Contact[] = [
-  { label: "email", href: "mailto:aleksandrnyrko@gmail.com", icon: "mail" },
+  { label: "email", href: "mailto:contact@alxnko.dev", icon: "mail" },
   { label: "telegram", href: "https://t.me/ALXNK0", icon: "brand-telegram" },
   { label: "instagram", href: "https://instagram.com/alxnko", icon: "brand-instagram" },
   { label: "github", href: "https://github.com/alxnko", icon: "brand-github" },
