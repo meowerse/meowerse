@@ -86,7 +86,7 @@ describe("router basics", () => {
   it("serves security.txt and robots.txt", async () => {
     const s = await handle(new Request("https://api.meow.alxnko.dev/.well-known/security.txt"), env, d);
     expect(s.status).toBe(200);
-    expect(await s.text()).toContain("Contact: mailto:Alexnekokyn@gmail.com");
+    expect(await s.text()).toContain("Contact: mailto:security@alxnko.dev");
     expect(s.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
     const rob = await handle(new Request("https://api.meow.alxnko.dev/robots.txt"), env, d);
