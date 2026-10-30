@@ -2,10 +2,10 @@ import { test, expect } from "vitest";
 import { handle } from "../src/index";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
-async function loggedIn(username: string) {
+async function loggedIn(username: string, extraEnv: Record<string, string> = { ACCOUNT_DELETE_ENABLED: "1" }) {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...extraEnv };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: "accttest1234" }) }), env as never, deps as never);
   const b = (await su.json()) as { csrf: string };
@@ -103,7 +103,7 @@ test("POST /api/account/delete on a session whose account already vanished → 4
 test("POST /api/account/delete confirms against displayName for a username-less (telegram-only) account", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web", ACCOUNT_DELETE_ENABLED: "true" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const idHash = await (await import("../src/crypto")).sha256Hex("delraw");
   store.tables.accounts.push({ id: "acct_tgd", username: null, display_name: "TG Del", avatar_url: null, verified: 1 });
@@ -114,4 +114,28 @@ test("POST /api/account/delete confirms against displayName for a username-less 
   const ok = await post(env, deps, "/api/account/delete", "delraw", { csrf: "csrfd", confirm: "TG Del" });
   expect(ok.status).toBe(200);
   expect(store.tables.accounts.some((a) => a.id === "acct_tgd")).toBe(false);
+});
+
+test("GET /api/account reports deleteEnabled true only for flag \"1\"/\"true\"", async () => {
+  for (const [flag, want] of [["1", true], ["true", true], [undefined, false], ["0", false], ["yes", false], ["", false]] as const) {
+    const { env, deps, sess } = await loggedIn(`neko_flag_${want}_${String(flag)}`.replace(/\W/g, "_"), flag === undefined ? {} : { ACCOUNT_DELETE_ENABLED: flag });
+    const b = (await (await get(env, deps, "/api/account", sess)).json()) as { deleteEnabled: unknown };
+    expect(b.deleteEnabled).toBe(want);
+  }
+});
+
+test("POST /api/account/delete with the flag off/unset → 503 deletion_unavailable, nothing changes, no audit row", async () => {
+  for (const extra of [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }]) {
+    const { store, env, deps, sess, csrf, accountId } = await loggedIn(`neko_off_${Object.values(extra)[0] ?? "unset"}`, extra);
+    const before = JSON.stringify(store.tables);
+    const auditBefore = (store.tables.audit_log ?? []).length;
+    const r = await post(env, deps, "/api/account/delete", sess, { csrf, confirm: `neko_off_${Object.values(extra)[0] ?? "unset"}` });
+    expect(r.status).toBe(503);
+    expect(await r.json()).toEqual({ error: "deletion_unavailable" });
+    expect(r.headers.get("Set-Cookie")).toBeNull();
+    expect(JSON.stringify(store.tables)).toBe(before);
+    expect((store.tables.audit_log ?? []).length).toBe(auditBefore);
+    expect(store.tables.accounts.some((a) => a.id === accountId)).toBe(true);
+    expect((await get(env, deps, "/api/account", sess)).status).toBe(200); // session survives
+  }
 });
