@@ -71,6 +71,7 @@ export const SCHEMA: string[] = [
     created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at INTEGER NOT NULL,
     consumed_at TEXT
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_codes_exp ON oauth_codes(expires_at)`,
   // --- Token revocation index + refresh (refresh = slice 2) ---
   `CREATE TABLE IF NOT EXISTS access_tokens (
     jti TEXT PRIMARY KEY, account_id TEXT NOT NULL, client_id TEXT NOT NULL,
@@ -90,6 +91,8 @@ export const SCHEMA: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_refresh_family ON refresh_tokens(family_id)`,
   `CREATE INDEX IF NOT EXISTS idx_refresh_acct_client ON refresh_tokens(account_id, client_id)`,
+  // housekeeping retention sweep (absolute expiry + grace)
+  `CREATE INDEX IF NOT EXISTS idx_refresh_abs ON refresh_tokens(absolute_expires_at)`,
   // --- Clients / consent ---
   `CREATE TABLE IF NOT EXISTS oauth_clients (
     client_id    TEXT PRIMARY KEY,
@@ -217,7 +220,9 @@ export function prodDeps(env: Env): Deps {
  *     CREATE INDEX IF NOT EXISTS idx_tickets_nonce ON login_tickets(nonce_hash);
  *     CREATE INDEX IF NOT EXISTS idx_client_secrets_client ON oauth_client_secrets(client_id);
  *     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
- *     CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, ts);"
+ *     CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, ts);
+ *     CREATE INDEX IF NOT EXISTS idx_refresh_abs ON refresh_tokens(absolute_expires_at);
+ *     CREATE INDEX IF NOT EXISTS idx_oauth_codes_exp ON oauth_codes(expires_at);"
  *
  * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
  */
