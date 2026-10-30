@@ -93,9 +93,16 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     const ours = APP_KINDS.find((k) => k.kind === "Our own apps")!;
     expect(ours.who).toContain("Meowsenger");
     expect(ours.consent).toContain("consent screen");
+    // workers/meowsenger/src/oidc.ts:8 SCOPES = "openid profile verified"; refresh tokens need offline_access (auth index.ts:594).
+    expect(ours.gets).toContain("openid, profile and verified only");
+    expect(ours.gets).not.toMatch(/stay signed in/);
     const tp = APP_KINDS.find((k) => k.kind.startsWith("Third-party"))!;
     expect(tp.consent).toContain("consent screen");
-    expect(tp.who).toContain("our approval");
+    // workers/auth/src/index.ts:883 -> dashboard.ts:68 registers apps as status 'active'; clients.ts:23 only checks 'active'.
+    expect(tp.who).toContain("Anyone with a meowerse account can register an app");
+    expect(tp.who).toContain("we do not review apps");
+    expect(tp.consent).toContain("Only approve apps you trust");
+    expect(JSON.stringify(APP_KINDS)).not.toMatch(/\bour approval|if we approve/i);
     expect(tp.control).toContain("revoke on your account page");
     expect(tp.control).toContain("independent controllers");
     expect(SCOPES.map((r) => r.scope)).toEqual(["openid", "profile", "telegram", "verified", "offline_access"]);
@@ -117,14 +124,50 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(privacy).toContain("last connected");
     expect(privacy).toContain("add you to groups");
   });
+  it("pins the corrected Meowsenger chat/reaction facts", () => {
+    // chats.ts:66 both direct members are 'member'; members.ts:145 non-owner leave returns early.
+    expect(privacy).toContain("Direct chats are never deleted");
+    expect(privacy).not.toContain("When the last member leaves, the chat disappears");
+    // conversation.ts:742 purges orphan reactions after the message row is hard-deleted.
+    expect(privacy).toContain("Reactions on a deleted message are purged along with the message row");
+    expect(privacy).not.toContain("Reactions and the record of who created a chat are not removed");
+  });
+  it("states the verified backup windows", () => {
+    // developers.cloudflare.com/durable-objects/api/sqlite-storage-api/: PITR "past 30 days"; turso.tech/pricing: Free "1 day".
+    expect(privacy).toContain("up to 30 days");
+    expect(privacy).toContain("SQLite-backed Cloudflare Durable Objects");
+    expect(privacy).toContain("on the Free plan the restore window is 1 day");
+    expect(privacy).not.toContain("our database provider's backup window");
+  });
+  it("describes Minecraft plugin reporting and logs without Minekube", () => {
+    // No Minekube jar is installed (plugins/connect/config.yml is a leftover).
+    expect(rendered + terms).not.toMatch(/minekube/i);
+    const fs = PARTNERS.find((p) => p.partner.startsWith("FastStats"))!;
+    expect(fs.partner).toContain("NexusCore");
+    expect(fs.gets).toContain("error reports");
+    expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("19 plugin files");
+    expect(privacy).toContain("There is no retention limit today");
+    expect(privacy).toContain("chat and commands");
+    expect(privacy).toContain("voice-chat group (any distance)");
+    expect(privacy).toContain("kept in the operator's Gmail mailbox, with no automatic deletion today");
+  });
+  it("states rate-limit cleanup and the step-up counter", () => {
+    expect(privacy).toContain("daily cleanup after about 7 days without activity (up to about 8)");
+    expect(privacy).toContain("step-up) counter is not removed when an account is deleted");
+  });
+  it("scopes the table CSS under .mw-prose and keeps the label out of the screen-reader text", () => {
+    expect(table).toContain('content: attr(data-label) ": " / ""');
+    const css = table.split("<style")[1]!;
+    for (const line of css.split("\n").filter((l) => /^\s*\.(?!mw-prose)legal-table/.test(l))) expect(line).toBe("");
+    expect(css).toContain(".mw-prose .legal-table th, .mw-prose .legal-table td { white-space: normal;");
+  });
   it("states backups, rate-limit retention and corrected auth retention", () => {
     expect(privacy).toContain("Time Travel");
     expect(privacy).toContain("7 days");
-    expect(privacy).toContain("our database provider's backup window");
     expect(privacy).toContain("offline copies");
     expect(privacy).toContain("unsalted SHA-256");
     expect(privacy).toContain("pseudonymous, not anonymous");
-    expect(privacy).toContain("deleted after 7 days without activity");
+    expect(privacy).toContain("after about 7 days without activity");
     expect(privacy).toContain("about 60 days");
     expect(privacy).toContain("so up to about 31 days after you signed in");
     expect(privacy).toContain("last 60 seconds");

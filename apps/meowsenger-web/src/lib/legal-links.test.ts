@@ -13,6 +13,10 @@ describe("meowsenger /privacy and /terms point at the shared pages", () => {
     expect(p).not.toContain("1,000,000");
     expect(p).toContain("within 24 hours");
     expect(p).toContain("stored message log is not wiped today");
+    // groups/channels only: direct members are both 'member' (chats.ts:66) and non-owner leave returns early (members.ts:145).
+    expect(p).toContain("last member leaves a group or channel");
+    expect(p).toContain("Direct chats are never deleted");
+    expect(p).not.toContain("when the last member leaves a chat its stored");
     expect(p).toContain("passes to another member");
     expect(p).not.toContain("solely own");
     expect(p).toContain("receives mail only");
