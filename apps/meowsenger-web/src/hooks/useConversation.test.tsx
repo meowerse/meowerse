@@ -24,9 +24,9 @@ vi.mock("../lib/chat", async (importActual) => {
   const actual = await importActual<typeof import("../lib/chat")>();
   return {
     ...actual, // keep applyReaction + wsUrl real
-    loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => (before ? H.older : H.history[chatId] ?? [])),
+    loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => ({ ok: true as const, status: 200, data: before ? H.older : H.history[chatId] ?? [] })),
     loadHistoryAround: vi.fn(async () => H.around ?? { found: false, messages: [], hasOlder: false, hasNewer: false }),
-    loadHistoryAfter: vi.fn(async () => H.after),
+    loadHistoryAfter: vi.fn(async () => ({ ok: true as const, status: 200, data: H.after })),
   };
 });
 
@@ -467,7 +467,7 @@ describe("useConversation — switched-away race safety", () => {
     const s = setup("c1");
     await waitFor(() => expect(s.result.current.messages.length).toBe(50));
     const d = deferred<Message[]>();
-    vi.mocked(loadHistory).mockReturnValueOnce(d.promise);
+    vi.mocked(loadHistory).mockReturnValueOnce(d.promise.then((data) => ({ ok: true as const, status: 200, data })));
     act(() => { s.result.current.logRef.current = fakeLog(0); });
     act(() => s.result.current.onLogScroll()); // starts loadOlder → awaits d.promise
     act(() => s.rerender({ activeId: "c2" })); // switch away before it resolves
@@ -511,7 +511,7 @@ describe("useConversation — switched-away race safety", () => {
     await act(async () => { await s.result.current.jumpToMessage("mOld"); });
     expect(s.result.current.hasNewer).toBe(true);
     const d = deferred<Message[]>();
-    vi.mocked(loadHistory).mockReturnValueOnce(d.promise);
+    vi.mocked(loadHistory).mockReturnValueOnce(d.promise.then((data) => ({ ok: true as const, status: 200, data })));
     let jl!: Promise<void>;
     act(() => { jl = s.result.current.jumpToLatest(); });
     act(() => s.rerender({ activeId: "c2" }));

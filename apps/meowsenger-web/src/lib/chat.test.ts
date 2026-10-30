@@ -39,6 +39,7 @@ import {
   applyReaction,
 } from "./chat";
 import type { Reaction } from "./chat";
+import { hasSessionEnded, resetSessionEnded } from "./sessionEnded";
 
 const BASE = "https://meowsenger.alxnko.eu.org";
 
@@ -54,16 +55,16 @@ describe("listChats", () => {
   it("returns the chats array (credentialed GET /api/chats)", async () => {
     const chats = [{ id: "c1", type: "direct", name: null, lastMessage: "hi", lastSenderId: "u2", lastActivity: 1, unreadCount: 0, peerId: "u2", peerUsername: "bob", peerDisplayName: "Bob", peerAvatarUrl: null }];
     const mock = stubFetch({ chats });
-    expect(await listChats(BASE)).toEqual(chats);
-    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats`, { credentials: "include" });
+    expect(await listChats(BASE)).toEqual({ ok: true, status: 200, data: chats });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats`, expect.objectContaining({ credentials: "include" }));
   });
   it("defaults to [] when the body has no chats", async () => {
     stubFetch({});
-    expect(await listChats(BASE)).toEqual([]);
+    expect(await listChats(BASE)).toEqual({ ok: true, status: 200, data: [] });
   });
   it("returns [] on a network error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    expect(await listChats(BASE)).toEqual([]);
+    expect(await listChats(BASE)).toEqual({ ok: false, error: { kind: "network" } });
   });
 });
 
@@ -88,13 +89,13 @@ describe("loadHistory", () => {
   it("returns the messages array (no cursor)", async () => {
     const messages = [{ id: "m1", chatId: "c1", senderId: "u1", body: "hi", createdAt: 1000 }];
     const mock = stubFetch({ messages });
-    expect(await loadHistory(BASE, "c1")).toEqual(messages);
-    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages`, { credentials: "include" });
+    expect(await loadHistory(BASE, "c1")).toEqual({ ok: true, status: 200, data: messages });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages`, expect.objectContaining({ credentials: "include" }));
   });
   it("passes the ?before cursor through (encoded)", async () => {
     const mock = stubFetch({ messages: [] });
     await loadHistory(BASE, "c1", "m 9");
-    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?before=m%209`, { credentials: "include" });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?before=m%209`, expect.objectContaining({ credentials: "include" }));
   });
   it("carries the Slice-4 reply/edit/delete fields through unchanged", async () => {
     const messages = [
@@ -102,22 +103,22 @@ describe("loadHistory", () => {
       { id: "m3", chatId: "c1", senderId: "u1", body: "", createdAt: 3000, replyToId: null, replyTo: null, editedAt: null, isDeleted: true },
     ];
     stubFetch({ messages });
-    expect(await loadHistory(BASE, "c1")).toEqual(messages);
+    expect(await loadHistory(BASE, "c1")).toEqual({ ok: true, status: 200, data: messages });
   });
   it("carries the Slice-9 reactions array through unchanged", async () => {
     const messages = [
       { id: "m4", chatId: "c1", senderId: "u1", body: "yo", createdAt: 4000, reactions: [{ emoji: "👍", count: 2, mine: true }] },
     ];
     stubFetch({ messages });
-    expect(await loadHistory(BASE, "c1")).toEqual(messages);
+    expect(await loadHistory(BASE, "c1")).toEqual({ ok: true, status: 200, data: messages });
   });
   it("defaults to [] when the body has no messages", async () => {
     stubFetch({});
-    expect(await loadHistory(BASE, "c1")).toEqual([]);
+    expect(await loadHistory(BASE, "c1")).toEqual({ ok: true, status: 200, data: [] });
   });
-  it("returns [] on a network error", async () => {
+  it("returns a typed network error (not [])", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    expect(await loadHistory(BASE, "c1")).toEqual([]);
+    expect(await loadHistory(BASE, "c1")).toEqual({ ok: false, error: { kind: "network" } });
   });
 });
 
@@ -136,16 +137,16 @@ describe("loadHistoryAround", () => {
 describe("loadHistoryAfter", () => {
   it("GETs ?after=<id> (encoded) and returns the messages", async () => {
     const mock = stubFetch({ messages: [{ id: "m6" }] });
-    expect(await loadHistoryAfter(BASE, "c1", "m 6")).toEqual([{ id: "m6" }]);
-    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?after=m%206`, { credentials: "include" });
+    expect(await loadHistoryAfter(BASE, "c1", "m 6")).toEqual({ ok: true, status: 200, data: [{ id: "m6" }] });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?after=m%206`, expect.objectContaining({ credentials: "include" }));
   });
   it("defaults to [] when the body has no messages", async () => {
     stubFetch({});
-    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual([]);
+    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual({ ok: true, status: 200, data: [] });
   });
-  it("returns [] on a network error", async () => {
+  it("returns a typed network error (not [])", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual([]);
+    expect(await loadHistoryAfter(BASE, "c1", "m6")).toEqual({ ok: false, error: { kind: "network" } });
   });
 });
 
@@ -228,16 +229,16 @@ describe("getMembers", () => {
   it("returns the members array", async () => {
     const members = [{ userId: "u1", username: "bob", displayName: "Bob", avatarUrl: null, role: "owner", joinedAt: 1 }];
     const mock = stubFetch({ members });
-    expect(await getMembers(BASE, "g1")).toEqual(members);
-    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/members`, { credentials: "include" });
+    expect(await getMembers(BASE, "g1")).toEqual({ ok: true, status: 200, data: members });
+    expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/g1/members`, expect.objectContaining({ credentials: "include" }));
   });
   it("defaults to [] when the body has no members", async () => {
     stubFetch({});
-    expect(await getMembers(BASE, "g1")).toEqual([]);
+    expect(await getMembers(BASE, "g1")).toEqual({ ok: true, status: 200, data: [] });
   });
-  it("returns [] on a network error", async () => {
+  it("returns a typed network error (not [])", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    expect(await getMembers(BASE, "g1")).toEqual([]);
+    expect(await getMembers(BASE, "g1")).toEqual({ ok: false, error: { kind: "network" } });
   });
 });
 
@@ -397,8 +398,26 @@ describe("getBySlug", () => {
     stubFetch({ error: "private" });
     expect(await getBySlug(BASE, "secret")).toEqual({ error: "private" });
   });
-  it("degrades to {error:'private'} on a network error (safe, no-leak default)", async () => {
+  it("reports a network error as {error:'unreachable'} (never 'private')", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+  });
+  it.each([500, 503, 429, 408])("reports a %i as unreachable", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+  });
+  it("reports a 401 as unauthorized", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unauthorized" });
+  });
+  it.each([403, 404])("keeps a definitive %i as the fallback 'private' (even with an empty body)", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "private" });
+  });
+  it("treats an unparseable body as unreachable on 200 and private on 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 200 })));
+    expect(await getBySlug(BASE, "x")).toEqual({ error: "unreachable" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 404 })));
     expect(await getBySlug(BASE, "x")).toEqual({ error: "private" });
   });
 });
@@ -495,8 +514,12 @@ describe("getInviteByCode", () => {
     stubFetch({ error: "bad_invite" });
     expect(await getInviteByCode(BASE, "dead")).toEqual({ error: "bad_invite" });
   });
-  it("degrades to {error:'bad_invite'} on a network error", async () => {
+  it("reports a network error as unreachable and a 401 as unauthorized", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    expect(await getInviteByCode(BASE, "x")).toEqual({ error: "unreachable" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    expect(await getInviteByCode(BASE, "x")).toEqual({ error: "unauthorized" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
     expect(await getInviteByCode(BASE, "x")).toEqual({ error: "bad_invite" });
   });
 });
@@ -768,5 +791,51 @@ describe("applyReaction", () => {
       { emoji: "👍", count: 1, mine: false },
       { emoji: "❤️", count: 1, mine: true },
     ]);
+  });
+});
+
+describe("typed readers — 200 / 401 / 403 / 500-HTML / network / timeout", () => {
+  const readers: [string, () => Promise<unknown>][] = [
+    ["listChats", () => listChats(BASE)],
+    ["loadHistory", () => loadHistory(BASE, "c1")],
+    ["loadHistoryAfter", () => loadHistoryAfter(BASE, "c1", "m1")],
+    ["getMembers", () => getMembers(BASE, "g1")],
+  ];
+  const cases: [string, () => Response | never, unknown][] = [
+    ["401", () => new Response("{}", { status: 401 }), { ok: false, error: { kind: "unauthorized", status: 401 } }],
+    ["403", () => new Response('{"error":"forbidden"}', { status: 403 }), { ok: false, error: { kind: "http", status: 403, body: { error: "forbidden" } } }],
+    ["500 HTML", () => new Response("<html>bad gateway</html>", { status: 500 }), { ok: false, error: { kind: "http", status: 500, body: null } }],
+    ["network", () => { throw new Error("offline"); }, { ok: false, error: { kind: "network" } }],
+    ["200 non-JSON", () => new Response("<html>", { status: 200 }), { ok: false, error: { kind: "parse" } }],
+  ];
+  for (const [name, call] of readers) {
+    for (const [label, impl, expected] of cases) {
+      it(`${name}: ${label} is a typed error, never an empty success`, async () => {
+        vi.stubGlobal("fetch", vi.fn(async () => impl()));
+        expect(await call()).toEqual(expected);
+      });
+    }
+    it(`${name}: a timeout is a typed timeout`, async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("fetch", vi.fn((_u: string, init: RequestInit) => new Promise((_r, rej) => {
+        init.signal?.addEventListener("abort", () => rej(new Error("aborted")));
+      })));
+      const p = call();
+      await vi.advanceTimersByTimeAsync(10_500);
+      expect(await p).toEqual({ ok: false, error: { kind: "timeout" } });
+      vi.useRealTimers();
+    });
+  }
+  it("a 401 raises the sessionEnded signal once; transient errors never do", async () => {
+    resetSessionEnded();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    await listChats(BASE);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    await listChats(BASE);
+    expect(hasSessionEnded()).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    await loadHistory(BASE, "c1");
+    expect(hasSessionEnded()).toBe(true);
+    resetSessionEnded();
   });
 });

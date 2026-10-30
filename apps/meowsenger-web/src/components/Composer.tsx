@@ -26,14 +26,21 @@ export function Composer({
   disabled,
   replyTo,
   onCancelReply,
+  onDraftChange,
 }: {
   onSend: (body: string) => void;
   onTyping?: (active: boolean) => void;
   disabled?: boolean;
   replyTo?: ReplyDraft | null;
   onCancelReply?: () => void;
+  /** Mirrors the unsent text to the parent (memory only) so a session-ended banner can hand it back. */
+  onDraftChange?: (text: string) => void;
 }) {
   const [text, setText] = useState("");
+  const draftCb = useRef(onDraftChange);
+  draftCb.current = onDraftChange;
+  useEffect(() => { draftCb.current?.(text); }, [text]);
+  useEffect(() => () => draftCb.current?.(""), []);
   const idleTimer = useRef<number | null>(null);
   // A <textarea>, not <input>: browsers never run username/password autofill on a
   // textarea, so the mobile credentials/autofill strip (which ignores

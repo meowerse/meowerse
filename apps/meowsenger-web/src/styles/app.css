@@ -1044,3 +1044,12 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 @media (pointer: coarse) {
   .mw-composer__input, input.mw-input, .mw-search__input, .mw-edit__input { font-size: 16px; }
 }
+
+/* Unobtrusive, retryable load-error line (sidebar refresh / older history). */
+.mw-loaderror {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 12px; font-size: 0.8rem;
+}
+
+/* Session-ended banner: the handed-back unsent draft (read-only, copyable). */
+.mw-gate__draft { display: flex; flex-direction: column; gap: 6px; align-items: stretch; max-width: 28rem; width: 100%; }

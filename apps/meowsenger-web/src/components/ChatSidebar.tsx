@@ -43,6 +43,8 @@ export function ChatSidebar({
   onSettingsClick,
   onLogout,
   loading,
+  error,
+  onRetry,
 }: {
   chats: ChatSummary[];
   activeId: string | null;
@@ -60,6 +62,10 @@ export function ChatSidebar({
   onSettingsClick?: () => void;
   onLogout?: () => void;
   loading: boolean;
+  // The last list refresh failed. Existing rows stay; a subtle retry line is shown, and
+  // an empty list becomes "couldn't load chats" instead of the (false) "no chats yet".
+  error?: boolean;
+  onRetry?: () => void;
 }) {
   // Global cross-chat search: debounced query → server → results shown IN PLACE of
   // the chat list. Clicking a hit opens that chat + jumps to the message.
@@ -137,7 +143,13 @@ export function ChatSidebar({
             ))}
           </div>
         )}
-        {!loading && chats.length === 0 && (
+        {error && (
+          <div className="mw-loaderror">
+            <span className="mw-muted" role="status">{chats.length === 0 ? "couldn't load chats." : "couldn't refresh chats."}</span>{" "}
+            <button className="mw-btn mw-btn--sm" onClick={onRetry}>retry</button>
+          </div>
+        )}
+        {!loading && !error && chats.length === 0 && (
           <div className="mw-emptychats">
             <span className="mw-emptychats__glyph" aria-hidden="true"><Icon name="message" size={32} /></span>
             <p className="mw-emptychats__title">no chats yet</p>
