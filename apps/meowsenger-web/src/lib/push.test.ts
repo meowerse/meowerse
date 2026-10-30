@@ -188,8 +188,8 @@ describe("enablePush — failures are never silent", () => {
     const f = serverSaying(200);
     stubEnv({ permission: "granted", fetch: f });
     await enablePush(BASE, "u1");
-    const post = f.mock.calls.find((c) => String(c[0]).endsWith("/api/push/subscribe"))!;
-    expect(JSON.parse(String((post[1] as RequestInit).body)).mode).toBe("enable");
+    const post = (f.mock.calls as unknown as Array<[string, RequestInit]>).find((c) => String(c[0]).endsWith("/api/push/subscribe"))!;
+    expect(JSON.parse(String(post[1].body)).mode).toBe("enable");
   });
   it("records the server-confirmed (user, endpoint) on success", async () => {
     stubEnv({ permission: "granted", fetch: serverSaying(200) });
@@ -502,5 +502,53 @@ describe("two accounts on one browser", () => {
     expect(await syncPushSubscription(BASE, "uB")).toBe(false);
     expect(w.rows.size).toBe(0);
     expect(w.local()).toBeNull();
+  });
+});
+
+describe("push.ts edge paths", () => {
+  it("pushSubscribed is false when the registration lookup throws", async () => {
+    stubEnv({ getRegistration: async () => { throw new Error("boom"); } });
+    expect(await pushSubscribed()).toBe(false);
+  });
+  it("disablePush / clearLocalPush survive a throwing registration lookup and still clear the marker", async () => {
+    stubEnv({ getRegistration: async () => { throw new Error("boom"); } });
+    localStorage.setItem("mw_push_synced", "u1|e");
+    await disablePush(BASE, "u1");
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+    localStorage.setItem("mw_push_synced", "u1|e");
+    await clearLocalPush();
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+  });
+  it("disablePush is a no-op when unsupported (marker still cleared)", async () => {
+    vi.stubGlobal("navigator", undefined);
+    vi.stubGlobal("window", undefined);
+    localStorage.setItem("mw_push_synced", "u1|e");
+    await disablePush(BASE, "u1");
+    expect(localStorage.getItem("mw_push_synced")).toBeNull();
+  });
+  it("disablePush derives the pending owner from the marker when no userId is passed", async () => {
+    const sub = { endpoint: "https://push/e1", unsubscribe: async () => true };
+    stubEnv({ subscription: sub, fetch: vi.fn(async () => { throw new TypeError("offline"); }) });
+    localStorage.setItem("mw_push_synced", "u7|https://push/e1");
+    await disablePush(BASE);
+    expect(localStorage.getItem("mw_push_pending_unsub")).toBe("u7|https://push/e1");
+  });
+  it("opt-in falls back to the page's controller when no registration is active", async () => {
+    const posted: unknown[] = [];
+    stubEnv({ permission: "granted", fetch: vi.fn(async (u: string) => String(u).endsWith("/key") ? new Response(JSON.stringify({ key: "AQID" })) : new Response("{}")) });
+    const nav = (globalThis as unknown as { navigator: { serviceWorker: { getRegistration: () => Promise<unknown>; controller?: unknown } } }).navigator;
+    nav.serviceWorker.getRegistration = async () => ({ active: null, pushManager: { getSubscription: async () => null } });
+    nav.serviceWorker.controller = { postMessage: (m: unknown) => void posted.push(m) };
+    await clearLocalPush();
+    expect(posted).toEqual([{ type: "mw-optin", userId: null }]);
+  });
+  it("sync drops the local subscription on a permanent refusal and keeps it on a 408/429", async () => {
+    for (const [status, dropped] of [[400, true], [408, false], [429, false], [404, true]] as const) {
+      let unsub = false;
+      const sub = { endpoint: "https://push/e1", toJSON: () => ({ keys: {} }), unsubscribe: async () => { unsub = true; return true; } };
+      stubEnv({ permission: "granted", subscription: sub, fetch: vi.fn(async () => new Response("x", { status })) });
+      await syncPushSubscription(BASE, "u1");
+      expect(unsub, String(status)).toBe(dropped);
+    }
   });
 });
