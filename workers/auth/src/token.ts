@@ -1,8 +1,9 @@
 import { TYP, TOKEN_USE, sha256, b64urlEncode, verifyPkceS256 } from "@meowerse/auth-shared";
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
-import { revokeFamily } from "./refresh";
+import { revokeFamilyWithRetry } from "./refresh";
 import { signJwt } from "./jwt";
+import { guardedInsert, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
 import type { AuthorizeRequest } from "./authorize";
 
@@ -56,14 +57,22 @@ export interface ExchangeOk {
   nonce: string | null;
   authTime: number;
   family: string;
+  /** SHA-256 of the code; the issuing batch consumes the row by this key. */
+  codeHash: string;
 }
-export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; accountId?: string; codeClientId?: string };
+export type ExchangeResult = ExchangeOk | { ok: false; error: string; replay?: boolean; revokeFailed?: boolean; family?: string; accountId?: string; codeClientId?: string };
 
 /**
- * Redeem an authorization code (spec §5, §8, §10/#3). Single-use via a
- * consumed_at marker; a SECOND presentation of an already-consumed code revokes
- * the whole token family and returns invalid_grant. Re-validates client +
- * byte-exact redirect_uri and the PKCE verifier.
+ * Validate an authorization code (spec §5, §8, §10/#3). A presentation of an
+ * already-consumed code revokes the whole token family and returns
+ * invalid_grant. Re-validates client + byte-exact redirect_uri and the PKCE
+ * verifier.
+ *
+ * This does NOT consume the code. Consumption happens in the SAME transaction
+ * that inserts the tokens (see `guardedInsert` / `consumeCodeStmt`), so "code
+ * consumed" and "its tokens exist" become visible together. Consuming here and
+ * inserting later left a window where a replay revoked an empty family and the
+ * first request then inserted usable tokens into it.
  */
 export async function exchangeCode(
   db: DbClient,
@@ -77,19 +86,20 @@ export async function exchangeCode(
   if (row.consumed_at != null) {
     // RFC 6749 §4.1.2: a replayed code revokes every token issued from it, including
     // the offline refresh token, which shares the code's family.
-    await revokeFamily(db, String(row.jti_family));
-    return { ok: false, error: "invalid_grant", replay: true, accountId: String(row.account_id), codeClientId: String(row.client_id) };
+    const ids = { replay: true, accountId: String(row.account_id), codeClientId: String(row.client_id) };
+    try {
+      await revokeFamilyWithRetry(db, String(row.jti_family));
+    } catch {
+      // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
+      console.error("family_revoke_failed");
+      return { ok: false, error: "server_error", revokeFailed: true, family: String(row.jti_family), ...ids };
+    }
+    return { ok: false, error: "invalid_grant", ...ids };
   }
   if (Number(row.expires_at) < i.now) return { ok: false, error: "invalid_grant" };
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
   if (String(row.redirect_uri) !== i.redirectUri) return { ok: false, error: "invalid_grant" };
   if (!(await verifyPkceS256(i.verifier, String(row.code_challenge)))) return { ok: false, error: "invalid_grant" };
-
-  const consume = await db.execute({
-    sql: "UPDATE oauth_codes SET consumed_at = datetime('now') WHERE code_hash = ? AND consumed_at IS NULL",
-    args: [codeHash],
-  });
-  if ((consume.rowsAffected ?? 0) !== 1) return { ok: false, error: "invalid_grant" }; // lost a concurrent race
 
   return {
     ok: true,
@@ -98,6 +108,7 @@ export async function exchangeCode(
     nonce: row.nonce == null ? null : String(row.nonce),
     authTime: Number(row.auth_time),
     family: String(row.jti_family),
+    codeHash,
   };
 }
 
@@ -166,15 +177,19 @@ export async function mintTokens(i: MintInput): Promise<MintedTokens> {
 }
 
 /** The access_token-jti INSERT as a statement (so callers can batch it with the
- *  refresh INSERT in the offline-token pair instead of two round-trips). */
+ *  refresh INSERT in the offline-token pair instead of two round-trips). With
+ *  `guard` it is the conditional variant (only if the guard holds). */
 export function accessTokenInsert(
   i: { jti: string; accountId: string; clientId: string; scope: string[]; family: string; now: number },
+  guard?: Guard,
 ): { sql: string; args: unknown[] } {
-  return {
-    sql: `INSERT INTO access_tokens (jti, account_id, client_id, scope, family_id, issued_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
-  };
+  return guardedInsert(
+    "access_tokens",
+    "jti, account_id, client_id, scope, family_id, issued_at, expires_at",
+    "?, ?, ?, ?, ?, ?, ?",
+    [i.jti, i.accountId, i.clientId, i.scope.join(" "), i.family, i.now, i.now + ACCESS_TTL],
+    guard,
+  );
 }
 
 /** Record the access_token jti for introspect/revoke. */

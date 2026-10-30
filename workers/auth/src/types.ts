@@ -43,7 +43,7 @@ export interface DbClient {
    * CAS (batching a CAS would double-spend). The real @libsql client provides
    * this; the test fakes implement it as a sequential `execute` loop.
    */
-  batch(stmts: (string | { sql: string; args: unknown[] })[]): Promise<{
+  batch(stmts: (string | { sql: string; args: unknown[] })[], mode?: "write" | "read" | "deferred"): Promise<{
     rows: Record<string, unknown>[];
     rowsAffected?: number;
     lastInsertRowid?: bigint | number;

@@ -1,6 +1,7 @@
 import { sha256Hex } from "./crypto";
 import { randomId } from "./security";
 import type { DbClient } from "./types";
+import { guardedInsert, type Guard } from "./codeguard";
 
 /** Refresh-token lifetimes (spec §3): 14d idle / 30d absolute, sliding. */
 export const REFRESH_IDLE_TTL = 14 * 24 * 3600;
@@ -15,15 +16,17 @@ export const REFRESH_ABS_TTL = 30 * 24 * 3600;
  *  callers batch it with the access_token INSERT (offline-token pair). */
 export async function refreshTokenInsert(
   i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
+  guard?: Guard,
 ): Promise<{ stmt: { sql: string; args: unknown[] }; token: string }> {
   const token = "rt_" + randomId(32);
   const tokenHash = await sha256Hex(token);
   return {
     token,
-    stmt: {
-      sql: `INSERT INTO refresh_tokens (token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
+    stmt: guardedInsert(
+      "refresh_tokens",
+      "token_hash, family_id, client_id, account_id, scope, prev_id, idle_expires_at, absolute_expires_at",
+      "?, ?, ?, ?, ?, ?, ?, ?",
+      [
         tokenHash,
         i.family,
         i.clientId,
@@ -33,7 +36,8 @@ export async function refreshTokenInsert(
         i.now + REFRESH_IDLE_TTL,
         i.absExpires ?? i.now + REFRESH_ABS_TTL,
       ],
-    },
+      guard,
+    ),
   };
 }
 
@@ -51,19 +55,25 @@ export interface RotateOk {
   accountId: string;
   scope: string[];
   family: string;
-  newRefresh: string;
+  /** SHA-256 of the presented token: the rotation batch spends it (see `refreshUnused`). */
+  tokenHash: string;
+  absExpires: number;
 }
 /** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
 export type RotateResult =
   | RotateOk
-  | { ok: false; error: string; reuse?: boolean; accountId?: string; familyClientId?: string };
+  | { ok: false; error: string; reuse?: boolean; revokeFailed?: boolean; family?: string; accountId?: string; familyClientId?: string };
 
 /**
- * Rotate a refresh token (spec §4, §10): single-use with reuse detection. A
- * token presented after it was already used means the family is compromised →
- * revoke the whole family (refresh rows + access jtis) and reject. A valid token
- * is consumed and a new one issued in the same family, preserving the absolute
- * deadline.
+ * Validate a refresh token for rotation (spec §4, §10): single-use with reuse
+ * detection. A token presented after it was already used means the family is
+ * compromised → revoke the whole family (refresh rows + access jtis) and reject.
+ *
+ * This does NOT mark the token used. The caller spends it in the SAME write
+ * transaction that inserts the successor refresh + access rows (guarded on the
+ * old row still being unused); otherwise a reuse landing between "mark used" and
+ * "insert successors" would revoke an empty family and the successors would then
+ * be inserted into it as usable tokens.
  */
 export async function rotateRefresh(
   db: DbClient,
@@ -75,32 +85,29 @@ export async function rotateRefresh(
   if (!row) return { ok: false, error: "invalid_grant" };
 
   if (row.used_at != null) {
-    await revokeFamily(db, String(row.family_id));
-    return { ok: false, error: "invalid_grant", reuse: true, accountId: String(row.account_id), familyClientId: String(row.client_id) };
+    const ids = { reuse: true, accountId: String(row.account_id), familyClientId: String(row.client_id) };
+    try {
+      await revokeFamilyWithRetry(db, String(row.family_id));
+    } catch {
+      // The revoke did not persist: fail closed (the caller still audits, then answers 5xx).
+      console.error("family_revoke_failed");
+      return { ok: false, error: "server_error", revokeFailed: true, family: String(row.family_id), ...ids };
+    }
+    return { ok: false, error: "invalid_grant", ...ids };
   }
   if (String(row.client_id) !== i.clientId) return { ok: false, error: "invalid_grant" };
   if (Number(row.idle_expires_at) < i.now || Number(row.absolute_expires_at) < i.now) {
     return { ok: false, error: "invalid_grant" };
   }
 
-  const consume = await db.execute({
-    sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE token_hash = ? AND used_at IS NULL",
-    args: [tokenHash],
-  });
-  if ((consume.rowsAffected ?? 0) !== 1) return { ok: false, error: "invalid_grant" };
-
-  const scope = String(row.scope).split(/\s+/).filter(Boolean);
-  const family = String(row.family_id);
-  const newRefresh = await createRefreshToken(db, {
+  return {
+    ok: true,
     accountId: String(row.account_id),
-    clientId: i.clientId,
-    scope,
-    family,
-    now: i.now,
-    prevId: tokenHash,
+    scope: String(row.scope).split(/\s+/).filter(Boolean),
+    family: String(row.family_id),
+    tokenHash,
     absExpires: Number(row.absolute_expires_at),
-  });
-  return { ok: true, accountId: String(row.account_id), scope, family, newRefresh };
+  };
 }
 
 /** Revoke an entire token family — all refresh rows + access jtis. */
@@ -110,4 +117,37 @@ export async function revokeFamily(db: DbClient, family: string): Promise<void> 
     { sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL", args: [family] },
     { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ?", args: [family] },
   ]);
+}
+
+const REVOKE_BACKOFF_MS = [0, 50, 200];
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * Background retry after the in-request attempts all failed (scheduled with
+ * ctx.waitUntil, so it outlives the 5xx response; total < the 30 s waitUntil budget).
+ * Covers a short database outage that ends after the request gave up.
+ */
+export const REVOKE_BACKGROUND_BACKOFF_MS = [1000, 4000, 12000];
+
+/**
+ * `revokeFamily` with bounded retry (3 attempts, 0/50/200 ms backoff) so one
+ * transient database error does not leave a replayed/compromised family live.
+ * Rethrows the last error if every attempt fails. `sleep` is injectable for tests.
+ */
+export async function revokeFamilyWithRetry(
+  db: DbClient,
+  family: string,
+  sleep: (ms: number) => Promise<void> = realSleep,
+  backoff: readonly number[] = REVOKE_BACKOFF_MS,
+): Promise<void> {
+  let last: unknown;
+  for (const delay of backoff) {
+    if (delay > 0) await sleep(delay);
+    try {
+      await revokeFamily(db, family);
+      return;
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
 }

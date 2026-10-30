@@ -1,4 +1,4 @@
-import type { Env } from "./types";
+import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
 import { corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
 import { sha256Hex } from "./crypto";
@@ -17,7 +17,8 @@ import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo,
 import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
-import { refreshTokenInsert, rotateRefresh } from "./refresh";
+import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
+import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -198,6 +199,20 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
 }
 
 // --- Route handlers ---------------------------------------------------------
+
+/**
+ * The in-request revoke attempts all failed: keep trying in the background
+ * (ctx.waitUntil) so a short database outage that ends after the 5xx still
+ * revokes the replayed/compromised family. Without a ctx (tests) nothing is scheduled.
+ */
+function scheduleBackgroundRevoke(deps: Deps, db: DbClient, family: string | undefined): void {
+  if (!family || !deps.ctx) return;
+  deps.ctx.waitUntil(
+    revokeFamilyWithRetry(db, family, undefined, REVOKE_BACKGROUND_BACKOFF_MS).catch(() => {
+      console.error("family_revoke_background_failed");
+    }),
+  );
+}
 
 async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   // Cheap in-worker second line behind the edge WAF (same shape as /token).
@@ -385,7 +400,26 @@ async function mintResponse(
   deps: Deps,
   cors: Record<string, string>,
   noStore: Record<string, string>,
-  i: { accountId: string; clientId: string; scope: string[]; nonce: string | null; authTime: number; family: string; issueRefresh?: boolean; refreshToken?: string },
+  i: {
+    accountId: string;
+    clientId: string;
+    scope: string[];
+    nonce: string | null;
+    authTime: number;
+    family: string;
+    issueRefresh?: boolean;
+    /** Refresh rotation: carried onto the successor refresh row. */
+    prevId?: string;
+    absExpires?: number;
+    /**
+     * Single-use credential (auth code or refresh token) that authorises this
+     * issuance: `guard` conditions the inserts, `consume` spends it, both in ONE
+     * write transaction.
+     */
+    atomic: { guard: Guard; consume: Stmt };
+    /** Called when the credential was already spent by another request (we are the loser). */
+    onLost: () => Promise<Response>;
+  },
 ): Promise<Response> {
   const db = deps.getDb();
   // The id_token only carries `verified` when the `verified` scope was granted,
@@ -409,16 +443,57 @@ async function mintResponse(
   });
   const { jti: _jti, ...body } = tokens;
   void _jti;
-  const accessStmt = accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t });
-  let refresh = i.refreshToken;
-  if (i.issueRefresh && !refresh) {
-    // Offline-token pair: the access jti + the new refresh row are both known up
-    // front (not a CAS) → one batch instead of two INSERT round-trips.
-    const { stmt: refreshStmt, token } = await refreshTokenInsert({ accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t });
-    refresh = token;
-    await db.batch([accessStmt, refreshStmt]);
-  } else {
-    await db.execute(accessStmt);
+  const { guard, consume } = i.atomic;
+  const stmts: Stmt[] = [accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, guard)];
+  let refresh: string | undefined;
+  if (i.issueRefresh) {
+    const ins = await refreshTokenInsert(
+      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires },
+      guard,
+    );
+    refresh = ins.token;
+    stmts.push(ins.stmt);
+  }
+
+  // Token inserts + spending the credential are ONE write transaction (BEGIN
+  // IMMEDIATE). The inserts are conditional on the credential still being unspent
+  // and the consume UPDATE is last, so either it was unspent and all of it
+  // happens, or it was already spent and none of it does. "Spent" and "its tokens
+  // exist" therefore become visible together. Reasoning for reuse/replay:
+  // revokeFamily (with retry) marks every unused refresh row used and revokes every access
+  // row, so a reuse that commits FIRST makes our guard fail (nothing inserted), and
+  // one that commits AFTER sees our committed rows and revokes them. A compromised
+  // family therefore never keeps usable tokens, whatever the interleaving.
+  // If the batch throws, the transaction rolled back: the credential stays
+  // unspent, nothing was issued, and the client may retry. (If COMMIT succeeded
+  // but the response was lost, the credential is spent and the tokens exist, but
+  // we still return no token; a retry takes the reuse/replay path and revokes the
+  // family.) Either way no token reaches the client. Answer 500.
+  let res;
+  try {
+    // The two trailing statements revoke the family INSIDE the same transaction, but
+    // only if our own access insert did not run (we lost). That way "lost" and
+    // "family revoked" commit together and a transient failure of the follow-up
+    // revoke (revokeLoserFamily) below cannot leave the winner's tokens usable.
+    const lost = "NOT EXISTS (SELECT 1 FROM access_tokens WHERE jti = ?)";
+    res = await db.batch(
+      [
+        ...stmts,
+        consume,
+        { sql: `UPDATE refresh_tokens SET used_at = datetime('now') WHERE family_id = ? AND used_at IS NULL AND ${lost}`, args: [i.family, tokens.jti] },
+        { sql: `UPDATE access_tokens SET revoked_at = datetime('now') WHERE family_id = ? AND revoked_at IS NULL AND ${lost}`, args: [i.family, tokens.jti] },
+      ],
+      "write",
+    );
+  } catch {
+    console.error("token_issue_failed");
+    return json({ error: "server_error" }, 500, { ...cors, ...noStore });
+  }
+  if ((res[stmts.length]?.rowsAffected ?? 0) !== 1) {
+    // Another request spent the credential first; this one issued nothing. Never
+    // return the signed tokens. The winner's rows are already committed, so
+    // revoking the family reaches them.
+    return i.onLost();
   }
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
@@ -445,6 +520,19 @@ async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, 
   return rl.allowed;
 }
 
+/**
+ * Race-loser follow-up. The in-batch revoke already committed with the loss, so a
+ * failure here is non-fatal: log (no secrets) and let the caller still audit and
+ * answer invalid_grant.
+ */
+async function revokeLoserFamily(db: DbClient, family: string): Promise<void> {
+  try {
+    await revokeFamilyWithRetry(db, family);
+  } catch {
+    console.error("family_revoke_followup_failed");
+  }
+}
+
 async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
@@ -461,9 +549,14 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   if (p.grant_type === "authorization_code") {
     const ex = await exchangeCode(db, { code: p.code ?? "", verifier: p.code_verifier ?? "", clientId, redirectUri: p.redirect_uri ?? "", now: now(deps) });
     if (!ex.ok) {
-      // Code replay already revoked every token issued from the code inside exchangeCode.
+      // Replay of an already-consumed code: exchangeCode revoked the family (with retry) before returning.
+      // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
       if (ex.replay) {
         await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId ?? null, clientId: ex.codeClientId ?? clientId });
+      }
+      if (ex.revokeFailed) {
+        scheduleBackgroundRevoke(deps, db, ex.family);
+        return json({ error: "server_error" }, 500, { ...cors, ...noStore });
       }
       return json({ error: ex.error }, 400, { ...cors, ...noStore });
     }
@@ -475,15 +568,26 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       authTime: ex.authTime,
       family: ex.family,
       issueRefresh: ex.scope.includes("offline_access"),
+      atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
+      onLost: async () => {
+        await revokeLoserFamily(db, ex.family);
+        await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
+        return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+      },
     });
   }
 
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
     if (!rot.ok) {
-      // Refresh-token reuse already revoked the whole family inside rotateRefresh.
+      // Refresh-token reuse: rotateRefresh revoked the family (with retry) before returning.
+      // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
       if (rot.reuse) {
         await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId ?? null, clientId: rot.familyClientId ?? clientId });
+      }
+      if (rot.revokeFailed) {
+        scheduleBackgroundRevoke(deps, db, rot.family);
+        return json({ error: "server_error" }, 500, { ...cors, ...noStore });
       }
       return json({ error: rot.error }, 400, { ...cors, ...noStore });
     }
@@ -494,7 +598,16 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       nonce: null,
       authTime: now(deps),
       family: rot.family,
-      refreshToken: rot.newRefresh,
+      issueRefresh: true,
+      prevId: rot.tokenHash,
+      absExpires: rot.absExpires,
+      atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
+      onLost: async () => {
+        // Lost to a concurrent rotation/reuse of the same token: treat as reuse.
+        await revokeLoserFamily(db, rot.family);
+        await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
+        return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+      },
     });
   }
 

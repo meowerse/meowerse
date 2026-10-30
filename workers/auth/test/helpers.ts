@@ -57,6 +57,15 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     login_tickets: [],
     audit_log: [],
   };
+  // Conditional INSERT ... SELECT ... WHERE EXISTS(unspent credential): last arg is its hash.
+  const guardOk = (sql: string, a: unknown[]): boolean => {
+    const last = a[a.length - 1];
+    if (/FROM oauth_codes WHERE code_hash = \? AND consumed_at IS NULL\)/.test(sql))
+      return t.oauth_codes.some((r) => r.code_hash === last && r.consumed_at == null);
+    if (/FROM refresh_tokens WHERE token_hash = \? AND used_at IS NULL\)/.test(sql))
+      return t.refresh_tokens.some((r) => r.token_hash === last && r.used_at == null);
+    return true;
+  };
   const exec: DbClient["execute"] = async (stmt) => {
       const raw = typeof stmt === "string" ? stmt : stmt.sql;
       const a = typeof stmt === "string" ? [] : stmt.args;
@@ -369,8 +378,25 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
 
+      // --- in-batch conditional family revoke (mintResponse): like real SQLite, only applies when
+      //     this request's own guarded access insert did NOT happen (a[1] = its jti). Must precede
+      //     the generic routes below, which would otherwise swallow/over-apply it.
+      if (/^UPDATE (refresh|access)_tokens SET .* WHERE family_id = \? .*NOT EXISTS \(SELECT 1 FROM access_tokens WHERE jti = \?\)/.test(sql)) {
+        const lost = !t.access_tokens.some((r) => r.jti === a[1]);
+        let n = 0;
+        if (lost) {
+          if (/^UPDATE refresh_tokens/.test(sql)) {
+            for (const r of t.refresh_tokens) if (r.family_id === a[0] && r.used_at == null) (r.used_at = "used", n++);
+          } else {
+            for (const r of t.access_tokens) if (r.family_id === a[0] && r.revoked_at == null) (r.revoked_at = "revoked", n++);
+          }
+        }
+        return { rows: [], rowsAffected: n };
+      }
+
       // --- access tokens ---
       if (/INSERT INTO access_tokens/.test(sql)) {
+        if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };
         t.access_tokens.push({ jti: a[0], account_id: a[1], client_id: a[2], scope: a[3], family_id: a[4], issued_at: a[5], expires_at: a[6], revoked_at: null });
         return { rows: [] };
       }
@@ -388,6 +414,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
 
       // --- refresh tokens ---
       if (/INSERT INTO refresh_tokens/.test(sql)) {
+        if (!guardOk(sql, a)) return { rows: [], rowsAffected: 0 };
         t.refresh_tokens.push({
           token_hash: a[0],
           family_id: a[1],
