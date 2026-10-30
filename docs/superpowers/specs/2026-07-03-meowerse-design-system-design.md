@@ -341,6 +341,7 @@ Two small, tested endpoints — everything else already exists.
     telegram_links, sessions, consents, access_tokens, refresh_tokens, management_tokens,
     oauth_codes, login_requests, login_tickets; then owned oauth_clients; finally accounts.
     Owned clients breaking their RP integrations is expected and documented on the confirm modal.
+  - **Correction (2026-10-30):** the FK claim above is wrong. 2026-10-30: verified PRAGMA foreign_keys = 1 on production Turso (HTTP pipeline). Cascades are enforced there, so credential inserts for a deleted account fail on the FK today; the Step C guards (`accountPresent` in `codeguard.ts`) make that a clean 401 independent of FK settings.
 - Tests (vitest, repo 90% branch gate): `/api/session` authed vs guest; delete happy-path,
   wrong-confirmation rejected, missing-CSRF rejected, and **every child table emptied**
   verified via `memStore` (proves the explicit batch, not a cascade that never runs).

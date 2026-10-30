@@ -8,6 +8,8 @@ import { createAuthCode } from "../src/token";
 import { grantConsent } from "../src/consent";
 import { linkTelegramToAccount } from "../src/telegram";
 import { sha256Hex } from "../src/crypto";
+import { createManagementToken, verifyManagementToken } from "../src/dashboard";
+import { authenticateClient } from "../src/clients";
 import { genSigningKeys, cookieValue, seedLiveSession } from "./helpers";
 import type { DbClient } from "../src/types";
 
@@ -19,6 +21,7 @@ const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const REDIRECT = "http://localhost:4321/callback";
 const NOW = 1000;
+const BOT_TOKEN = "123456:bottoken";
 
 async function freshDb(): Promise<DbClient> {
   const c = createClient({ url: ":memory:" }) as unknown as DbClient;
@@ -37,7 +40,7 @@ const count = async (db: DbClient, sql: string, args: unknown[] = []) =>
 async function setup() {
   const db = await freshDb();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", STATE_SECRET: "s", ACCOUNT_DELETE_ENABLED: "1" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", STATE_SECRET: "s", ACCOUNT_DELETE_ENABLED: "1", TELEGRAM_BOT_TOKEN: BOT_TOKEN };
   // `hook` runs once, right AFTER the next statement matching `hookRe` returns (the "read, then deletion commits" interleaving).
   let hook: (() => Promise<void>) | null = null;
   let hookRe = /FROM sessions WHERE id_hash/;
@@ -78,6 +81,7 @@ async function setup() {
     db, wrapped, call, sess, csrf, accountId, idHash,
     deleteNow: () => deleteAccount(db, accountId),
     onNextSessionRead: (fn: () => Promise<void>) => { hook = fn; hookRe = /FROM sessions WHERE id_hash/; },
+    onNext: (re: RegExp, fn: () => Promise<void>) => { hook = fn; hookRe = re; },
     onNextConsentRead: (fn: () => Promise<void>) => { hook = fn; hookRe = /FROM consents WHERE account_id/; },
   };
 }
@@ -241,4 +245,166 @@ test("normal path: signup -> authorize(consent) -> code -> token still works for
   const t = await f.call("/token", { body: { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT } });
   expect(t.status).toBe(200);
   expect(await count(f.db, "access_tokens WHERE account_id = ?", [f.accountId])).toBe(1);
+});
+
+// ------------------------------------------------------------ step C: clients, management tokens, telegram, refresh, M3
+
+const countAudit = (db: DbClient, event: string) => count(db, "audit_log WHERE event = ?", [event]);
+const clientBody = (csrf: string, name: string) => ({ csrf, name, client_type: "confidential", redirect_uris: "https://rp.example/cb", scopes: "openid" });
+
+test("POST /api/dev/clients: owner deleted after the session read -> 401 account_gone, no client/uri/secret rows", async () => {
+  const f = await setup();
+  f.onNextSessionRead(f.deleteNow);
+  const r = await f.call("/api/dev/clients", { sess: f.sess, body: clientBody(f.csrf, "ghost-app") });
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(await count(f.db, "oauth_clients WHERE name = 'ghost-app'")).toBe(0);
+  expect(await count(f.db, "oauth_client_redirect_uris WHERE redirect_uri = 'https://rp.example/cb'")).toBe(0);
+  expect(await count(f.db, "oauth_client_secrets")).toBe(0);
+});
+
+test("POST /api/dev/clients on a live account still creates the client with its uri and secret", async () => {
+  const f = await setup();
+  const r = await f.call("/api/dev/clients", { sess: f.sess, body: clientBody(f.csrf, "live-app") });
+  expect(r.status).toBe(200);
+  expect(await count(f.db, "oauth_clients WHERE name = 'live-app' AND owner_account_id = ?", [f.accountId])).toBe(1);
+  expect(await count(f.db, "oauth_client_redirect_uris WHERE redirect_uri = 'https://rp.example/cb'")).toBe(1);
+  expect(await count(f.db, "oauth_client_secrets")).toBe(1);
+});
+
+test("POST /api/dev/tokens: owner deleted after the session read -> 401 account_gone, no management_tokens row", async () => {
+  const f = await setup();
+  f.onNextSessionRead(f.deleteNow);
+  const r = await f.call("/api/dev/tokens", { sess: f.sess, body: { csrf: f.csrf, label: "ci" } });
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(await count(f.db, "management_tokens")).toBe(0);
+});
+
+test("createManagementToken: live account gets a token that verifies; deleted account gets null", async () => {
+  const f = await setup();
+  const tok = await createManagementToken(f.db, f.accountId, "x");
+  expect(tok).toMatch(/^mgmt_/);
+  expect(await verifyManagementToken(f.db, tok!)).toBe(f.accountId);
+  await f.deleteNow();
+  expect(await createManagementToken(f.db, f.accountId)).toBeNull();
+  expect(await count(f.db, "management_tokens")).toBe(0);
+});
+
+test("verifyManagementToken ignores a leftover token whose owner account is gone", async () => {
+  const f = await setup();
+  await f.deleteNow();
+  await leftover(f.db, "INSERT INTO management_tokens (token_hash, owner_account_id) VALUES (?, ?)", [await sha256Hex("mgmt_left"), f.accountId]);
+  expect(await verifyManagementToken(f.db, "mgmt_left")).toBeNull();
+  const r = await f.call("/mgmt/v1/clients", { body: { name: "x-app", redirect_uris: "https://rp.example/cb" } });
+  expect(r.status).toBe(401);
+});
+
+test("management API client upsert: owner deleted after the token check -> 401 account_gone, no rows", async () => {
+  const f = await setup();
+  const tok = (await createManagementToken(f.db, f.accountId))!;
+  f.onNext(/FROM management_tokens/, f.deleteNow);
+  const r = await handle(
+    new Request("https://iss/mgmt/v1/clients", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: "iac-app", client_type: "confidential", redirect_uris: "https://rp.example/cb" }),
+    }),
+    { AUTH_SIGNING_KEYS: JSON.stringify(await genSigningKeys()), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", STATE_SECRET: "s" } as never,
+    { getDb: () => f.wrapped, clock: () => NOW } as never,
+  );
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(await count(f.db, "oauth_clients WHERE name = 'iac-app'")).toBe(0);
+  expect(await count(f.db, "oauth_client_secrets")).toBe(0);
+});
+
+test("authenticateClient rejects a leftover client whose owner is gone; seeded acct_system clients still authenticate", async () => {
+  const f = await setup();
+  expect((await authenticateClient(f.db, "mw_demo", undefined)).ok).toBe(true);
+  await f.deleteNow();
+  await leftover(f.db, `INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, allowed_scopes, first_party, status) VALUES ('mw_orphan2', 'orphan2', ?, 'public', '["openid"]', 0, 'active')`, [f.accountId]);
+  expect(await authenticateClient(f.db, "mw_orphan2", undefined)).toEqual({ ok: false, error: "invalid_client" });
+});
+
+test("/tg/status: confirmed ticket whose account was deleted -> 401 account_gone, no session", async () => {
+  const f = await setup();
+  await f.deleteNow();
+  const owner = "ownercookie";
+  await leftover(f.db, "INSERT INTO login_tickets (ticket_id, nonce_hash, owner_hash, kind, account_id, status, expires_at) VALUES ('tkt_gone', 'nh', ?, 'SIGNIN_OR_SIGNUP', ?, 'consumed', 9e9)", [await sha256Hex(owner), f.accountId]);
+  const r = await f.call("/tg/status?ticket=tkt_gone", { cookie: `__Host-mw_tgown=${owner}` });
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(r.headers.get("Set-Cookie")).toBeNull();
+  expect(await count(f.db, "sessions WHERE account_id = ?", [f.accountId])).toBe(0);
+});
+
+test("/tg/widget: linked account deleted after the link lookup -> 401 account_gone, no session", async () => {
+  const f = await setup();
+  expect(await linkTelegramToAccount(f.db, f.accountId, { telegramId: "77", username: "tguser", displayName: "Tg", avatarUrl: null })).toEqual({ ok: true });
+  f.onNext(/FROM telegram_links WHERE telegram_id/, f.deleteNow);
+  const data: Record<string, string> = { id: "77", first_name: "Tg", username: "tguser", auth_date: "1000" };
+  const dcs = Object.keys(data).sort().map((k) => `${k}=${data[k]}`).join("\n");
+  const k = await crypto.subtle.importKey("raw", new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(BOT_TOKEN))), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  data.hash = [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(dcs)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const r = await f.call("/tg/widget", { body: data });
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(r.headers.get("Set-Cookie")).toBeNull();
+  expect(await count(f.db, "sessions WHERE account_id = ?", [f.accountId])).toBe(0);
+});
+
+test("refresh_token grant with a leftover refresh token for a deleted account -> invalid_grant, nothing inserted, no reuse audit (M3)", async () => {
+  const f = await setup();
+  await f.deleteNow();
+  const rt = "rt_leftover";
+  await leftover(f.db, "INSERT INTO refresh_tokens (token_hash, family_id, client_id, account_id, scope, idle_expires_at, absolute_expires_at) VALUES (?, 'fam_l', 'mw_demo', ?, 'openid offline_access', 9e9, 9e9)", [await sha256Hex(rt), f.accountId]);
+  const r = await f.call("/token", { body: { grant_type: "refresh_token", refresh_token: rt, client_id: "mw_demo" } });
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
+  expect(await count(f.db, "access_tokens WHERE account_id = ?", [f.accountId])).toBe(0);
+  expect(await count(f.db, "refresh_tokens WHERE account_id = ? AND prev_id IS NOT NULL", [f.accountId])).toBe(0);
+  expect(await countAudit(f.db, "token.reuse_detected")).toBe(0);
+});
+
+test("auth-code exchange lost because the account is gone is not audited as token.code_replay (M3)", async () => {
+  const f = await setup();
+  const code = "code_leftover2";
+  await f.deleteNow();
+  await leftover(f.db, `INSERT INTO oauth_codes (code_hash, client_id, redirect_uri, scope, code_challenge, code_challenge_method, account_id, session_id_hash, auth_time, jti_family, expires_at)
+    VALUES (?, 'mw_demo', ?, 'openid', ?, 'S256', ?, 'sh', 1, 'fam_left2', 9e9)`, [await sha256Hex(code), REDIRECT, CHALLENGE, f.accountId]);
+  const r = await f.call("/token", { body: { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT } });
+  expect(r.status).toBe(400);
+  expect(await countAudit(f.db, "token.code_replay")).toBe(0);
+});
+
+test("a genuine code replay (account alive) is still audited as token.code_replay", async () => {
+  const f = await setup();
+  await grantConsent(f.db, { accountId: f.accountId, clientId: "mw_demo", requested: ["openid"], clientAllowed: ["openid", "profile"], priorMax: null });
+  const q = new URLSearchParams({ client_id: "mw_demo", redirect_uri: REDIRECT, response_type: "code", scope: "openid", state: "st", code_challenge: CHALLENGE, code_challenge_method: "S256" });
+  const a = await f.call(`/authorize?${q}`, { sess: f.sess });
+  const code = new URL(a.headers.get("Location")!).searchParams.get("code")!;
+  const body = { grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT };
+  expect((await f.call("/token", { body })).status).toBe(200);
+  expect((await f.call("/token", { body })).status).toBe(400);
+  expect(await countAudit(f.db, "token.code_replay")).toBe(1);
+});
+
+test("signup: resolveNext returning nothing (new account deleted before the silent code mint) is a clean 401 account_gone, not a 500", async () => {
+  const f = await setup();
+  // First-party client => the post-signup decision is 'silent', so resolveNext mints a code (guarded) and returns null when the account vanished.
+  await run(f.db, "UPDATE oauth_clients SET first_party = 1 WHERE client_id = 'mw_demo'");
+  const q = new URLSearchParams({ client_id: "mw_demo", redirect_uri: REDIRECT, response_type: "code", scope: "openid", state: "st", code_challenge: CHALLENGE, code_challenge_method: "S256" });
+  const a = await f.call(`/authorize?${q}`);
+  const tkt = cookieValue(a.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
+  expect(tkt).toBeTruthy();
+  f.onNextConsentRead(async () => {
+    const id = String((await run(f.db, "SELECT id FROM accounts WHERE username = 'newbie'")).rows[0]!.id);
+    await deleteAccount(f.db, id);
+  });
+  const r = await f.call("/signup", { cookie: `__Host-mw_tkt=${tkt}`, body: { username: "newbie", password: "accttest1234" } });
+  expect(r.status).toBe(401);
+  expect(await r.json()).toEqual({ error: "account_gone" });
+  expect(await count(f.db, "oauth_codes")).toBe(0);
+  expect(await count(f.db, "accounts WHERE username = 'newbie'")).toBe(0);
 });

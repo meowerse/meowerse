@@ -19,7 +19,8 @@ export function routedDb(routes: Route[], log: { sql: string; args: unknown[] }[
     for (const [re, fn] of routes) {
       if (re.test(sql)) return fn(args) ?? { rows: [] };
     }
-    return { rows: [] };
+    // An unrouted INSERT is treated as a write that landed (guarded inserts report rowsAffected = 1).
+    return /^\s*INSERT/i.test(sql) ? { rows: [], rowsAffected: 1 } : { rows: [] };
   };
   // batch = sequential execute (each statement is still logged + routed), so
   // tests that assert on the per-statement log keep working with batched writes.

@@ -432,7 +432,7 @@ async function mintResponse(
      */
     atomic: { guard: Guard; consume: Stmt };
     /** Called when the credential was already spent by another request (we are the loser). */
-    onLost: () => Promise<Response>;
+    onLost: (accountGone: boolean) => Promise<Response>;
   },
 ): Promise<Response> {
   const db = deps.getDb();
@@ -510,7 +510,15 @@ async function mintResponse(
     // Another request spent the credential first; this one issued nothing. Never
     // return the signed tokens. The winner's rows are already committed, so
     // revoking the family reaches them.
-    return i.onLost();
+    // One extra read, only on the lost path: if the loss is because the account was deleted (our
+    // account guard failed) it is not a replay/reuse, so the caller must not audit it as one.
+    let accountGone = false;
+    try {
+      accountGone = (await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [i.accountId] })).rows.length === 0;
+    } catch {
+      accountGone = false; // unknown: fall back to the conservative (audited) path
+    }
+    return i.onLost(accountGone);
   }
   return json(refresh ? { ...body, refresh_token: refresh } : body, 200, { ...cors, ...noStore });
 }
@@ -586,9 +594,9 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       family: ex.family,
       issueRefresh: ex.scope.includes("offline_access"),
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
-      onLost: async () => {
+      onLost: async (accountGone) => {
         await revokeLoserFamily(db, ex.family);
-        await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
+        if (!accountGone) await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },
     });
@@ -619,10 +627,10 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       prevId: rot.tokenHash,
       absExpires: rot.absExpires,
       atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
-      onLost: async () => {
-        // Lost to a concurrent rotation/reuse of the same token: treat as reuse.
+      onLost: async (accountGone) => {
+        // Lost to a concurrent rotation/reuse of the same token: treat as reuse (unless the account is gone).
         await revokeLoserFamily(db, rot.family);
-        await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
+        if (!accountGone) await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
         return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
       },
     });
@@ -879,6 +887,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       verifiedOnly: asBool(p.verified_only),
       allowOfflineAccess: asBool(p.offline),
     });
+    if (!res.ok && res.error === "account_gone") return accountGone(cors);
     if (res.ok) await recordAudit(deps, req, { event: "client.create", accountId: session.accountId, clientId: res.clientId });
     return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
   }
@@ -905,6 +914,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
   }
   if (sub === "tokens") {
     const token = await createManagementToken(db, session.accountId, p.label);
+    if (token === null) return accountGone(cors);
     await recordAudit(deps, req, { event: "mgmt_token.create", accountId: session.accountId });
     return json({ token }, 200, { ...cors, ...securityHeaders() });
   }
@@ -1041,6 +1051,7 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
   if (!("error" in res) && (res.created || !res.unchanged)) {
     await recordAudit(deps, req, { event: res.created ? "client.create" : "client.update", accountId: ownerId, clientId: res.clientId });
   }
+  if ("error" in res && res.error === "account_gone") return accountGone(cors);
   return "error" in res ? json({ error: res.error }, 400, cors) : json(res, 200, { ...cors, ...securityHeaders() });
 }
 

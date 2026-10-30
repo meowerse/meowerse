@@ -1,6 +1,7 @@
 import { CATALOG } from "@meowerse/auth-shared";
 import { hashPassword, sha256Hex } from "./crypto";
 import { randomId } from "./security";
+import { accountPresent, guardedInsert, type Guard, type Stmt } from "./codeguard";
 import type { DbClient } from "./types";
 
 const CLIENT_TYPES = new Set(["public", "confidential"]);
@@ -57,15 +58,24 @@ export async function createClient(db: DbClient, i: CreateClientInput): Promise<
     clientSecret = "mws_" + randomId(32);
     secretPhc = await hashPassword(clientSecret);
   }
-  await db.execute({
-    sql: `INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, display_name, allowed_scopes, allow_offline_access, verified_only, first_party, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active')`,
-    args: [clientId, i.name, i.ownerId, i.clientType, i.displayName ?? i.name, JSON.stringify(scopes), i.allowOfflineAccess ? 1 : 0, i.verifiedOnly ? 1 : 0],
-  });
+  // ONE write transaction: the client row is guarded on its owner still existing, and the redirect
+  // URIs / secret are guarded on that client row existing, so a deleted owner leaves nothing behind.
+  const clientExists: Guard = { sql: "EXISTS (SELECT 1 FROM oauth_clients WHERE client_id = ?)", args: [clientId] };
+  const stmts: Stmt[] = [
+    guardedInsert(
+      "oauth_clients",
+      "client_id, name, owner_account_id, client_type, display_name, allowed_scopes, allow_offline_access, verified_only, first_party, status",
+      "?, ?, ?, ?, ?, ?, ?, ?, 0, 'active'",
+      [clientId, i.name, i.ownerId, i.clientType, i.displayName ?? i.name, JSON.stringify(scopes), i.allowOfflineAccess ? 1 : 0, i.verifiedOnly ? 1 : 0],
+      accountPresent(i.ownerId),
+    ),
+  ];
   for (const uri of i.redirectUris) {
-    await db.execute({ sql: "INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri) VALUES (?, ?)", args: [clientId, uri] });
+    stmts.push(guardedInsert("oauth_client_redirect_uris", "client_id, redirect_uri", "?, ?", [clientId, uri], clientExists));
   }
-  if (secretPhc) await db.execute({ sql: "INSERT INTO oauth_client_secrets (client_id, secret_phc) VALUES (?, ?)", args: [clientId, secretPhc] });
+  if (secretPhc) stmts.push(guardedInsert("oauth_client_secrets", "client_id, secret_phc", "?, ?", [clientId, secretPhc], clientExists));
+  const res = await db.batch(stmts, "write");
+  if ((res[0]?.rowsAffected ?? 0) !== 1) return { ok: false, error: "account_gone" };
   return { ok: true, clientId, clientSecret };
 }
 
@@ -169,24 +179,33 @@ export async function rotateSecret(db: DbClient, ownerId: string, clientId: stri
   const row = r.rows[0];
   if (!row || String(row.client_type) !== "confidential") return { ok: false };
   const secret = "mws_" + randomId(32);
-  await db.execute({ sql: "INSERT INTO oauth_client_secrets (client_id, secret_phc) VALUES (?, ?)", args: [clientId, await hashPassword(secret)] });
+  const ins = guardedInsert(
+    "oauth_client_secrets",
+    "client_id, secret_phc",
+    "?, ?",
+    [clientId, await hashPassword(secret)],
+    { sql: "EXISTS (SELECT 1 FROM oauth_clients c JOIN accounts a ON a.id = c.owner_account_id WHERE c.client_id = ? AND c.owner_account_id = ?)", args: [clientId, ownerId] },
+  );
+  if ((await db.execute(ins)).rowsAffected !== 1) return { ok: false };
   return { ok: true, clientSecret: secret };
 }
 
 /** Mint an owner-scoped management PAT (for the config-as-code provisioner). */
-export async function createManagementToken(db: DbClient, ownerId: string, label?: string): Promise<string> {
+export async function createManagementToken(db: DbClient, ownerId: string, label?: string): Promise<string | null> {
   const token = "mgmt_" + randomId(32);
-  await db.execute({
-    sql: "INSERT INTO management_tokens (token_hash, owner_account_id, label) VALUES (?, ?, ?)",
-    args: [await sha256Hex(token), ownerId, label ?? null],
-  });
-  return token;
+  const st = guardedInsert("management_tokens", "token_hash, owner_account_id, label", "?, ?, ?", [await sha256Hex(token), ownerId, label ?? null], accountPresent(ownerId));
+  const r = await db.execute(st);
+  return r.rowsAffected === 1 ? token : null; // null: the owner account no longer exists
 }
 
 /** Resolve a management PAT to its owner id, or null if unknown/revoked. */
 export async function verifyManagementToken(db: DbClient, token: string): Promise<string | null> {
   if (!token) return null;
-  const r = await db.execute({ sql: "SELECT owner_account_id, revoked_at FROM management_tokens WHERE token_hash = ?", args: [await sha256Hex(token)] });
+  const r = await db.execute({
+    sql: `SELECT owner_account_id, revoked_at FROM management_tokens WHERE token_hash = ?
+          AND EXISTS (SELECT 1 FROM accounts WHERE id = management_tokens.owner_account_id)`,
+    args: [await sha256Hex(token)],
+  });
   const row = r.rows[0];
   if (!row || row.revoked_at != null) return null;
   return String(row.owner_account_id);
@@ -213,7 +232,7 @@ export async function upsertClientByName(
   const row = existing.rows[0];
   if (!row) {
     const created = await createClient(db, { ...i, ownerId });
-    if (!created.ok) return { error: created.error };
+    if (!created.ok) return { error: created.error }; // includes account_gone
     return { created: true, unchanged: false, clientId: created.clientId, clientSecret: created.clientSecret };
   }
   if (String(row.owner_account_id) !== ownerId) return { error: "not_owner" };
