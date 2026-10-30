@@ -95,7 +95,11 @@ export default function AccountSettings({ base }: { base: string }) {
           <div className="mw-stack">
             {grants.map((g) => (
               <div key={g.clientId} className="mw-row">
-                <span><code className="mono" data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}</span>
+                <span>
+                  {g.displayName ? <strong data-case="preserve">{g.displayName}</strong> : null}
+                  {g.displayName ? " " : null}
+                  <code className={g.displayName ? "mono mw-muted" : "mono"} data-case="preserve">{g.clientId}</code> — {g.approvedScopes.join(", ")}
+                </span>
                 <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "revoke", clientId: g.clientId })}>revoke</Button>
               </div>
             ))}

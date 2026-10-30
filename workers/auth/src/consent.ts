@@ -82,6 +82,8 @@ export async function grantConsent(
 
 export interface Grant {
   clientId: string;
+  /** The client's display name (developer-chosen; null when unset or the client is gone). */
+  displayName: string | null;
   approvedScopes: string[];
   updatedAt: string | null;
 }
@@ -89,7 +91,7 @@ export interface Grant {
 /** Apps a user has authorized (their connected-apps list, spec R14). */
 export async function listGrants(db: DbClient, accountId: string): Promise<Grant[]> {
   const r = await db.execute({
-    sql: "SELECT client_id, approved_scope_snapshot, updated_at FROM consents WHERE account_id = ?",
+    sql: "SELECT c.client_id, c.approved_scope_snapshot, c.updated_at, o.display_name FROM consents c LEFT JOIN oauth_clients o ON o.client_id = c.client_id WHERE c.account_id = ?",
     args: [accountId],
   });
   return r.rows.map((row) => {
@@ -100,7 +102,8 @@ export async function listGrants(db: DbClient, accountId: string): Promise<Grant
     } catch {
       approvedScopes = [];
     }
-    return { clientId: String(row.client_id), approvedScopes, updatedAt: row.updated_at == null ? null : String(row.updated_at) };
+    const name = row.display_name == null ? "" : String(row.display_name).trim();
+    return { clientId: String(row.client_id), displayName: name === "" ? null : name, approvedScopes, updatedAt: row.updated_at == null ? null : String(row.updated_at) };
   });
 }
 
