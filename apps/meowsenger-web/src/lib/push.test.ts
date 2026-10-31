@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, urlBase64ToUint8Array, syncPushSubscription, clearLocalPush, PushError } from "./push";
+import { pushSupported, pushPermission, pushSubscribed, enablePush, disablePush, urlBase64ToUint8Array, syncPushSubscription, clearLocalPush, PushError, describePushFailure } from "./push";
 
 /** A fresh in-memory localStorage per test (the unit env is plain Node). */
 function memStorage() {
@@ -739,5 +739,22 @@ describe("opt-in id is written to IndexedDB directly (not only posted)", () => {
     // open ok, but the store is missing (transaction throws synchronously)
     vi.stubGlobal("indexedDB", { open: () => { const r: Record<string, unknown> = {}; setTimeout(() => { r.result = { close() {}, transaction() { throw new Error("NotFoundError"); } }; (r.onsuccess as () => void)?.(); }, 0); return r; } });
     expect(await enablePush(BASE, "u1")).toBe("granted");
+  });
+});
+
+describe("describePushFailure", () => {
+  it("drops a browser message carrying a UUID or a 24+ char token", () => {
+    expect(describePushFailure(new DOMException("bad sub 123e4567-e89b-12d3-a456-426614174000", "InvalidStateError"))).toBe("InvalidStateError");
+    expect(describePushFailure(new DOMException("key AbCdEfGhIjKlMnOpQrStUvWxYz", "InvalidAccessError"))).toBe("InvalidAccessError");
+  });
+  it("names DOMExceptions with a short generic message", () => {
+    expect(describePushFailure(new DOMException("Registration failed - push service error", "AbortError")))
+      .toBe("AbortError — Registration failed - push service error");
+  });
+  it("drops messages with URLs or long tokens, caps at 120, and maps non-errors to unknown", () => {
+    expect(describePushFailure(new DOMException("failed at https://fcm.googleapis.com/x/abc", "AbortError"))).toBe("AbortError");
+    expect(describePushFailure(Object.assign(new Error("x".repeat(200)), { name: "N".repeat(64) })).length).toBeLessThanOrEqual(120);
+    expect(describePushFailure("boom")).toBe("unknown");
+    expect(describePushFailure(null)).toBe("unknown");
   });
 });
