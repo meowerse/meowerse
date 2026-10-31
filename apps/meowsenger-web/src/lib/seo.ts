@@ -12,8 +12,8 @@ export const SITE = "https://meowsenger.alxnko.dev";
 export const PAGES = {
   public: {
     "/about/": "Meowsenger is real-time chat for the meowerse: direct messages, groups and channels, signed in with your meowerse account.",
-    "/privacy/": "What Meowsenger keeps about you and your chats, how deletion works today, and a link to the full meowverse privacy policy.",
-    "/terms/": "Meowsenger terms of use in short, with a link to the full meowverse terms.",
+    "/privacy/": "What Meowsenger keeps about you and your chats, how deletion works today, and a link to the full meowerse privacy policy.",
+    "/terms/": "Meowsenger terms of use in short, with a link to the full meowerse terms.",
   },
   // The app shell: signed-out visitors are sent to sign in, so it stays out of the sitemap, but it
   // is the home page, so it keeps a canonical and isn't noindexed.
