@@ -54,7 +54,7 @@ export async function upsertUser(db: DbClient, info: UserInfo, now: number): Pro
   };
   const stmts = [
     // Only a real auth username can be claimed from another row.
-    ...(claimsName ? [release] : [{ sql: "SELECT 0 WHERE 0", params: [] }]),
+    ...(claimsName ? [release] : []),
     {
       sql: `INSERT INTO users (id, username, display_name, avatar_url, verified, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -76,7 +76,7 @@ export async function upsertUser(db: DbClient, info: UserInfo, now: number): Pro
     if (!/UNIQUE/i.test(String(e))) throw e;
     changes = await batch(stmts); // lost a race with a concurrent sign-in: re-release, then claim
   }
-  const released = changes[0] ?? 0;
+  const released = claimsName ? (changes[0] ?? 0) : 0;
   if (released > 0) console.log(`user_username_released count=${released}`);
 }
 
