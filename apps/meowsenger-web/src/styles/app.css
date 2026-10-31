@@ -140,6 +140,12 @@ body:has(.mw-chat) main.mw-container {
   flex: none; width: 10px; height: 10px; align-self: center;
   background: var(--mw-green); border-radius: var(--radius-pill);
 }
+/* Queued (unsent) actions for a chat that isn't open: glyph + text, never colour alone. */
+.mw-chatrow__unsent {
+  flex: none; align-self: center; display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; font-size: var(--text-xs); color: var(--text-secondary);
+  border: 1px solid var(--border-subtle, currentColor); border-radius: var(--radius-pill);
+}
 /* Unread row: bolder name + a fully-opaque preview so it reads as "new". */
 .mw-chatrow.has-unread .mw-chatrow__name { font-weight: 700; }
 .mw-chatrow.has-unread .mw-chatrow__preview { color: var(--text-primary); font-weight: 500; }
@@ -259,6 +265,15 @@ body:has(.mw-chat) main.mw-container {
 }
 .mw-msg:not(.mw-msg--me) .mw-bubble { border-bottom-left-radius: var(--radius-sm); }
 .mw-bubble.is-pending { opacity: 0.6; }
+/* Pending state is glyph + text, never opacity alone. */
+.mw-bubble__state {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-end;
+  font-size: 10px; color: var(--text-muted);
+}
+.mw-bubble__state[data-queued="1"] { color: var(--text-secondary, var(--text-muted)); }
+.mw-bubble.is-queued { border-style: dashed; }
+.mw-composer__count { align-self: flex-end; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.mw-composer__count.is-limit { color: var(--danger, var(--text-primary)); font-weight: 600; }
 /* Touch devices: a long-press opens the message context menu, so suppress the
    native text selection + iOS callout the hold would otherwise start — their
    selection handles/magnifier render ABOVE the page and buried the menu's top
@@ -874,6 +889,12 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   box-shadow: var(--shadow-md);
 }
 .mw-chat__tolatest:hover { filter: brightness(1.05); }
+.mw-chat__sentnote {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 124px; z-index: 5;
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  font-size: var(--text-sm); background: var(--surface-raised, Canvas);
+  border-radius: var(--radius-pill); box-shadow: var(--shadow-md);
+}
 
 /* Emoji picker popover: a horizontal row of large tappable emoji (Slice 9). */
 .mw-emojipick {
