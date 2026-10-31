@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, MockWebSocket } from "../test/rtl";
-import { hasSessionEnded, resetSessionEnded } from "../lib/sessionEnded";
+import { hasSessionEnded, notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 
 const S = vi.hoisted(() => ({ calls: 0 }));
 vi.mock("../lib/meowsengerApi", async (importActual) => {
@@ -54,5 +54,24 @@ describe("useInbox reconnect", () => {
     const n = MockWebSocket.instances.length;
     await tick(120_000);
     expect(MockWebSocket.instances.length).toBe(n);
+  });
+
+  it("sessionEnded while connected stops it for good; a pong is consumed, not parsed", async () => {
+    renderHook(() => useInbox("", true, vi.fn()));
+    act(() => inbox().mockOpen());
+    await tick(25_000);
+    act(() => inbox().onmessage?.({ data: "pong" }));
+    act(() => notifySessionEnded());
+    await tick(60_000);
+    act(() => window.dispatchEvent(new Event("online")));
+    expect(MockWebSocket.instances.length).toBe(1);
+  });
+
+  it("unmount cancels the pending reconnect", async () => {
+    const h = renderHook(() => useInbox("", true, vi.fn()));
+    act(() => inbox().mockDrop());
+    h.unmount();
+    await tick(10_000);
+    expect(MockWebSocket.instances.length).toBe(1);
   });
 });

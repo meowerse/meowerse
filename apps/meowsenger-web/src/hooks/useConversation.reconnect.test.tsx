@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, MockWebSocket, setVisibility } from "../test/rtl";
 import type { Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
-import { hasSessionEnded, resetSessionEnded } from "../lib/sessionEnded";
+import { hasSessionEnded, notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 
 const S = vi.hoisted(() => ({
   msgs: [] as Array<Record<string, unknown>>,
@@ -17,6 +17,10 @@ const S = vi.hoisted(() => ({
   afterCalls: 0,
   session: { ok: false as boolean, error: { kind: "unauthorized" as string } } as unknown,
   sessionCalls: 0,
+  afterFail: 0,
+  afterKind: "network" as string,
+  latestFail: false,
+  aroundThrow: 0,
 }));
 
 vi.mock("../lib/meowsengerApi", async (importActual) => {
@@ -30,15 +34,23 @@ vi.mock("../lib/chat", async (importActual) => {
     ...actual,
     loadHistory: vi.fn(async (_b: string, _c: string, before?: string) => {
       if (before) return { ok: true as const, status: 200, data: [] as Message[] };
+      if (S.latestFail) return { ok: false as const, error: { kind: "network" as const } };
       const q = S.latestQueue.shift();
       return { ok: true as const, status: 200, data: page(q ?? S.msgs) };
     }),
     loadHistoryAround: vi.fn(async (_b: string, _c: string, id: string) => {
+      if (S.aroundThrow > 0) { S.aroundThrow--; throw new Error("net"); }
       const m = S.msgs.find((x) => x.id === id);
       return { found: !!m, messages: (m ? [m] : []) as unknown as Message[], hasOlder: false, hasNewer: S.aroundHasNewer };
     }),
     loadHistoryAfter: vi.fn(async (_b: string, _c: string, id: string) => {
       S.afterCalls++;
+      if (S.afterFail > 0) {
+        S.afterFail--;
+        return S.afterKind === "forbidden"
+          ? { ok: false as const, error: { kind: "http" as const, status: 403 } }
+          : { ok: false as const, error: { kind: "network" as const } };
+      }
       const i = S.msgs.findIndex((x) => x.id === id);
       if (i < 0) return { ok: true as const, status: 200, data: [] as Message[], unknown: true };
       return { ok: true as const, status: 200, data: S.msgs.slice(i + 1, i + 51) as unknown as Message[] };
@@ -74,7 +86,7 @@ const sendFrames = (ws: MockWebSocket) => ws.sentFrames().filter((f) => f.type =
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-  S.msgs = []; S.latestQueue = []; S.aroundHasNewer = false; S.afterCalls = 0; S.sessionCalls = 0;
+  S.msgs = []; S.latestQueue = []; S.aroundHasNewer = false; S.afterCalls = 0; S.sessionCalls = 0; S.afterFail = 0; S.afterKind = "network"; S.latestFail = false; S.aroundThrow = 0;
   S.session = { ok: false, error: { kind: "unauthorized" } };
   resetSessionEnded();
 });
@@ -289,5 +301,101 @@ describe("session probe", () => {
     expect(hasSessionEnded()).toBe(false);
     await tick(2000);
     expect(MockWebSocket.instances.length).toBe(3);
+  });
+});
+
+describe("catch-up failure and edge paths", () => {
+  async function outage(hist: Array<Record<string, unknown>>) {
+    const h = await boot(hist);
+    act(() => room().mockDrop());
+    return h;
+  }
+  const reopen = async () => { await tick(1000); act(() => room().mockOpen()); await tick(); };
+
+  it("a failed catch-up fetch is retried with backoff and then merges once", async () => {
+    const { result } = await outage([msg("m1", 1000)]);
+    S.msgs.push(msg("p1", 2000));
+    S.afterFail = 1;
+    await reopen();
+    expect(ids(result)).toEqual(["m1"]);
+    await tick(1000);
+    expect(S.afterCalls).toBe(2);
+    expect(ids(result)).toEqual(["m1", "p1"]);
+  });
+
+  it("a 403 during catch-up reports the revocation instead of retrying", async () => {
+    const { onRevoked } = await outage([msg("m1", 1000)]);
+    S.afterFail = 1; S.afterKind = "forbidden";
+    await reopen();
+    await tick(20_000);
+    expect(onRevoked).toHaveBeenCalledTimes(1);
+    expect(S.afterCalls).toBe(1);
+  });
+
+  it("gives up after the retry cap (the next reconnect tries again)", async () => {
+    await outage([msg("m1", 1000)]);
+    S.afterFail = 99;
+    await reopen();
+    await tick(60_000);
+    expect(S.afterCalls).toBe(5); // first try + 4 retries
+  });
+
+  it("a failed newest-page fallback is retried too", async () => {
+    const { result } = await outage([msg("m1", 1000)]);
+    S.msgs = [msg("p1", 3000)]; // anchor gone
+    S.latestFail = true;
+    await reopen();
+    S.latestFail = false;
+    await tick(1000);
+    expect(ids(result)).toEqual(["p1"]);
+  });
+
+  it("a lookup failure while reconciling an edit retries; the server text then wins", async () => {
+    const { result } = await boot([msg("m1", 1000, { body: "hello" })]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "mine"); });
+    act(() => room().mockDrop());
+    S.aroundThrow = 1;
+    await reopen();
+    expect(result.current.messages[0].body).toBe("mine"); // not yet reconciled
+    await tick(1000);
+    expect(result.current.messages[0].body).toBe("hello");
+  });
+
+  it("an edited message that is no longer on the server falls back to the last confirmed text", async () => {
+    const { result } = await boot([msg("m1", 1000, { body: "hello" }), msg("m2", 2000)]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "mine"); });
+    act(() => room().mockDrop());
+    S.msgs = [msg("m2", 2000), msg("p1", 3000)]; // m1 gone from the server
+    await reopen();
+    expect(result.current.messages.find((m) => m.id === "m1")?.body).toBe("hello");
+    expect(ids(result)).toContain("p1");
+  });
+
+  it("an edit re-sent on the new socket is not clobbered by the catch-up", async () => {
+    const { result } = await boot([msg("m1", 1000, { body: "hello" })]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "mine"); });
+    act(() => room().mockDrop());
+    act(() => { result.current.sendEdit(result.current.messages[0], "again"); }); // queued while offline
+    await reopen();
+    expect(result.current.messages[0].body).toBe("again");
+  });
+
+  it("a detached window is not extended by the catch-up", async () => {
+    const { result } = await boot([msg("m1", 1000), msg("m2", 2000)]);
+    S.aroundHasNewer = true;
+    await act(async () => { await result.current.jumpToMessage("m1"); });
+    act(() => room().mockDrop());
+    await reopen();
+    expect(S.afterCalls).toBe(0);
+  });
+
+  it("sessionEnded while connected stops the socket and any reconnect", async () => {
+    const { result } = await boot([msg("m1", 1000)]);
+    act(() => notifySessionEnded());
+    expect(result.current.connected).toBe(false);
+    await tick(60_000);
+    expect(MockWebSocket.instances.length).toBe(1);
+    act(() => window.dispatchEvent(new Event("online")));
+    expect(MockWebSocket.instances.length).toBe(1);
   });
 });
