@@ -4,7 +4,7 @@ import { Card } from "@meowerse/ui";
 import LegalTable from "../components/LegalTable.astro";
 import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/legal";
 ---
-<Layout title="privacy · meowerse">
+<Layout title="privacy · meowerse" wide>
   <div class="mw-prose">
     <h1>privacy policy</h1>
     <p class="mw-muted">One page for every meowverse service: meow.alxnko.dev, alxnko.dev, meowerse accounts (auth), Meowsenger, meow-sim and the Minecraft server. Version {POLICY_VERSION}.</p>
@@ -77,7 +77,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
 
     <Card title="Minecraft server (mc.alxnko.dev)">
       <ul>
-        <li>The Minecraft server runs on a machine at the operator's home, not behind Cloudflare, from a separate project. Connecting to it reveals your IP address to that machine. The server runs in offline mode (<code class="mono" data-case="preserve">online-mode=false</code>): it does not check your name with Mojang, which is why it has its own login.</li>
+        <li>The Minecraft server runs on a dedicated machine the operator manages directly (not one of the cloud services above and not behind Cloudflare), from a separate project. Connecting to it reveals your IP address to that machine. The server runs in offline mode (<code class="mono" data-case="preserve">online-mode=false</code>): it does not check your name with Mojang, which is why it has its own login.</li>
         <li>The server logs the IP address you connect from (<code class="mono" data-case="preserve">log-ips=true</code>), along with chat and commands, in log files kept on that machine. There is no retention limit today: logs going back to 2026-09-19 are still kept.</li>
         <li>The login plugin (AuthMe) stores your username, a bcrypt hash of your password, the IP address you last logged in from, the IP address you registered from, last position in the game, and login and registration times. Registration asks for a username and password only; no email is requested and the server sends no email, although AuthMe has an optional <code class="mono" data-case="preserve">/email</code> command that stores an address if a player chooses to use it.</li>
         <li>Simple Voice Chat relays voice through the server (UDP port 24454) to nearby players or your voice-chat group (any distance). The server does not record voice; the setting that lets players' own clients record voice (<code class="mono" data-case="preserve">allow_recording</code>) is on, so another player's recording is outside our control.</li>
@@ -118,7 +118,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
       <li><strong>Optional features you switch on</strong> (Telegram link, notifications): your choice (consent); you can switch them off.</li>
       <li><strong>Retention:</strong> as listed per service above.</li>
       <li><strong>Your rights:</strong> access, correction, export, deletion and objection, as applicable where you live. Ask at {CONTACTS.privacy}. You may also complain to your local data protection supervisory authority.</li>
-      <li><strong>International transfers:</strong> Cloudflare, Google, Turso (Ireland), Hetzner, Telegram, browser push services, Mojang / MineSkin, bStats and the other plugin services operate outside or across your country, and the Minecraft server is hosted in the operator's home, so your data may be processed abroad. We rely on those providers' standard terms.</li>
+      <li><strong>International transfers:</strong> Cloudflare, Google, Turso (Ireland), Hetzner, Telegram, browser push services, Mojang / MineSkin, bStats and the other plugin services operate outside or across your country, and the Minecraft server's machine may be in another country too, so your data may be processed abroad. We rely on those providers' standard terms.</li>
       <li><strong>Children:</strong> 16 is the minimum age to have an account by our policy, but we do not verify age today. This age is subject to legal review and is not an exemption from local rules, which vary by country.</li>
       <li><strong>Changes:</strong> this is policy {POLICY_VERSION}. We will change the version and date when it changes.</li>
     </ul>

@@ -172,8 +172,9 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(privacy).toContain("so up to about 31 days after you signed in");
     expect(privacy).toContain("last 60 seconds");
   });
-  it("discloses the Minecraft facts and home hosting, and not a blanket Cloudflare claim", () => {
-    for (const w of ["log-ips=true", "online-mode=false", "bcrypt", "registered from", "Simple Voice Chat", "operator's home"]) expect(privacy, w).toContain(w);
+  it("discloses the Minecraft facts and self-managed hosting, and not a blanket Cloudflare claim", () => {
+    for (const w of ["log-ips=true", "online-mode=false", "bcrypt", "registered from", "Simple Voice Chat", "manages directly"]) expect(privacy, w).toContain(w);
+    expect(privacy).not.toContain("operator's home");
     expect(JSON.stringify(PARTNERS)).not.toContain("runs all our websites and servers");
     expect(JSON.stringify(PARTNERS)).toContain("NOT behind Cloudflare");
     const bstats = PARTNERS.find((p) => p.partner.startsWith("bStats"))!;
