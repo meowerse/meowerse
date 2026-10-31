@@ -1,5 +1,8 @@
 // Copy that tests assert on, shared by /privacy and /terms. Keep every claim true of the running system:
 // each row names the code/config it was checked against in the PR that wrote it.
+// Minecraft facts in privacy.astro were checked on the live server on 2026-10-31 (not in this repo): AuthMe
+// sessions.enabled=false; cron "17 4 * * * mc-log-retention --apply" (source: minicraft/go-live/mc-log-retention)
+// deletes rotated logs older than 30 days and trims plugins/AuthMe/authme.log to its last 30 days.
 export const POLICY_VERSION = "v2, 2026-10-31";
 
 export const CONTACTS = {
