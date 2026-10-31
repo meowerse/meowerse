@@ -210,3 +210,33 @@ describe("a released placeholder is unresolvable by username", () => {
     expect(isReleasedUsername("~x")).toBe(true);
   });
 });
+
+describe("username-less accounts can't have their handle claimed (opus review, critical)", () => {
+  it("a Telegram-only account is stored under the unaddressable placeholder, not its bare id", async () => {
+    const { db } = meowsengerDb();
+    await upsertUser(db, { sub: "acct_victimABC", name: "Victim" }, 1);
+    expect(await usernameOf(db, "acct_victimABC")).toBe("~acct_victimABC");
+  });
+  it("an attacker whose username equals the victim's id gets nothing of the victim's", async () => {
+    const { db } = meowsengerDb();
+    await upsertUser(db, { sub: "acct_victimABC", name: "Victim" }, 1);
+    await upsertUser(db, { sub: "acct_attacker", preferred_username: "acct_victimABC" }, 2);
+    expect(await usernameOf(db, "acct_victimABC")).toBe("~acct_victimABC"); // untouched
+    expect(await getUser(db, "acct_victimABC")).toMatchObject({ displayName: "Victim" });
+  });
+  it("a LEGACY row stored as username = its id is never released (the claim fails instead)", async () => {
+    const { db, raw } = meowsengerDb();
+    raw.exec("INSERT INTO users (id, username, display_name, verified, updated_at) VALUES ('acct_legacyXYZ','acct_legacyXYZ','Legacy',0,1)");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(upsertUser(db, { sub: "acct_attacker", preferred_username: "acct_legacyXYZ" }, 2)).rejects.toThrow(/UNIQUE/);
+    expect(await usernameOf(db, "acct_legacyXYZ")).toBe("acct_legacyXYZ");
+  });
+  it("the one-shot data fix moves legacy id-named rows to the placeholder and is idempotent", async () => {
+    const { db, raw } = meowsengerDb();
+    raw.exec("INSERT INTO users (id, username, display_name, verified, updated_at) VALUES ('acct_legacyXYZ','acct_legacyXYZ','Legacy',0,1), ('acct_named','bob','Bob',0,1)");
+    const fix = readFileSync(new URL("../schema-username-placeholder.sql", import.meta.url), "utf8").split("\n").filter((l) => !l.startsWith("--")).join("\n");
+    raw.exec(fix); raw.exec(fix);
+    expect(await usernameOf(db, "acct_legacyXYZ")).toBe("~acct_legacyXYZ");
+    expect(await usernameOf(db, "acct_named")).toBe("bob");
+  });
+});

@@ -10,6 +10,8 @@ test("signup rejects bad username / weak password before any write", async () =>
   const log: { sql: string; args: unknown[] }[] = [];
   const db = routedDb([], log);
   expect((await signup(db, { username: "ab", password: "x".repeat(12) }, OPTS)).ok).toBe(false);
+  // id-shaped usernames are reserved (Meowsenger shows a username-less account by its acct_ id)
+  for (const u of ["acct_abc", "ACCT_xyz123", "Acct_victimABC"]) expect(await signup(db, { username: u, password: "abcdefghijkl" }, OPTS)).toEqual({ ok: false, error: "invalid username" });
   expect((await signup(db, { username: "valid_user", password: "short" }, OPTS)).ok).toBe(false);
   expect(log.filter((c) => c.sql.includes("INSERT")).length).toBe(0);
 });

@@ -42,12 +42,19 @@ export function isReleasedUsername(username: string): boolean {
  * once.
  */
 export async function upsertUser(db: DbClient, info: UserInfo, now: number): Promise<void> {
-  const username = info.preferred_username ?? info.sub;
+  // An account without a username (Telegram-only) is stored under the unaddressable
+  // placeholder form, never under its bare id: an id-shaped username could otherwise
+  // be registered in auth and claim this row's handle through the release below.
+  const claimsName = typeof info.preferred_username === "string" && info.preferred_username.length > 0;
+  const username = claimsName ? info.preferred_username! : RELEASED_USERNAME_PREFIX + info.sub;
+  const release = {
+    // Never release a legacy row whose username is its own id (pre-placeholder data).
+    sql: `UPDATE users SET username = '${RELEASED_USERNAME_PREFIX}' || id WHERE username = ? AND id != ? AND username != id`,
+    params: [username, info.sub],
+  };
   const stmts = [
-    {
-      sql: `UPDATE users SET username = '${RELEASED_USERNAME_PREFIX}' || id WHERE username = ? AND id != ?`,
-      params: [username, info.sub],
-    },
+    // Only a real auth username can be claimed from another row.
+    ...(claimsName ? [release] : [{ sql: "SELECT 0 WHERE 0", params: [] }]),
     {
       sql: `INSERT INTO users (id, username, display_name, avatar_url, verified, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)

@@ -27,6 +27,9 @@ export interface SignupOpts {
 export async function signup(db: DbClient, input: SignupInput, opts: SignupOpts = {}): Promise<SignupResult> {
   const username = (input.username ?? "").trim();
   if (!USERNAME_RE.test(username)) return { ok: false, error: "invalid username" };
+  // Reserved: account ids look like acct_…, and Meowsenger shows a username-less account
+  // by its id, so a username shaped like an id could pose as that account.
+  if (/^acct_/i.test(username)) return { ok: false, error: "invalid username" };
   const pw = validatePassword(input.password);
   if (!pw.ok) return { ok: false, error: pw.error };
 
