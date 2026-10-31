@@ -28,7 +28,7 @@ describe("shared privacy page copy", () => {
   });
   it("has every live partner row and no analytics rows yet", () => {
     const names = PARTNERS.map((p) => p.partner);
-    for (const n of ["Cloudflare", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
+    for (const n of ["Cloudflare", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "FastStats", "synkdev.cc", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
       expect(names.some((x) => x.includes(n)), n).toBe(true);
     }
     for (const p of PARTNERS) for (const f of [p.partner, p.why, p.gets, p.when]) expect(f.length).toBeGreaterThan(0);
@@ -147,6 +147,7 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(fs.partner).toContain("NexusCore");
     expect(fs.why).toContain("submitErrors=false");
     expect(fs.gets).toContain("not their names");
+    expect(fs.gets).toContain("IP address (from the connection itself)");
     expect(fs.gets).not.toContain("error reports");
     expect(PARTNERS.find((p) => p.partner.startsWith("synkdev.cc"))!.gets).toContain("no player data");
     expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("built into most of the server's plugins");
