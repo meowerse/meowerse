@@ -114,7 +114,7 @@
         title: top.name || top.peerDisplayName || top.peerUsername || "meowsenger",
         body: body,
         chatId: top.id || "",
-        icon: notificationIcon(unread.length === 1 ? (top.avatarUrl || top.peerAvatarUrl) : null),
+        icon: notificationIcon(unread.length === 1 ? top.peerAvatarUrl : null),
       };
     } catch (e) {
       return { show: false, reason: "chats_failed" };
