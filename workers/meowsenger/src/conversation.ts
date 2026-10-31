@@ -1026,6 +1026,9 @@ export class Conversation extends DurableObject<Env> {
     if (work.rounds >= MAX_FOLLOWUPS || work.total >= work.ceiling) {
       console.log(`push_decision overflow_dropped push=${work.push.length} inbox=${work.inbox.length}${work.rounds >= MAX_FOLLOWUPS ? "" : " reason=ceiling"}`);
       if (work.push.length > 0) logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: work.push.length, suppressed: "n/a", debounced: 0, deferred: 0 });
+      // Same as every other delete path: keep the seq floor (SEQ_KEY) before dropping the record.
+      const floor = (await this.ctx.storage.get<number>(SEQ_KEY)) ?? 0;
+      await this.ctx.storage.put(SEQ_KEY, Math.max(floor, work.seq));
       await this.ctx.storage.delete(OVERFLOW_KEY);
       return;
     }
