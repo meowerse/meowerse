@@ -35,7 +35,7 @@ describe("shared privacy page copy", () => {
     expect(rendered).not.toMatch(/Google Analytics|Cloudflare Web Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v1, 2026-10-30");
+    expect(POLICY_VERSION).toBe("v2, 2026-10-31");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
@@ -56,7 +56,8 @@ describe("shared privacy page copy", () => {
     expect(privacy + terms + legalSrc).not.toMatch(/gmail\.com|@gmail|@proton|@icloud/i);
   });
   it("states analytics as today's state, with placeholders for the next release, not a permanent promise", () => {
-    expect(privacy).toContain("Today we run no analytics");
+    expect(privacy).toContain("Today our websites run no visitor analytics");
+    expect(privacy).toContain("bStats and FastStats; see the Minecraft section");
     expect(privacy).not.toMatch(/never (use|run|load) analytics|no third-party trackers\./i);
     expect(privacy).toContain("TODAY-ONLY");
     expect(legalSrc).toContain("NEXT RELEASE");
@@ -146,7 +147,8 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(fs.partner).toContain("NexusCore");
     expect(fs.gets).toContain("error reports");
     expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("built into most of the server's plugins");
-    expect(privacy).toContain("There is no retention limit today");
+    expect(privacy).toContain("kept for 30 days and then deleted automatically");
+    expect(privacy).toContain("does not remember a login by IP address");
     expect(privacy).toContain("chat and commands");
     expect(privacy).toContain("voice-chat group (any distance)");
     expect(privacy).toContain("kept in the operator's Gmail mailbox, with no automatic deletion today");

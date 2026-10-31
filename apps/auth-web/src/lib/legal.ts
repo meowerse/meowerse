@@ -1,6 +1,6 @@
 // Copy that tests assert on, shared by /privacy and /terms. Keep every claim true of the running system:
 // each row names the code/config it was checked against in the PR that wrote it.
-export const POLICY_VERSION = "v1, 2026-10-30";
+export const POLICY_VERSION = "v2, 2026-10-31";
 
 export const CONTACTS = {
   privacy: "privacy@alxnko.dev",
@@ -17,9 +17,10 @@ export interface Partner {
 
 // Only partners that are LIVE today. Analytics, consent and membership rows are added in the same
 // release that turns each feature on (never before).
-// NEXT RELEASE: insert "Cloudflare Web Analytics" and "Google Analytics" (consent-gated; Google's data-sharing settings
-// may let Google use the data for its own purposes, say so plainly) right after the "Cloudflare" row below, and
-// replace the "today" analytics section in privacy.astro.
+// NEXT RELEASE: insert "Google Analytics" (consent-gated; Google's data-sharing settings may let Google use the data
+// for its own purposes, say so plainly) right after the "Cloudflare" row below, describe our own first-party
+// anonymous counts, and replace the "today" analytics section in privacy.astro. No Cloudflare Web Analytics beacon
+// (owner decision D3, 2026-10-30).
 export const PARTNERS: readonly Partner[] = [
   { partner: "Cloudflare", why: "hosts our websites and web services (Pages, Workers, D1, Durable Objects). The Minecraft server is NOT behind Cloudflare", gets: "every request to those sites: IP address, browser info, the page or API you asked for. Cloudflare keeps short-lived edge request logs", when: "always (hosting)" },
   { partner: "Cloudflare Turnstile", why: "stops bots at sign-up and sign-in; its script loads in your browser from challenges.cloudflare.com", gets: "your IP address (we pass it on to check the result), plus whatever the browser check collects", when: "when you sign up or sign in" },
