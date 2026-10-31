@@ -19,14 +19,14 @@ chosen yet, nothing purchased), the owner decides per request whether to reply f
 acknowledgment below is drafted either way.
 
 1. Acknowledge within 7 days (an internal acknowledgment target, not a promise of completed erasure):
-   - we received the request and are holding it;
+   - we received the request;
    - deletion is self-service: from inside their account settings, after they sign in again and confirm (if they cannot
      sign in, we can only point them at regaining access; nothing is deleted from an email);
    - they should delete Meowsenger data first (Meowsenger settings, danger zone), because deletion of the meowerse account
      does not delete it;
    - never send recovery codes, passwords or Telegram login codes by email; we will never ask for them.
 2. Record the request in the private tracker: date received, the username they gave (if any), the services they
-   mention, and status `queued`. Do not look up or copy any other account data into the tracker.
+   mention, and status `received`. Do not look up or copy any other account data into the tracker.
 3. Do not change the account, revoke sessions, or touch Meowsenger data on their behalf.
 4. Tell each requester how to use the in-account flow, and mark the entry `notified`.
 
