@@ -10,17 +10,40 @@ import { render, screen, waitFor, act, fireEvent, setVisibility } from "../test/
 const H = vi.hoisted(() => ({
   results: [] as unknown[],
   calls: 0,
+  chatCalls: [] as Array<{ quiet?: boolean }>,
+  chatsResult: null as unknown,
+  chatsGate: null as null | Promise<void>,
+  /** Order of network starts/settles, to prove the parallel boot. */
+  trace: [] as string[],
+  sessionGate: null as null | Promise<void>,
+  gateCall: null as null | number,
 }));
 
 vi.mock("../lib/meowsengerApi", () => ({
   getSession: vi.fn(async () => {
-    const r = H.results[Math.min(H.calls, H.results.length - 1)];
+    H.trace.push("session:start");
+    const idx = H.calls;
+    const r = H.results[Math.min(idx, H.results.length - 1)];
     H.calls++;
+    if (H.sessionGate && (H.gateCall == null || H.gateCall === idx)) await H.sessionGate;
+    H.trace.push("session:end");
     return r;
   }),
   loginUrl: (b: string) => `${b}/auth/login`,
 }));
-vi.mock("./Chat", () => ({ default: () => <div data-testid="chat">secret chat content</div> }));
+vi.mock("../lib/chat", () => ({
+  listChats: vi.fn(async (_b: string, opts?: { quiet?: boolean }) => {
+    H.trace.push("chats:start");
+    H.chatCalls.push(opts ?? {});
+    if (H.chatsGate) await H.chatsGate;
+    return H.chatsResult;
+  }),
+}));
+vi.mock("./Chat", () => ({
+  default: (p: { user: { id: string }; initialChats: { ok: boolean; data?: Array<{ id: string }> } }) => (
+    <div data-testid="chat" data-user={p.user.id}>secret chat content{p.initialChats.data?.map((c) => <i key={c.id}>{c.id}</i>)}</div>
+  ),
+}));
 
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded, setSnapshotSource } from "../lib/sessionEnded";
@@ -31,6 +54,12 @@ const replace = vi.fn();
 beforeEach(() => {
   H.results = [authed];
   H.calls = 0;
+  H.chatCalls = [];
+  H.trace = [];
+  H.chatsGate = null;
+  H.sessionGate = null;
+  H.gateCall = null;
+  H.chatsResult = { ok: true, status: 200, data: [{ id: "chat-of-u1" }] };
   replace.mockClear();
   resetSessionEnded();
   Object.defineProperty(window, "location", { value: { ...window.location, replace }, configurable: true });
@@ -183,5 +212,174 @@ describe("AppShell", () => {
     await screen.findByText(/your session ended/);
     expect(screen.queryByLabelText(/your unsent message/)).toBeNull();
     expect(screen.queryByText(/may not have been sent/)).toBeNull();
+  });
+
+  it("boot makes exactly one session read and one chats read, and Chat gets the user + list from them", async () => {
+    render(<AppShell base="" />);
+    const chat = await screen.findByTestId("chat");
+    expect(H.calls).toBe(1);
+    expect(H.chatCalls).toHaveLength(1);
+    expect(chat.getAttribute("data-user")).toBe("u1");
+    expect(chat.textContent).toContain("chat-of-u1");
+  });
+
+  it("starts the chats read before the session read resolves (parallel, no waterfall)", async () => {
+    let release!: () => void;
+    H.sessionGate = new Promise<void>((r) => { release = r; });
+    render(<AppShell base="" />);
+    await waitFor(() => expect(H.trace).toContain("session:start"));
+    expect(H.trace).toContain("chats:start");
+    expect(H.trace).not.toContain("session:end");
+    expect(screen.queryByTestId("chat")).toBeNull();
+    await act(async () => { release(); });
+    await screen.findByTestId("chat");
+    expect(H.trace.indexOf("chats:start")).toBeLessThan(H.trace.indexOf("session:end"));
+  });
+
+  it("shows the busy skeleton, not 'authenticating', while booting; nothing is announced as loaded", async () => {
+    let release!: () => void;
+    H.sessionGate = new Promise<void>((r) => { release = r; });
+    const { container } = render(<AppShell base="" />);
+    const shell = container.querySelector(".mw-chat") as HTMLElement;
+    expect(shell.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText(/authenticating/)).toBeNull();
+    // all decorative parts are hidden from assistive tech; only one polite "loading" note
+    expect(container.querySelector("aside")?.getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector(".mw-chat__main")?.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    await act(async () => { release(); });
+    await screen.findByTestId("chat");
+  });
+
+  it("discards the chats result when the session is unauthenticated (and redirects, no banner)", async () => {
+    H.results = [{ ok: true, status: 200, data: { authenticated: false } }];
+    H.chatsResult = { ok: false, error: { kind: "unauthorized", status: 401 } };
+    render(<AppShell base="" />);
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/auth/login"));
+    expect(screen.queryByTestId("chat")).toBeNull();
+    expect(screen.queryByText(/your session ended/)).toBeNull();
+    expect(H.chatCalls[0]).toEqual({ quiet: true });
+  });
+
+  it("never renders another account's chats: a list that arrived for a rejected session is dropped", async () => {
+    H.results = [{ ok: true, status: 200, data: { authenticated: false } }];
+    H.chatsResult = { ok: true, status: 200, data: [{ id: "someone-elses-chat" }] };
+    render(<AppShell base="" />);
+    await waitFor(() => expect(replace).toHaveBeenCalled());
+    expect(document.body.textContent).not.toContain("someone-elses-chat");
+  });
+
+  it("a 401 on the chats read of an authenticated boot raises sessionEnded (banner)", async () => {
+    H.chatsResult = { ok: false, error: { kind: "unauthorized", status: 401 } };
+    render(<AppShell base="" />);
+    await screen.findByText(/your session ended/);
+    expect(screen.queryByTestId("chat")).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("a session 5xx shows retry, discards the chats result and never redirects", async () => {
+    H.results = [{ ok: false, error: { kind: "http", status: 503, body: null } }];
+    render(<AppShell base="" />);
+    await screen.findByText(/can't reach meowsenger/);
+    expect(screen.getByRole("button", { name: "retry now" })).toBeTruthy();
+    expect(screen.queryByTestId("chat")).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("a failed chats read does not block the app: Chat gets the error and shows its own retry", async () => {
+    H.chatsResult = { ok: false, error: { kind: "network" } };
+    render(<AppShell base="" />);
+    const chat = await screen.findByTestId("chat");
+    expect(chat.getAttribute("data-user")).toBe("u1");
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  describe("bfcache restore (pageshow persisted)", () => {
+    const u2 = { ok: true, status: 200, data: { authenticated: true, user: { id: "u2" } } };
+    async function restore(persisted = true) {
+      await act(async () => {
+        const e = new Event("pageshow") as Event & { persisted: boolean };
+        (e as { persisted: boolean }).persisted = persisted;
+        window.dispatchEvent(e);
+      });
+    }
+
+    it("same user: re-checks quietly and keeps the mounted app (no remount, no refetch of chats)", async () => {
+      render(<AppShell base="" />);
+      const before = await screen.findByTestId("chat");
+      H.results = [authed];
+      await restore();
+      expect(H.calls).toBe(2);
+      expect(screen.getByTestId("chat")).toBe(before); // same DOM node: state kept
+      expect(H.chatCalls).toHaveLength(1);
+    });
+
+    it("different user: wipes the old app state, clears ?chat, and boots the new user", async () => {
+      // happy-dom's location is swapped for a snapshot in beforeEach, so seed it directly.
+      Object.defineProperty(window, "location", { value: { ...window.location, href: "http://localhost/app?chat=chat-of-u1&m=m9", search: "?chat=chat-of-u1&m=m9", replace }, configurable: true });
+      const replaceState = vi.spyOn(window.history, "replaceState");
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      H.results = [authed, u2, u2];
+      H.chatsResult = { ok: true, status: 200, data: [{ id: "chat-of-u2" }] };
+      await restore();
+      // old user's content must be gone at some point and the new one shown after boot
+      const chat = await screen.findByText(/chat-of-u2/);
+      expect(chat.closest("[data-testid=chat]")?.getAttribute("data-user")).toBe("u2");
+      expect(document.body.textContent).not.toContain("chat-of-u1");
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(String(replaceState.mock.calls[0][2])).toBe("/app");
+      expect(H.chatCalls).toHaveLength(2);
+    });
+
+    it("different user: the old user's app is unmounted BEFORE the new boot resolves", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      let release!: () => void;
+      H.results = [authed, u2, u2];
+      H.chatsResult = { ok: true, status: 200, data: [{ id: "chat-of-u2" }] };
+      H.sessionGate = new Promise<void>((r) => { release = r; });
+      H.gateCall = 2; // hold the re-boot's session read (call #2); the pageshow re-check is call #1
+      await restore();
+      expect(screen.queryByTestId("chat")).toBeNull();
+      expect(document.body.textContent).not.toContain("secret chat content");
+      expect(document.querySelector(".mw-chat")?.getAttribute("aria-busy")).toBe("true");
+      await act(async () => { release(); });
+      const chat = await screen.findByTestId("chat");
+      expect(chat.getAttribute("data-user")).toBe("u2");
+    });
+
+    it("signed out meanwhile: wipes and redirects to login", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      H.results = [{ ok: true, status: 200, data: { authenticated: false } }];
+      await restore();
+      await waitFor(() => expect(replace).toHaveBeenCalledWith("/auth/login"));
+      expect(screen.queryByTestId("chat")).toBeNull();
+    });
+
+    it("a network error or 5xx on the re-check keeps the current state (no wipe, no redirect)", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      H.results = [{ ok: false, error: { kind: "http", status: 502, body: null } }];
+      await restore();
+      expect(screen.getByTestId("chat")).toBeTruthy();
+      expect(replace).not.toHaveBeenCalled();
+    });
+
+    it("a 401 on the re-check raises the session-ended banner", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      H.results = [{ ok: false, error: { kind: "unauthorized", status: 401 } }];
+      await restore();
+      await screen.findByText(/your session ended/);
+    });
+
+    it("ignores a non-persisted pageshow", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      await restore(false);
+      expect(H.calls).toBe(1);
+    });
   });
 });

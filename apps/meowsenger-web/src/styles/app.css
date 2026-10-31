@@ -792,6 +792,15 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 }
 .mw-skelrow__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 
+/* Boot skeleton (AppShell): reuses the real shell grid/sidebar/dock classes; the header
+   controls are real disabled elements blanked into placeholder blocks (token colours, so
+   it follows light/dark), keeping the exact real geometry (no layout shift on swap-in). */
+.mw-bootskel__ctl {
+  background: var(--surface-muted); background-image: none; color: transparent;
+  border-color: transparent; pointer-events: none; opacity: 1;
+}
+.mw-bootskel .mw-chat__account-info { gap: 4px; }
+
 /* Log skeleton bubbles alternate sides like a real conversation. */
 .mw-skel-log { display: flex; flex-direction: column; gap: var(--space-3); padding-block: var(--space-2); }
 .mw-skelbubble { display: flex; }

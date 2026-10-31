@@ -7,9 +7,12 @@
  * so they pin behavior ACROSS the useConversation extraction — a regression there
  * fails these.
  */
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act, fireEvent, within, MockWebSocket, setVisibility } from "../test/rtl";
+import type { RequestResult } from "@meowerse/ui";
 import type { ChatSummary, Message, Member } from "../lib/chat";
+import type { SessionUser } from "../lib/meowsengerApi";
 
 // Controlled fixtures + spies, referenced from the hoisted vi.mock factories.
 const H = vi.hoisted(() => ({
@@ -41,8 +44,8 @@ vi.mock("../lib/chat", async (importActual) => {
   return {
     ...actual, // keep the PURE helpers real: applyReaction, wsUrl, slugify
     // Like the real `read`, a 401 raises the app-level session-ended signal.
-    listChats: vi.fn(async () => {
-      if (H.failChats) { if (H.failChats.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failChats }; }
+    listChats: vi.fn(async (_b: string, opts?: { quiet?: boolean }) => {
+      if (H.failChats) { if (H.failChats.kind === "unauthorized" && !opts?.quiet) notifySessionEnded(); return { ok: false as const, error: H.failChats }; }
       return { ok: true as const, status: 200, data: H.chats };
     }),
     loadHistory: vi.fn(async (_b: string, chatId: string) => {
@@ -69,6 +72,13 @@ import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 import { listChats } from "../lib/chat";
 
+/** Chat now receives the session user + first list from AppShell (one source of truth). */
+function ChatBoot() {
+  const [initialChats] = useState<RequestResult<ChatSummary[]>>(() =>
+    H.failChats ? { ok: false, error: H.failChats as never } : { ok: true, status: 200, data: H.chats });
+  return <Chat base="" user={H.session.user as SessionUser} initialChats={initialChats} />;
+}
+
 function dm(over: Partial<ChatSummary> = {}): ChatSummary {
   return {
     id: "c1", type: "direct", name: null, lastMessage: "hi", lastSenderId: "u2",
@@ -91,7 +101,7 @@ function logEl(): HTMLElement {
 /** Mount at ?chat=c1, wait for the socket to be created + first history to render. */
 async function mountOpen(): Promise<MockWebSocket> {
   setUrl("/app?chat=c1");
-  render(<Chat base="" />);
+  render(<ChatBoot />);
   await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
   return MockWebSocket.room;
 }
@@ -159,7 +169,7 @@ describe("Chat island — detached-window suppression (audit)", () => {
       hasNewer: true, // there ARE newer messages below the loaded window
     };
     setUrl("/app?chat=c1&m=mOld");
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
     const ws = MockWebSocket.room;
     // The jump lands: the old message + a "jump to latest" affordance are shown.
@@ -296,7 +306,7 @@ describe("Chat island — tab-title unread badge (#14)", () => {
       dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", unreadCount: 1 }),
     ];
     setUrl("/app"); // no active chat → no read zeroes the counts
-    const { unmount } = render(<Chat base="" />);
+    const { unmount } = render(<ChatBoot />);
     await waitFor(() => expect(document.title).toBe("(2) meowsenger"));
     unmount();
     expect(document.title).toBe("meowsenger");
@@ -584,7 +594,7 @@ describe("Chat island — logout drops the push subscription (cross-account priv
     H.order = [];
     const fetchMock = vi.fn(async (url: string) => { H.order.push(`fetch:${url}`); return new Response("{}", { status: 200 }); });
     vi.stubGlobal("fetch", fetchMock);
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     fireEvent.click(await screen.findByLabelText("log out"));
     await waitFor(() => expect(H.order.some((o) => o === "fetch:/auth/logout")).toBe(true));
   }
@@ -605,7 +615,7 @@ describe("Chat island — logout drops the push subscription (cross-account priv
 
 describe("Chat island — honest error states (no false empty)", () => {
   it("a failed sidebar poll keeps the previous chats and shows a subtle retry (not 'no chats yet')", async () => {
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     await screen.findByText("Bob");
     H.failChats = { kind: "network" };
     act(() => { window.dispatchEvent(new Event("focus")); });
@@ -621,14 +631,14 @@ describe("Chat island — honest error states (no false empty)", () => {
 
   it("a failed FIRST list load shows 'couldn't load chats', never 'no chats yet'", async () => {
     H.failChats = { kind: "http", status: 500 };
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     await screen.findByText("couldn't load chats.");
     expect(screen.queryByText("no chats yet")).toBeNull();
   });
 
   it("a genuinely empty list still shows 'no chats yet'", async () => {
     H.chats = [];
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     await screen.findByText("no chats yet");
     expect(screen.queryByText(/couldn't/)).toBeNull();
   });
@@ -656,7 +666,7 @@ describe("Chat island — deep link survives a failed first list load", () => {
   it("applies ?chat= once the sidebar retry succeeds", async () => {
     H.failChats = { kind: "http", status: 500 };
     setUrl("/app?chat=c1");
-    render(<Chat base="" />);
+    render(<ChatBoot />);
     await screen.findByText("couldn't load chats.");
     expect(MockWebSocket.room).toBeUndefined();
     H.failChats = null;
@@ -672,6 +682,32 @@ describe("Chat island — history 403", () => {
     await mountOpen();
     await screen.findByText("you're no longer a member of this chat");
     expect(screen.queryByText("couldn't load messages.")).toBeNull();
+  });
+});
+
+describe("Chat island — one session source (real Chat under AppShell)", () => {
+  it("boot makes exactly one session read and one chats read (no second fetch in Chat)", async () => {
+    const { getSession } = await import("../lib/meowsengerApi");
+    vi.mocked(getSession).mockClear();
+    vi.mocked(listChats).mockClear();
+    setUrl("/app?chat=c1");
+    render(<AppShell base="" />);
+    await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+    await waitFor(() => expect(within(logEl()).getByText("hello there")).toBeTruthy());
+    expect(vi.mocked(getSession)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listChats)).toHaveBeenCalledTimes(1);
+    // the signed-in user reached the sidebar dock from that single read
+    expect(screen.getByText("@alice")).toBeTruthy();
+  });
+
+  it("the composer is disabled until the socket is ready, then enabled (me is known from the start)", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "send" }) as HTMLButtonElement).disabled).toBe(true);
+    open(ws);
+    await waitFor(() => expect((screen.getByLabelText("message") as HTMLTextAreaElement).disabled).toBe(false));
   });
 });
 

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
-import { getSession, loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
+import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
 import { useConversation } from "../hooks/useConversation";
@@ -48,8 +48,9 @@ function lastSeenLabel(ms: number | null | undefined): string {
  * UI state (menus, modals, selection, emoji picker, search, member drawer), the
  * derivations for the header, and the JSX.
  */
-export default function Chat({ base }: { base: string }) {
-  const [me, setMe] = useState<SessionUser | null>(null);
+export default function Chat({ base, user, initialChats }: { base: string; user: SessionUser; initialChats: RequestResult<ChatSummary[]> }) {
+  // The signed-in user comes from AppShell's single /api/session read (no second fetch).
+  const me: SessionUser = user;
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
   // The last sidebar refresh failed. The previous list is KEPT (never replaced by an
@@ -324,12 +325,19 @@ export default function Chat({ base }: { base: string }) {
     }).catch(() => showToast("you don't have access to this chat"));
   };
 
-  // Load who-am-i + the sidebar list once (a failure keeps the sidebar retry; the
-  // deep link then runs on the first successful list).
+  // Apply the sidebar list AppShell fetched in parallel with the session read (no
+  // second /api/chats at boot). A failure keeps the sidebar retry; the deep link then
+  // runs on the first successful list. Runs once per mount (AppShell remounts Chat,
+  // via a key, for a different user so no list can carry over).
+  const bootAppliedRef = useRef(false);
   useEffect(() => {
-    getSession(base).then((s) => { if (s.ok) setMe(s.data.user ?? null); });
-    refreshChats().then(() => setLoadingChats(false));
-  }, [base, refreshChats]);
+    if (bootAppliedRef.current) return;
+    bootAppliedRef.current = true;
+    const seq = ++listSeqRef.current.started;
+    if (initialChats.ok) listSeqRef.current.applied = seq;
+    applyChatList(initialChats);
+    setLoadingChats(false);
+  }, [initialChats, applyChatList]);
 
   // Hand the session-ended banner the unsent draft + whether a send was un-acked.
   // Memory only; no message bodies of any other message leave this component.
@@ -971,7 +979,7 @@ export default function Chat({ base }: { base: string }) {
               <Composer
                 onSend={sendWith}
                 onTyping={sendTyping}
-                disabled={!connected}
+                disabled={!me || !connected}
                 replyTo={replyDraft}
                 onCancelReply={() => setReplyingTo(null)}
                 onDraftChange={(t) => { draftRef.current = t; }}
