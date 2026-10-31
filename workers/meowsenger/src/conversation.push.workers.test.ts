@@ -841,12 +841,12 @@ describe("Conversation offline push decision", () => {
       const sender = await connect(c, "sender");
       await send(sender, "one");
       await vi.waitFor(async () => expect((await queued(c))?.push).toHaveLength(300));
-      expect((await queued(c))!.ceiling).toBe(10 + 3 * Math.ceil(300 / 44)); // scaled with the batch
+      expect((await queued(c))!.ceiling).toBe(10 + 3 * Math.ceil((300 * 10) / 44)); // worst case: 10 endpoints per recipient
       const rounds = await runUntilDone(runAlarm, c, at);
       expect(await queued(c)).toBeUndefined();
       const counts = countsByEndpoint();
       expect(counts.size).toBe(300);
-      console.info(`COST 300-push-target room under a 503 outage: pushes=${pushCalls().length} alarm_rounds=${rounds} (ceiling 31)`);
+      console.info(`COST 300-push-target room under a 503 outage: pushes=${pushCalls().length} alarm_rounds=${rounds} (ceiling 217)`);
       for (const [, n] of counts) expect(n).toBe(3); // exactly 3: none dropped early, none retried again
       const dropped = outcomeLogs().reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0);
       expect(dropped).toBe(300);
@@ -971,6 +971,96 @@ describe("Conversation offline push decision", () => {
       expect(outcomeLogs().at(-1)).toContain("suppressed_active=0");
       expect(outcomeLogs().at(-1)).toContain("accepted=1");
     });
+  });
+
+  it("(ar) multi-device: 100 members x 3 devices in a sustained 503 outage: every endpoint gets exactly 3 attempts, then the batch is dropped and logged; the ceiling is never hit", async () => {
+    await withFakeTime(11_000_000, async (at) => {
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 503 }));
+      const users = Array.from({ length: 100 }, (_, i) => `u${i}`);
+      const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+      for (const u of users) for (const d of [2, 3]) {
+        await DB.prepare("INSERT OR REPLACE INTO push_subscriptions (endpoint, user_id, created_at) VALUES (?, ?, 1)").bind(EP(`${c}-${u}-d${d}`), u).run();
+      }
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await queued(c))?.push?.length).toBeGreaterThan(0));
+      const ceiling = (await queued(c))!.ceiling!;
+      expect(ceiling).toBe(10 + 3 * Math.ceil((100 * 10) / 44));
+      const rounds = await runUntilDone(runAlarm, c, at);
+      expect(await queued(c)).toBeUndefined();
+      expect(rounds).toBeLessThan(ceiling);
+      const counts = countsByEndpoint();
+      expect(counts.size).toBe(300);
+      for (const [, n] of counts) expect(n).toBe(3);
+      const dropped = outcomeLogs().reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0);
+      expect(dropped).toBe(100);
+      expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(false);
+    });
+  }, 90_000);
+
+  it("(as) first send: a rejected send does not lose its recipient, and a recipient who got a 2xx is never retried", async () => {
+    await withFakeTime(12_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "okU", "rejU"], ["okU", "rejU"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      let broken = false;
+      await runInDurableObject(stub(c), async (inst: Conversation) => {
+        Object.defineProperty(internals(inst).env, "DB", { configurable: true, get() { if (broken) throw new Error("d1 gone"); return DB; } });
+      });
+      // rejU's 404 triggers the prune, whose d1() construction throws -> that send REJECTS
+      let healed = false;
+      fetchSpy.mockImplementation(async (url: string) => {
+        if (String(url).includes("rejU") && !healed) { broken = true; return new Response(null, { status: 404 }); }
+        if (String(url).includes("okU") && !healed) await new Promise((r) => setTimeout(r, 60)); // finishes AFTER rejU's rejection
+        return new Response(null, { status: 201 });
+      });
+      try {
+        await send(sender, "one");
+        await vi.waitFor(async () => expect((await queued(c))?.push).toEqual(["rejU"]));
+        await settle();
+        expect((await queued(c))?.push).toEqual(["rejU"]);
+      } finally {
+        healed = true; broken = false;
+        await runInDurableObject(stub(c), async (inst: Conversation) => {
+          Object.defineProperty(internals(inst).env, "DB", { configurable: true, writable: true, enumerable: true, value: DB });
+        });
+      }
+      expect((await queued(c))!.attempts).toEqual({ rejU: 1 });
+      expect(pushedTo().filter((u) => u.includes("okU"))).toHaveLength(1);
+      at(10_000); await runAlarm();
+      expect(pushedTo().filter((u) => u.includes("okU"))).toHaveLength(1); // not retried
+      expect(pushedTo().filter((u) => u.includes("rejU"))).toHaveLength(2);
+      expect(await queued(c)).toBeUndefined();
+    });
+  });
+
+  it("(at) target read failure fallback excludes users who were active at send time (and the sender)", async () => {
+    await withFakeTime(13_000_000, async () => {
+      const c = newChat(); await seed(c, ["sender", "act", "other"], ["act", "other"]); await configureVapid(c);
+      await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await connect(c, "act");
+      let thrown = false;
+      await setEnv(c, { DB: { prepare: (sql: string) => { if (!thrown && sql.includes("push_subscriptions")) { thrown = true; throw new Error("d1 blip"); } return DB.prepare(sql); } } });
+      try {
+        await send(sender, "one");
+        await vi.waitFor(async () => expect(await queued(c)).toBeTruthy());
+      } finally { await setEnv(c, { DB }); }
+      expect((await queued(c))!.push).toEqual(["other"]);
+    });
+  });
+
+  it("(au) a failing overflow queue write is logged with counts only, not swallowed", async () => {
+    const users = Array.from({ length: 61 }, (_, i) => `u${i}`);
+    const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+    await manualAlarms(c);
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      (inst as unknown as { queueOverflow: () => Promise<void> }).queueOverflow = async () => { throw new Error("storage down SECRET"); };
+    });
+    const sender = await connect(c, "sender");
+    await send(sender, "one");
+    await vi.waitFor(() => expect(allDecisionLogs()).toContain("push_decision overflow_error Error queue_write_failed push=19 inbox=0"));
   });
 
   it("(s) per-message cost: DM and 10-member group", async () => {

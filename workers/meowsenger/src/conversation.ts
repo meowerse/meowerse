@@ -4,7 +4,7 @@ import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { d1Client } from "./db";
-import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily } from "./push";
+import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -105,14 +105,18 @@ interface SubBudget { ext: number; int: number }
  *  45 s sidebar poll covers the sidebar. Rounds that make progress do not count: each is
  *  bounded by the per-invocation budgets and the DO serves other events between alarms. */
 const MAX_FOLLOWUPS = 5;
-/** Hard safety ceiling on TOTAL rounds per queued batch (progress or not), logged when
- *  hit. Scales with the batch: every recipient needs up to MAX_PUSH_ATTEMPTS attempts and
- *  a round serves at most EXTERNAL_BUDGET - 1 of them (one subrequest is the target read). */
-const ROUND_CAPACITY = EXTERNAL_BUDGET - 1;
-const roundCeiling = (batchSize: number): number => 10 + 3 * Math.ceil(batchSize / ROUND_CAPACITY);
 /** Max delivery attempts per recipient per queued batch (the first send counts as one);
  *  transient failures (429/5xx/network) are retried until then, then dropped. */
 const MAX_PUSH_ATTEMPTS = 3;
+/** Hard safety ceiling on TOTAL rounds per queued batch (progress or not), logged when
+ *  hit; only a backstop (progress counting already guarantees termination). Sized for the
+ *  worst case: the round budget is spent per ENDPOINT, not per recipient, and a user can
+ *  have up to MAX_PUSH_SUBS_PER_USER endpoints, each needing up to MAX_PUSH_ATTEMPTS
+ *  attempts; a round serves at most EXTERNAL_BUDGET - 1 endpoints (one subrequest is the
+ *  target read). */
+const ROUND_CAPACITY = EXTERNAL_BUDGET - 1;
+const roundCeiling = (batchSize: number): number =>
+  10 + MAX_PUSH_ATTEMPTS * Math.ceil((batchSize * MAX_PUSH_SUBS_PER_USER) / ROUND_CAPACITY);
 /** Pending fan-out work persisted in DO storage: recipient ids and the chat id only
  *  (never message text, endpoints or keys). `seq` increments on every queueOverflow so
  *  a running follow-up can tell that new work arrived while it awaited. `attempts` /
@@ -505,7 +509,9 @@ export class Conversation extends DurableObject<Env> {
       (async () => {
         const push = await this.pushOffline(chatId, senderId, budget, mirror, pushRes).catch((): PushResult => pushRes);
         const inboxLeft = await sidebar;
-        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry).catch(() => {});
+        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry).catch((e) => {
+          console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} queue_write_failed push=${push.cut.length + Object.keys(push.retry).length} inbox=${inboxLeft.length}`);
+        });
       })(),
     );
     return id;
@@ -598,7 +604,7 @@ export class Conversation extends DurableObject<Env> {
     try {
       all = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active], skipped);
     } catch (e) {
-      return this.targetReadFailed(chatId, senderId, budget, e, sink);
+      return this.targetReadFailed(chatId, senderId, active, budget, e, sink);
     }
     skipped.delete(senderId);
     return this.fanPush(all, budget, { suppressedActive: skipped.size, followup: false, prior: {}, gate, sink });
@@ -609,7 +615,7 @@ export class Conversation extends DurableObject<Env> {
    *  nobody is lost; the follow-up re-filters by subscription, membership and activity,
    *  so over-including is harmless. Ids come from the fresh member cache or one read; if
    *  that fails too there is nothing to queue (logged, counts only). */
-  private async targetReadFailed(chatId: string, senderId: string, budget: SubBudget, e: unknown, sink: PushResult): Promise<PushResult> {
+  private async targetReadFailed(chatId: string, senderId: string, active: string[], budget: SubBudget, e: unknown, sink: PushResult): Promise<PushResult> {
     let ids: string[] | null = null;
     const cached = this.inboxMembers.get(chatId);
     if (cached && Date.now() - cached.at < 5000) ids = cached.ids;
@@ -617,7 +623,8 @@ export class Conversation extends DurableObject<Env> {
       budget.ext++;
       try { ids = await chatMemberIds(this.d1(), chatId); } catch { ids = null; }
     }
-    const members = ids ? ids.filter((u) => u !== senderId) : [];
+    const skip = new Set([senderId, ...active]);
+    const members = ids ? ids.filter((u) => !skip.has(u)) : [];
     if (!ids) console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} members_unreadable=1 lost=unknown`);
     else console.log(`push_decision target_read_failed queued=${members.length}`);
     for (const u of members) sink.retry[u] = 1;
@@ -681,7 +688,11 @@ export class Conversation extends DurableObject<Env> {
       const key = await importVapidKey(this.env);
       // Push only after the D1 mirror write: the service worker reads /api/chats.
       if (o.gate) await o.gate;
-      await Promise.all(
+      const merge = (userId: string, oc: "ok" | "transient" | "final"): void => {
+        const prev = outcome.get(userId);
+        if (!prev || rank[oc] > rank[prev]) outcome.set(userId, oc);
+      };
+      const settled = await Promise.allSettled(
         targets.map(async ({ endpoint: ep, userId }) => {
           const status = await sendPush(ep, this.env, now, fetch, key);
           // Delivery observability: ONLY the push service's HTTP status and its host
@@ -693,10 +704,25 @@ export class Conversation extends DurableObject<Env> {
             await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
           }
           const oc = status >= 200 && status < 300 ? "ok" : status === 0 || status === 429 || status >= 500 ? "transient" : "final";
-          const prev = outcome.get(userId);
-          if (!prev || rank[oc] > rank[prev]) outcome.set(userId, oc);
+          merge(userId, oc);
         }),
       );
+      // A rejected send leaves the recipient's other endpoints' outcomes intact (a 2xx is
+      // never retried); on the first invocation the rejection itself counts as transient.
+      // A follow-up rethrows so runOverflow re-queues the run with a back-off.
+      const rejected = settled.findIndex((r) => r.status === "rejected");
+      if (rejected >= 0) {
+        if (o.followup) throw (settled[rejected] as PromiseRejectedResult).reason;
+        console.log(`push_decision send_error ${(settled[rejected] as PromiseRejectedResult).reason instanceof Error ? ((settled[rejected] as PromiseRejectedResult).reason as Error).name : "unknown"}`);
+        settled.forEach((r, i) => {
+          if (r.status !== "rejected") return;
+          const u = targets[i]!.userId;
+          // No known outcome: release the debounce reservation (as a thrown send always did)
+          // so the next message can still push, and retry via the queue.
+          if (!outcome.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
+          merge(u, "transient");
+        });
+      }
     } catch (e) {
       // Release the reservation so the next round can still push these recipients. On the
       // first invocation recipients whose outcome is already known keep theirs.
@@ -751,7 +777,7 @@ export class Conversation extends DurableObject<Env> {
       chatId: raw.chatId ?? "", push, inbox,
       attempts: raw.attempts ?? {}, notBefore: raw.notBefore ?? {},
       rounds: raw.rounds ?? 0, total: raw.total ?? 0,
-      ceiling: raw.ceiling ?? roundCeiling(push.length + inbox.length), seq: raw.seq ?? 0,
+      ceiling: Math.max(raw.ceiling ?? 0, roundCeiling(push.length + inbox.length)), seq: raw.seq ?? 0,
     };
   }
 
@@ -844,7 +870,7 @@ export class Conversation extends DurableObject<Env> {
    *  `{chatId, invalidate}` inbox signals to members beyond the inline budget (client
    *  refetches the list). Anything still cut by this invocation's own budgets is
    *  re-queued. Rounds that made progress continue (each is bounded by the budgets);
-   *  only MAX_FOLLOWUPS no-progress/failed rounds, or MAX_TOTAL_ROUNDS in all, drop the
+   *  only MAX_FOLLOWUPS no-progress/failed rounds, or the per-batch round ceiling in all, drop the
    *  rest (logged). A failure re-queues the whole run, backing off PUSH_RETRY_MS. */
   private async runOverflow(): Promise<void> {
     const work = await this.readOverflow();
