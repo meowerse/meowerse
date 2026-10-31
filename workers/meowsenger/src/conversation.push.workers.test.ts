@@ -1141,6 +1141,169 @@ describe("Conversation offline push decision", () => {
     expect(logSpy.mock.calls.some((x: unknown[]) => x.some((a) => String(a).includes("SECRET") || String(a).includes("storage down")))).toBe(false);
   });
 
+  // ---- per-device retry (owed) and mirror gating -----------------------------------
+  const fp16 = async (url: string): Promise<string> => {
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url)));
+    return [...d.subarray(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  /** Second device for `u`; the first is the one `seed` created. */
+  const addDevice = async (c: string, u: string): Promise<{ a: string; b: string }> => {
+    const b = `https://fcm.googleapis.com/fcm/send/${c}-${u}-device-b`;
+    await DB.prepare("INSERT OR REPLACE INTO push_subscriptions (endpoint, user_id, created_at) VALUES (?, ?, 1)").bind(b, u).run();
+    return { a: EP(`${c}-${u}`), b };
+  };
+  const countTo = (url: string) => pushedTo().filter((x) => x === url).length;
+  type Q2 = { push: string[]; owed?: Record<string, string[]>; mirrorPending?: boolean; attempts?: Record<string, number> };
+  const q2 = (c: string) => queued(c) as unknown as Promise<Q2 | undefined>;
+  /** Make every D1 chat-preview write fail while `state.fail` is true. */
+  const failMirror = async (c: string, state: { fail: boolean }) => {
+    await setEnv(c, {
+      DB: { prepare: (sql: string) => { if (state.fail && sql.startsWith("UPDATE chats SET last_message")) throw new Error("d1 mirror down"); return DB.prepare(sql); } },
+    });
+  };
+
+  it("(aw) mixed devices: 201 on one and 503 on the other; the retry goes ONLY to the failed device", async () => {
+    await withFakeTime(14_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      let bHits = 0;
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: String(url) === b && ++bHits === 1 ? 503 : 201 }));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toBeTruthy());
+      const q = (await q2(c))!;
+      expect(q.owed).toEqual({ rcpt: [await fp16(b)] }); // a fingerprint, never the URL
+      expect(JSON.stringify(q)).not.toContain("https://");
+      expect(outcomeLogs().at(-1)).toContain("accepted=1");
+      at(10_000); await runAlarm();
+      expect(countTo(a)).toBe(1);
+      expect(countTo(b)).toBe(2);
+      expect(await q2(c)).toBeUndefined();
+      at(60_000); await runAlarm();
+      expect(countTo(a)).toBe(1);
+    });
+  });
+
+  it("(ax) mixed devices, sustained 503: failing device gets exactly 3 attempts, working device 1; accepted, partial logged on drop", async () => {
+    await withFakeTime(15_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: String(url) === b ? 503 : 201 }));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect(await q2(c)).toBeTruthy());
+      expect(outcomeLogs().at(-1)).toContain("accepted=1");
+      expect(outcomeLogs().at(-1)).not.toContain("partial=");
+      at(10_000); await runAlarm();
+      expect((await q2(c))?.attempts).toEqual({ rcpt: 2 });
+      at(20_000); await runAlarm();
+      expect(await q2(c)).toBeUndefined();
+      expect(countTo(b)).toBe(3);
+      expect(countTo(a)).toBe(1);
+      expect(outcomeLogs().at(-1)).toContain("dropped=1");
+      expect(outcomeLogs().at(-1)).toContain("partial=1");
+      at(60_000); await runAlarm();
+      expect(countTo(b)).toBe(3);
+      for (const l of allDecisionLogs()) for (const secret of [c, "rcpt", "https://"]) expect(l).not.toContain(secret);
+    });
+  });
+
+  it("(ay) a new message while `owed` is pending goes to ALL devices and clears the narrowing", async () => {
+    await withFakeTime(16_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      let phase = 1;
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: phase === 2 || String(url) === b ? 503 : 201 }));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toEqual({ rcpt: [await fp16(b)] }));
+      expect([countTo(a), countTo(b)]).toEqual([1, 1]);
+      phase = 2; at(31_000); // past the debounce window; every device now fails
+      await send(sender, "two");
+      await vi.waitFor(async () => expect(countTo(b)).toBe(2));
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toEqual({}));
+      expect([countTo(a), countTo(b)]).toEqual([2, 2]); // the new message reached both devices
+      expect((await q2(c))?.push).toEqual(["rcpt"]);
+    });
+  });
+
+  it("(az) an old-shape record without `owed`/`mirrorPending` is processed as before (all devices)", async () => {
+    await withFakeTime(17_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      const runAlarm = await manualAlarms(c);
+      await runInDurableObject(stub(c), async (inst: Conversation) => {
+        await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], attempts: { rcpt: 1 }, notBefore: { rcpt: 0 }, rounds: 0, total: 0, ceiling: 50, seq: 1 });
+      });
+      at(1_000); await runAlarm();
+      expect([countTo(a), countTo(b)]).toEqual([1, 1]);
+      expect(await q2(c)).toBeUndefined();
+    });
+  });
+
+  it("(ba) mirror write fails twice: no push in the first invocation; queued with mirrorPending; the follow-up re-mirrors the latest message, then pushes", async () => {
+    await withFakeTime(18_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const state = { fail: true };
+      await failMirror(c, state);
+      try {
+        const sender = await connect(c, "sender");
+        await send(sender, "latest-body");
+        await vi.waitFor(async () => expect((await q2(c))?.mirrorPending).toBe(true));
+        expect(pushCalls()).toHaveLength(0);
+        expect(allDecisionLogs()).toContain("push_decision mirror_failed retried=1 deferred=1");
+        expect((await q2(c))!.attempts).toEqual({}); // deferred, not an attempt
+        const before = await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(c).first<{ last_message: string | null }>();
+        expect(before?.last_message).toBeNull();
+        state.fail = false;
+        at(1_000); await runAlarm();
+        const after = await DB.prepare("SELECT last_message, last_sender_id FROM chats WHERE id = ?").bind(c).first<{ last_message: string; last_sender_id: string }>();
+        expect(after).toEqual({ last_message: "latest-body", last_sender_id: "sender" });
+        expect(pushCalls()).toHaveLength(1);
+        expect(await q2(c)).toBeUndefined();
+      } finally { await setEnv(c, { DB }); }
+    });
+  });
+
+  it("(bb) mirror keeps failing: dropped after the bound and logged, no push is ever sent, queue key deleted", async () => {
+    await withFakeTime(19_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      await failMirror(c, { fail: true });
+      try {
+        const sender = await connect(c, "sender");
+        await send(sender, "never-mirrored");
+        await vi.waitFor(async () => expect((await q2(c))?.mirrorPending).toBe(true));
+        await runUntilDone(runAlarm, c, at);
+        expect(await q2(c)).toBeUndefined();
+        expect(pushCalls()).toHaveLength(0);
+        expect(allDecisionLogs()).toContain("push_decision overflow_dropped push=1 inbox=0");
+        expect(outcomeLogs().at(-1)).toContain("dropped=1");
+        expect(outcomeLogs().some((l) => l.includes("accepted=1"))).toBe(false);
+      } finally { await setEnv(c, { DB }); }
+    });
+  });
+
+  it("(bc) removing a member clears their `owed` entry", async () => {
+    await withFakeTime(20_000_000, async () => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { b } = await addDevice(c, "rcpt");
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: String(url) === b ? 503 : 201 }));
+      await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toBeTruthy());
+      await stub(c).dropUser("rcpt", true);
+      const q = (await q2(c))!;
+      expect(q.owed).toEqual({});
+      expect(q.push).toEqual([]);
+    });
+  });
+
   it("(s) per-message cost: DM and 10-member group", async () => {
     for (const [label, n] of [["DM", 1], ["10-member group", 9]] as const) {
       const users = Array.from({ length: n }, (_, i) => `${label[0]}${n}x${i}`);

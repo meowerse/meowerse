@@ -130,14 +130,30 @@ interface Overflow {
   chatId: string; push: string[]; inbox: string[];
   attempts: Record<string, number>; notBefore: Record<string, number>;
   rounds: number; total: number; ceiling: number; seq: number;
+  /** userId -> short endpoint fingerprints still owed this push (a sibling device already
+   *  got it, or failed for good). Absent entry = ALL of the user's endpoints. Old stored records
+   *  lack the field (readOverflow normalises it to {}). Fingerprints only: never an endpoint URL. */
+  owed: Record<string, string[]>;
+  /** The D1 chat-preview mirror write failed for this batch: re-mirror before any push. */
+  mirrorPending?: boolean;
 }
 /** What one push round hands back: `cut` = not reached (budget), `retry` = transient
- *  failures with their attempt count so far, `dropped` = recipients out of attempts. */
-interface PushResult { cut: string[]; retry: Record<string, number>; dropped: number }
+ *  failures with their attempt count so far, `dropped` = recipients out of attempts,
+ *  `owed` = per retried user, the endpoint fingerprints that still need the push,
+ *  `mirrorPending` = the push was deferred because the D1 mirror write failed. */
+interface PushResult { cut: string[]; retry: Record<string, number>; dropped: number; owed: Record<string, string[]>; mirrorPending: boolean }
+/** First 16 hex chars of SHA-256(endpoint URL): identifies a device inside the DO queue
+ *  without storing the endpoint itself. */
+async function endpointFingerprint(endpoint: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint)));
+  let hex = "";
+  for (const b of d.subarray(0, 8)) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
 /** The single per-invocation outcome line: counts only. */
-function logOutcome(c: { eligible: number; attempted: number; accepted: number; transient: number; permanent: number; dropped: number; suppressed: string; debounced: number; deferred: number }): void {
+function logOutcome(c: { eligible: number; attempted: number; accepted: number; transient: number; permanent: number; dropped: number; suppressed: string; debounced: number; deferred: number; partial?: number }): void {
   console.log(
-    `push_decision outcome eligible=${c.eligible} attempted=${c.attempted} accepted=${c.accepted} transient_failed=${c.transient} permanent_failed=${c.permanent} dropped=${c.dropped} suppressed_active=${c.suppressed} suppressed_debounce=${c.debounced} deferred=${c.deferred}`,
+    `push_decision outcome eligible=${c.eligible} attempted=${c.attempted} accepted=${c.accepted} transient_failed=${c.transient} permanent_failed=${c.permanent} dropped=${c.dropped} suppressed_active=${c.suppressed} suppressed_debounce=${c.debounced} deferred=${c.deferred}${c.partial ? ` partial=${c.partial}` : ""}`,
   );
 }
 const OVERFLOW_KEY = "fanout_overflow";
@@ -490,11 +506,18 @@ export class Conversation extends DurableObject<Env> {
     // member list is cached, so push sizing never depends on the inbox fan-out's timing).
     const budget: SubBudget = { ext: 2, int: 0 };
     // Filled in place by pushOffline so even a rejection cannot discard the budget-cut recipients.
-    const pushRes: PushResult = { cut: [], retry: {}, dropped: 0 };
-    const mirror: Promise<void> = (async () => {
-      try {
-        await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
-      } catch {}
+    const pushRes: PushResult = { cut: [], retry: {}, dropped: 0, owed: {}, mirrorPending: false };
+    // Resolves to whether the write landed (never rejects). One inline retry (one more
+    // external subrequest); a push must not go out against a stale /api/chats preview.
+    const mirror: Promise<boolean> = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) budget.ext++;
+        try {
+          await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
+          return true;
+        } catch {}
+      }
+      return false;
     })();
     const sidebar = (async (): Promise<string[]> => {
       await mirror;
@@ -512,7 +535,7 @@ export class Conversation extends DurableObject<Env> {
       (async () => {
         const push = await this.pushOffline(chatId, senderId, budget, mirror, pushRes).catch((): PushResult => pushRes);
         const inboxLeft = await sidebar;
-        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry).catch((e) => {
+        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry, push.owed, push.mirrorPending).catch((e) => {
           console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} queue_write_failed push=${push.cut.length + Object.keys(push.retry).length} inbox=${inboxLeft.length}`);
         });
       })(),
@@ -594,7 +617,7 @@ export class Conversation extends DurableObject<Env> {
    * external `budget` (the inbox fan-out spends the separate internal one). `gate` (the
    * D1 mirror write) is awaited just before the first send.
    */
-  private async pushOffline(chatId: string, senderId: string, budget: SubBudget, gate: Promise<void>, sink: PushResult): Promise<PushResult> {
+  private async pushOffline(chatId: string, senderId: string, budget: SubBudget, gate: Promise<boolean>, sink: PushResult): Promise<PushResult> {
     if (!this.env.VAPID_PRIVATE_JWK) return sink; // push not configured
     // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
     // backgrounded tab still gets a push (its service worker suppresses the toast while
@@ -607,10 +630,12 @@ export class Conversation extends DurableObject<Env> {
     try {
       all = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active], skipped);
     } catch (e) {
+      // Recipients are queued without a mirror check; if the mirror failed too the follow-up must re-mirror first.
+      if (!(await gate)) sink.mirrorPending = true;
       return this.targetReadFailed(chatId, senderId, active, budget, e, sink);
     }
     skipped.delete(senderId);
-    return this.fanPush(all, budget, { suppressedActive: skipped.size, followup: false, prior: {}, gate, sink });
+    return this.fanPush(all, budget, { suppressedActive: skipped.size, followup: false, prior: {}, owed: {}, gate, sink });
   }
 
   /** The first invocation could not read the push targets (D1 error): queue EVERY member
@@ -648,8 +673,12 @@ export class Conversation extends DurableObject<Env> {
   private async fanPush(
     all: Array<{ endpoint: string; userId: string }>,
     budget: SubBudget,
-    o: { suppressedActive: number | null; followup: boolean; prior: Record<string, number>; gate?: Promise<void>; sink?: PushResult },
+    o: { suppressedActive: number | null; followup: boolean; prior: Record<string, number>; owed: Record<string, string[]>; gate?: Promise<boolean>; sink?: PushResult },
   ): Promise<PushResult> {
+    // Users still owed only some devices: fingerprint their endpoints first (async, so
+    // BEFORE the synchronous section) to send to the owed ones only.
+    const fpOf = new Map<string, string>();
+    for (const t of all) if (o.owed[t.userId]) fpOf.set(t.endpoint, await endpointFingerprint(t.endpoint));
     // ---- synchronous section: filter by window, apply budget, reserve (no await) ----
     const now = Date.now();
     const byUser = new Map<string, string[]>();
@@ -657,40 +686,69 @@ export class Conversation extends DurableObject<Env> {
     let debounced = 0;
     const cut: string[] = [];
     const targets: Array<{ endpoint: string; userId: string }> = [];
-    for (const [userId, endpoints] of byUser) {
-      if (now - (this.lastPush.get(userId) ?? -Infinity) < PUSH_DEBOUNCE_MS) { debounced++; continue; }
+    // `reserved`: users whose debounce window this call stamped. Owed users are exempt: the
+    // window was stamped when the first devices got the push, and the owed devices never did.
+    const reserved = new Set<string>();
+    const owedUsers = new Set<string>();
+    for (const [userId, allEndpoints] of [...byUser]) {
+      let endpoints = allEndpoints;
+      const owedFps = o.owed[userId];
+      if (owedFps) {
+        endpoints = allEndpoints.filter((ep) => owedFps.includes(fpOf.get(ep)!));
+        // Every owed device is gone (subscription removed/pruned): nothing left to deliver.
+        if (endpoints.length === 0) { byUser.delete(userId); continue; }
+        owedUsers.add(userId);
+      } else if (now - (this.lastPush.get(userId) ?? -Infinity) < PUSH_DEBOUNCE_MS) { debounced++; continue; }
       if (budget.ext + endpoints.length > EXTERNAL_BUDGET) { cut.push(userId); continue; }
       budget.ext += endpoints.length;
       for (const endpoint of endpoints) targets.push({ endpoint, userId });
-      this.lastPush.set(userId, now);
+      if (!owedUsers.has(userId)) { this.lastPush.set(userId, now); reserved.add(userId); }
     }
-    const reserved = new Set(targets.map((t) => t.userId));
+    const attemptedUsers = new Set(targets.map((t) => t.userId));
     if (o.sink) o.sink.cut = cut; // visible to the caller even if this call later rejects
     // ---- end synchronous section ----
     // Observability without identities: counts only.
-    let accepted = 0, transientFailed = 0, permanentFailed = 0, dropped = 0;
+    let accepted = 0, transientFailed = 0, permanentFailed = 0, dropped = 0, partial = 0;
     const retry: Record<string, number> = {};
+    const owedOut: Record<string, string[]> = {};
+    let mirrorPending = false;
     const suppressed = o.suppressedActive === null ? "n/a" : String(o.suppressedActive);
-    const outcomeLine = () => logOutcome({ eligible: byUser.size, attempted: reserved.size, accepted, transient: transientFailed, permanent: permanentFailed, dropped, suppressed, debounced, deferred: cut.length });
+    const outcomeLine = () => logOutcome({ eligible: byUser.size, attempted: attemptedUsers.size, accepted, transient: transientFailed, permanent: permanentFailed, dropped, suppressed, debounced, deferred: cut.length, partial });
     if (!o.followup) {
       if (byUser.size > 0 && debounced === byUser.size) {
         console.log("push_decision skipped=debounce");
         outcomeLine();
-        return { cut, retry, dropped };
+        return { cut, retry, dropped, owed: owedOut, mirrorPending };
       }
       console.log(`push_decision targets=${targets.length} active_excluded=${suppressed}${debounced > 0 ? ` debounced=${debounced}` : ""}`);
     } else if (targets.length > 0) {
       console.log(`push_decision followup targets=${targets.length}`);
     }
     if (cut.length > 0) console.log(`push_decision truncated=${cut.length}`);
-    if (targets.length === 0) { outcomeLine(); return { cut, retry, dropped }; }
+    if (targets.length === 0) { outcomeLine(); return { cut, retry, dropped, owed: owedOut, mirrorPending }; }
     const outcome = new Map<string, "ok" | "transient" | "final">();
+    // Per user: fingerprints of the endpoints that failed transiently this round.
+    const transientFps = new Map<string, string[]>();
+    const addTransient = (u: string, fp: string): void => { transientFps.set(u, [...(transientFps.get(u) ?? []), fp]); };
     let threw = false;
     const rank = { ok: 2, transient: 1, final: 0 } as const;
     try {
       const key = await importVapidKey(this.env);
       // Push only after the D1 mirror write: the service worker reads /api/chats.
-      if (o.gate) await o.gate;
+      if (o.gate && !(await o.gate)) {
+        // The mirror write failed twice: the preview in D1 is stale, so do NOT push now.
+        // Release the reservations and hand everyone back as deferred (no attempt counted);
+        // the follow-up re-mirrors before it pushes.
+        for (const u of reserved) if (this.lastPush.get(u) === now) this.lastPush.delete(u);
+        const deferredUsers = [...attemptedUsers];
+        cut.push(...deferredUsers);
+        reserved.clear();
+        attemptedUsers.clear();
+        mirrorPending = true;
+        console.log(`push_decision mirror_failed retried=1 deferred=${deferredUsers.length}`);
+        outcomeLine();
+        return { cut, retry, dropped, owed: owedOut, mirrorPending };
+      }
       const merge = (userId: string, oc: "ok" | "transient" | "final"): void => {
         const prev = outcome.get(userId);
         if (!prev || rank[oc] > rank[prev]) outcome.set(userId, oc);
@@ -707,6 +765,7 @@ export class Conversation extends DurableObject<Env> {
             await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
           }
           const oc = status >= 200 && status < 300 ? "ok" : status === 0 || status === 429 || status >= 500 ? "transient" : "final";
+          if (oc === "transient") addTransient(userId, await endpointFingerprint(ep));
           merge(userId, oc);
         }),
       );
@@ -716,14 +775,15 @@ export class Conversation extends DurableObject<Env> {
       const rejected = settled.findIndex((r) => r.status === "rejected");
       if (rejected >= 0) {
         console.log(`push_decision send_error ${(settled[rejected] as PromiseRejectedResult).reason instanceof Error ? ((settled[rejected] as PromiseRejectedResult).reason as Error).name : "unknown"}`);
-        settled.forEach((r, i) => {
-          if (r.status !== "rejected") return;
+        for (const [i, r] of settled.entries()) {
+          if (r.status !== "rejected") continue;
           const u = targets[i]!.userId;
           // No known outcome: release the debounce reservation (as a thrown send always did)
           // so the next message can still push, and retry via the queue.
-          if (!outcome.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
+          if (!outcome.has(u) && reserved.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
+          addTransient(u, await endpointFingerprint(targets[i]!.endpoint));
           merge(u, "transient");
-        });
+        }
       }
     } catch (e) {
       // Release the reservation so the next round can still push these recipients. On the
@@ -748,17 +808,22 @@ export class Conversation extends DurableObject<Env> {
     // subscribed recipients excluded as active; `deferred` = queued for the alarm.
     // Active exclusion is per USER: any non-away socket in this room suppresses push on
     // all of that user's devices.
-    for (const u of reserved) {
+    for (const u of attemptedUsers) {
       const oc = outcome.get(u);
+      const tf = transientFps.get(u) ?? [];
+      // Partially delivered: a sibling device got it (2xx now, or in an earlier round which
+      // is what an `owed` entry records). Only the failed devices are retried.
+      const mixed = tf.length > 0 && (oc === "ok" || owedUsers.has(u));
       if (oc === "ok") accepted++;
-      else if (oc === "transient" || (threw && oc === undefined)) {
-        transientFailed++;
+      if (oc === "transient" || (threw && oc === undefined) || (oc === "ok" && mixed)) {
+        if (oc !== "ok") transientFailed++;
         const n = (o.prior[u] ?? 0) + 1;
-        if (n >= MAX_PUSH_ATTEMPTS) dropped++; else retry[u] = n;
-      } else permanentFailed++;
+        if (n >= MAX_PUSH_ATTEMPTS) { dropped++; if (mixed) partial++; }
+        else { retry[u] = n; if (mixed) owedOut[u] = tf; }
+      } else if (oc !== "ok") permanentFailed++;
     }
     outcomeLine();
-    return { cut, retry, dropped };
+    return { cut, retry, dropped, owed: owedOut, mirrorPending };
   }
 
   // ---- follow-up fan-out (DO alarm) ---------------------------------------------
@@ -780,6 +845,7 @@ export class Conversation extends DurableObject<Env> {
       attempts: raw.attempts ?? {}, notBefore: raw.notBefore ?? {},
       rounds: raw.rounds ?? 0, total: raw.total ?? 0,
       ceiling: Math.max(raw.ceiling ?? 0, roundCeiling(push.length + inbox.length)), seq: raw.seq ?? 0,
+      owed: raw.owed ?? {}, mirrorPending: raw.mirrorPending === true,
     };
   }
 
@@ -797,11 +863,11 @@ export class Conversation extends DurableObject<Env> {
    *  work already queued by earlier messages, and arm the alarm: immediately for new
    *  work, at now + PUSH_RETRY_MS when only retries are waiting. The current sender is
    *  never a queued push target (they are looking at the chat). */
-  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[], retry: Record<string, number>): Promise<void> {
+  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[], retry: Record<string, number>, owed: Record<string, string[]> = {}, mirrorPending = false): Promise<void> {
     const retryIds = Object.keys(retry).filter((u) => u !== senderId);
     if (push.length === 0 && inbox.length === 0 && retryIds.length === 0) return;
     const now = Date.now();
-    const prev = (await this.readOverflow()) ?? { chatId, push: [], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 0, ceiling: 0, seq: 0 };
+    const prev = (await this.readOverflow()) ?? { chatId, push: [], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 0, ceiling: 0, seq: 0, owed: {}, mirrorPending: false };
     const all = [...new Set([...prev.push, ...push, ...retryIds])].filter((u) => u !== senderId);
     const attempts: Record<string, number> = {};
     const notBefore: Record<string, number> = {};
@@ -812,6 +878,14 @@ export class Conversation extends DurableObject<Env> {
     // This message's own recipients that were cut start a fresh attempt allowance, due now.
     for (const u of push) { delete attempts[u]; delete notBefore[u]; }
     for (const u of retryIds) { attempts[u] = retry[u]!; notBefore[u] = now + PUSH_RETRY_MS; }
+    // This message goes to ALL of a user's devices, so an older `owed` narrowing is cleared for
+    // every user it (re)queues; only this message's own partial-delivery narrowing applies.
+    const nextOwed: Record<string, string[]> = {};
+    for (const u of all) {
+      if (push.includes(u)) continue;
+      const o = retryIds.includes(u) ? owed[u] : prev.owed?.[u];
+      if (o) nextOwed[u] = o;
+    }
     const nextInbox = [...new Set([...prev.inbox, ...inbox])];
     const next: Overflow = {
       chatId,
@@ -822,6 +896,8 @@ export class Conversation extends DurableObject<Env> {
       total: 0,
       ceiling: roundCeiling(all.length + nextInbox.length),
       seq: prev.seq + 1,
+      owed: nextOwed,
+      mirrorPending: prev.mirrorPending === true || mirrorPending,
     };
     await this.ctx.storage.put(OVERFLOW_KEY, next);
     await this.armAlarm(this.nextDue(next, now));
@@ -835,7 +911,7 @@ export class Conversation extends DurableObject<Env> {
    *  have re-queued (a redundant invalidation/push is cheap; a lost one is not). */
   private async settleOverflow(
     work: Overflow,
-    r: { push: string[]; inbox: string[]; attempts: Record<string, number>; notBefore: Record<string, number>; progress: boolean; attempted: boolean; failed: boolean },
+    r: { push: string[]; inbox: string[]; attempts: Record<string, number>; notBefore: Record<string, number>; owed: Record<string, string[]>; mirrorPending: boolean; progress: boolean; attempted: boolean; failed: boolean },
   ): Promise<void> {
     const cur = await this.readOverflow();
     if (!cur) return; // pruned empty by dropUser: nothing left to serve
@@ -859,7 +935,20 @@ export class Conversation extends DurableObject<Env> {
     const rounds = seqChanged ? cur.rounds : work.rounds + (!r.progress && r.attempted ? 1 : 0);
     const total = seqChanged ? cur.total : work.total + 1;
     const ceiling = seqChanged ? cur.ceiling : work.ceiling;
-    const next: Overflow = { chatId: work.chatId, push, inbox, attempts, notBefore, rounds, total, ceiling, seq: cur.seq };
+    // `owed` narrows a user to some devices. Where this run still holds the user AND a newer
+    // message re-queued them, the two narrowings concern different messages: keep a device
+    // only if both want it (union), and drop the narrowing (= all devices) if either side has none.
+    const owed: Record<string, string[]> = {};
+    for (const u of push) {
+      const mine = r.owed[u], theirs = cur.owed?.[u];
+      let o: string[] | undefined;
+      if (!runPush.has(u)) o = theirs;
+      else if (!seqChanged) o = mine;
+      else o = mine && theirs ? [...new Set([...mine, ...theirs])] : undefined;
+      if (o) owed[u] = o;
+    }
+    const mirrorPending = r.mirrorPending || (seqChanged && cur.mirrorPending === true);
+    const next: Overflow = { chatId: work.chatId, push, inbox, attempts, notBefore, rounds, total, ceiling, seq: cur.seq, owed, mirrorPending };
     await this.ctx.storage.put(OVERFLOW_KEY, next);
     const now = Date.now();
     // A failed run backs off; otherwise continue as soon as something is due.
@@ -893,30 +982,42 @@ export class Conversation extends DurableObject<Env> {
     let inboxLeft: string[] = this.env.USER_INBOX ? work.inbox : [];
     let attempts = { ...work.attempts };
     let notBefore = { ...work.notBefore };
+    let owed: Record<string, string[]> = { ...work.owed };
+    let mirrorPending = work.mirrorPending === true;
     let pushResolved = 0, retried = 0, inboxResolved = 0, failed = false, outcomeLogged = false;
     try {
       if (due.length > 0) {
+        if (mirrorPending) {
+          // The D1 preview is stale (the first invocation's mirror write failed twice): write
+          // the chat's CURRENT latest message before any push. A failure here is a failed round.
+          const last = this.ctx.storage.sql.exec("SELECT sender_id, body, created_at FROM messages WHERE is_deleted = 0 ORDER BY created_at DESC LIMIT 1").toArray()[0];
+          budget.ext++;
+          if (last) await mirrorLastMessage(this.d1(), work.chatId, String(last.body), String(last.sender_id), Number(last.created_at));
+          mirrorPending = false;
+        }
         const pending = new Set(due);
         const active = this.activeUsers();
         for (const u of active) this.lastPush.delete(u);
         budget.ext++;
         const skipped = new Set<string>();
         const all = await pushTargetsForChat(this.d1(), work.chatId, active, skipped); // join on chat_members: removed users drop out
-        const r = await this.fanPush(all.filter((t) => pending.has(t.userId)), budget, { suppressedActive: [...skipped].filter((u) => pending.has(u)).length, followup: true, prior: work.attempts });
+        const r = await this.fanPush(all.filter((t) => pending.has(t.userId)), budget, { suppressedActive: [...skipped].filter((u) => pending.has(u)).length, followup: true, prior: work.attempts, owed: work.owed });
         outcomeLogged = true;
         const retryIds = Object.keys(r.retry);
         pushLeft = [...work.push.filter((u) => !dueSet.has(u)), ...r.cut, ...retryIds];
         attempts = { ...work.attempts };
         notBefore = { ...work.notBefore };
-        for (const u of due) { delete attempts[u]; delete notBefore[u]; }
-        for (const u of r.cut) if (work.attempts[u] !== undefined) attempts[u] = work.attempts[u]!;
+        owed = { ...work.owed };
+        for (const u of due) { delete attempts[u]; delete notBefore[u]; delete owed[u]; }
+        for (const u of r.cut) { if (work.attempts[u] !== undefined) attempts[u] = work.attempts[u]!; if (work.owed[u]) owed[u] = work.owed[u]!; }
+        for (const u of retryIds) if (r.owed[u]) owed[u] = r.owed[u]!;
         for (const u of retryIds) { attempts[u] = r.retry[u]!; notBefore[u] = Date.now() + PUSH_RETRY_MS; }
         pushResolved = due.length - r.cut.length - retryIds.length;
         retried = retryIds.length; // an attempt was made (and counted) for each of these
       } else if (vapid && work.push.length > 0) {
         // Only transiently-failed recipients still waiting: nothing attempted this round,
         // but the invocation still reports exactly one outcome line.
-        await this.fanPush([], budget, { suppressedActive: null, followup: true, prior: work.attempts });
+        await this.fanPush([], budget, { suppressedActive: null, followup: true, prior: work.attempts, owed: work.owed });
         outcomeLogged = true;
       }
       const ns = this.env.USER_INBOX;
@@ -941,7 +1042,8 @@ export class Conversation extends DurableObject<Env> {
       if (due.length > 0 && !outcomeLogged) logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: 0, suppressed: "n/a", debounced: 0, deferred: due.length });
     }
     await this.settleOverflow(work, {
-      push: pushLeft, inbox: inboxLeft, attempts, notBefore,
+      push: pushLeft, inbox: inboxLeft, attempts, notBefore, owed,
+      mirrorPending: mirrorPending && pushLeft.length > 0,
       progress: !failed && (pushResolved + retried > 0 || inboxResolved > 0),
       attempted: due.length > 0 || work.inbox.length > 0,
       failed,
@@ -1006,7 +1108,8 @@ export class Conversation extends DurableObject<Env> {
     if (queued && (queued.push.includes(userId) || queued.inbox.includes(userId))) {
       const { [userId]: _a, ...attempts } = queued.attempts;
       const { [userId]: _n, ...notBefore } = queued.notBefore;
-      await this.ctx.storage.put(OVERFLOW_KEY, { ...queued, push: queued.push.filter((u) => u !== userId), inbox: queued.inbox.filter((u) => u !== userId), attempts, notBefore });
+      const { [userId]: _o, ...owed } = queued.owed ?? {};
+      await this.ctx.storage.put(OVERFLOW_KEY, { ...queued, push: queued.push.filter((u) => u !== userId), inbox: queued.inbox.filter((u) => u !== userId), attempts, notBefore, owed });
     }
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attach | null;
