@@ -1,9 +1,13 @@
-import { test, expect, afterAll } from "vitest";
+import { test, expect, afterAll, vi } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
 import { genSigningKeys, cookieValue } from "./helpers";
 import type { DbClient } from "../src/types";
+
+// Every scenario runs many real PBKDF2 (600k) logins; on loaded CI runners one scenario can
+// exceed vitest's 5 s default (it did on #94). A longer per-test limit, same assertions.
+vi.setConfig({ testTimeout: 60_000 });
 
 // ACCEPTANCE (pre-enable) for self-service account deletion. Production-like: real libSQL (the same engine Turso
 // runs), the real `handle` router end to end (signup, login, Telegram widget, authorize, consent, token, userinfo,
