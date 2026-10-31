@@ -6,7 +6,7 @@ export const SITE = {
   url: "https://meow.alxnko.dev/",
   name: "meowerse",
   description: "Small, fast web apps by alxnko: one account, a messenger, and the design system they share.",
-  legal: "meowerse — a personal project by alxnko. no ads. no website analytics or trackers today.",
+  legal: "meowerse — a personal project by alxnko. no ads or cross-site tracking today; cookieless page counts only.",
   source: "https://github.com/meowerse/meowerse",
   themeColor: { dark: tokens.semantic.dark.bg, light: tokens.semantic.light.bg },
 } as const;

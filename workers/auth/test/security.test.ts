@@ -6,6 +6,7 @@ import {
   clearHostCookie,
   parseCookies,
   securityHeaders,
+  CF_BEACON_CSP,
   validateCsrf,
   validateRedirectUri,
 } from "../src/security";
@@ -78,6 +79,13 @@ test("securityHeaders sets no-referrer, no-store, frame-ancestors none; extra CS
   expect(h["Cache-Control"]).toContain("no-store");
   expect(h["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
   expect(securityHeaders("img-src 'self' https://logos.example")["Content-Security-Policy"]).toContain("img-src");
+});
+
+test("CF_BEACON_CSP allows exactly the Cloudflare Web Analytics script host (D7)", () => {
+  expect(CF_BEACON_CSP).toBe("script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
+  const csp = securityHeaders(CF_BEACON_CSP)["Content-Security-Policy"] ?? "";
+  expect(csp).toContain("default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
+  expect(csp).not.toMatch(/unsafe-/);
 });
 
 test("validateCsrf needs non-empty constant-time match", () => {

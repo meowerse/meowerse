@@ -34,6 +34,13 @@ export function dataUrls(src: string): string[] {
   return src.match(/(?:src|href)\s*=\s*["']data:[^"']*|url\(\s*["']?data:[^)]*/gi) ?? [];
 }
 
+/** Cloudflare Web Analytics (owner decision D7): the zone auto-injects <script type="module" src=".../beacon.min.js"> into
+ * every HTML response. External, no inline code, so a host-source is enough for script-src. The beacon POSTs to
+ * send.to, else (tag without "version") https://cloudflareinsights.com/cdn-cgi/rum, else same-origin /cdn-cgi/rum
+ * (verified against beacon.min.js and in Chromium), so connect-src gets that one origin too. */
+export const CF_BEACON_ORIGIN = "https://static.cloudflareinsights.com";
+export const CF_INSIGHTS_ORIGIN = "https://cloudflareinsights.com";
+
 export const TRUSTED_TYPES = ["require-trusted-types-for 'script'", "trusted-types 'none'"] as const;
 
 type ProbeLike = { status?: { kind?: string; url?: string } };
@@ -56,11 +63,11 @@ export function buildCsp(docs: string[], connect: string[] = []): string {
   const list = (xs: Iterable<string>) => [...xs].sort().map((x) => ` ${x}`).join("");
   return [
     "default-src 'none'",
-    `script-src 'self'${list(scripts)}`,
+    `script-src 'self'${list(scripts)} ${CF_BEACON_ORIGIN}`,
     `style-src 'self'${list(styles)}`,
     "img-src 'self'",
     "font-src 'self'",
-    `connect-src 'self'${list(connect)}`,
+    `connect-src 'self'${list([...connect, CF_INSIGHTS_ORIGIN])}`,
     "manifest-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",

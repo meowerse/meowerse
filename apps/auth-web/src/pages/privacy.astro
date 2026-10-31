@@ -17,7 +17,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
     </aside>
     <p><strong>Here is the real list of who gets what, and why.</strong></p>
 
-    <!-- Analytics, the consent banner, the membership and the my-data page are not live. Their rows and sections are added
+    <!-- Cloudflare Web Analytics is live (D7). Other analytics, the consent banner, the membership and the my-data page are not live. Their rows and sections are added
          in the SAME release that turns each feature on, never before. -->
     <LegalTable caption="who gets your data, why, what and when" head={["partner", "why", "what they get", "when"]} rows={PARTNERS.map((p) => [p.partner, p.why, p.gets, p.when])} />
     <p class="mw-muted">The Minecraft server and its plugins run on a separate machine from a separate project; this page covers them at a high level plus the facts below. Cloudflare appears in several rows because it provides several things.</p>
@@ -63,7 +63,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
 
     <Card title="meow.alxnko.dev and alxnko.dev">
       <ul>
-        <li>Static sites. No accounts, no cookies, no tracking. The only things stored in your browser are display preferences such as light/dark and sound (local storage); alxnko.dev also keeps its terminal's command history there. All of it stays on your device.</li>
+        <li>Static sites. No accounts, no cookies, no ads or cross-site tracking (only the cookieless page counts above). The only things stored in your browser are display preferences such as light/dark and sound (local storage); alxnko.dev also keeps its terminal's command history there. All of it stays on your device.</li>
         <li>Cloudflare serves them and sees each request, as in the table.</li>
       </ul>
     </Card>
@@ -91,7 +91,7 @@ import { APP_KINDS, CONTACTS, PARTNERS, POLICY_VERSION, SCOPES } from "../lib/le
          (the consent-gated providers and our own anonymous counts) REPLACES it with an "Anonymous
          measurement" section, adds the consent banner and partner rows (after the Cloudflare rows above), and the membership section. -->
     <h2>analytics today</h2>
-    <p>Today our websites run no visitor analytics and load no third-party trackers or advertising scripts. (The Minecraft server's plugins send their own statistics to bStats and FastStats; see the Minecraft section and the table.) If that changes, this page, the partner table and the consent choices change in the same release, before anything is switched on.</p>
+    <p>Our websites use Cloudflare Web Analytics for page-view and performance counts. It is cookieless: it sets no cookie and uses no identifier that follows you across sites (see the table). No other analytics or tracking scripts run on our websites today, and none load advertising. (The Minecraft server's plugins send their own statistics to bStats and FastStats; see the Minecraft section and the table.) If that changes, this page, the partner table and the consent choices change in the same release, before anything is switched on.</p>
 
     <h2>what we never do</h2>
     <ul>
