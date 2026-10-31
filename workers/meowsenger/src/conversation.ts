@@ -877,6 +877,7 @@ export class Conversation extends DurableObject<Env> {
   private async runOverflow(): Promise<void> {
     const work = await this.readOverflow();
     if (!work) return;
+    // A round where nothing is due still counts toward the ceiling; harmless in production (monotonic clock, early alarms just re-arm).
     if (work.rounds >= MAX_FOLLOWUPS || work.total >= work.ceiling) {
       console.log(`push_decision overflow_dropped push=${work.push.length} inbox=${work.inbox.length}${work.rounds >= MAX_FOLLOWUPS ? "" : " reason=ceiling"}`);
       if (work.push.length > 0) logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: work.push.length, suppressed: "n/a", debounced: 0, deferred: 0 });

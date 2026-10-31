@@ -48,13 +48,23 @@ beforeEach(async () => {
   vi.stubGlobal("fetch", fetchSpy);
   logSpy = vi.spyOn(console, "log");
 });
-afterEach(() => {
+afterEach(async () => {
+  // Real-clock tests can leave a queued retry + a real alarm armed; it would fire in a later
+  // fake-clock test (clock far from real time -> retry never due -> ceiling-drop log noise).
+  // Disarm every chat this test created.
+  for (const c of createdChats.splice(0)) {
+    await runInDurableObject(stub(c), async (inst: Conversation) => {
+      await internals(inst).ctx.storage.deleteAlarm();
+      await internals(inst).ctx.storage.delete("fanout_overflow");
+    });
+  }
   vi.unstubAllGlobals();
   logSpy.mockRestore();
   for (const ws of sockets.splice(0)) { try { ws.close(); } catch { /* already closed */ } }
 });
 
-function newChat(): string { return `push-${++seq}-${Math.random().toString(36).slice(2, 8)}`; }
+const createdChats: string[] = [];
+function newChat(): string { const c = `push-${++seq}-${Math.random().toString(36).slice(2, 8)}`; createdChats.push(c); return c; }
 async function seed(chatId: string, users: string[], subscribed: string[]): Promise<void> {
   await DB.prepare("INSERT OR IGNORE INTO chats (id, type, created_by, created_at, last_activity) VALUES (?, 'direct', 'sender', 0, 0)").bind(chatId).run();
   for (const u of users) {
@@ -1025,11 +1035,8 @@ describe("Conversation offline push decision", () => {
       const counts = countsByEndpoint();
       expect(counts.size).toBe(N * MAX_PUSH_SUBS_PER_USER);
       for (const [, n] of counts) expect(n).toBe(3);
-      // (A stale single-recipient ceiling drop from an earlier test's Durable Object can interleave
-      // here, so single-recipient lines are skipped; a ceiling drop of THIS batch's tail would
-      // also fail the exact-3-attempts assertion above.)
-      expect(allDecisionLogs().filter((l) => (l.startsWith("push_decision overflow_dropped") || l.includes("reason=ceiling")) && !l.includes("push=1 "))).toEqual([]);
-      const logs = outcomeLogs().filter((l) => !l.includes("eligible=0 ")); // same stale-DO caveat: ceiling-drop lines have eligible=0
+      expect(allDecisionLogs().filter((l) => l.startsWith("push_decision overflow_dropped") || l.includes("reason=ceiling"))).toEqual([]);
+      const logs = outcomeLogs();
       expect(logs.reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0)).toBe(N);
       expect(logs.reduce((t, l) => t + Number(/accepted=(\d+)/.exec(l)![1]), 0)).toBe(0);
     });
