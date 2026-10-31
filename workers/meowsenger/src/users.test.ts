@@ -23,6 +23,18 @@ function memDb() {
         const row = u.get(String(p[1])); if (row) row.last_seen_at = Number(p[0]);
       }
     },
+    async batch(stmts) {
+      const out: number[] = [];
+      for (const st of stmts) {
+        const p = st.params ?? [];
+        if (st.sql.startsWith("UPDATE users SET username")) {
+          let n = 0;
+          for (const row of u.values()) if (row.username === p[0] && row.id !== p[1]) { row.username = "~" + row.id; n++; }
+          out.push(n);
+        } else { await db.run(st.sql, p); out.push(1); }
+      }
+      return out;
+    },
   };
   return { db, u };
 }

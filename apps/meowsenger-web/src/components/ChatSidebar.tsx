@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { shownName, shownUsername } from "../lib/userName";
 import { searchGlobal, type ChatSummary, type Message } from "../lib/chat";
 import { Avatar } from "./Avatar";
 import { Icon } from "@meowerse/ui";
@@ -27,7 +28,7 @@ function isMembered(c: ChatSummary): boolean {
 /** A chat's display title: groups/channels by their name; DMs by the peer's name. */
 function chatTitle(c: ChatSummary): string {
   if (isMembered(c)) return c.name || (isChannel(c) ? "channel" : "group");
-  return c.peerDisplayName || c.peerUsername || c.name || "direct message";
+  return c.peerUsername ? shownName(c.peerDisplayName, c.peerUsername) : (c.peerDisplayName || c.name || "direct message");
 }
 
 export function ChatSidebar({
@@ -207,12 +208,12 @@ export function ChatSidebar({
       {me && (
         <footer className="mw-chat__account">
           <span className="mw-chatrow__avatar">
-            <Avatar url={me.avatarUrl} name={me.displayName || me.username} size="sm" />
+            <Avatar url={me.avatarUrl} name={shownName(me.displayName, me.username)} size="sm" />
             <span className="mw-dot mw-dot--on" aria-label="online" />
           </span>
           <div className="mw-chat__account-info">
-            <span className="mw-chat__account-name" data-case="preserve">{me.displayName || me.username}</span>
-            <span className="mw-chat__account-user" data-case="preserve">@{me.username}</span>
+            <span className="mw-chat__account-name" data-case="preserve">{shownName(me.displayName, me.username)}</span>
+            {shownUsername(me.username) && <span className="mw-chat__account-user" data-case="preserve">@{me.username}</span>}
           </div>
           <div className="mw-chat__account-actions">
             {onSettingsClick && (

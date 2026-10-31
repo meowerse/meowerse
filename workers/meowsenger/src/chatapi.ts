@@ -26,13 +26,15 @@ import {
 } from "./chats";
 import { addMember, removeMember, promote, demote, leave } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
-import { getAllowAutoGroupAdd, setAllowAutoGroupAdd, userIdsByNames } from "./users";
+import { getAllowAutoGroupAdd, setAllowAutoGroupAdd, userIdsByNames, isReleasedUsername } from "./users";
 import { savePushSubscription, deletePushSubscription, isAllowedPushEndpoint } from "./push";
 import { MAX_MESSAGE_BODY as MAX_BODY } from "@meowerse/ts-shared";
 
 /** Look up a user id by username, or null. */
 async function userIdByName(db: DbClient, username: string): Promise<string | null> {
-  const r = await db.first("SELECT id FROM users WHERE username = ?", [username.trim()]);
+  const name = username.trim();
+  if (isReleasedUsername(name)) return null; // released placeholder: never addressable
+  const r = await db.first("SELECT id FROM users WHERE username = ?", [name]);
   return r ? String(r.id) : null;
 }
 

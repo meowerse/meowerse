@@ -35,6 +35,10 @@ function memDb() {
       if (sql.startsWith("INSERT INTO sessions")) { expect(p).not.toContain("AT"); expect(p).not.toContain("RT"); s.set(String(p[0]), { id: p[0], params: p }); }
       if (sql.startsWith("INSERT INTO users")) u.set(String(p[0]), { id: p[0] });
     },
+    async batch(stmts) {
+      for (const st of stmts) if (st.sql.startsWith("INSERT INTO users")) u.set(String(st.params?.[0]), { id: st.params?.[0] });
+      return stmts.map(() => 0);
+    },
   };
   return { db, s, u };
 }

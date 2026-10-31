@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Icon } from "@meowerse/ui";
+import { shownName } from "../lib/userName";
 import { forwardMessages, type ChatSummary } from "../lib/chat";
 import { Avatar } from "./Avatar";
 
 /** A chat's display title: groups/channels by name; DMs by the peer's name. */
 function chatTitle(c: ChatSummary): string {
   if (c.type === "group" || c.type === "channel") return c.name || (c.type === "channel" ? "channel" : "group");
-  return c.peerDisplayName || c.peerUsername || c.name || "direct message";
+  return c.peerUsername ? shownName(c.peerDisplayName, c.peerUsername) : (c.peerDisplayName || c.name || "direct message");
 }
 
 /**

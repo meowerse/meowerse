@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Avatar } from "./Avatar";
 import { Icon } from "@meowerse/ui";
+import { shownName } from "../lib/userName";
 import {
   getMembers,
   addMember,
@@ -381,7 +382,7 @@ export function MemberDrawer({
               <p className="mw-muted" style={{ padding: "var(--space-3) var(--space-4)" }}>no pending requests.</p>
             ) : (
               requests.map((rq) => {
-                const label = rq.displayName || rq.username;
+                const label = shownName(rq.displayName, rq.username);
                 const rowBusy = reqBusyId === rq.id;
                 return (
                   <div key={rq.id} className="mw-mrow">
@@ -487,7 +488,7 @@ export function MemberDrawer({
           {loading && <p className="mw-muted" style={{ padding: "var(--space-3)" }}>loading members…</p>}
           {!loading && members.map((m) => {
             const isMe = m.userId === meId;
-            const label = m.displayName || m.username;
+            const label = shownName(m.displayName, m.username);
             const isOnline = online.has(m.userId);
             const rowBusy = busyId === m.userId;
             // Owner can act on anyone but self; admin can remove members (server
