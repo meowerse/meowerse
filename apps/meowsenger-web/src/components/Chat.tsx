@@ -3,7 +3,7 @@ import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
 import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { fmtDay } from "../lib/messageText";
-import { useConversation } from "../hooks/useConversation";
+import { useConversation, type SendResult } from "../hooks/useConversation";
 import { useInbox } from "../hooks/useInbox";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
@@ -261,7 +261,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, sendReact, sendTyping,
+    send, sendEdit, sendDelete, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onMessageDeleted, consumeReply, onRevoked });
 
@@ -343,10 +343,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Memory only; no message bodies of any other message leave this component.
   const messagesRefForEnd = useRef(messages);
   messagesRefForEnd.current = messages;
+  const queuedCountRef = useRef(queuedCount);
+  queuedCountRef.current = queuedCount;
   useEffect(() => {
     const src = () => ({
       draft: draftRef.current,
-      pendingSend: messagesRefForEnd.current.some((m) => m.pending),
+      // queued outbox items count too: a memory-only queue is lost with the tab/session.
+      pendingSend: messagesRefForEnd.current.some((m) => m.pending) || queuedCountRef.current() > 0,
     });
     setSnapshotSource(src);
     return () => setSnapshotSource(null);
@@ -470,21 +473,21 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   }, [base, activeRef, fetchList]);
 
   // Reply/edit/delete route through the hook; ownership + windows are UX gating only.
-  function sendWith(body: string) {
-    send(body, replyingTo?.id ?? null);
+  function sendWith(body: string): SendResult {
+    return send(body, replyingTo?.id ?? null);
   }
   function onSaveEdit(m: Bubble, body: string) {
-    setEditingId(null);
-    sendEdit(m, body);
+    // Keep the editor open (and the typed text) if nothing was sent or queued.
+    if (sendEdit(m, body) !== "rejected") setEditingId(null);
   }
 
   // Can I still edit / delete this message? (own + within window, ignoring optimistic
   // bubbles and tombstones). Mirrors the server's checks — purely for showing the action.
   function canEdit(m: Bubble): boolean {
-    return !!me && m.senderId === me.id && !m.pending && !m.isDeleted && Date.now() - m.createdAt <= EDIT_WINDOW_MS;
+    return !!me && m.senderId === me.id && !m.pending && m.queued !== "delete" && !m.isDeleted && Date.now() - m.createdAt <= EDIT_WINDOW_MS;
   }
   function canDelete(m: Bubble): boolean {
-    return !!me && m.senderId === me.id && !m.pending && !m.isDeleted && Date.now() - m.createdAt <= DELETE_WINDOW_MS;
+    return !!me && m.senderId === me.id && !m.pending && m.queued !== "delete" && !m.isDeleted && Date.now() - m.createdAt <= DELETE_WINDOW_MS;
   }
 
   // Best-effort clipboard write with a toast on the outcome. Falls back to a toast
@@ -979,7 +982,6 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               <Composer
                 onSend={sendWith}
                 onTyping={sendTyping}
-                disabled={!connected}
                 replyTo={replyDraft}
                 onCancelReply={() => setReplyingTo(null)}
                 onDraftChange={(t) => { draftRef.current = t; }}

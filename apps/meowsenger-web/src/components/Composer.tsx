@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@meowerse/ui";
+import { enterSubmits } from "../lib/enterKey";
+import type { SendResult } from "../hooks/useConversation";
 
 const TYPING_IDLE_MS = 4000;
+/** The server's body limit; also the textarea's `maxLength`. */
+const MAX_LEN = 4000;
+/** The counter appears (and is announced) once this few characters remain. */
+const COUNT_FROM = 400;
 
 /** The message being replied to, surfaced as a dismissable chip above the input. */
 export interface ReplyDraft {
@@ -10,8 +16,10 @@ export interface ReplyDraft {
   preview: string;
 }
 
-/** Message composer: a text input + send button. Enter sends; the input clears
- *  on send. Disabled until the socket is connected.
+/** Message composer: a text input + send button. Enter sends on desktop (a newline
+ *  on touch devices); IME composition never sends. The textarea is NEVER disabled --
+ *  while the socket isn't open the parent queues the message (in memory) and the text
+ *  clears only when `onSend` reports "sent" or "queued"; "rejected" keeps it.
  *
  *  Typing signal: `onTyping(true)` fires on the first keystroke after idle, and
  *  `onTyping(false)` fires after ~4s of no typing, on send, or on blur. The timer
@@ -23,14 +31,12 @@ export interface ReplyDraft {
 export function Composer({
   onSend,
   onTyping,
-  disabled,
   replyTo,
   onCancelReply,
   onDraftChange,
 }: {
-  onSend: (body: string) => void;
+  onSend: (body: string) => SendResult;
   onTyping?: (active: boolean) => void;
-  disabled?: boolean;
   replyTo?: ReplyDraft | null;
   onCancelReply?: () => void;
   /** Mirrors the unsent text to the parent (memory only) so a session-ended banner can hand it back. */
@@ -81,11 +87,14 @@ export function Composer({
 
   function send() {
     const body = text.trim();
-    if (!body || disabled) return;
-    onSend(body);
+    if (!body) return;
+    if (onSend(body) === "rejected") return; // keep the text: nothing was sent or queued
     setText("");
     stopTyping();
   }
+
+  const remaining = MAX_LEN - text.length;
+  const enterHint = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches ? "enter" : "send";
 
   return (
     <div className="mw-composer">
@@ -112,11 +121,11 @@ export function Composer({
         rows={1}
         autoComplete="off"
         autoCapitalize="sentences"
-        enterKeyHint="send"
+        enterKeyHint={enterHint}
         value={text}
         placeholder="type a message…"
         aria-label="message"
-        disabled={disabled}
+        maxLength={MAX_LEN}
         onChange={(e) => {
           setText(e.target.value);
           if (e.target.value) keystroke();
@@ -124,8 +133,9 @@ export function Composer({
         }}
         onBlur={stopTyping}
         onKeyDown={(e) => {
-          // Enter sends; Shift+Enter inserts a newline.
-          if (e.key === "Enter" && !e.shiftKey) {
+          // Desktop Enter sends; Shift+Enter / touch Enter insert a newline; an open IME
+          // composition (Enter confirms the candidate) never sends.
+          if (enterSubmits(e)) {
             e.preventDefault();
             send();
           }
@@ -135,12 +145,29 @@ export function Composer({
         className="mw-btn mw-btn--primary mw-btn--md"
         aria-label="send"
         onClick={send}
-        disabled={disabled || !text.trim()}
+        disabled={!text.trim()}
       >
         <span className="mw-tlabel">send</span>
         <span className="mw-ticon" aria-hidden="true"><Icon name="send" size={16} /></span>
       </button>
       </div>
+      {remaining <= COUNT_FROM && (
+        <span className={`mw-composer__count${remaining <= 0 ? " is-limit" : ""}`} aria-hidden="true">
+          {text.length} / {MAX_LEN}
+        </span>
+      )}
+      {/* Polite announcement that changes only when a threshold is crossed, so a steady
+          typist is not read a number per keystroke. */}
+      <span className="mw-sr-only" role="status" aria-live="polite">{countAnnouncement(remaining)}</span>
     </div>
   );
+}
+
+/** Coarse buckets, so the live region only updates near the limit. */
+function countAnnouncement(remaining: number): string {
+  if (remaining <= 0) return "message limit reached";
+  if (remaining <= 20) return "20 characters left or fewer";
+  if (remaining <= 100) return "100 characters left or fewer";
+  if (remaining <= COUNT_FROM) return "400 characters left or fewer";
+  return "";
 }

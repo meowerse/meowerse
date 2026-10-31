@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction, type Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
@@ -28,6 +28,24 @@ const FLASH_MS = 1200;
 const TYPING_TTL_MS = 5000;
 // How close to the bottom (px) still counts as "at bottom" for read + autoscroll.
 const NEAR_BOTTOM_PX = 80;
+
+/** The server's message-body limit (conversation DO `bad_body`). Mirrored client-side. */
+export const MAX_BODY = 4000;
+/** Per-chat cap on queued (unsent) items, so a long offline stretch can't grow without bound. */
+const OUTBOX_MAX = 100;
+
+/** The outcome of a send/edit/delete request. The composer clears its text only on
+ *  "sent" or "queued"; "rejected" keeps what the user typed. */
+export type SendResult = "sent" | "queued" | "rejected";
+
+/** One queued action, held in memory only (never persisted: bodies must not reach
+ *  localStorage/sessionStorage/IndexedDB). A send keeps the client `tempId` it was
+ *  given at enqueue time and reuses it on flush -- never regenerated -- so the server
+ *  can dedupe on (senderId, tempId) once it is idempotent (PR-4). */
+type OutboxItem =
+  | { kind: "send"; tempId: string; body: string; replyToId: string | null; replyTo: Bubble["replyTo"]; createdAt: number }
+  | { kind: "edit"; id: string; body: string; editedAt: number }
+  | { kind: "delete"; id: string };
 
 /** Human-readable copy for the transient error toast the server can send. */
 const ERROR_COPY: Record<string, string> = {
@@ -118,9 +136,12 @@ export interface UseConversation {
   registerRow: (id: string, el: HTMLDivElement | null) => void;
   /** Read-only mirror of the active chat id, for the view's own async guards. */
   activeRef: RefObject<string | null>;
-  send: (body: string, replyToId?: string | null) => void;
-  sendEdit: (m: Bubble, body: string) => void;
-  sendDelete: (m: Bubble) => void;
+  /** Send, or queue in the per-chat in-memory outbox when the socket isn't open. */
+  send: (body: string, replyToId?: string | null) => SendResult;
+  sendEdit: (m: Bubble, body: string) => SendResult;
+  sendDelete: (m: Bubble) => SendResult;
+  /** How many actions are queued (unsent) across ALL chats; for the session-ended snapshot. */
+  queuedCount: () => number;
   sendReact: (m: Bubble, emoji: string) => void;
   sendTyping: (active: boolean) => void;
   jumpToMessage: (id: string) => Promise<void>;
@@ -164,6 +185,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const sentTypingRef = useRef(false);
   const atBottomRef = useRef(true);
   const sentReadUpToRef = useRef(0);
+
+  // Per-chat outbox (memory only). The ref is the source of truth; `outboxTick` makes
+  // React re-derive the queued bubbles. Entries live until flushed over an OPEN socket
+  // of THEIR chat, so switching chats keeps each chat's queue separate and intact.
+  const outboxRef = useRef<Map<string, OutboxItem[]>>(new Map());
+  const [outboxTick, setOutboxTick] = useState(0);
+  const bumpOutbox = useCallback(() => setOutboxTick((n) => n + 1), []);
 
   const messagesRef = useRef<Bubble[]>([]);
   const hasMoreRef = useRef(false);
@@ -405,6 +433,49 @@ export function useConversation(input: UseConversationInput): UseConversation {
     };
   }, [sendRead]);
 
+  // Drain the ACTIVE chat's outbox, in order, over its open socket. A item leaves the
+  // queue only after `ws.send` returned without throwing, so a close race (readyState
+  // CLOSING, or a throw) leaves it queued for the next open instead of dropping it.
+  // The flushed send reuses the tempId minted at enqueue time (PR-4 will dedupe the
+  // server side on (senderId, tempId); an unacked item resent after a reconnect must
+  // carry that same id -- hook point for the PR-4 client resend).
+  const flushOutbox = useCallback(() => {
+    const chatId = activeRef.current;
+    const ws = socketRef.current;
+    const myId = meIdRef.current;
+    if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId || hasNewerRef.current) return;
+    const q = outboxRef.current.get(chatId);
+    if (!q || q.length === 0) return;
+    let changed = false;
+    while (q.length > 0) {
+      const item = q[0];
+      try {
+        if (item.kind === "send") {
+          ws.send(JSON.stringify({ type: "send", tempId: item.tempId, body: item.body, ...(item.replyToId ? { replyToId: item.replyToId } : {}) }));
+        } else if (item.kind === "edit") {
+          ws.send(JSON.stringify({ type: "edit", id: item.id, body: item.body }));
+        } else {
+          ws.send(JSON.stringify({ type: "delete", id: item.id }));
+        }
+      } catch { break; }
+      q.shift();
+      changed = true;
+      if (item.kind === "send") {
+        const optimistic: Bubble = {
+          id: item.tempId, tempId: item.tempId, chatId, senderId: myId, body: item.body,
+          createdAt: item.createdAt, pending: true, replyToId: item.replyToId, replyTo: item.replyTo,
+        };
+        setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
+        atBottomRef.current = true;
+        onActiveMessageRef.current?.(optimistic);
+      } else if (item.kind === "edit") {
+        setMessages((prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt } : b)));
+      }
+    }
+    if (q.length === 0) outboxRef.current.delete(chatId);
+    if (changed) bumpOutbox();
+  }, [bumpOutbox]);
+
   // Open exactly ONE socket to the active chat; reload history on select. The view's
   // per-chat UI resets (menus/selection/etc.) live in a SEPARATE view-side effect.
   useEffect(() => {
@@ -446,7 +517,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
         return;
       }
       const hist = res.data;
-      setMessages(hist.map((m) => ({ ...m })));
+      // Keep in-flight (flushed, un-acked) bubbles: a fast socket can flush the outbox
+      // before this history read lands, and it must not wipe them.
+      setMessages((prev) => {
+        const have = new Set(hist.map((m) => m.id));
+        return [...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.pending && !have.has(b.id))];
+      });
       setHasMore(hist.length >= 50);
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
       if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
@@ -468,6 +544,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (cancelled) return;
         reconnectRef.current.attempts = 0;
         setConnected(true);
+        flushOutbox();
         sentReadUpToRef.current = 0;
         if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
         if (typeof document !== "undefined") sendAway(document.visibilityState !== "visible");
@@ -519,52 +596,70 @@ export function useConversation(input: UseConversationInput): UseConversation {
       socketRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
-  }, [base, activeId, applyFrame, sendRead]);
+  }, [base, activeId, applyFrame, sendRead, flushOutbox]);
 
-  function send(body: string, replyToId?: string | null) {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeId || !me) return;
-    // Sending from a detached window: snap back to the live tail first so the
-    // optimistic bubble lands in context, then resend — only if still the SAME chat
-    // (a switch during the reload must not redeliver into the newly-opened chat).
-    if (hasNewerRef.current) {
-      const at = activeRef.current;
-      void jumpToLatest().then(() => { if (activeRef.current === at) send(body, replyToId); });
-      return;
+  function enqueue(chatId: string, item: OutboxItem): boolean {
+    const q = outboxRef.current.get(chatId) ?? [];
+    if (q.length >= OUTBOX_MAX) { onToastRef.current("too many unsent changes — wait for the connection to return"); return false; }
+    q.push(item);
+    outboxRef.current.set(chatId, q);
+    bumpOutbox();
+    return true;
+  }
+  /** Drop queued items for a message (a newer edit/delete supersedes them). */
+  function dropQueued(chatId: string, id: string, kinds: Array<OutboxItem["kind"]>) {
+    const q = outboxRef.current.get(chatId);
+    if (!q) return;
+    const kept = q.filter((i) => !(kinds.includes(i.kind) && "id" in i && i.id === id));
+    if (kept.length === q.length) return;
+    if (kept.length === 0) outboxRef.current.delete(chatId); else outboxRef.current.set(chatId, kept);
+  }
+  /** After enqueueing: try to flush now; report whether the item actually left the queue. */
+  function settle(chatId: string, item: OutboxItem): SendResult {
+    flushOutbox();
+    return outboxRef.current.get(chatId)?.includes(item) ? "queued" : "sent";
+  }
+
+  function send(body: string, replyToId?: string | null): SendResult {
+    if (!activeId || !me) {
+      onToastRef.current("couldn't send — you're not signed in to this chat yet");
+      return "rejected";
     }
+    if (!body.trim() || body.length > MAX_BODY) return "rejected";
+    const chatId = activeId;
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const parent = replyToId ? messages.find((m) => m.id === replyToId && !m.isDeleted) : undefined;
     const replyTo = parent ? { id: parent.id, senderId: parent.senderId, body: parent.body.slice(0, 120) } : null;
-    const optimistic: Bubble = {
-      id: tempId,
-      tempId,
-      chatId: activeId,
-      senderId: me.id,
-      body,
-      createdAt: Date.now(),
-      pending: true,
-      replyToId: replyToId ?? null,
-      replyTo,
-    };
-    setMessages((prev) => [...prev, optimistic]);
+    const item: OutboxItem = { kind: "send", tempId, body, replyToId: replyToId ?? null, replyTo, createdAt: Date.now() };
+    if (!enqueue(chatId, item)) return "rejected";
     atBottomRef.current = true;
-    onActiveMessageRef.current?.(optimistic);
-    ws.send(JSON.stringify({ type: "send", tempId, body, ...(replyToId ? { replyToId } : {}) }));
     input.consumeReply();
+    // A detached (jumped) window snaps back to the live tail first so the bubble lands
+    // in context; the item stays queued (and visible state is unchanged) until then, and
+    // is flushed once the tail is loaded -- never dropped if the reload is slow or fails.
+    if (hasNewerRef.current) {
+      void jumpToLatest(); // flushes the outbox itself once the live tail is attached
+      return "queued";
+    }
+    return settle(chatId, item);
   }
 
-  function sendEdit(m: Bubble, body: string) {
+  function sendEdit(m: Bubble, body: string): SendResult {
     const trimmed = body.trim();
-    if (!trimmed || trimmed === m.body) return;
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    setMessages((prev) => prev.map((b) => (b.id === m.id ? { ...b, body: trimmed, editedAt: Date.now() } : b)));
-    ws.send(JSON.stringify({ type: "edit", id: m.id, body: trimmed }));
+    if (!trimmed || trimmed === m.body || trimmed.length > MAX_BODY || !activeId) return "rejected";
+    const chatId = activeId;
+    dropQueued(chatId, m.id, ["edit"]);
+    const item: OutboxItem = { kind: "edit", id: m.id, body: trimmed, editedAt: Date.now() };
+    if (!enqueue(chatId, item)) return "rejected";
+    return settle(chatId, item);
   }
-  function sendDelete(m: Bubble) {
-    const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "delete", id: m.id }));
+  function sendDelete(m: Bubble): SendResult {
+    if (!activeId) return "rejected";
+    const chatId = activeId;
+    dropQueued(chatId, m.id, ["edit", "delete"]);
+    const item: OutboxItem = { kind: "delete", id: m.id };
+    if (!enqueue(chatId, item)) return "rejected";
+    return settle(chatId, item);
   }
   function sendReact(m: Bubble, emoji: string) {
     if (m.pending || m.isDeleted) return;
@@ -645,7 +740,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [base, sendRead]);
+    flushOutbox(); // anything queued while detached can go now that the tail is live
+  }, [base, sendRead, flushOutbox]);
 
   // Retry a failed initial history load for the open chat.
   const retryHistory = useCallback(async () => {
@@ -671,12 +767,48 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
   }, [base, sendRead]);
 
+  const queuedCount = useCallback(() => {
+    let n = 0;
+    for (const q of outboxRef.current.values()) n += q.length;
+    return n;
+  }, []);
+
+  // What the view renders: the loaded log, with this chat's queued edits/deletes laid
+  // over their messages and its queued sends appended as pending bubbles. Derived (not
+  // stored) so a chat switch -- which reloads `messages` -- still shows that chat's own
+  // queue and no other's.
+  const shown = useMemo<Bubble[]>(() => {
+    const q = activeId && !hasNewer ? outboxRef.current.get(activeId) : undefined;
+    if (!q || q.length === 0 || !me) return messages;
+    const edits = new Map<string, Extract<OutboxItem, { kind: "edit" }>>();
+    const dels = new Set<string>();
+    for (const i of q) {
+      if (i.kind === "edit") edits.set(i.id, i);
+      else if (i.kind === "delete") dels.add(i.id);
+    }
+    const base2 = messages.map((b) => {
+      if (dels.has(b.id)) return { ...b, queued: "delete" as const };
+      const e = edits.get(b.id);
+      return e ? { ...b, body: e.body, editedAt: e.editedAt, queued: "edit" as const } : b;
+    });
+    const sends: Bubble[] = [];
+    for (const i of q) {
+      if (i.kind !== "send") continue;
+      sends.push({
+        id: i.tempId, tempId: i.tempId, chatId: activeId!, senderId: me.id, body: i.body,
+        createdAt: i.createdAt, pending: true, queued: "send", replyToId: i.replyToId, replyTo: i.replyTo,
+      });
+    }
+    return [...base2, ...sends];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, outboxTick, activeId, hasNewer, me]);
+
   const armJump = useCallback((msgId: string) => { pendingJumpRef.current = msgId; }, []);
 
   return {
-    messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
+    messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, sendReact, sendTyping,
+    send, sendEdit, sendDelete, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };
 }

@@ -194,11 +194,18 @@ describe("useConversation — actions", () => {
     const f = ws.sentFrames().find((x) => x.type === "send");
     expect(f).toMatchObject({ type: "send", body: "outgoing", replyToId: "m1" });
     expect(consumeReply).toHaveBeenCalledTimes(1);
-    // Close the socket → send is a no-op (reply stays armed).
+    // A closed socket no longer drops the send: it queues (see the outbox tests below).
     act(() => ws.mockDrop());
-    consumeReply.mockClear();
-    act(() => result.current.send("while down"));
-    expect(consumeReply).not.toHaveBeenCalled();
+    let r = "";
+    act(() => { r = result.current.send("while down"); });
+    expect(r).toBe("queued");
+  });
+
+  it("send returns \"sent\" when the socket is open", async () => {
+    const { result } = await open([]);
+    let r = "";
+    act(() => { r = result.current.send("hi"); });
+    expect(r).toBe("sent");
   });
 
   it("sendEdit skips a no-op edit and emits a real one", async () => {
@@ -215,6 +222,146 @@ describe("useConversation — actions", () => {
     expect(ws.sentFrames().some((x) => x.type === "delete" && x.id === "m1")).toBe(true);
     act(() => result.current.sendReact({ ...result.current.messages[0], isDeleted: true }, "👍"));
     expect(ws.sentFrames().some((x) => x.type === "react")).toBe(false);
+  });
+});
+
+describe("useConversation — outbox (PR-3)", () => {
+  /** Mount WITHOUT opening the socket: still CONNECTING. */
+  async function connecting(activeId = "c1") {
+    H.history[activeId] = [];
+    const s = setup(activeId);
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+    return { ...s, ws: MockWebSocket.last };
+  }
+  const sends = (ws: MockWebSocket) => ws.sentFrames().filter((f) => f.type === "send");
+
+  it("send while CONNECTING queues (no frame, pending bubble marked queued), then flushes on open with the SAME tempId", async () => {
+    const { result, ws } = await connecting();
+    let r = "";
+    act(() => { r = result.current.send("typed early"); });
+    expect(r).toBe("queued");
+    expect(ws.sentFrames()).toEqual([]);
+    const bubble = result.current.messages.find((m) => m.body === "typed early")!;
+    expect(bubble).toMatchObject({ pending: true, queued: "send" });
+    act(() => ws.mockOpen());
+    expect(sends(ws)).toHaveLength(1);
+    expect(sends(ws)[0].tempId).toBe(bubble.tempId); // minted once at enqueue, reused on flush
+    const after = result.current.messages.find((m) => m.body === "typed early")!;
+    expect(after.queued).toBeUndefined(); // now in flight, no longer queued
+    expect(after.pending).toBe(true);
+    act(() => ws.mockEmit({ type: "sent", tempId: bubble.tempId, message: msg({ id: "real1", senderId: "u1", body: "typed early" }) }));
+    expect(result.current.messages.filter((m) => m.body === "typed early")).toHaveLength(1);
+    expect(result.current.messages.find((m) => m.body === "typed early")!.id).toBe("real1");
+  });
+
+  it("send during a close race (readyState CLOSING while connected is still true) queues, then flushes on the next socket", async () => {
+    const { result, ws } = await open([]);
+    expect(result.current.connected).toBe(true);
+    ws.readyState = MockWebSocket.CLOSING; // `connected` only flips in onclose, so it lags
+    expect(result.current.connected).toBe(true);
+    let r = "";
+    act(() => { r = result.current.send("racing"); });
+    expect(r).toBe("queued");
+    expect(sends(ws)).toHaveLength(0);
+    const tempId = result.current.messages.find((m) => m.body === "racing")!.tempId;
+    act(() => ws.mockDrop());
+    // reconnect timer
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(1), { timeout: 3000 });
+    const ws2 = MockWebSocket.last;
+    act(() => ws2.mockOpen());
+    expect(sends(ws2)).toHaveLength(1);
+    expect(sends(ws2)[0]).toMatchObject({ body: "racing", tempId });
+  });
+
+  it("flushes queued items in order on open (sends, then an edit and a delete)", async () => {
+    H.history["c1"] = [msg({ id: "m1", senderId: "u1", body: "old", createdAt: 1000 }), msg({ id: "m2", senderId: "u1", body: "bye", createdAt: 1100 })];
+    const s = setup("c1");
+    await waitFor(() => expect(s.result.current.messages.length).toBe(2));
+    const ws = MockWebSocket.last;
+    act(() => { s.result.current.send("one"); s.result.current.send("two"); });
+    act(() => { s.result.current.sendEdit(s.result.current.messages[0], "new"); });
+    act(() => { s.result.current.sendDelete(s.result.current.messages[1]); });
+    act(() => { s.result.current.send("three"); });
+    const shown = s.result.current.messages;
+    expect(shown.find((m) => m.id === "m1")).toMatchObject({ body: "new", queued: "edit" });
+    expect(shown.find((m) => m.id === "m2")).toMatchObject({ queued: "delete" });
+    expect(s.result.current.queuedCount()).toBe(5);
+    expect(ws.sentFrames()).toEqual([]);
+    act(() => ws.mockOpen());
+    const frames = ws.sentFrames().filter((f) => f.type !== "read" && f.type !== "away");
+    expect(frames.map((f) => `${f.type}:${(f.body as string | undefined) ?? (f.id as string)}`)).toEqual(["send:one", "send:two", "edit:new", "delete:m2", "send:three"]);
+    expect(s.result.current.queuedCount()).toBe(0);
+    // flushed sends append to the log in the order they were typed
+    expect(s.result.current.messages.filter((m) => m.pending).map((m) => m.body)).toEqual(["one", "two", "three"]);
+  });
+
+  it("a later edit replaces a queued edit; a delete supersedes queued edits", async () => {
+    H.history["c1"] = [msg({ id: "m1", senderId: "u1", body: "old", createdAt: 1000 })];
+    const s = setup("c1");
+    await waitFor(() => expect(s.result.current.messages.length).toBe(1));
+    const ws = MockWebSocket.last;
+    act(() => { s.result.current.sendEdit(s.result.current.messages[0], "v1"); });
+    act(() => { s.result.current.sendEdit(s.result.current.messages[0], "v2"); });
+    expect(s.result.current.queuedCount()).toBe(1);
+    act(() => { s.result.current.sendDelete(s.result.current.messages[0]); });
+    expect(s.result.current.queuedCount()).toBe(1);
+    act(() => ws.mockOpen());
+    expect(ws.sentFrames().filter((f) => f.type === "edit")).toEqual([]);
+    expect(ws.sentFrames().filter((f) => f.type === "delete")).toHaveLength(1);
+  });
+
+  it("each chat keeps its own outbox across a switch; only the open chat's queue flushes", async () => {
+    H.history["c1"] = []; H.history["c2"] = [];
+    const s = setup("c1");
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+    act(() => { s.result.current.send("for c1"); });
+    s.rerender({ activeId: "c2" });
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2));
+    const ws2 = MockWebSocket.last;
+    expect(ws2.url).toContain("c2");
+    expect(s.result.current.messages.map((m) => m.body)).toEqual([]); // c1's queue is not shown in c2
+    act(() => { s.result.current.send("for c2"); });
+    expect(s.result.current.messages.map((m) => m.body)).toEqual(["for c2"]);
+    s.rerender({ activeId: "c1" });
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(3));
+    expect(s.result.current.messages.map((m) => m.body)).toEqual(["for c1"]);
+    const ws3 = MockWebSocket.last;
+    act(() => ws3.mockOpen());
+    expect(sends(ws3).map((f) => f.body)).toEqual(["for c1"]); // c2's item did not leak into c1's socket
+    expect(s.result.current.queuedCount()).toBe(1); // c2's is still held
+    s.rerender({ activeId: "c2" });
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(4));
+    act(() => MockWebSocket.last.mockOpen());
+    expect(sends(MockWebSocket.last).map((f) => f.body)).toEqual(["for c2"]);
+    expect(s.result.current.queuedCount()).toBe(0);
+  });
+
+  it("rejects (and keeps nothing queued) with no signed-in user, an empty body or an over-long body", async () => {
+    const noUser = setup("c1", null);
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+    let r = "";
+    act(() => { r = noUser.result.current.send("hello"); });
+    expect(r).toBe("rejected");
+    expect(noUser.onToast).toHaveBeenCalled();
+    expect(noUser.result.current.queuedCount()).toBe(0);
+    noUser.unmount();
+    const { result } = await connecting();
+    act(() => { r = result.current.send("   "); });
+    expect(r).toBe("rejected");
+    act(() => { r = result.current.send("x".repeat(4001)); });
+    expect(r).toBe("rejected");
+    expect(result.current.queuedCount()).toBe(0);
+  });
+
+  it("a send from a detached window stays queued, then flushes once the live tail is reattached", async () => {
+    H.around = { found: true, messages: [msg({ id: "mOld", createdAt: 100 })], hasOlder: false, hasNewer: true };
+    const { result, ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+    await act(async () => { await result.current.jumpToMessage("mOld"); });
+    let r = "";
+    await act(async () => { r = result.current.send("from afar"); });
+    expect(r).toBe("queued");
+    await waitFor(() => expect(sends(ws).some((f) => f.body === "from afar")).toBe(true));
+    expect(result.current.hasNewer).toBe(false);
   });
 });
 

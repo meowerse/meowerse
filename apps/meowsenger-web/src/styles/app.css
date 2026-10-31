@@ -259,6 +259,15 @@ body:has(.mw-chat) main.mw-container {
 }
 .mw-msg:not(.mw-msg--me) .mw-bubble { border-bottom-left-radius: var(--radius-sm); }
 .mw-bubble.is-pending { opacity: 0.6; }
+/* Pending state is glyph + text, never opacity alone. */
+.mw-bubble__state {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-end;
+  font-size: 10px; color: var(--text-muted);
+}
+.mw-bubble__state[data-queued="1"] { color: var(--text-secondary, var(--text-muted)); }
+.mw-bubble.is-queued { border-style: dashed; }
+.mw-composer__count { align-self: flex-end; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.mw-composer__count.is-limit { color: var(--danger, var(--text-primary)); font-weight: 600; }
 /* Touch devices: a long-press opens the message context menu, so suppress the
    native text selection + iOS callout the hold would otherwise start — their
    selection handles/magnifier render ABOVE the page and buried the menu's top

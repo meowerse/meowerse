@@ -154,7 +154,8 @@ async function journeyRun(browser: Browser, name: ProfileName, mock: string): Pr
     const ta = page.getByRole("textbox", { name: "message" });
     await ta.click();
     await ta.pressSequentially("perf harness typing: forty characters!!", { delay: 8 }); // 40 chars
-    await page.keyboard.press("Enter");
+    // Touch profile: Enter inserts a newline (owner decision, PR-3); the send button submits.
+    if (PROFILES[name].hasTouch) await page.getByRole("button", { name: "send" }).click(); else await page.keyboard.press("Enter");
     await waitP(page, 15000, "logHas", "perf harness typing");
     await backIfPhone();
     await page.locator(".mw-chatrow", { hasText: CHATS.grp1000.title }).first().click();

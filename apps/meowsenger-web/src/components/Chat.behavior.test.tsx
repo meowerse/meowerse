@@ -700,14 +700,66 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     expect(screen.getByText("@alice")).toBeTruthy();
   });
 
-  it("the composer is disabled until the socket is ready, then enabled (socket readiness is the only gate)", async () => {
-    const ws = await mountOpen();
+  // PR-3 contract (replaces PR-2's "disabled until ready"): the textarea is NEVER disabled.
+  // Typing before the socket opens queues the message in memory instead of locking the box.
+  it("the composer is never disabled: typing while the socket is CONNECTING keeps working and queues (then flushes on open)", async () => {
+    const ws = await mountOpen(); // still CONNECTING
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     const input = screen.getByLabelText("message") as HTMLTextAreaElement;
-    expect(input.disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "send" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(input.disabled).toBe(false);
+    fireEvent.change(input, { target: { value: "typed early" } });
+    expect(input.value).toBe("typed early"); // not wiped
+    expect(input.disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(input.value).toBe("")); // cleared: queued counts as accepted
+    expect(within(logEl()).getByText("typed early")).toBeTruthy();
+    expect(within(logEl()).getByText("will send when reconnected")).toBeTruthy();
+    expect(ws.sentFrames().some((f) => f.type === "send")).toBe(false);
     open(ws);
-    await waitFor(() => expect((screen.getByLabelText("message") as HTMLTextAreaElement).disabled).toBe(false));
+    await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "send" && f.body === "typed early")).toBe(true));
+    expect(screen.queryByText("will send when reconnected")).toBeNull();
+    expect(within(logEl()).getByText("sending…")).toBeTruthy();
+    expect(input.disabled).toBe(false);
+  });
+
+  it("IME: Enter while composing (isComposing, or keyCode 229) does not send; a plain Enter does", async () => {
+    const ws = await mountOpen();
+    open(ws);
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "こんにちは" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(ws.sentFrames().some((f) => f.type === "send")).toBe(false);
+    expect(input.value).toBe("こんにちは");
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true }); // newline, not send
+    expect(ws.sentFrames().some((f) => f.type === "send")).toBe(false);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "send" && f.body === "こんにちは")).toBe(true));
+  });
+
+  it("IME: Enter while composing does not save the inline editor either", async () => {
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "mine", createdAt: Date.now() - 1000 })] };
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(within(logEl()).getByText("mine")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "edit" }));
+    const box = await screen.findByLabelText("edit message") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "mine!" } });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+    expect(ws.sentFrames().some((f) => f.type === "edit")).toBe(false);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "edit" && f.body === "mine!")).toBe(true));
+  });
+
+  it("caps the composer at 4000 characters with a counter that appears near the limit", async () => {
+    await mountOpen();
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    expect(input.maxLength).toBe(4000);
+    expect(document.querySelector(".mw-composer__count")).toBeNull();
+    fireEvent.change(input, { target: { value: "x".repeat(3700) } });
+    expect(document.querySelector(".mw-composer__count")?.textContent).toBe("3700 / 4000");
+    expect(document.querySelector(".mw-composer .mw-sr-only[aria-live=\"polite\"]")?.textContent).toBe("400 characters left or fewer");
   });
 });
 
@@ -760,6 +812,18 @@ describe("Chat island — session ended (real Chat under AppShell)", () => {
     expect(screen.queryByLabelText(/your unsent message/)).toBeNull();
     expect(document.body.textContent).not.toContain("in flight");
     expect(document.activeElement?.textContent).toBe("sign in");
+  });
+
+  it("a queued (never flushed) send at 401 also shows the 'may not have been sent' warning", async () => {
+    await mountShell(); // socket still CONNECTING
+    const input = screen.getByLabelText("message") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "queued secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(screen.getByText("will send when reconnected")).toBeTruthy());
+    H.failChats = { kind: "unauthorized", status: 401 };
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/a message may not have been sent/);
+    expect(document.body.textContent).not.toContain("queued secret");
   });
 
   it("a 401 from the history read also ends the session and clears the rendered messages", async () => {

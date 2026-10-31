@@ -3,11 +3,14 @@ import type { Message } from "../lib/chat";
 import { renderBody } from "../lib/messageText";
 import { Avatar } from "./Avatar";
 import { Icon } from "@meowerse/ui";
+import { enterSubmits } from "../lib/enterKey";
 
 /** A rendered bubble: a real Message, plus a client-only tempId while optimistic. */
 export interface Bubble extends Message {
   tempId?: string;
   pending?: boolean;
+  /** Set while the action sits in the in-memory outbox (socket not open); cleared on flush. */
+  queued?: "send" | "edit" | "delete";
 }
 
 function fmtTime(ms: number): string {
@@ -172,6 +175,15 @@ export function MessageItem({
 
   const deleted = !!m.isDeleted;
 
+  // Glyph + text (never opacity alone). "queued" = held in this tab's memory until the
+  // socket reopens; it is not saved anywhere, so a reload loses it (say so).
+  const pendingState: { icon: string; text: string } | null =
+    m.queued === "delete" ? { icon: "trash", text: "will delete when reconnected" }
+    : m.queued === "edit" ? { icon: "edit", text: "edit will send when reconnected" }
+    : m.queued === "send" ? { icon: "refresh", text: "will send when reconnected" }
+    : m.pending ? { icon: "refresh", text: "sending…" }
+    : null;
+
   return (
     <div
       key={key}
@@ -217,12 +229,14 @@ export function MessageItem({
                 autoComplete="off"
                 autoCapitalize="sentences"
                 value={draft}
+                maxLength={4000}
                 autoFocus
                 aria-label="edit message"
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") { e.preventDefault(); onCancelEdit(); }
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSaveEdit(m, draft); }
+                  // Same rule as the composer: IME confirm / touch Enter / Shift+Enter never save.
+                  if (enterSubmits(e)) { e.preventDefault(); onSaveEdit(m, draft); }
                 }}
               />
               <div className="mw-edit__actions">
@@ -232,7 +246,7 @@ export function MessageItem({
             </div>
           </div>
         ) : (
-          <div className={`mw-bubble${mine ? " mw-bubble--me" : ""}${m.pending ? " is-pending" : ""}`}>
+          <div className={`mw-bubble${mine ? " mw-bubble--me" : ""}${m.pending ? " is-pending" : ""}${m.queued ? " is-queued" : ""}`}>
             <div className="mw-bubble__stack">
               {m.isForwarded && (
                 <span className="mw-bubble__forwarded" aria-label="forwarded message">
@@ -257,6 +271,12 @@ export function MessageItem({
                 {m.editedAt ? <span className="mw-bubble__edited" title="edited">edited</span> : null}
                 <span className="mw-bubble__time" title={new Date(m.createdAt).toLocaleString()}>{fmtTime(m.createdAt)}</span>
               </span>
+              {pendingState && (
+                <span className="mw-bubble__state" data-queued={m.queued ? "1" : "0"}>
+                  <Icon name={pendingState.icon} size={11} />
+                  <span>{pendingState.text}</span>
+                </span>
+              )}
             </div>
 
             {!selectMode && (
