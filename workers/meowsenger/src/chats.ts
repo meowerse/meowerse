@@ -76,13 +76,20 @@ export async function createOrGetDirect(
  * busy group could exhaust the free-tier D1 write budget. "Has unread" is instead
  * derived lazily in `listChats` (last_activity > the member's last_read_at), which
  * costs zero extra writes — see the CASE in the sidebar query.
+ *
+ * MONOTONIC: the WHERE only matches when `now` (the message's own createdAt) is not older
+ * than the row's `last_activity`, so a late mirror of an older message (a re-mirror that read
+ * M1, then lost a race to M2's mirror) can't roll the preview or `last_activity` back.
+ * Resolves on success AND when the guard skips (a newer message is already mirrored: the
+ * preview is current or newer, which counts as success for push gating); it throws only on a
+ * real D1 failure, and only a throw is a failure.
  */
 export async function mirrorLastMessage(
   db: DbClient, chatId: string, body: string, senderId: string, now: number,
 ): Promise<void> {
   await db.run(
-    "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = ? WHERE id = ?",
-    [body.slice(0, 140), senderId, now, chatId],
+    "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = ? WHERE id = ? AND (last_activity IS NULL OR last_activity <= ?)",
+    [body.slice(0, 140), senderId, now, chatId, now],
   );
 }
 

@@ -68,7 +68,7 @@ function memDb(users: Record<string, { username: string; displayName: string | n
         // are grouped as (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) members.push({ chat_id: p[i], user_id: p[i + 1], unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
       }
-      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
+      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c && (c.last_activity == null || Number(c.last_activity) <= Number(p[4]))) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
       // markRead: advance last_read_at monotonically for one (chat, user) — the guard
       // (last_read_at IS NULL OR < upTo) means a stale/duplicate read is a no-op.
       else if (sql.startsWith("UPDATE chat_members SET last_read_at")) {
@@ -104,6 +104,14 @@ describe("mirrorLastMessage", () => {
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
     await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
     expect(chats.get(a.id)?.last_message).toBe("hi");
+  });
+  it("is monotonic: mirroring an OLDER message after a newer one leaves the newer preview and resolves (skip = success)", async () => {
+    const { db, chats } = memDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1000);
+    await mirrorLastMessage(db, a.id, "M2", "u2", 4000);
+    await expect(mirrorLastMessage(db, a.id, "M1", "u1", 3000)).resolves.toBeUndefined();
+    expect(chats.get(a.id)?.last_message).toBe("M2");
+    expect(chats.get(a.id)?.last_activity).toBe(4000);
   });
 });
 describe("markRead", () => {

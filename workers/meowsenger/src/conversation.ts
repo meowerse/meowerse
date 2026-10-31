@@ -140,8 +140,9 @@ interface Overflow {
 /** What one push round hands back: `cut` = not reached (budget), `retry` = transient
  *  failures with their attempt count so far, `dropped` = recipients out of attempts,
  *  `owed` = per retried user, the endpoint fingerprints that still need the push,
- *  `mirrorPending` = the push was deferred because the D1 mirror write failed. */
-interface PushResult { cut: string[]; retry: Record<string, number>; dropped: number; owed: Record<string, string[]>; mirrorPending: boolean }
+ *  `mirrorPending` = the push was deferred because the D1 mirror write failed,
+ *  `done` = (first invocation only) users whose EVERY device got a 2xx: any older queued retry for them is obsolete. */
+interface PushResult { cut: string[]; retry: Record<string, number>; dropped: number; owed: Record<string, string[]>; mirrorPending: boolean; done?: string[] }
 /** First 16 hex chars of SHA-256(endpoint URL): identifies a device inside the DO queue
  *  without storing the endpoint itself. */
 async function endpointFingerprint(endpoint: string): Promise<string> {
@@ -171,6 +172,12 @@ const MAX_REACTIONS_PER_USER = 12;
  * that would broaden (or slow) the scan. The backslash is escaped FIRST so the
  * escapes added for `%`/`_` aren't themselves re-escaped.
  */
+/** Same fingerprint set (order-insensitive); both undefined counts as equal. */
+function sameSet(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.length === b.length && a.every((x) => b.includes(x));
+}
+
 function escapeLike(term: string): string {
   return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
@@ -535,7 +542,7 @@ export class Conversation extends DurableObject<Env> {
       (async () => {
         const push = await this.pushOffline(chatId, senderId, budget, mirror, pushRes).catch((): PushResult => pushRes);
         const inboxLeft = await sidebar;
-        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry, push.owed, push.mirrorPending).catch((e) => {
+        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry, push.owed, push.mirrorPending, push.done ?? []).catch((e) => {
           console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} queue_write_failed push=${push.cut.length + Object.keys(push.retry).length} inbox=${inboxLeft.length}`);
         });
       })(),
@@ -731,6 +738,8 @@ export class Conversation extends DurableObject<Env> {
     const transientFps = new Map<string, string[]>();
     const addTransient = (u: string, fp: string): void => { transientFps.set(u, [...(transientFps.get(u) ?? []), fp]); };
     let threw = false;
+    // Users with at least one endpoint that did NOT answer 2xx (transient, final or thrown).
+    const anyBad = new Set<string>();
     const rank = { ok: 2, transient: 1, final: 0 } as const;
     try {
       const key = await importVapidKey(this.env);
@@ -765,6 +774,7 @@ export class Conversation extends DurableObject<Env> {
             await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
           }
           const oc = status >= 200 && status < 300 ? "ok" : status === 0 || status === 429 || status >= 500 ? "transient" : "final";
+          if (oc !== "ok") anyBad.add(userId);
           if (oc === "transient") addTransient(userId, await endpointFingerprint(ep));
           merge(userId, oc);
         }),
@@ -781,6 +791,7 @@ export class Conversation extends DurableObject<Env> {
           // No known outcome: release the debounce reservation (as a thrown send always did)
           // so the next message can still push, and retry via the queue.
           if (!outcome.has(u) && reserved.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
+          anyBad.add(u);
           addTransient(u, await endpointFingerprint(targets[i]!.endpoint));
           merge(u, "transient");
         }
@@ -823,7 +834,13 @@ export class Conversation extends DurableObject<Env> {
       } else if (oc !== "ok") permanentFailed++;
     }
     outcomeLine();
-    return { cut, retry, dropped, owed: owedOut, mirrorPending };
+    const done: string[] = [];
+    if (!o.followup && !threw) {
+      for (const u of attemptedUsers) {
+        if (outcome.get(u) === "ok" && !anyBad.has(u) && !(u in retry) && !owedUsers.has(u)) done.push(u);
+      }
+    }
+    return { cut, retry, dropped, owed: owedOut, mirrorPending, done };
   }
 
   // ---- follow-up fan-out (DO alarm) ---------------------------------------------
@@ -863,12 +880,15 @@ export class Conversation extends DurableObject<Env> {
    *  work already queued by earlier messages, and arm the alarm: immediately for new
    *  work, at now + PUSH_RETRY_MS when only retries are waiting. The current sender is
    *  never a queued push target (they are looking at the chat). */
-  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[], retry: Record<string, number>, owed: Record<string, string[]> = {}, mirrorPending = false): Promise<void> {
+  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[], retry: Record<string, number>, owed: Record<string, string[]> = {}, mirrorPending = false, done: string[] = []): Promise<void> {
     const retryIds = Object.keys(retry).filter((u) => u !== senderId);
-    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0) return;
+    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0 && done.length === 0) return;
     const now = Date.now();
     const prev = (await this.readOverflow()) ?? { chatId, push: [], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 0, ceiling: 0, seq: 0, owed: {}, mirrorPending: false };
-    const all = [...new Set([...prev.push, ...push, ...retryIds])].filter((u) => u !== senderId);
+    // `done`: this message reached EVERY device of these users, which supersedes any queued
+    // retry for them (push entry, owed, attempts, notBefore all go with them).
+    const doneSet = new Set(done.filter((u) => !push.includes(u) && !retryIds.includes(u)));
+    const all = [...new Set([...prev.push, ...push, ...retryIds])].filter((u) => u !== senderId && !doneSet.has(u));
     const attempts: Record<string, number> = {};
     const notBefore: Record<string, number> = {};
     for (const u of all) {
@@ -887,6 +907,11 @@ export class Conversation extends DurableObject<Env> {
       if (o) nextOwed[u] = o;
     }
     const nextInbox = [...new Set([...prev.inbox, ...inbox])];
+    if (all.length === 0 && nextInbox.length === 0) {
+      // Nothing left to serve (e.g. the only queued retry was superseded): clean the key.
+      if (prev.seq > 0) await this.ctx.storage.delete(OVERFLOW_KEY);
+      return;
+    }
     const next: Overflow = {
       chatId,
       push: all,
@@ -943,7 +968,7 @@ export class Conversation extends DurableObject<Env> {
       const mine = r.owed[u], theirs = cur.owed?.[u];
       let o: string[] | undefined;
       if (!runPush.has(u)) o = theirs;
-      else if (!seqChanged) o = mine;
+      else if (!seqChanged || sameSet(theirs, work.owed?.[u])) o = mine; // a newer message did not touch this entry
       else o = mine && theirs ? [...new Set([...mine, ...theirs])] : undefined;
       if (o) owed[u] = o;
     }

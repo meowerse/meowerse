@@ -3,6 +3,8 @@ import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test"
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import type { Conversation } from "./conversation";
 import { MAX_PUSH_SUBS_PER_USER } from "./push";
+import { mirrorLastMessage } from "./chats";
+import { d1Client } from "./db";
 
 // Offline-push decision inside the Conversation DO: who is skipped (only users with a
 // NON-away socket + the sender), when the 30 s debounce is stamped (only when something
@@ -1301,6 +1303,105 @@ describe("Conversation offline push decision", () => {
       const q = (await q2(c))!;
       expect(q.owed).toEqual({});
       expect(q.push).toEqual([]);
+    });
+  });
+
+  it("(bd) the mirror fails once and succeeds on the inline retry: the push goes out in the same invocation and no mirrorPending is set", async () => {
+    await withFakeTime(21_000_000, async () => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      await manualAlarms(c);
+      let mirrorCalls = 0;
+      await setEnv(c, {
+        DB: { prepare: (sql: string) => { if (sql.startsWith("UPDATE chats SET last_message") && ++mirrorCalls === 1) throw new Error("d1 blip"); return DB.prepare(sql); } },
+      });
+      try {
+        const sender = await connect(c, "sender");
+        await send(sender, "blip-body");
+        await vi.waitFor(() => expect(pushCalls()).toHaveLength(1));
+        await new Promise((r) => setTimeout(r, 30));
+        expect(mirrorCalls).toBe(2);
+        expect(allDecisionLogs()).not.toContain("push_decision mirror_failed retried=1 deferred=1");
+        expect((await q2(c))?.mirrorPending).toBeFalsy();
+        expect(await q2(c)).toBeUndefined();
+        const row = await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(c).first<{ last_message: string }>();
+        expect(row?.last_message).toBe("blip-body");
+      } finally { await setEnv(c, { DB }); }
+    });
+  });
+
+  it("(be) the mirror is monotonic on real D1: an older message mirrored after a newer one does not roll the row back, and resolves", async () => {
+    const c = newChat(); await seed(c, ["sender", "rcpt"], []);
+    const db = d1Client(DB);
+    await mirrorLastMessage(db, c, "M2", "rcpt", 5000);
+    await expect(mirrorLastMessage(db, c, "M1", "sender", 4000)).resolves.toBeUndefined();
+    const row = await DB.prepare("SELECT last_message, last_sender_id, last_activity FROM chats WHERE id = ?").bind(c).first();
+    expect(row).toEqual({ last_message: "M2", last_sender_id: "rcpt", last_activity: 5000 });
+    await mirrorLastMessage(db, c, "M3", "sender", 5000); // equal timestamp still applies (same-ms sends)
+    expect((await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(c).first<{ last_message: string }>())?.last_message).toBe("M3");
+  });
+
+  it("(bf) a newer message re-queues OTHER users while the run delivered A and failed B: the user's owed is this run's result ({B}), A is not pushed again", async () => {
+    await withFakeTime(22_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt", "other"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      const runAlarm = await manualAlarms(c);
+      const owedBoth = [await fp16(a), await fp16(b)];
+      await runInDurableObject(stub(c), async (inst: Conversation) => {
+        await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], attempts: { rcpt: 1 }, notBefore: { rcpt: 0 }, rounds: 0, total: 0, ceiling: 50, seq: 1, owed: { rcpt: owedBoth }, mirrorPending: false });
+      });
+      let open!: () => void;
+      const gate = new Promise<void>((r) => { open = r; });
+      fetchSpy.mockImplementation(async (url: unknown) => {
+        if (String(url) === b) { await gate; return new Response(null, { status: 503 }); }
+        return new Response(null, { status: 201 });
+      });
+      at(1_000);
+      const running = runAlarm();
+      await vi.waitFor(() => expect(countTo(b)).toBe(1)); // parked inside the follow-up's push to B
+      await runInDurableObject(stub(c), async (inst: Conversation) => {
+        await (inst as unknown as { queueOverflow(...a: unknown[]): Promise<void> }).queueOverflow(c, "sender", ["other"], [], {});
+      });
+      open();
+      await running;
+      const q = (await q2(c))!;
+      expect(q.owed).toEqual({ rcpt: [await fp16(b)] });
+      at(15_000); await runAlarm();
+      expect(countTo(a)).toBe(1); // A was delivered by the first run and never again
+    });
+  });
+
+  it("(bg) a new message that reaches ALL of a user's devices supersedes that user's queued retry (no further push from the old retry, key cleaned)", async () => {
+    await withFakeTime(23_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      let phase = 1;
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: phase === 1 && String(url) === b ? 503 : 201 }));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toEqual({ rcpt: [await fp16(b)] }));
+      phase = 2; at(31_000); // past the debounce window; everything now succeeds
+      await send(sender, "two");
+      await vi.waitFor(async () => expect(countTo(b)).toBe(2));
+      await vi.waitFor(async () => expect(await q2(c)).toBeUndefined());
+      at(120_000); await runAlarm();
+      expect([countTo(a), countTo(b)]).toEqual([2, 2]); // the old narrowed retry never fired
+    });
+  });
+
+  it("(bh) every owed endpoint gone (subscriptions deleted): the user is settled with no push, and the queue key is cleaned up", async () => {
+    await withFakeTime(24_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      fetchSpy.mockImplementation(async (url: unknown) => new Response(null, { status: String(url) === b ? 503 : 201 }));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await q2(c))?.owed).toEqual({ rcpt: [await fp16(b)] }));
+      await DB.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(b).run();
+      at(10_000); await runAlarm();
+      expect(await q2(c)).toBeUndefined();
+      expect([countTo(a), countTo(b)]).toEqual([1, 1]); // nothing more went out
     });
   });
 
