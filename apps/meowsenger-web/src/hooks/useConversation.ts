@@ -133,7 +133,11 @@ function keepLocalOwn(hist: Message[], prev: Bubble[], live?: LiveGuard): Bubble
   const localWins = (id: string) => { const b = local.get(id); return !!b && (b.isDeleted === true || isLive?.(id) === true); };
   const have = new Set(hist.map((m) => m.id));
   const merged: Bubble[] = hist.map((m) => (localWins(m.id) ? local.get(m.id)! : { ...tombstoned(m, live) }));
-  const kept = prev.filter((b) => !have.has(b.id) && (b.tempId || isLive?.(b.id)));
+  // A live-touched row absent from the page is kept only if it belongs to the page's time
+  // range (or is newer). An OLD row that merely got a reaction/edit/delete during the fetch
+  // would otherwise sort above the page, become loadOlder's `before` cursor and hide the gap.
+  const oldest = hist.length > 0 ? Math.min(...hist.map((m) => m.createdAt)) : -Infinity;
+  const kept = prev.filter((b) => !have.has(b.id) && (b.tempId || (isLive?.(b.id) && b.createdAt >= oldest)));
   return orderLog([...merged, ...kept]);
 }
 
@@ -754,6 +758,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     prependingRef.current = false;
     setHistoryError(false);
     setOlderError(false);
+    const loadStartSeq = liveSeqRef.current; // live frames stamped after this beat the fetched rows
     loadHistory(base, chatId).then((res) => {
       if (cancelled) return;
       setLoadingHistory(false);
@@ -766,7 +771,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       const hist = res.data;
       // Keep in-flight (flushed, un-acked) bubbles: a fast socket can flush the outbox
       // before this history read lands, and it must not wipe them.
-      setMessages((prev) => keepLocalOwn(hist, prev));
+      setMessages((prev) => keepLocalOwn(hist, prev, liveSince(loadStartSeq)));
       setHasMore(hist.length >= HISTORY_PAGE);
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
       if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });

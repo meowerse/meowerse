@@ -479,6 +479,14 @@ describe("live frames beat fetched rows (review follow-ups)", () => {
     expect(ids(result)).toEqual(["p1", "live1"]);
   });
 
+  it("(d2) an OLD row that only got a live reaction during a fallback fetch is not kept above the page (no hidden gap)", async () => {
+    const { result } = await outage([msg("old1", 500), msg("m1", 1000)]);
+    S.msgs = [msg("p1", 3000)]; // anchor m1 gone -> newest-page fallback
+    S.hook = () => room().mockEmit({ type: "reaction", id: "old1", userId: "u2", emoji: "👍", on: true });
+    await reopen();
+    expect(ids(result)).toEqual(["p1"]); // old1 reloads via loadOlder, not as a stray top row
+  });
+
   it("(e) the retry timer is cleared on chat switch: no stray request", async () => {
     const cb = { onToast: vi.fn(), onActiveRead: vi.fn(), onMessageDeleted: vi.fn(), consumeReply: vi.fn(), onRevoked: vi.fn() };
     S.msgs = [msg("m1", 1000)];
