@@ -13,6 +13,8 @@ export interface Bubble extends Message {
   queued?: "send" | "edit" | "delete";
   /** A queued/in-flight edit was refused by the server and reverted locally. */
   editFailed?: boolean;
+  /** The server refused this send (tempId-correlated error): shows "not sent -- retry / edit". */
+  sendFailed?: boolean;
 }
 
 /** The outbox is memory-only: say so, so nobody trusts it across a reload. */
@@ -55,6 +57,8 @@ export function MessageItem({
   onToggleReaction,
   onJumpToReply,
   registerRef,
+  onRetrySend,
+  onEditFailedSend,
 }: {
   m: Bubble;
   meId: string | null;
@@ -94,6 +98,9 @@ export function MessageItem({
   onToggleReaction: (m: Bubble, emoji: string) => void;
   onJumpToReply: (id: string) => void;
   registerRef: (id: string, el: HTMLDivElement | null) => void;
+  // A refused send: retry re-sends with the same tempId; edit moves the text back to the composer.
+  onRetrySend?: (m: Bubble) => void;
+  onEditFailedSend?: (m: Bubble) => void;
 }) {
   const key = m.tempId ?? m.id;
   const rowRef = useRef<HTMLDivElement | null>(null);
@@ -186,6 +193,7 @@ export function MessageItem({
     m.queued === "delete" ? { icon: "trash", text: `delete not sent yet · ${QUEUE_TAIL}` }
     : m.queued === "edit" ? { icon: "edit", text: `edit not sent yet · ${QUEUE_TAIL}` }
     : m.queued === "send" ? { icon: "refresh", text: `not sent yet · ${QUEUE_TAIL}` }
+    : m.sendFailed ? { icon: "refresh", text: "not sent" }
     : m.pending ? { icon: "refresh", text: "sending…" }
     : m.editFailed ? { icon: "edit", text: "edit couldn't be saved" }
     : null;
@@ -281,6 +289,12 @@ export function MessageItem({
                 <span className="mw-bubble__state" data-queued={m.queued ? "1" : "0"}>
                   <Icon name={pendingState.icon} size={11} />
                   <span>{pendingState.text}</span>
+                  {m.sendFailed && (
+                    <>
+                      <button type="button" className="mw-btn mw-btn--ghost mw-btn--sm" onClick={() => onRetrySend?.(m)}>retry</button>
+                      <button type="button" className="mw-btn mw-btn--ghost mw-btn--sm" onClick={() => onEditFailedSend?.(m)}>edit</button>
+                    </>
+                  )}
                 </span>
               )}
             </div>

@@ -992,4 +992,163 @@ describe("Conversation DO", () => {
     const results = await stub("c36").search("50%", "u1");
     expect(results.map((m) => m.id)).toEqual(["s6"]);
   });
+
+  // ---- PR-4: idempotent send + correlated errors ----
+
+  /** Collect every frame a socket receives (parsed), so tests can count acks/broadcasts. */
+  function collect(ws: WebSocket): Array<Record<string, unknown> & { type: string }> {
+    const frames: Array<Record<string, unknown> & { type: string }> = [];
+    ws.addEventListener("message", (e: MessageEvent) => {
+      try { frames.push(JSON.parse(String(e.data))); } catch { /* ignore */ }
+    });
+    return frames;
+  }
+  async function until(pred: () => boolean): Promise<void> {
+    for (let waited = 0; !pred() && waited < 3000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+  }
+
+  it("dedupe: a duplicate tempId yields ONE row, ONE peer broadcast and TWO acks with the same message id", async () => {
+    await seedChat("d1");
+    const wa = await connect("d1", "u1");
+    const wb = await connect("d1", "u2");
+    const aFrames = collect(wa);
+    const bFrames = collect(wb);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-dup", body: "once" }));
+    await until(() => aFrames.some((f) => f.type === "sent"));
+    // The resend (e.g. after a reconnect: a fresh socket, same tempId).
+    const wa2 = await connect("d1", "u1");
+    const a2Frames = collect(wa2);
+    wa2.send(JSON.stringify({ type: "send", tempId: "t-dup", body: "once" }));
+    await until(() => a2Frames.some((f) => f.type === "sent"));
+
+    const acks = [...aFrames, ...a2Frames].filter((f) => f.type === "sent");
+    expect(acks).toHaveLength(2);
+    const ids = acks.map((f) => (f.message as { id: string }).id);
+    expect(ids[0]).toBe(ids[1]);
+    expect(acks.every((f) => f.tempId === "t-dup")).toBe(true);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(bFrames.filter((f) => f.type === "message")).toHaveLength(1);
+    const hist = await stub("d1").historyFor("d1", null);
+    expect(hist.filter((m) => m.body === "once")).toHaveLength(1);
+  });
+
+  it("dedupe: the same tempId from a DIFFERENT sender inserts a separate message", async () => {
+    await seedChat("d2");
+    const wa = await connect("d2", "u1");
+    const wb = await connect("d2", "u2");
+    const aFrames = collect(wa);
+    const bFrames = collect(wb);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-same", body: "from u1" }));
+    await until(() => aFrames.some((f) => f.type === "sent"));
+    wb.send(JSON.stringify({ type: "send", tempId: "t-same", body: "from u2" }));
+    await until(() => bFrames.some((f) => f.type === "sent"));
+    const bAck = bFrames.find((f) => f.type === "sent") as unknown as { message: { body: string; senderId: string } };
+    expect(bAck.message).toMatchObject({ body: "from u2", senderId: "u2" });
+    const hist = await stub("d2").historyFor("d2", null);
+    expect(hist.map((m) => m.body)).toEqual(["from u1", "from u2"]);
+  });
+
+  it("dedupe: send_dedupe stores ids only (never the body)", async () => {
+    await seedChat("d3");
+    const wa = await connect("d3", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-ids", body: "secret-body-xyz" }));
+    await until(() => frames.some((f) => f.type === "sent"));
+    await runInDurableObject(stub("d3"), async (_i: Conversation, ctx: DurableObjectState) => {
+      const rows = ctx.storage.sql.exec("SELECT * FROM send_dedupe").toArray();
+      expect(rows).toHaveLength(1);
+      expect(Object.keys(rows[0]!).sort()).toEqual(["created_at", "message_id", "sender_id", "temp_id"]);
+      expect(JSON.stringify(rows)).not.toContain("secret-body-xyz");
+    });
+  });
+
+  it("dedupe: a resend is not metered by the rate limiter and a stale tempId from >24h ago is a fresh send", async () => {
+    await seedChat("d4");
+    await runInDurableObject(stub("d4"), async (_i: Conversation, ctx: DurableObjectState) => {
+      ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES ('old1','u1','ancient',1000)");
+      ctx.storage.sql.exec(
+        "INSERT INTO send_dedupe (sender_id, temp_id, message_id, created_at) VALUES ('u1','t-old','old1',?)",
+        Date.now() - 25 * 3600_000,
+      );
+    });
+    const wa = await connect("d4", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-old", body: "fresh" }));
+    await until(() => frames.some((f) => f.type === "sent"));
+    const ack = frames.find((f) => f.type === "sent") as unknown as { message: { id: string; body: string } };
+    expect(ack.message.id).not.toBe("old1");
+    expect(ack.message.body).toBe("fresh");
+  });
+
+  it("prune: keeps entries under 24h, drops older ones, on a send write", async () => {
+    await seedChat("d5");
+    await runInDurableObject(stub("d5"), async (_i: Conversation, ctx: DurableObjectState) => {
+      const ins = "INSERT INTO send_dedupe (sender_id, temp_id, message_id, created_at) VALUES (?,?,?,?)";
+      ctx.storage.sql.exec(ins, "u9", "t-young", "m-young", Date.now() - 23 * 3600_000);
+      ctx.storage.sql.exec(ins, "u9", "t-old", "m-old", Date.now() - 25 * 3600_000);
+    });
+    const wa = await connect("d5", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-trigger", body: "prune now" }));
+    await until(() => frames.some((f) => f.type === "sent"));
+    await runInDurableObject(stub("d5"), async (_i: Conversation, ctx: DurableObjectState) => {
+      const ids = ctx.storage.sql.exec("SELECT temp_id FROM send_dedupe ORDER BY temp_id").toArray().map((r) => r.temp_id);
+      expect(ids).toEqual(["t-trigger", "t-young"]);
+    });
+  });
+
+  it("errors carry the tempId: bad_body, read_only and rate_limited", async () => {
+    await seedChat("d6");
+    const wa = await connect("d6", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-bad", body: "   " }));
+    await until(() => frames.some((f) => f.type === "error"));
+    expect(frames.find((f) => f.type === "error")).toMatchObject({ code: "bad_body", tempId: "t-bad" });
+
+    await seedChat("d7");
+    const member = await connect("d7", "u1", "member", "channel");
+    const mFrames = collect(member);
+    member.send(JSON.stringify({ type: "send", tempId: "t-ro", body: "nope" }));
+    await until(() => mFrames.some((f) => f.type === "error"));
+    expect(mFrames.find((f) => f.type === "error")).toMatchObject({ code: "read_only", tempId: "t-ro" });
+
+    await seedChat("d8");
+    const flooder = await connect("d8", "u1");
+    const fFrames = collect(flooder);
+    for (let i = 0; i < 35; i++) flooder.send(JSON.stringify({ type: "send", tempId: `f${i}`, body: `fl-${i}` }));
+    await until(() => fFrames.some((f) => f.code === "rate_limited"));
+    const rl = fFrames.find((f) => f.code === "rate_limited");
+    expect(rl).toMatchObject({ type: "error", code: "rate_limited" });
+    expect(String(rl!.tempId)).toMatch(/^f\d+$/);
+  });
+
+  it("an oversized or malformed tempId is rejected (bad_body, not echoed, nothing persisted)", async () => {
+    await seedChat("d9");
+    const wa = await connect("d9", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "x".repeat(65), body: "big id" }));
+    wa.send(JSON.stringify({ type: "send", tempId: "has space/<script>", body: "odd id" }));
+    wa.send(JSON.stringify({ type: "send", tempId: 12345, body: "num id" }));
+    await until(() => frames.filter((f) => f.type === "error").length >= 3);
+    const errs = frames.filter((f) => f.type === "error");
+    expect(errs).toHaveLength(3);
+    for (const e of errs) {
+      expect(e.code).toBe("bad_body");
+      expect("tempId" in e).toBe(false);
+    }
+    const hist = await stub("d9").historyFor("d9", null);
+    expect(hist).toHaveLength(0);
+  });
+
+  it("edit/delete errors echo the messageId (and tempId when sent)", async () => {
+    await seedChat("d10");
+    const wa = await connect("d10", "u1");
+    const frames = collect(wa);
+    wa.send(JSON.stringify({ type: "edit", id: "nope-1", body: "x" }));
+    wa.send(JSON.stringify({ type: "delete", id: "nope-2", tempId: "t-del" }));
+    await until(() => frames.filter((f) => f.type === "error").length >= 2);
+    const errs = frames.filter((f) => f.type === "error");
+    expect(errs.find((e) => e.code === "cannot_edit")).toMatchObject({ messageId: "nope-1" });
+    expect(errs.find((e) => e.code === "cannot_delete")).toMatchObject({ messageId: "nope-2", tempId: "t-del" });
+  });
 });

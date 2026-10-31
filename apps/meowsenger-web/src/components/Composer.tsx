@@ -34,6 +34,7 @@ export function Composer({
   replyTo,
   onCancelReply,
   onDraftChange,
+  restore,
 }: {
   onSend: (body: string) => SendResult;
   onTyping?: (active: boolean) => void;
@@ -41,6 +42,9 @@ export function Composer({
   onCancelReply?: () => void;
   /** Mirrors the unsent text to the parent (memory only) so a session-ended banner can hand it back. */
   onDraftChange?: (text: string) => void;
+  /** Put text back in the composer (a refused send turned into "edit"). A new `nonce` re-applies;
+   *  existing draft text is kept, with the restored text before it. */
+  restore?: { text: string; nonce: number } | null;
 }) {
   const [text, setText] = useState("");
   const draftCb = useRef(onDraftChange);
@@ -53,6 +57,14 @@ export function Composer({
   // autocomplete=off on an <input>) never attaches. It also gives free multi-line
   // composing (Shift+Enter). Matches the inline-edit field, which is already one.
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const restoredRef = useRef(0);
+  useEffect(() => {
+    if (!restore || restore.nonce === restoredRef.current) return;
+    restoredRef.current = restore.nonce;
+    setText((cur) => (cur.trim() ? `${restore.text}\n${cur}` : restore.text));
+    inputRef.current?.focus();
+  }, [restore]);
 
   // Focus the input when a reply is armed, so the user can type immediately.
   useEffect(() => {

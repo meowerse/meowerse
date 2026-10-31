@@ -20,7 +20,9 @@ type Frame =
   // The server closed this socket because the user was removed from / left the chat
   // (membership revoked) → the client drops the chat and stops reconnecting.
   | { type: "revoked" }
-  | { type: "error"; code: string };
+  // `tempId` correlates a refused send; `messageId` a refused edit/delete/react (older
+  // servers send neither -> the client falls back to the oldest in-flight edit).
+  | { type: "error"; code: string; tempId?: string; messageId?: string };
 
 // How long the ".is-flash" highlight lingers after a jump-to-original.
 const FLASH_MS = 1200;
@@ -40,10 +42,11 @@ export type SendResult = "sent" | "queued" | "rejected";
 
 /** One queued action, held in memory only (never persisted: bodies must not reach
  *  localStorage/sessionStorage/IndexedDB). A send keeps the client `tempId` it was
- *  given at enqueue time and reuses it on flush -- never regenerated -- so the server
- *  can dedupe on (senderId, tempId) once it is idempotent (PR-4). */
+ *  given at enqueue time and reuses it on flush AND on any reconnect resend / retry --
+ *  never regenerated -- so the server dedupes on (senderId, tempId). */
+type SendItem = { kind: "send"; tempId: string; body: string; replyToId: string | null; replyTo: Bubble["replyTo"]; createdAt: number };
 type OutboxItem =
-  | { kind: "send"; tempId: string; body: string; replyToId: string | null; replyTo: Bubble["replyTo"]; createdAt: number }
+  | SendItem
   | { kind: "edit"; id: string; body: string; editedAt: number }
   | { kind: "delete"; id: string };
 
@@ -86,6 +89,17 @@ function mergeRows(prev: Bubble[], rows: Message[], where: "append" | "prepend")
 function keepLocalOwn(hist: Message[], prev: Bubble[]): Bubble[] {
   const have = new Set(hist.map((m) => m.id));
   return [...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.tempId && !have.has(b.id))];
+}
+
+/** The wire frame for a send (flush, reconnect resend and retry all use this -- one tempId). */
+function sendFrame(item: SendItem): string {
+  return JSON.stringify({ type: "send", tempId: item.tempId, body: item.body, ...(item.replyToId ? { replyToId: item.replyToId } : {}) });
+}
+function optimisticBubble(item: SendItem, chatId: string, myId: string): Bubble {
+  return {
+    id: item.tempId, tempId: item.tempId, chatId, senderId: myId, body: item.body,
+    createdAt: item.createdAt, pending: true, replyToId: item.replyToId, replyTo: item.replyTo,
+  };
 }
 
 /** Human-readable copy for the transient error toast the server can send. */
@@ -182,6 +196,10 @@ export interface UseConversation {
   /** Send, or queue in the per-chat in-memory outbox when the socket isn't open. */
   send: (body: string, replyToId?: string | null) => SendResult;
   sendEdit: (m: Bubble, body: string) => SendResult;
+  /** Retry a refused send with the same tempId. */
+  retrySend: (m: Bubble) => SendResult;
+  /** Drop a refused send's bubble and return its text (for the composer). */
+  discardFailedSend: (m: Bubble) => string;
   sendDelete: (m: Bubble) => SendResult;
   /** Bulk delete: the capacity is checked ONCE; if it doesn't fit nothing is queued/sent. */
   sendDeleteMany: (ms: Bubble[]) => SendResult;
@@ -246,6 +264,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // `error` answer, oldest first, plus the last server-confirmed text of each so a
   // refused edit can be reverted. (Memory only.)
   const inflightEditsRef = useRef<string[]>([]);
+  // Sends that left the outbox but have no `sent` ack yet, per chat, oldest first. If the
+  // socket drops they are resent on reconnect WITH THE SAME tempId (the server re-acks the
+  // original row instead of inserting twice). Memory only. An ack or a tempId error removes.
+  const unackedRef = useRef<Map<string, Map<string, SendItem>>>(new Map());
   const editBaselineRef = useRef<Map<string, { body: string; editedAt?: number | null }>>(new Map());
   const settleEdit = useCallback((id: string, body: string, editedAt: number | null | undefined) => {
     const i = inflightEditsRef.current.indexOf(id);
@@ -254,8 +276,17 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (inflightEditsRef.current.includes(id)) editBaselineRef.current.set(id, { body, editedAt });
     else editBaselineRef.current.delete(id);
   }, []);
-  const revertRefusedEdit = useCallback(() => {
-    const id = inflightEditsRef.current.shift();
+  /** Revert the refused edit of message `messageId` (exact). Without a messageId (an older
+   *  server) fall back to FIFO: the oldest in-flight edit, as the server answers in order. */
+  const revertRefusedEdit = useCallback((messageId?: string) => {
+    let id: string | undefined;
+    if (messageId !== undefined) {
+      const i = inflightEditsRef.current.indexOf(messageId);
+      if (i < 0) return; // not in flight (e.g. the socket dropped first) -> nothing to revert
+      id = inflightEditsRef.current.splice(i, 1)[0];
+    } else {
+      id = inflightEditsRef.current.shift();
+    }
     if (id === undefined) return;
     const baseline = editBaselineRef.current.get(id);
     if (!inflightEditsRef.current.includes(id)) editBaselineRef.current.delete(id);
@@ -414,6 +445,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   const applyFrame = useCallback((frame: Frame) => {
     if (frame.type === "sent") {
+      unackedRef.current.get(frame.message.chatId)?.delete(frame.tempId);
       setMessages((prev) => upsertById(prev, frame.message, frame.tempId));
       onActiveMessageRef.current?.(frame.message); // my own send → refresh this chat's sidebar row
     } else if (frame.type === "message") {
@@ -467,12 +499,18 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // Membership revoked (removed/left). Mark it so the imminent onclose does NOT
       // reconnect, then let the view drop the chat + toast.
       revokedRef.current = true;
+      if (activeRef.current) unackedRef.current.delete(activeRef.current);
       onRevokedRef.current();
     } else if (frame.type === "error") {
       onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
-      // PR-4: correlate by messageId (error frames carry none today, so we assume the
-      // OLDEST in-flight edit is the refused one -- the server answers in order).
-      if (frame.code === "cannot_edit") revertRefusedEdit();
+      if (frame.tempId) {
+        // A refused send: stop resending it and turn its bubble into "not sent -- retry / edit".
+        const tid = frame.tempId;
+        const chatId = activeRef.current;
+        if (chatId) unackedRef.current.get(chatId)?.delete(tid);
+        setMessages((prev) => prev.map((b) => (b.tempId === tid && b.id === tid ? { ...b, pending: false, sendFailed: true } : b)));
+      }
+      if (frame.code === "cannot_edit") revertRefusedEdit(frame.messageId);
     }
   }, [sendRead]);
 
@@ -517,9 +555,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // Drain the ACTIVE chat's outbox, in order, over its open socket. A item leaves the
   // queue only after `ws.send` returned without throwing, so a close race (readyState
   // CLOSING, or a throw) leaves it queued for the next open instead of dropping it.
-  // The flushed send reuses the tempId minted at enqueue time (PR-4 will dedupe the
-  // server side on (senderId, tempId); an unacked item resent after a reconnect must
-  // carry that same id -- hook point for the PR-4 client resend).
+  // The flushed send reuses the tempId minted at enqueue time; the server dedupes on
+  // (senderId, tempId), and a send left unacked by a drop is resent with that same id.
   const flushOutbox = useCallback(() => {
     const chatId = activeRef.current;
     const ws = socketRef.current;
@@ -534,7 +571,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       const item = q[0];
       try {
         if (item.kind === "send") {
-          ws.send(JSON.stringify({ type: "send", tempId: item.tempId, body: item.body, ...(item.replyToId ? { replyToId: item.replyToId } : {}) }));
+          ws.send(sendFrame(item));
         } else if (item.kind === "edit") {
           ws.send(JSON.stringify({ type: "edit", id: item.id, body: item.body }));
         } else {
@@ -544,10 +581,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
       q.shift();
       changed = true;
       if (item.kind === "send") {
-        const optimistic: Bubble = {
-          id: item.tempId, tempId: item.tempId, chatId, senderId: myId, body: item.body,
-          createdAt: item.createdAt, pending: true, replyToId: item.replyToId, replyTo: item.replyTo,
-        };
+        const un = unackedRef.current.get(chatId) ?? new Map<string, SendItem>();
+        un.set(item.tempId, item);
+        unackedRef.current.set(chatId, un);
+        const optimistic = optimisticBubble(item, chatId, myId);
         setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
         atBottomRef.current = true;
         sentNew = true;
@@ -565,6 +602,24 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (sentNew && hasNewerRef.current) jumpAfterSendRef.current();
   }, [bumpOutbox]);
   flushOutboxRef.current = flushOutbox;
+
+  // After a (re)connect, BEFORE the outbox flush (so order is kept): resend every send that
+  // left the outbox but was never acked, with its original tempId. A send that did land is
+  // re-acked by the server (no second insert/broadcast); the ack merges by tempId/id, so a
+  // bubble never shows twice. Re-creates the optimistic bubble if a chat switch dropped it.
+  const resendUnacked = useCallback(() => {
+    const chatId = activeRef.current;
+    const ws = socketRef.current;
+    const myId = meIdRef.current;
+    if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
+    const pending = unackedRef.current.get(chatId);
+    if (!pending || pending.size === 0) return;
+    for (const item of pending.values()) {
+      try { ws.send(sendFrame(item)); } catch { break; }
+      const optimistic = optimisticBubble(item, chatId, myId);
+      setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
+    }
+  }, []);
 
   // Open exactly ONE socket to the active chat; reload history on select. The view's
   // per-chat UI resets (menus/selection/etc.) live in a SEPARATE view-side effect.
@@ -634,6 +689,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (cancelled) return;
         reconnectRef.current.attempts = 0;
         setConnected(true);
+        resendUnacked();
         flushOutbox();
         sentReadUpToRef.current = 0;
         if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
@@ -689,7 +745,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       socketRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
-  }, [base, activeId, applyFrame, sendRead, flushOutbox]);
+  }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked]);
 
   function enqueue(chatId: string, item: OutboxItem): boolean {
     const q = outboxRef.current.get(chatId) ?? [];
@@ -731,6 +787,27 @@ export function useConversation(input: UseConversationInput): UseConversation {
     // detached window (the server has it whatever happens next), and the flush then
     // jumps to the live tail; with it closed the item stays queued (and visible).
     return settle(chatId, item);
+  }
+
+  /** "not sent -- retry": re-send a refused bubble with the SAME tempId. The failed bubble
+   *  is dropped first; the flush (or the queued overlay while offline) recreates it. */
+  function retrySend(m: Bubble): SendResult {
+    if (!activeId || !m.tempId || !m.sendFailed) return "rejected";
+    const chatId = activeId;
+    const tid = m.tempId;
+    const item: SendItem = { kind: "send", tempId: tid, body: m.body, replyToId: m.replyToId ?? null, replyTo: m.replyTo ?? null, createdAt: m.createdAt };
+    if (!enqueue(chatId, item)) return "rejected";
+    setMessages((prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)));
+    return settle(chatId, item);
+  }
+  /** "not sent -- edit": drop the failed bubble and hand its text back for the composer. */
+  function discardFailedSend(m: Bubble): string {
+    const tid = m.tempId;
+    if (tid) {
+      if (activeId) unackedRef.current.get(activeId)?.delete(tid);
+      setMessages((prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)));
+    }
+    return m.body;
   }
 
   function sendEdit(m: Bubble, body: string): SendResult {
@@ -932,7 +1009,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   return {
     messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
+    send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };
 }
