@@ -3,7 +3,7 @@ import type { RequestResult } from "@meowerse/ui";
 import { getSession, loginUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, type ChatSummary } from "../lib/chat";
 import { recordPushError } from "../lib/push";
-import { getEndedSnapshot, hasSessionEnded, notifySessionEnded, resetSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+import { getEndedSnapshot, hasSessionEnded, notifySessionEnded, resetSessionEnded, clearSessionEndedFlag, subscribeSessionEnded } from "../lib/sessionEnded";
 import Chat from "./Chat";
 
 const RETRY_BASE_MS = 2_000;
@@ -114,15 +114,18 @@ export default function AppShell({ base }: { base: string }) {
   // bfcache restore can tell "same user" from "someone else signed in meanwhile").
   const heldUserRef = useRef<string | null>(null);
   const pageshowSeqRef = useRef(0);
+  const gateRef = useRef<Gate>(gate);
+  gateRef.current = gate;
 
   useEffect(() => subscribeSessionEnded(() => setGate("ended")), []);
 
   // bfcache restore: the frozen page may show a user who has since signed out or been
   // replaced. Re-check the session (same shape as auth-web's useSession pageshow).
-  // Same user -> keep everything, quietly. Different user / signed out -> drop ALL in-memory
+  // Same user -> keep everything, quietly. Different user -> drop ALL in-memory
   // app state (unmounting Chat drops its chats, active chat, conversation, drafts and
   // sockets), then boot again for whoever is signed in now. A network/5xx error keeps the
-  // current state: only a definitive answer changes anything.
+  // current state: only a definitive answer changes anything. Signed out while we hold or
+  // held a session raises the session-ended banner (draft kept), never a wipe/redirect.
   useEffect(() => {
     const onPageShow = (e: PageTransitionEvent) => {
       if (!e.persisted) return;
@@ -134,16 +137,29 @@ export default function AppShell({ base }: { base: string }) {
           return;
         }
         const nowId = r.data.authenticated ? (r.data.user?.id ?? null) : null;
-        if (nowId != null && nowId === heldUserRef.current) return; // same user: quiet
-        if (nowId == null && !r.data.authenticated) {
-          wipeAppState();
-          setGate("out");
+        const held = heldUserRef.current;
+        if (!r.data.authenticated) {
+          // Definitive signed-out. If we hold (or held) a session, never wipe or
+          // auto-redirect: surface the banner so the user's draft survives.
+          if (held != null || gateRef.current === "ended") notifySessionEnded();
+          else setGate("out");
           return;
         }
         if (nowId == null) return; // authenticated without a user: malformed, keep state
-        wipeAppState();
-        setGate("loading");
-        setAttempt((n) => n + 1);
+        if (held != null && nowId !== held) {
+          // A DIFFERENT account is signed in now: drop everything, boot as them.
+          wipeAppState();
+          setGate("loading");
+          setAttempt((n) => n + 1);
+          return;
+        }
+        // Same user, or nothing held yet. Quiet while mounted; otherwise recover from
+        // "ended"/"unreachable" without losing a handed-back draft or the address bar.
+        if (gateRef.current === "ended" || gateRef.current === "unreachable") {
+          clearSessionEndedFlag();
+          setGate("loading");
+          setAttempt((n) => n + 1);
+        }
       });
     };
     function wipeAppState() {

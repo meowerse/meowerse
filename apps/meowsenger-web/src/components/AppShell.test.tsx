@@ -46,7 +46,7 @@ vi.mock("./Chat", () => ({
 }));
 
 import AppShell from "./AppShell";
-import { notifySessionEnded, resetSessionEnded, setSnapshotSource } from "../lib/sessionEnded";
+import { getEndedSnapshot, notifySessionEnded, resetSessionEnded, setSnapshotSource } from "../lib/sessionEnded";
 
 const authed = { ok: true, status: 200, data: { authenticated: true, user: { id: "u1" } } };
 const replace = vi.fn();
@@ -349,13 +349,62 @@ describe("AppShell", () => {
       expect(chat.getAttribute("data-user")).toBe("u2");
     });
 
-    it("signed out meanwhile: wipes and redirects to login", async () => {
+    const signedOut = { ok: true, status: 200, data: { authenticated: false } };
+    const draftSource = () => setSnapshotSource(() => ({ draft: "my unsent words", pendingSend: false }));
+
+    it("signed out meanwhile (gate in): shows the banner, keeps the draft, no redirect, no wipe", async () => {
+      draftSource();
       render(<AppShell base="" />);
       await screen.findByTestId("chat");
-      H.results = [{ ok: true, status: 200, data: { authenticated: false } }];
+      H.results = [signedOut];
       await restore();
-      await waitFor(() => expect(replace).toHaveBeenCalledWith("/auth/login"));
+      await screen.findByText(/your session ended/);
+      expect((screen.getByLabelText(/your unsent message/) as HTMLTextAreaElement).value).toBe("my unsent words");
+      expect(replace).not.toHaveBeenCalled();
       expect(screen.queryByTestId("chat")).toBeNull();
+    });
+
+    it("signed out on restore while the ended banner shows: banner and draft stay, no redirect, no wipe", async () => {
+      draftSource();
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      act(() => { notifySessionEnded(); });
+      await screen.findByText(/your session ended/);
+      const replaceState = vi.spyOn(window.history, "replaceState");
+      H.results = [signedOut];
+      await restore();
+      expect(screen.getByText(/your session ended/)).toBeTruthy();
+      expect((screen.getByLabelText(/your unsent message/) as HTMLTextAreaElement).value).toBe("my unsent words");
+      expect(replace).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+
+    it("unreachable, then a same-user restore: keeps ?chat (no wipe) and boots", async () => {
+      Object.defineProperty(window, "location", { value: { ...window.location, href: "http://localhost/app?chat=c9", search: "?chat=c9", replace }, configurable: true });
+      const replaceState = vi.spyOn(window.history, "replaceState");
+      H.results = [{ ok: false, error: { kind: "network" } }];
+      render(<AppShell base="" />);
+      await screen.findByText(/can't reach meowsenger/);
+      H.results = [authed];
+      H.calls = 0;
+      await restore();
+      await screen.findByTestId("chat");
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+
+    it("ended (in-session), then a same-user restore: banner cleared, draft kept, app boots again", async () => {
+      draftSource();
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      act(() => { notifySessionEnded(); });
+      await screen.findByText(/your session ended/);
+      H.results = [authed];
+      H.calls = 0;
+      await restore();
+      await screen.findByTestId("chat");
+      expect(screen.queryByText(/your session ended/)).toBeNull();
+      expect(getEndedSnapshot()?.draft).toBe("my unsent words");
+      expect(replace).not.toHaveBeenCalled();
     });
 
     it("a network error or 5xx on the re-check keeps the current state (no wipe, no redirect)", async () => {

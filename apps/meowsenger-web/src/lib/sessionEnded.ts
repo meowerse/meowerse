@@ -35,3 +35,6 @@ export function subscribeSessionEnded(l: Listener): () => void {
 
 /** Test/sign-in reset. */
 export function resetSessionEnded(): void { ended = false; snapshot = null; }
+
+/** Signed in again as the same user: lift the ended state but keep the handed-back draft. */
+export function clearSessionEndedFlag(): void { ended = false; }

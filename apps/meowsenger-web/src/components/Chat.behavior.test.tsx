@@ -700,7 +700,7 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     expect(screen.getByText("@alice")).toBeTruthy();
   });
 
-  it("the composer is disabled until the socket is ready, then enabled (me is known from the start)", async () => {
+  it("the composer is disabled until the socket is ready, then enabled (socket readiness is the only gate)", async () => {
     const ws = await mountOpen();
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     const input = screen.getByLabelText("message") as HTMLTextAreaElement;

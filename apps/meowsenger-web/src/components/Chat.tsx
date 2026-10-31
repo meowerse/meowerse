@@ -979,7 +979,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               <Composer
                 onSend={sendWith}
                 onTyping={sendTyping}
-                disabled={!me || !connected}
+                disabled={!connected}
                 replyTo={replyDraft}
                 onCancelReply={() => setReplyingTo(null)}
                 onDraftChange={(t) => { draftRef.current = t; }}
