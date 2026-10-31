@@ -226,7 +226,9 @@ export function loadHistory(base: string, chatId: string, before?: string): Prom
 }
 
 /** GET ?around=<msgId> — a window centered on a message (deep-link jump), ascending,
- *  with hasOlder/hasNewer (more to page each side) + found (false ⇒ unknown id). */
+ *  with hasOlder/hasNewer (more to page each side) + found (false ⇒ unknown id).
+ *  REJECTS on a network error or a non-2xx answer (5xx/401/403 carry JSON bodies that would
+ *  otherwise parse as `found:false`): only a SUCCESSFUL response may say "not found". */
 export async function loadHistoryAround(
   base: string,
   chatId: string,
@@ -236,6 +238,7 @@ export async function loadHistoryAround(
     `${base}/api/chats/${encodeURIComponent(chatId)}/messages?around=${encodeURIComponent(msgId)}`,
     { credentials: "include" },
   );
+  if (!r.ok) throw new Error(`history around failed: ${r.status}`);
   const d = (await r.json()) as { messages?: Message[]; hasOlder?: boolean; hasNewer?: boolean; found?: boolean };
   return { messages: d.messages ?? [], hasOlder: !!d.hasOlder, hasNewer: !!d.hasNewer, found: !!d.found };
 }

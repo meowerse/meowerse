@@ -21,6 +21,9 @@ const S = vi.hoisted(() => ({
   afterKind: "network" as string,
   latestFail: false,
   aroundThrow: 0,
+  aroundStatus: 0,
+  /** Runs inside the next after/latest read, i.e. while the catch-up fetch is in flight. */
+  hook: null as null | (() => void),
 }));
 
 vi.mock("../lib/meowsengerApi", async (importActual) => {
@@ -33,18 +36,25 @@ vi.mock("../lib/chat", async (importActual) => {
   return {
     ...actual,
     loadHistory: vi.fn(async (_b: string, _c: string, before?: string) => {
+      if (S.hook && !before) { const h = S.hook; S.hook = null; h(); }
       if (before) return { ok: true as const, status: 200, data: [] as Message[] };
       if (S.latestFail) return { ok: false as const, error: { kind: "network" as const } };
       const q = S.latestQueue.shift();
       return { ok: true as const, status: 200, data: page(q ?? S.msgs) };
     }),
-    loadHistoryAround: vi.fn(async (_b: string, _c: string, id: string) => {
+    loadHistoryAround: vi.fn(async (b: string, c: string, id: string) => {
+      if (S.aroundStatus) {
+        // the REAL function over a stubbed fetch: a non-2xx answer with a JSON body
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ messages: [], found: false }), { status: S.aroundStatus })));
+        try { return await actual.loadHistoryAround(b, c, id); } finally { vi.unstubAllGlobals(); }
+      }
       if (S.aroundThrow > 0) { S.aroundThrow--; throw new Error("net"); }
       const m = S.msgs.find((x) => x.id === id);
       return { found: !!m, messages: (m ? [m] : []) as unknown as Message[], hasOlder: false, hasNewer: S.aroundHasNewer };
     }),
     loadHistoryAfter: vi.fn(async (_b: string, _c: string, id: string) => {
       S.afterCalls++;
+      if (S.hook) { const h = S.hook; S.hook = null; h(); }
       if (S.afterFail > 0) {
         S.afterFail--;
         return S.afterKind === "forbidden"
@@ -86,7 +96,7 @@ const sendFrames = (ws: MockWebSocket) => ws.sentFrames().filter((f) => f.type =
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-  S.msgs = []; S.latestQueue = []; S.aroundHasNewer = false; S.afterCalls = 0; S.sessionCalls = 0; S.afterFail = 0; S.afterKind = "network"; S.latestFail = false; S.aroundThrow = 0;
+  S.msgs = []; S.latestQueue = []; S.aroundHasNewer = false; S.afterCalls = 0; S.sessionCalls = 0; S.afterFail = 0; S.afterKind = "network"; S.latestFail = false; S.aroundThrow = 0; S.aroundStatus = 0; S.hook = null;
   S.session = { ok: false, error: { kind: "unauthorized" } };
   resetSessionEnded();
 });
@@ -397,5 +407,91 @@ describe("catch-up failure and edge paths", () => {
     expect(MockWebSocket.instances.length).toBe(1);
     act(() => window.dispatchEvent(new Event("online")));
     expect(MockWebSocket.instances.length).toBe(1);
+  });
+});
+
+describe("live frames beat fetched rows (review follow-ups)", () => {
+  async function outage(hist: Array<Record<string, unknown>>) {
+    const h = await boot(hist);
+    act(() => room().mockDrop());
+    return h;
+  }
+  const reopen = async () => { await tick(1000); act(() => room().mockOpen()); await tick(); };
+
+  it.each([500, 401, 403])("(a) a %i from the reconcile lookup does NOT revert the edit; it retries later", async (status) => {
+    const { result } = await boot([msg("m1", 1000, { body: "hello" })]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "mine"); });
+    act(() => room().mockDrop());
+    S.aroundStatus = status;
+    await reopen();
+    expect(result.current.messages.find((m) => m.id === "m1")?.body).toBe("mine"); // not "gone"
+    S.aroundStatus = 0;
+    S.msgs = [msg("m1", 1000, { body: "mine", editedAt: 9 }), msg("m2", 2000)];
+    await tick(1000); // the retry now succeeds
+    expect(result.current.messages.find((m) => m.id === "m1")).toMatchObject({ body: "mine", editedAt: 9 });
+  });
+
+  it("(b) a live `deleted` during an in-flight catch-up stays deleted after the merge", async () => {
+    const { result } = await outage([msg("m1", 1000)]);
+    // the after-page (read before the delete landed) carries m2 alive; the delete frame
+    // arrives while that fetch is in flight, and m2 is not a local row yet.
+    S.msgs = [msg("m1", 1000), msg("m2", 2000), msg("m3", 3000)];
+    S.hook = () => room().mockEmit({ type: "deleted", id: "m2" });
+    await reopen();
+    expect(ids(result)).toEqual(["m1", "m2", "m3"]);
+    expect(result.current.messages.find((m) => m.id === "m2")).toMatchObject({ isDeleted: true, body: "" });
+  });
+
+  it("(b1) ...and a local row deleted live during the fetch stays deleted", async () => {
+    const { result } = await outage([msg("m1", 1000), msg("m2", 2000)]);
+    S.hook = () => room().mockEmit({ type: "deleted", id: "m2" });
+    // anchor m2 unknown to the server -> newest-page fallback, whose copy of m2 is alive
+    S.msgs = [msg("m3", 3000)];
+    S.latestQueue = [[msg("m2", 2000), msg("m3", 3000)]];
+    await reopen();
+    expect(result.current.messages.find((m) => m.id === "m2")).toMatchObject({ isDeleted: true, body: "" });
+  });
+
+  it("(b2) a tombstone is never resurrected by a later fetched non-deleted row", async () => {
+    const { result } = await boot([msg("m1", 1000), msg("m2", 2000)]);
+    act(() => room().mockEmit({ type: "deleted", id: "m2" }));
+    S.aroundHasNewer = false;
+    S.latestQueue = [[msg("m1", 1000), msg("m2", 2000)], [msg("m1", 1000), msg("m2", 2000)]];
+    await act(async () => { await result.current.jumpToLatest(); });
+    expect(result.current.messages.find((m) => m.id === "m2")?.isDeleted).toBe(true);
+  });
+
+  it("(c) a live `edited` during the fetch: the newer text wins", async () => {
+    const { result } = await outage([msg("m1", 1000, { body: "old" })]);
+    // anchor m1 unknown to the server -> newest-page fallback, whose copy of m1 is the stale one
+    S.msgs = [msg("m2", 2000)];
+    S.latestQueue = [[msg("m1", 1000, { body: "old" }), msg("m2", 2000)]];
+    S.hook = () => room().mockEmit({ type: "edited", id: "m1", body: "new", editedAt: 50 });
+    await reopen();
+    expect(result.current.messages.find((m) => m.id === "m1")).toMatchObject({ body: "new", editedAt: 50 });
+  });
+
+  it("(d) a peer message arriving live during a fallback fetch survives", async () => {
+    const { result } = await outage([msg("m1", 1000)]);
+    S.msgs = [msg("p1", 3000)]; // anchor m1 gone -> newest-page fallback
+    S.hook = () => room().mockEmit({ type: "message", message: msg("live1", 4000) });
+    await reopen();
+    expect(ids(result)).toEqual(["p1", "live1"]);
+  });
+
+  it("(e) the retry timer is cleared on chat switch: no stray request", async () => {
+    const cb = { onToast: vi.fn(), onActiveRead: vi.fn(), onMessageDeleted: vi.fn(), consumeReply: vi.fn(), onRevoked: vi.fn() };
+    S.msgs = [msg("m1", 1000)];
+    const { rerender } = renderHook(({ id }: { id: string }) => useConversation({ base: "", activeId: id, me: ME, resolveSenderName: (x) => x, ...cb }), { initialProps: { id: "c1" } });
+    await tick();
+    act(() => room().mockOpen());
+    await tick();
+    act(() => room().mockDrop());
+    S.afterFail = 99;
+    await reopen(); // first catch-up try fails and arms a retry timer
+    expect(S.afterCalls).toBe(1);
+    rerender({ id: "c2" });
+    await tick(60_000);
+    expect(S.afterCalls).toBe(1);
   });
 });

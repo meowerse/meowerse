@@ -114,15 +114,38 @@ function orderLog(list: Bubble[]): Bubble[] {
  *  (still pending OR already acked) that the page doesn't already contain by id. An acked
  *  one older than the page's tail is placed by createdAt (never after a newer server row);
  *  unconfirmed ones stay at the tail. */
-function keepLocalOwn(hist: Message[], prev: Bubble[]): Bubble[] {
+interface LiveGuard {
+  /** A live frame changed this id after the fetch started. */
+  isLive: (id: string) => boolean;
+  /** A live `deleted` frame was seen for this id in this chat (even if no local row existed). */
+  wasDeleted: (id: string) => boolean;
+}
+/** A fetched row that a live `deleted` frame already tombstoned must not come back alive. */
+function tombstoned(m: Message, live?: LiveGuard): Message {
+  return live?.wasDeleted(m.id) ? { ...m, isDeleted: true, body: "" } : m;
+}
+
+function keepLocalOwn(hist: Message[], prev: Bubble[], live?: LiveGuard): Bubble[] {
+  const isLive = live?.isLive;
+  const local = new Map(prev.map((b) => [b.id, b]));
+  // A row a live frame changed after the fetch started (or a tombstone) is newer than the
+  // fetched copy: the local row wins.
+  const localWins = (id: string) => { const b = local.get(id); return !!b && (b.isDeleted === true || isLive?.(id) === true); };
   const have = new Set(hist.map((m) => m.id));
-  return orderLog([...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.tempId && !have.has(b.id))]);
+  const merged: Bubble[] = hist.map((m) => (localWins(m.id) ? local.get(m.id)! : { ...tombstoned(m, live) }));
+  const kept = prev.filter((b) => !have.has(b.id) && (b.tempId || isLive?.(b.id)));
+  return orderLog([...merged, ...kept]);
 }
 
 /** Reconnect catch-up: fold server rows (older-to-newer) into the log by id (server state
- *  wins for rows already there), then restore server order. */
-function mergeCatchUp(prev: Bubble[], rows: Message[]): Bubble[] {
-  return orderLog(mergeRows(prev, rows, "append"));
+ *  wins for rows already there, EXCEPT rows a live frame changed after the fetch started and
+ *  tombstones, which a fetched row never undoes), then restore server order. */
+function mergeCatchUp(prev: Bubble[], rows: Message[], live?: LiveGuard): Bubble[] {
+  const local = new Map(prev.map((b) => [b.id, b]));
+  const fresh = rows
+    .filter((m) => { const b = local.get(m.id); return !(b && (b.isDeleted === true || live?.isLive(m.id) === true)); })
+    .map((m) => tombstoned(m, live));
+  return orderLog(mergeRows(prev, fresh, "append"));
 }
 
 /** The wire frame for a send (flush, reconnect resend and retry all use this -- one tempId). */
@@ -345,6 +368,19 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const jumpingAfterSendRef = useRef(false);
   const jumpAfterSendRef = useRef<() => void>(() => {});
 
+  // Live-version stamps: a monotonic counter bumped by every live frame that changes a row
+  // (message/sent/edited/deleted/reaction), and the counter value per message id. A fetch
+  // records the counter when it STARTS; a fetched row whose id was stamped after that is
+  // older than the live state and must not overwrite it.
+  const liveSeqRef = useRef(0);
+  const liveStampRef = useRef<Map<string, number>>(new Map());
+  const stampLive = useCallback((id: string) => { liveStampRef.current.set(id, ++liveSeqRef.current); }, []);
+  const liveDeletedRef = useRef<Set<string>>(new Set());
+  const liveSince = useCallback((startSeq: number): LiveGuard => ({
+    isLive: (id) => (liveStampRef.current.get(id) ?? 0) > startSeq,
+    wasDeleted: (id) => liveDeletedRef.current.has(id),
+  }), []);
+
   const messagesRef = useRef<Bubble[]>([]);
   const hasMoreRef = useRef(false);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
@@ -491,10 +527,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   const applyFrame = useCallback((frame: Frame) => {
     if (frame.type === "sent") {
+      stampLive(frame.message.id);
       unackedRef.current.get(frame.message.chatId)?.delete(frame.tempId);
       setMessages((prev) => upsertById(prev, frame.message, frame.tempId));
       onActiveMessageRef.current?.(frame.message); // my own send → refresh this chat's sidebar row
     } else if (frame.type === "message") {
+      stampLive(frame.message.id);
       // A live message belongs at the tail. In a DETACHED window (hasNewer) the tail
       // isn't loaded, so appending would render it out of context → skip; the unread
       // badge + "jump to latest" surface it. Otherwise append (dedupe by id).
@@ -531,12 +569,16 @@ export function useConversation(input: UseConversationInput): UseConversation {
     } else if (frame.type === "read_receipt") {
       setPeerLastReadAt((prev) => Math.max(prev, frame.upTo));
     } else if (frame.type === "edited") {
+      stampLive(frame.id);
       settleEdit(frame.id, frame.body, frame.editedAt);
       setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, body: frame.body, editedAt: frame.editedAt, editFailed: undefined } : b)));
     } else if (frame.type === "deleted") {
+      stampLive(frame.id);
+      liveDeletedRef.current.add(frame.id);
       setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b)));
       onMessageDeletedRef.current(frame.id);
     } else if (frame.type === "reaction") {
+      stampLive(frame.id);
       const isMine = frame.userId === meIdRef.current;
       setMessages((prev) => prev.map((b) =>
         b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b,
@@ -558,7 +600,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       }
       if (frame.code === "cannot_edit") revertRefusedEdit(frame.messageId);
     }
-  }, [sendRead]);
+  }, [sendRead, stampLive]);
 
   const sendTyping = useCallback((active: boolean) => {
     const ws = socketRef.current;
@@ -690,6 +732,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     inflightEditsRef.current = [];
     editBaselineRef.current.clear();
     staleEditsRef.current.clear();
+    liveStampRef.current.clear();
+    liveDeletedRef.current.clear();
     setSentUnseen(false);
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
@@ -748,9 +792,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
     };
     async function catchUp(retry = 0): Promise<void> {
       const gen = ++catchGen;
+      if (catchTimer != null) { clearTimeout(catchTimer); catchTimer = null; } // a newer run supersedes a pending retry
+      const startSeq = liveSeqRef.current; // live frames stamped after this beat any fetched row
+      const live = liveSince(startSeq);
       const alive = () => !cancelled && activeRef.current === chatId && catchGen === gen;
       const again = () => {
         if (retry >= CATCHUP_MAX_RETRIES || !alive()) return;
+        if (catchTimer != null) clearTimeout(catchTimer);
         catchTimer = window.setTimeout(() => { catchTimer = null; void catchUp(retry + 1); }, retryDelay(retry));
       };
       // A detached (jumped) window has no live tail to extend; the user pages forward instead.
@@ -775,13 +823,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (!alive()) return;
         if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(); else again(); return; }
         fetched = res.data;
-        setMessages((prev) => keepLocalOwn(fetched, prev));
+        setMessages((prev) => keepLocalOwn(fetched, prev, live));
         setHasMore(fetched.length >= HISTORY_PAGE);
         if (overflow) onToastRef.current("lots of new messages while you were away — showing the latest");
       } else if (rows.length > 0) {
-        setMessages((prev) => mergeCatchUp(prev, rows));
+        setMessages((prev) => mergeCatchUp(prev, rows, live));
       }
-      if (!(await reconcileStaleEdits(fetched, alive))) { if (alive()) again(); return; }
+      if (!(await reconcileStaleEdits(fetched, alive, live.isLive))) { if (alive()) again(); return; }
       if (!alive()) return;
       if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
     }
@@ -789,24 +837,27 @@ export function useConversation(input: UseConversationInput): UseConversation {
     // optimistic text (the answer to those frames is lost; it either landed or it did not).
     // Skips an id re-sent on THIS socket (answer pending) or still queued. Resolves false if a
     // lookup failed (the caller retries the whole catch-up; the entries are kept).
-    async function reconcileStaleEdits(fetched: Message[], alive: () => boolean): Promise<boolean> {
+    async function reconcileStaleEdits(fetched: Message[], alive: () => boolean, isLive: (id: string) => boolean): Promise<boolean> {
       const stale = staleEditsRef.current;
       if (stale.size === 0) return true;
       const queued = outboxRef.current.get(chatId) ?? [];
       const mine = new Map(fetched.map((m) => [m.id, m]));
       for (const [id, baseline] of [...stale]) {
         if (inflightEditsRef.current.some((e) => e.id === id) || queued.some((i) => i.kind !== "send" && i.id === id)) { stale.delete(id); continue; }
+        if (isLive(id)) { stale.delete(id); continue; } // a live frame already gave the newest state
         let server: Message | undefined = mine.get(id);
         if (!server) {
           try {
             const around = await loadHistoryAround(base, chatId, id);
             if (!alive()) return true;
+            // Only a SUCCESSFUL response may say "gone" (loadHistoryAround rejects otherwise).
             server = around.found ? around.messages.find((m) => m.id === id) : undefined;
-          } catch { return false; }
+          } catch { return false; } // unknown: retry later (counted against the cap), never "gone"
         }
         stale.delete(id);
+        if (isLive(id)) continue; // a live frame landed during the lookup
         const next = server ?? baseline; // gone from the server: fall back to the last confirmed text
-        setMessages((prev) => prev.map((b) => (b.id === id
+        setMessages((prev) => prev.map((b) => (b.id === id && !b.isDeleted
           ? { ...b, body: next.body, editedAt: next.editedAt, ...(server ? { isDeleted: server.isDeleted } : {}), editFailed: undefined }
           : b)));
       }
@@ -919,7 +970,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       socketRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
-  }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked]);
+  }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked, liveSince]);
 
   function enqueue(chatId: string, item: OutboxItem): boolean {
     const q = outboxRef.current.get(chatId) ?? [];
@@ -1085,13 +1136,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const attachLatest = useCallback(async (silent: boolean): Promise<boolean> => {
     const chatId = activeRef.current;
     if (!chatId) return false;
+    const live = liveSince(liveSeqRef.current); // live frames after this point beat the fetched pages
     const histRes = await loadHistory(base, chatId);
     if (activeRef.current !== chatId) return false;
     if (!histRes.ok) { if (!silent) onToastRef.current("couldn't load the latest messages. try again."); return false; }
     const hist = histRes.data;
     // Local bubbles (a just-sent message still pending, or acked but not yet in this
     // page) survive the reload.
-    setMessages((prev) => keepLocalOwn(hist, prev));
+    setMessages((prev) => keepLocalOwn(hist, prev, live));
     setHasMore(hist.length >= 50);
     atBottomRef.current = true;
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
@@ -1102,13 +1154,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (activeRef.current !== chatId) return false;
     if (tailRes.ok && tailRes.data.length > 0) {
       const tail = tailRes.data;
-      setMessages((prev) => mergeCatchUp(prev, tail));
+      setMessages((prev) => mergeCatchUp(prev, tail, live));
     }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     return true;
-  }, [base, sendRead, markAttached]);
+  }, [base, sendRead, markAttached, liveSince]);
   const jumpToLatest = useCallback(async () => { await attachLatest(false); }, [attachLatest]);
 
   // After a send from a detached window: attach the live tail. If that fails the message
