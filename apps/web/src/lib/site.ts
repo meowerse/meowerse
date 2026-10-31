@@ -6,7 +6,7 @@ export const SITE = {
   url: "https://meow.alxnko.dev/",
   name: "meowerse",
   description: "Small, fast web apps by alxnko: one account, a messenger, and the design system they share.",
-  legal: "meowerse — a personal project by alxnko. no ads, no analytics, no trackers.",
+  legal: "meowerse — a personal project by alxnko. no ads. no website analytics or trackers today.",
   source: "https://github.com/meowerse/meowerse",
   themeColor: { dark: tokens.semantic.dark.bg, light: tokens.semantic.light.bg },
 } as const;
@@ -24,6 +24,8 @@ export const FOOTER_LINKS = [
   { label: "projects", href: "/#projects" },
   { label: "ui docs", href: "/ui/" },
   { label: "playground", href: "/ui/playground/" },
+  { label: "privacy", href: "https://auth.alxnko.dev/privacy" },
+  { label: "terms", href: "https://auth.alxnko.dev/terms" },
 ];
 
 export { isCurrent };

@@ -1,0 +1,34 @@
+---
+// A table that stacks into cards under 600px. With display:block the browser drops the native table semantics,
+// so every element carries an explicit ARIA role. The first column is the row header.
+interface Props { caption: string; head: string[]; rows: string[][]; class?: string }
+const { caption, head, rows, class: cls } = Astro.props;
+---
+<table class:list={["legal-table", cls]} role="table">
+  <caption class="sr-only">{caption}</caption>
+  <thead role="rowgroup"><tr role="row">{head.map((h) => <th scope="col" role="columnheader">{h}</th>)}</tr></thead>
+  <tbody role="rowgroup">
+    {rows.map((r) => (
+      <tr role="row">
+        {r.map((c, i) => (i === 0
+          ? <th scope="row" role="rowheader" data-label={head[i]}>{c}</th>
+          : <td role="cell" data-label={head[i]}>{c}</td>))}
+      </tr>
+    ))}
+  </tbody>
+</table>
+
+<style is:global>
+  .mw-prose .legal-table { display: table; width: 100%; overflow: visible; border-collapse: collapse; font-size: var(--fs-2); table-layout: fixed; }
+  .mw-prose .legal-table th, .mw-prose .legal-table td { white-space: normal; overflow-wrap: anywhere; text-align: start; vertical-align: top; padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--c-line); }
+  .mw-prose .legal-table thead th { color: var(--c-fg-muted); font-weight: 600; }
+  .mw-prose .legal-table thead th:first-child { width: 20%; }
+  @media (max-width: 599px) {
+    .mw-prose .legal-table, .mw-prose .legal-table tbody, .mw-prose .legal-table tr, .mw-prose .legal-table th, .mw-prose .legal-table td { display: block; width: 100%; }
+    .mw-prose .legal-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .mw-prose .legal-table tr { margin-bottom: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-m); background: var(--c-surface); }
+    .mw-prose .legal-table th, .mw-prose .legal-table td { padding: var(--sp-1) 0; border: 0; }
+    .mw-prose .legal-table th[scope="row"] { font-size: var(--fs-3); }
+    .mw-prose .legal-table td::before { content: attr(data-label) ": "; content: attr(data-label) ": " / ""; color: var(--c-fg-muted); font-weight: 600; }
+  }
+</style>

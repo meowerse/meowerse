@@ -166,7 +166,7 @@
 
 .mw-footer { border-top: 1px solid var(--c-line); margin-top: var(--sp-6); padding: var(--sp-5) var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); align-items: center; text-align: center; }
 .mw-footer__links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 var(--sp-4); }
-.mw-footer__links a { display: inline-flex; align-items: center; min-height: var(--control-height); color: var(--c-fg-muted); text-decoration: none; font-size: var(--fs-2); }
+.mw-footer__links a { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-height); min-width: var(--control-height); color: var(--c-fg-muted); text-decoration: none; font-size: var(--fs-2); }
 .mw-footer__links a:hover { color: var(--c-fg); }
 .mw-footer__legal { font-size: var(--fs-1); color: var(--c-fg-subtle); margin: 0; }
 

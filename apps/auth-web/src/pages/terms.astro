@@ -1,33 +1,60 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import { Card } from "@meowerse/ui";
+import { CONTACTS, POLICY_VERSION } from "../lib/legal";
 ---
-<Layout title="terms · meowerse">
+<Layout title="terms · meowerse" wide>
   <div class="mw-prose">
     <h1>terms of use</h1>
-    <p class="mw-muted">Last updated 2026-07-03. Meowerse accounts is a personal project provided by an individual (alxnko). By using it you agree to these terms.</p>
+    <p class="mw-muted">One set of terms for every meowverse service, with a short section for each. Version {POLICY_VERSION}. The meowverse services are a personal project provided by an individual (alxnko). By using them you agree to these terms. How we handle data is in the <a href="/privacy">privacy policy</a>.</p>
 
-    <Card title="the service">
-      <p>Meowerse accounts is provided free of charge, as-is and as-available, with no warranty and no service-level guarantee. It runs on free-tier infrastructure and may change, break, or be discontinued at any time.</p>
-    </Card>
+    <h2>for every service</h2>
 
-    <Card title="acceptable use">
+    <Card title="accounts">
       <ul>
-        <li>Don't attempt to break, overload, or abuse the service. Automated credential attacks are rate-limited and may be blocked.</li>
-        <li>Don't use it for anything illegal or to harm others.</li>
-        <li>You are responsible for keeping your password and recovery codes safe.</li>
+        <li>You need to be at least 16 to have an account. We do not check your age today. You are responsible for keeping your password and recovery codes safe.</li>
+        <li>You own the account data you provide. If you register developer apps, you are responsible for how they use the access you are granted, and for your own app's terms and privacy toward its users.</li>
         <li>Accounts used for abuse may be suspended or removed.</li>
       </ul>
     </Card>
 
-    <Card title="your content & apps">
-      <p>You own the account data you provide. If you register developer apps, you're responsible for how they use the access you're granted, and for your own app's terms and privacy toward its users.</p>
+    <Card title="acceptable use">
+      <ul>
+        <li>Don't attempt to break, overload or abuse the services. Automated attacks are rate-limited and may be blocked.</li>
+        <li>Don't use them for anything illegal, for spam or harassment, or to harm others.</li>
+        <li>Don't scrape, flood, or try to reach data that isn't yours.</li>
+      </ul>
     </Card>
 
-    <Card title="liability">
-      <p>To the extent permitted by law, the operator is not liable for any loss or damage arising from use of the service. Your sole remedy is to stop using it and ask for your account to be deleted.</p>
+    <Card title="no warranty, and liability">
+      <p>The services are provided free of charge, as-is and as-available, with no warranty and no service-level guarantee. They run on free-tier infrastructure and may change, break or be discontinued at any time. To the extent permitted by law, the operator is not liable for any loss or damage arising from their use. Your remedy is to stop using them and ask for your data to be deleted.</p>
     </Card>
 
-    <p class="mw-muted">See also our <a href="/privacy">privacy policy</a>. Questions? Use the contact links in the footer below.</p>
+    <Card title="changes and contact">
+      <p>We may update these terms; the version and date above change when we do. Questions: <a href={`mailto:${CONTACTS.general}`}>{CONTACTS.general}</a>. Privacy requests: <a href={`mailto:${CONTACTS.privacy}`}>{CONTACTS.privacy}</a>. Security reports: <a href={`mailto:${CONTACTS.security}`}>{CONTACTS.security}</a>.</p>
+    </Card>
+
+    <h2>per service</h2>
+
+    <Card title="meowerse accounts (auth)">
+      <p>Single sign-on for the meowverse apps. Automated credential attacks are rate-limited. Account deletion is handled on request for now (see the <a href="/privacy">privacy policy</a>).</p>
+    </Card>
+
+    <Card title="Meowsenger">
+      <ul>
+        <li>Meowsenger is a free, best-effort chat service. Sign-in is delegated to your meowerse account.</li>
+        <li>It is <strong>not end-to-end encrypted</strong>: the server can read messages. Don't send anything you need to keep secret from the server.</li>
+        <li>You own your messages and are responsible for what you send. Respect the people you chat with.</li>
+        <li>Content that breaks these terms may be removed, and accounts abusing the service may lose access.</li>
+      </ul>
+    </Card>
+
+    <Card title="meow-sim">
+      <p>A read-only public spectator view of a simulation. No account is needed. It may be slow, reset or unavailable at any time; connections are limited per address, and abusing the connection limits may get you blocked.</p>
+    </Card>
+
+    <Card title="Minecraft server">
+      <p>The server rules live on the server itself (in game, see the server's rules and guide). Breaking them can get you muted, kicked or banned. The server is a hobby project and may be reset, restored from a backup or taken down.</p>
+    </Card>
   </div>
 </Layout>

@@ -32,7 +32,10 @@ export function Footer({
   return (
     <footer className={cx("mw-footer", className)}>
       <nav className="mw-footer__links" aria-label="site">
-        {links.map((l) => <a key={l.href} href={l.href}>{l.label}</a>)}
+        {links.map((l) =>
+          /^https?:\/\//.test(l.href)
+            ? <a key={l.href} href={l.href} target="_blank" rel="noopener noreferrer">{l.label}</a>
+            : <a key={l.href} href={l.href}>{l.label}</a>)}
       </nav>
       <ContactLinks />
       <p className="mw-footer__legal">{legal}</p>
