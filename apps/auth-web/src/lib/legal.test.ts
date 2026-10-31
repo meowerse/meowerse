@@ -26,16 +26,20 @@ describe("shared privacy page copy", () => {
     const noJoke = rendered.replace(/1,000,000 trusted partners/, "");
     expect(noJoke).not.toMatch(/\b\d[\d,]*\+?\s+(trusted\s+)?(partners|recipients|third parties)/i);
   });
-  it("has every live partner row and no analytics rows yet", () => {
+  it("has every live partner row, including cookieless Cloudflare Web Analytics, and no Google Analytics", () => {
     const names = PARTNERS.map((p) => p.partner);
-    for (const n of ["Cloudflare", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "FastStats", "synkdev.cc", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
+    for (const n of ["Cloudflare", "Cloudflare Web Analytics", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "FastStats", "synkdev.cc", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
       expect(names.some((x) => x.includes(n)), n).toBe(true);
     }
     for (const p of PARTNERS) for (const f of [p.partner, p.why, p.gets, p.when]) expect(f.length).toBeGreaterThan(0);
-    expect(rendered).not.toMatch(/Google Analytics|Cloudflare Web Analytics/i);
+    const i = names.indexOf("Cloudflare");
+    expect(names[i + 1]).toBe("Cloudflare Web Analytics");
+    expect(PARTNERS[i + 1]?.gets).toMatch(/No cookies and no cross-site identifier/);
+    expect(rendered).toMatch(/Cloudflare Web Analytics/);
+    expect(rendered).not.toMatch(/Google Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v2, 2026-10-31");
+    expect(POLICY_VERSION).toBe("v3, 2026-10-31");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
@@ -56,7 +60,8 @@ describe("shared privacy page copy", () => {
     expect(privacy + terms + legalSrc).not.toMatch(/gmail\.com|@gmail|@proton|@icloud/i);
   });
   it("states analytics as today's state, with placeholders for the next release, not a permanent promise", () => {
-    expect(privacy).toContain("Today our websites run no visitor analytics");
+    expect(privacy).toContain("Our websites use Cloudflare Web Analytics");
+    expect(privacy).toContain("No other analytics or tracking scripts run on our websites today");
     expect(privacy).toContain("bStats and FastStats; see the Minecraft section");
     expect(privacy).not.toMatch(/never (use|run|load) analytics|no third-party trackers\./i);
     expect(privacy).toContain("TODAY-ONLY");

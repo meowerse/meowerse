@@ -111,6 +111,8 @@ test("authorize: unknown client is a FATAL on-site error (never a redirect)", as
   expect(r.status).toBe(400);
   expect(r.headers.get("Content-Type")).toContain("text/html");
   expect(r.headers.get("Referrer-Policy")).toBe("no-referrer");
+  // The HTML error page allows only the Cloudflare Web Analytics beacon (D7).
+  expect(r.headers.get("Content-Security-Policy")).toContain("script-src 'self' https://static.cloudflareinsights.com/beacon.min.js/; connect-src 'self' https://cloudflareinsights.com");
 });
 
 test("authorize: bad scope on a known client redirects with error+state+iss", async () => {

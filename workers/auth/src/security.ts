@@ -90,6 +90,10 @@ export function securityHeaders(extraCsp = ""): Record<string, string> {
   };
 }
 
+/** Cloudflare Web Analytics (D7): the zone injects its beacon into HTML responses; default-src 'self' would block it.
+ * Script host plus the one origin the beacon reports to (same-origin /cdn-cgi/rum is covered by 'self'). */
+export const CF_BEACON_CSP = "script-src 'self' https://static.cloudflareinsights.com/beacon.min.js/; connect-src 'self' https://cloudflareinsights.com";
+
 /** Synchronizer-token CSRF check: non-empty + constant-time equal. */
 export function validateCsrf(provided: string, expected: string): boolean {
   return expected.length > 0 && constantTimeEqual(provided, expected);
