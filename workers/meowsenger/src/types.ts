@@ -25,4 +25,6 @@ export interface DbClient {
   all(sql: string, params?: unknown[]): Promise<Row[]>;
   first(sql: string, params?: unknown[]): Promise<Row | undefined>;
   run(sql: string, params?: unknown[]): Promise<void>;
+  /** Run statements as ONE atomic unit (D1 `batch`: all-or-nothing). Optional only so read-only test fakes needn't implement it; `d1Client` always does. Resolves the rows changed per statement. */
+  batch?(stmts: { sql: string; params?: unknown[] }[]): Promise<number[]>;
 }

@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
 import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
+import { shownName } from "../lib/userName";
 import { fmtDay } from "../lib/messageText";
 import { useConversation, type SendResult } from "../hooks/useConversation";
 import { useInbox } from "../hooks/useInbox";
@@ -121,7 +122,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Suppress the Composer on a channel until the role is known (avoids the flash).
   const channelComposerPending = isChannel && !channelRoleKnown;
 
-  const peerName = activeChat ? (activeChat.peerDisplayName || activeChat.peerUsername || activeChat.name || "direct message") : "";
+  const peerName = activeChat ? (activeChat.peerUsername ? shownName(activeChat.peerDisplayName, activeChat.peerUsername) : (activeChat.peerDisplayName || activeChat.name || "direct message")) : "";
 
   // Resolve a sender id → a human name for the backgrounded-message notification: a
   // group/channel uses the roster (falling back to the raw id), a DM uses the peer
@@ -291,7 +292,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     const list: Member[] = res.data;
     const map = new Map<string, SenderInfo>();
     for (const m of list) {
-      map.set(m.userId, { name: m.displayName || m.username, avatarUrl: m.avatarUrl, role: m.role });
+      map.set(m.userId, { name: shownName(m.displayName, m.username), avatarUrl: m.avatarUrl, role: m.role });
     }
     setMemberMap(map);
   }, [base, activeRef]);
