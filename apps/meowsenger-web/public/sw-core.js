@@ -9,6 +9,14 @@
 // the push subscription is dropped so the stale registration stops waking us.
 (function (root) {
   var OPT_IN_KEY = "optedInUser";
+  var APP_ICON = "/icon-192.png";
+
+  /** The notification's large icon: the peer's avatar for a single direct chat (https only;
+   *  anything else — data:, http:, javascript:, relative paths — falls back), else the app icon. */
+  function notificationIcon(url) {
+    if (typeof url !== "string" || url.length > 2048) return APP_ICON;
+    try { return new URL(url).protocol === "https:" ? url : APP_ICON; } catch (e) { return APP_ICON; }
+  }
 
   /** Tiny IndexedDB-backed store for the opted-in account id (no tokens). */
   function makeIdbStore(idb) {
@@ -47,7 +55,7 @@
   }
 
   /**
-   * Decide what to show for one push. Returns { show:false } or { show:true, title, body, chatId }.
+   * Decide what to show for one push. Returns { show:false } or { show:true, title, body, chatId, icon }.
    *  - no stored opt-in                      → purge, show nothing
    *  - /api/session 401/403, authenticated:false, no user id, or another account → purge, show nothing
    *  - /api/session 5xx / 429 / other non-OK / unreadable body / network error → show nothing,
@@ -106,6 +114,7 @@
         title: top.name || top.peerDisplayName || top.peerUsername || "meowsenger",
         body: body,
         chatId: top.id || "",
+        icon: notificationIcon(unread.length === 1 ? top.peerAvatarUrl : null),
       };
     } catch (e) {
       return { show: false, reason: "chats_failed" };

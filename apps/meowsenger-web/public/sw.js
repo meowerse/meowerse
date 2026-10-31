@@ -35,6 +35,8 @@ async function handlePush() {
   if (!d.show) return;
   await self.registration.showNotification(d.title, {
     body: d.body,
+    icon: d.icon || "/icon-192.png", // sender avatar (single DM) or the Meowsenger icon, not a grey letter
+    badge: "/badge-96.png", // monochrome cat for the Android status bar, instead of the Chrome logo
     tag: "meowsenger-msg", // coalesce a burst into a single notification
     renotify: true,
     data: { chatId: d.chatId },
