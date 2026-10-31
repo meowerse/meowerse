@@ -304,6 +304,9 @@ export interface InboxDelta {
   at: number;
   senderId: string;
   forwarded?: boolean;
+  /** Content-free signal (no preview/sender): "this chat changed, refetch the list".
+   *  Sent to members beyond the server's inline fan-out cap. */
+  invalidate?: boolean;
 }
 
 // ---- Slice 5: group creation + member management + metadata ----------------

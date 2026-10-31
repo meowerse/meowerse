@@ -41,6 +41,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
               at: frame.at ?? Date.now(),
               senderId: frame.senderId ?? "",
               forwarded: frame.forwarded,
+              invalidate: frame.invalidate === true,
             });
           }
         } catch { /* ignore junk */ }

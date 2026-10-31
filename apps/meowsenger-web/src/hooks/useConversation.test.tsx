@@ -316,11 +316,61 @@ describe("useConversation — scroll, notify, flash", () => {
     setVisibility("hidden");
     const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
-    expect(MockNotification.instances.length).toBe(1);
+    await waitFor(() => expect(MockNotification.instances.length).toBe(1));
     expect(MockNotification.instances[0].body).toBe("ping");
     // Our OWN message never notifies.
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m3", senderId: "u1", body: "self", createdAt: 3000 }) }));
+    await new Promise((r) => setTimeout(r, 20));
     expect(MockNotification.instances.length).toBe(1);
+  });
+
+  describe("with a service worker", () => {
+    const showNotification = vi.fn(async () => {});
+    function installSw(subscribed: boolean, marker?: string) {
+      vi.stubGlobal("localStorage", { getItem: (k: string) => (k === "mw_push_synced" ? marker ?? null : null), setItem() {}, removeItem() {} });
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: { getRegistration: async () => ({ showNotification, pushManager: { getSubscription: async () => (subscribed ? { endpoint: "https://e/1" } : null) } }) },
+      });
+      (window as unknown as { PushManager: unknown }).PushManager = function PushManager() {};
+    }
+    afterEach(() => {
+      delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
+      delete (window as unknown as { PushManager?: unknown }).PushManager;
+      showNotification.mockClear();
+      vi.unstubAllGlobals();
+    });
+
+    it("a push subscription CONFIRMED for this account suppresses the in-page notification (the SW push covers it)", async () => {
+      installSw(true, "u1|https://e/1");
+      setVisibility("hidden");
+      const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+      act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(showNotification).not.toHaveBeenCalled();
+      expect(MockNotification.instances.length).toBe(0);
+    });
+
+    it("a subscription that is not confirmed for this account (no / foreign marker) still shows the in-page notification", async () => {
+      for (const marker of [undefined, "u2|https://e/1", "u1|https://e/other"]) {
+        installSw(true, marker);
+        setVisibility("hidden");
+        const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+        act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
+        await waitFor(() => expect(showNotification).toHaveBeenCalledTimes(1));
+        showNotification.mockClear();
+      }
+    });
+
+    it("without a push subscription it shows via the registration with the SW's tag", async () => {
+      installSw(false);
+      setVisibility("hidden");
+      const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
+      act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", body: "ping", createdAt: 2000 }) }));
+      await waitFor(() => expect(showNotification).toHaveBeenCalledTimes(1));
+      expect(showNotification).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ body: "ping", tag: "meowsenger-msg", data: { chatId: "c1" } }));
+      expect(MockNotification.instances.length).toBe(0);
+    });
   });
 
   it("jumpToMessage flashes an already-loaded row in place (no server fetch)", async () => {
@@ -362,6 +412,7 @@ describe("useConversation — branch guards", () => {
     setVisibility("hidden");
     const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
     act(() => ws.mockEmit({ type: "message", message: msg({ id: "m2", senderId: "u2", createdAt: 2000 }) }));
+    await new Promise((r) => setTimeout(r, 20));
     expect(MockNotification.instances.length).toBe(0);
   });
 

@@ -65,15 +65,26 @@ function b64urlJson(obj: unknown): string {
 
 /** Build the VAPID Authorization header value for a push endpoint (unified draft
  *  form: `vapid t=<jwt>, k=<publicKey>`). The JWT's `aud` is the endpoint origin. */
-async function vapidAuth(endpoint: string, env: Env, now: number): Promise<string | null> {
-  const jwkStr = env.VAPID_PRIVATE_JWK;
+/** Import the VAPID signing key once, so a fan-out to many targets doesn't re-import
+ *  it per target. Returns null when VAPID isn't configured / the JWK is unusable. */
+export async function importVapidKey(env: Env): Promise<CryptoKey | null> {
+  if (!env.VAPID_PRIVATE_JWK) return null;
+  try {
+    const jwk = JSON.parse(env.VAPID_PRIVATE_JWK) as JsonWebKey;
+    return await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  } catch {
+    return null;
+  }
+}
+
+async function vapidAuth(endpoint: string, env: Env, now: number, preKey?: CryptoKey | null): Promise<string | null> {
   const pub = env.VAPID_PUBLIC_KEY;
   const sub = env.VAPID_SUBJECT || "mailto:security@alxnko.dev";
-  if (!jwkStr || !pub) return null;
+  if (!env.VAPID_PRIVATE_JWK || !pub) return null;
   let origin: string;
   try { origin = new URL(endpoint).origin; } catch { return null; }
-  const jwk = JSON.parse(jwkStr) as JsonWebKey;
-  const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const key = preKey ?? (await importVapidKey(env));
+  if (!key) return null;
   const header = b64urlJson({ typ: "JWT", alg: "ES256" });
   const claims = b64urlJson({ aud: origin, exp: Math.floor(now / 1000) + 12 * 3600, sub });
   const signingInput = `${header}.${claims}`;
@@ -83,10 +94,10 @@ async function vapidAuth(endpoint: string, env: Env, now: number): Promise<strin
 
 /** Deliver one payloadless push. Returns the HTTP status (0 on a network error).
  *  201/2xx = delivered; 404/410 = the subscription is dead (caller should delete). */
-export async function sendPush(endpoint: string, env: Env, now: number, fetchFn = fetch): Promise<number> {
+export async function sendPush(endpoint: string, env: Env, now: number, fetchFn = fetch, key?: CryptoKey | null): Promise<number> {
   // Defense in depth: re-validate right before the request, whatever is in D1.
   if (!isAllowedPushEndpoint(endpoint)) return 0;
-  const auth = await vapidAuth(endpoint, env, now);
+  const auth = await vapidAuth(endpoint, env, now, key);
   if (!auth) return 0;
   try {
     const res = await fetchFn(endpoint, {
@@ -206,6 +217,8 @@ export async function pushTargetsForChat(
   db: DbClient,
   chatId: string,
   excludeUserIds: string[],
+  /** Optional out-param: receives the excluded users that DO have a subscription here. */
+  skipped?: Set<string>,
 ): Promise<Array<{ endpoint: string; userId: string }>> {
   const excluded = new Set(excludeUserIds);
   const rows = await db.all(
@@ -216,7 +229,7 @@ export async function pushTargetsForChat(
   );
   const out = new Map<string, string>(); // endpoint → owner (endpoint is the primary key)
   for (const r of rows as Row[]) {
-    if (excluded.has(String(r.user_id))) continue;
+    if (excluded.has(String(r.user_id))) { skipped?.add(String(r.user_id)); continue; }
     out.set(String(r.endpoint), String(r.user_id));
   }
   return [...out].map(([endpoint, userId]) => ({ endpoint, userId }));

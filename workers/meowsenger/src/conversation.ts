@@ -3,7 +3,8 @@ import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
 import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
-import { pushTargetsForChat, sendPush, deleteDeadPushSubscription, pushHostFamily } from "./push";
+import { d1Client } from "./db";
+import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
 
 /** Per-connection metadata stashed on the socket (survives hibernation). */
 interface Attach {
@@ -82,6 +83,64 @@ const RATE_MAX = 30;
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
 const PUSH_DEBOUNCE_MS = 30_000;
+/** Two independent per-invocation subrequest budgets (Cloudflare limits page, Oct 2026,
+ *  Free plan): external `fetch()` subrequests are capped at 50; "subrequests to internal
+ *  services" (DO stub fetches) have a SEPARATE cap of 1,000.
+ *  EXTERNAL: Web Push POSTs, plus D1 queries counted conservatively (the docs list D1
+ *  ambiguously). 45 keeps headroom under 50.
+ *  INTERNAL: UserInbox /notify DO fetches. 900 keeps headroom under 1,000. */
+const EXTERNAL_BUDGET = 45;
+const INTERNAL_BUDGET = 900;
+/** After a transient push failure (429/5xx/network) a recipient becomes eligible again
+ *  this long after the failure — not immediately, not after the full window. */
+const PUSH_RETRY_MS = 10_000;
+
+/** Subrequests spent so far in ONE invocation, per budget. `ext`: mirror write, member
+ *  read, push-target read, push sends, prunes (counted synchronously). `int`: inbox DO
+ *  fetches. */
+interface SubBudget { ext: number; int: number }
+
+/** Max follow-up (alarm) rounds that may make NO progress (or fail) before the queued
+ *  work is dropped (logged, counts only): the next message re-queues it and the client's
+ *  45 s sidebar poll covers the sidebar. Rounds that make progress do not count: each is
+ *  bounded by the per-invocation budgets and the DO serves other events between alarms. */
+const MAX_FOLLOWUPS = 5;
+/** Max delivery attempts per recipient per queued batch (the first send counts as one);
+ *  transient failures (429/5xx/network) are retried until then, then dropped. */
+const MAX_PUSH_ATTEMPTS = 3;
+/** Hard safety ceiling on TOTAL rounds per queued batch (progress or not), logged when
+ *  hit; only a backstop (progress counting already guarantees termination). Sized for the
+ *  worst case: the round budget is spent per ENDPOINT, and fanPush only ever packs WHOLE
+ *  users into a round (a user's devices are never split across rounds). A follow-up round
+ *  spends one subrequest on the push-target read, leaving ROUND_CAPACITY endpoints, so at
+ *  worst only floor(ROUND_CAPACITY / MAX_PUSH_SUBS_PER_USER) users fit per round, and each
+ *  user needs up to MAX_PUSH_ATTEMPTS rounds. */
+const ROUND_CAPACITY = EXTERNAL_BUDGET - 1;
+const roundCeiling = (batchSize: number): number => {
+  const usersPerRound = Math.max(1, Math.floor(ROUND_CAPACITY / MAX_PUSH_SUBS_PER_USER));
+  return 10 + MAX_PUSH_ATTEMPTS * Math.ceil(batchSize / usersPerRound);
+};
+/** Pending fan-out work persisted in DO storage: recipient ids and the chat id only
+ *  (never message text, endpoints or keys). `seq` increments on every queueOverflow so
+ *  a running follow-up can tell that new work arrived while it awaited. `attempts` /
+ *  `notBefore` (push recipients only): failed delivery attempts so far, and the earliest
+ *  time a transiently-failed recipient may be retried. `rounds` = no-progress rounds,
+ *  `total` = all rounds, `ceiling` = max `total`, sized from the batch when it was queued. */
+interface Overflow {
+  chatId: string; push: string[]; inbox: string[];
+  attempts: Record<string, number>; notBefore: Record<string, number>;
+  rounds: number; total: number; ceiling: number; seq: number;
+}
+/** What one push round hands back: `cut` = not reached (budget), `retry` = transient
+ *  failures with their attempt count so far, `dropped` = recipients out of attempts. */
+interface PushResult { cut: string[]; retry: Record<string, number>; dropped: number }
+/** The single per-invocation outcome line: counts only. */
+function logOutcome(c: { eligible: number; attempted: number; accepted: number; transient: number; permanent: number; dropped: number; suppressed: string; debounced: number; deferred: number }): void {
+  console.log(
+    `push_decision outcome eligible=${c.eligible} attempted=${c.attempted} accepted=${c.accepted} transient_failed=${c.transient} permanent_failed=${c.permanent} dropped=${c.dropped} suppressed_active=${c.suppressed} suppressed_debounce=${c.debounced} deferred=${c.deferred}`,
+  );
+}
+const OVERFLOW_KEY = "fanout_overflow";
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
 const MAX_EMOJI_LEN = 8;
@@ -125,8 +184,11 @@ export class Conversation extends DurableObject<Env> {
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
   // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
   private lastSeenStamp = new Map<string, number>();
-  // Last time (ms) we fanned out a Web Push for this chat, to coalesce pushes to
-  // ~once/PUSH_DEBOUNCE_MS (see pushOffline). One entry per chat this DO serves (1).
+  // Per-RECIPIENT push window: userId → time (ms) we last reserved a Web Push for them,
+  // to coalesce pushes to ~once/PUSH_DEBOUNCE_MS per user (see pushOffline). Reserved
+  // synchronously (before any await) so a concurrent burst can't double-push; cleared
+  // when the user next has an active socket here (they have seen the chat). Bounded by
+  // this chat's member count.
   private lastPush = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -165,6 +227,7 @@ export class Conversation extends DurableObject<Env> {
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
+    this.lastPush.delete(userId); // a fresh socket is visible: they're seeing the chat → reset their push window
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
     // Presence: derive who was online BEFORE this socket joined (exclude the
@@ -196,6 +259,17 @@ export class Conversation extends DurableObject<Env> {
       if (a?.userId) s.add(a.userId);
     }
     return [...s];
+  }
+
+  /** Users with at least one NON-away socket in this room (the chat is on screen
+   *  somewhere for them). Same hibernation-safe derivation as onlineUsers. */
+  private activeUsers(): string[] {
+    const active = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attach | null;
+      if (a?.userId && !a.away) active.add(a.userId);
+    }
+    return [...active];
   }
 
   /** Users who are online (≥1 socket) but whose EVERY socket is `away` (all their
@@ -265,6 +339,7 @@ export class Conversation extends DurableObject<Env> {
     // user's DERIVED status (away iff ALL their sockets are away). Peers-only.
     if (msg.type === "away") {
       ws.serializeAttachment({ ...att, away: !!msg.away });
+      if (!msg.away) this.lastPush.delete(att.userId); // back on screen → reset their push window
       this.broadcast({ type: "presence", userId: att.userId, online: true, away: this.awayUsers().includes(att.userId) }, ws);
       return;
     }
@@ -405,21 +480,43 @@ export class Conversation extends DurableObject<Env> {
     for (const peer of this.ctx.getWebSockets()) {
       if (peer !== opts.ackTo) this.safeSend(peer, frame);
     }
-    // Off the critical path: mirror the preview to D1 and notify all members' UserInbox DOs.
-    // Awaiting mirrorLastMessage ensures D1 is up-to-date if a client refetches on notification.
+    // Off the critical path: mirror the preview to D1, notify all members' UserInbox DOs
+    // and send Web Push. The mirror write is its OWN promise: the inbox fan-out waits for
+    // it (a client that refetches on a notification must see the new last_activity), and
+    // fanPush waits for it just before the first push is sent (the service worker builds
+    // the notification from /api/chats, and unread state depends on chats.last_activity).
+    // Nothing awaits the whole inbox fan-out before pushing.
+    // External: the mirror write + the member read (reserved up front, even when the
+    // member list is cached, so push sizing never depends on the inbox fan-out's timing).
+    const budget: SubBudget = { ext: 2, int: 0 };
+    // Filled in place by pushOffline so even a rejection cannot discard the budget-cut recipients.
+    const pushRes: PushResult = { cut: [], retry: {}, dropped: 0 };
+    const mirror: Promise<void> = (async () => {
+      try {
+        await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
+      } catch {}
+    })();
+    const sidebar = (async (): Promise<string[]> => {
+      await mirror;
+      try {
+        return await this.inboxFanout(chatId, senderId, message, budget);
+      } catch {
+        return [];
+      }
+    })();
+    // Web Push: notify members with NO active socket in this room (offline, busy in
+    // another chat, or backgrounded) — their service worker decides whether to show it.
+    // Whatever the per-invocation budget cut off (or a transient failure) continues from
+    // the DO alarm.
     this.ctx.waitUntil(
       (async () => {
-        try {
-          await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
-        } catch {}
-        try {
-          await this.inboxFanout(chatId, senderId, message);
-        } catch {}
+        const push = await this.pushOffline(chatId, senderId, budget, mirror, pushRes).catch((): PushResult => pushRes);
+        const inboxLeft = await sidebar;
+        await this.queueOverflow(chatId, senderId, push.cut, inboxLeft, push.retry).catch((e) => {
+          console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} queue_write_failed push=${push.cut.length + Object.keys(push.retry).length} inbox=${inboxLeft.length}`);
+        });
       })(),
     );
-    // Web Push: notify members with NO live socket in this room (offline, or busy in
-    // another chat) — their service worker decides whether to show it. Off the path.
-    this.ctx.waitUntil(this.pushOffline(chatId, senderId).catch(() => {}));
     return id;
   }
 
@@ -430,22 +527,40 @@ export class Conversation extends DurableObject<Env> {
    * the real-time sidebar delta.
    * Member ids are cached ~5s per chat so a busy room doesn't read chat_members on
    * every message; a just-joined member starts getting deltas within that window.
+   * `dropUser` (removal/leave/demotion) clears the cache and bumps a generation; a
+   * member read that overlapped it is discarded and re-read, never cached. A removed
+   * member therefore gets no preview from a message sent after the REST handler
+   * returns (a message already mid-fan-out may still reach them: it predates the removal).
    */
   private inboxMembers = new Map<string, { ids: string[]; at: number }>();
-  private async inboxFanout(chatId: string, senderId: string, message: Wire): Promise<void> {
+  /** Bumped by dropUser; a member read that raced a removal must not be cached/used. */
+  private membershipGen = 0;
+  /** Per-invocation internal (DO fetch) budget; an instance field only so tests can
+   *  lower it (not production configuration). */
+  private internalBudget = INTERNAL_BUDGET;
+  private async inboxFanout(chatId: string, senderId: string, message: Wire, budget: SubBudget): Promise<string[]> {
     const ns = this.env.USER_INBOX;
-    if (!ns) return; // binding not configured (older deploy / tests)
+    if (!ns) return []; // binding not configured (older deploy / tests)
     const cached = this.inboxMembers.get(chatId);
     const now = Date.now();
     let ids: string[];
     if (cached && now - cached.at < 5000) {
       ids = cached.ids;
     } else {
-      ids = await chatMemberIds(this.d1(), chatId);
-      this.inboxMembers.set(chatId, { ids, at: now });
+      // A read that overlaps a membership change (dropUser bumps the generation) may
+      // hold the removed member: discard it and re-read once, and never cache it.
+      for (let attempt = 0; ; attempt++) {
+        const gen = this.membershipGen;
+        if (attempt > 0) budget.ext++; // the re-read (the first read is reserved by the caller)
+        ids = await chatMemberIds(this.d1(), chatId);
+        if (gen === this.membershipGen) {
+          this.inboxMembers.set(chatId, { ids, at: now });
+          break;
+        }
+        if (attempt >= 1) return []; // still racing: skip this preview rather than leak it
+      }
     }
-    const targets = ids;
-    if (targets.length === 0) return;
+    if (ids.length === 0) return [];
     const body = JSON.stringify({
       chatId,
       preview: message.body.slice(0, 140),
@@ -453,41 +568,384 @@ export class Conversation extends DurableObject<Env> {
       senderId,
       forwarded: message.isForwarded,
     });
-    // Cloudflare Workers enforce a 50 subrequest limit per invocation. Bound to 40 targets.
-    const bounded = targets.slice(0, 40);
+    // Every member gets a preview up to the INTERNAL budget; members beyond it are
+    // returned and get a content-free invalidation from a follow-up.
+    const take = Math.max(0, this.internalBudget - budget.int);
+    const bounded = ids.slice(0, take);
+    budget.int += bounded.length;
     await Promise.all(
       bounded.map((id) =>
         ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {}),
       ),
     );
+    return ids.slice(take);
   }
 
   /**
-   * Send a payloadless Web Push to every subscription of a chat member who has NO
-   * live socket in this room (so they aren't already getting it over the wire) and
-   * isn't the sender. A dead endpoint (404/410) is pruned. No-op when VAPID isn't
-   * configured. One D1 read for the target endpoints; sends run concurrently.
+   * Send a payloadless Web Push to every subscription of a chat member who is not the
+   * sender and has no ACTIVE (non-away) socket in this room — offline, busy in another
+   * chat, or with the tab backgrounded (their service worker decides whether to show
+   * it). No-op when VAPID isn't configured. Returns the recipients the per-invocation
+   * budget cut off and those to retry after a transient failure (queued for the alarm
+   * by the caller).
+   * Debounced PER RECIPIENT (see `lastPush`); the window is reserved synchronously,
+   * right after the single D1 read and before any send, so concurrent messages can't
+   * double-push and one recipient's push never silences another. Shares this event's
+   * external `budget` (the inbox fan-out spends the separate internal one). `gate` (the
+   * D1 mirror write) is awaited just before the first send.
    */
-  private async pushOffline(chatId: string, senderId: string): Promise<void> {
-    if (!this.env.VAPID_PRIVATE_JWK) return; // push not configured
-    // Coalesce: at most one offline fan-out per chat per window. Stamp BEFORE the
-    // D1 read so a burst skips the read entirely (the recipient's SW fetches the
-    // details when it wakes, so a suppressed tickle loses nothing).
+  private async pushOffline(chatId: string, senderId: string, budget: SubBudget, gate: Promise<void>, sink: PushResult): Promise<PushResult> {
+    if (!this.env.VAPID_PRIVATE_JWK) return sink; // push not configured
+    // Only users actively LOOKING at this chat (>=1 non-away socket) are skipped: a
+    // backgrounded tab still gets a push (its service worker suppresses the toast while
+    // a Meowsenger window is visible).
+    const active = this.activeUsers();
+    for (const u of active) this.lastPush.delete(u); // they've seen the chat
+    budget.ext++; // the target read
+    const skipped = new Set<string>();
+    let all: Array<{ endpoint: string; userId: string }>;
+    try {
+      all = await pushTargetsForChat(this.d1(), chatId, [senderId, ...active], skipped);
+    } catch (e) {
+      return this.targetReadFailed(chatId, senderId, active, budget, e, sink);
+    }
+    skipped.delete(senderId);
+    return this.fanPush(all, budget, { suppressedActive: skipped.size, followup: false, prior: {}, gate, sink });
+  }
+
+  /** The first invocation could not read the push targets (D1 error): queue EVERY member
+   *  but the sender as a push recipient (attempt 1, retried after PUSH_RETRY_MS) so
+   *  nobody is lost; the follow-up re-filters by subscription, membership and activity,
+   *  so over-including is harmless. Ids come from the fresh member cache or one read; if
+   *  that fails too there is nothing to queue (logged, counts only). */
+  private async targetReadFailed(chatId: string, senderId: string, active: string[], budget: SubBudget, e: unknown, sink: PushResult): Promise<PushResult> {
+    let ids: string[] | null = null;
+    const cached = this.inboxMembers.get(chatId);
+    if (cached && Date.now() - cached.at < 5000) ids = cached.ids;
+    else if (budget.ext < EXTERNAL_BUDGET) {
+      budget.ext++;
+      try { ids = await chatMemberIds(this.d1(), chatId); } catch { ids = null; }
+    }
+    const skip = new Set([senderId, ...active]);
+    const members = ids ? ids.filter((u) => !skip.has(u)) : [];
+    if (!ids) console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"} members_unreadable=1 lost=unknown`);
+    else console.log(`push_decision target_read_failed queued=${members.length}`);
+    for (const u of members) sink.retry[u] = 1;
+    logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: 0, suppressed: "n/a", debounced: 0, deferred: members.length });
+    return sink;
+  }
+
+  /**
+   * Debounce, budget and send pushes for `all` (endpoint, owner) pairs. Whole
+   * recipients only (all their endpoints). Outcomes per recipient: any 2xx → full
+   * window; 404/410/403 → endpoint pruned (403 = it can never accept our VAPID key);
+   * other 4xx → full window (never retried); 429/5xx/network → eligible again after
+   * PUSH_RETRY_MS and returned in `retry` with its attempt count, until
+   * MAX_PUSH_ATTEMPTS (then counted in `dropped`). `cut` = recipients the budget cut
+   * off (NOT reserved). `suppressedActive`: subscribed recipients excluded as active
+   * (null = not measured → "n/a"). Emits exactly one outcome line per call.
+   */
+  private async fanPush(
+    all: Array<{ endpoint: string; userId: string }>,
+    budget: SubBudget,
+    o: { suppressedActive: number | null; followup: boolean; prior: Record<string, number>; gate?: Promise<void>; sink?: PushResult },
+  ): Promise<PushResult> {
+    // ---- synchronous section: filter by window, apply budget, reserve (no await) ----
     const now = Date.now();
-    if (now - (this.lastPush.get(chatId) ?? 0) < PUSH_DEBOUNCE_MS) return;
-    this.lastPush.set(chatId, now);
-    const exclude = [senderId, ...this.onlineUsers()];
-    const targets = await pushTargetsForChat(this.d1(), chatId, exclude);
-    if (targets.length === 0) return;
-    await Promise.all(
-      targets.map(async ({ endpoint: ep, userId }) => {
-        const status = await sendPush(ep, this.env, now);
-        // Delivery observability: ONLY the push service's HTTP status and its host
-        // family — never the endpoint URL, keys, user or chat ids.
-        console.log(`push_delivery status=${status} service=${pushHostFamily(ep)}`);
-        if (status === 404 || status === 410) await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
-      }),
-    );
+    const byUser = new Map<string, string[]>();
+    for (const t of all) byUser.set(t.userId, [...(byUser.get(t.userId) ?? []), t.endpoint]);
+    let debounced = 0;
+    const cut: string[] = [];
+    const targets: Array<{ endpoint: string; userId: string }> = [];
+    for (const [userId, endpoints] of byUser) {
+      if (now - (this.lastPush.get(userId) ?? -Infinity) < PUSH_DEBOUNCE_MS) { debounced++; continue; }
+      if (budget.ext + endpoints.length > EXTERNAL_BUDGET) { cut.push(userId); continue; }
+      budget.ext += endpoints.length;
+      for (const endpoint of endpoints) targets.push({ endpoint, userId });
+      this.lastPush.set(userId, now);
+    }
+    const reserved = new Set(targets.map((t) => t.userId));
+    if (o.sink) o.sink.cut = cut; // visible to the caller even if this call later rejects
+    // ---- end synchronous section ----
+    // Observability without identities: counts only.
+    let accepted = 0, transientFailed = 0, permanentFailed = 0, dropped = 0;
+    const retry: Record<string, number> = {};
+    const suppressed = o.suppressedActive === null ? "n/a" : String(o.suppressedActive);
+    const outcomeLine = () => logOutcome({ eligible: byUser.size, attempted: reserved.size, accepted, transient: transientFailed, permanent: permanentFailed, dropped, suppressed, debounced, deferred: cut.length });
+    if (!o.followup) {
+      if (byUser.size > 0 && debounced === byUser.size) {
+        console.log("push_decision skipped=debounce");
+        outcomeLine();
+        return { cut, retry, dropped };
+      }
+      console.log(`push_decision targets=${targets.length} active_excluded=${suppressed}${debounced > 0 ? ` debounced=${debounced}` : ""}`);
+    } else if (targets.length > 0) {
+      console.log(`push_decision followup targets=${targets.length}`);
+    }
+    if (cut.length > 0) console.log(`push_decision truncated=${cut.length}`);
+    if (targets.length === 0) { outcomeLine(); return { cut, retry, dropped }; }
+    const outcome = new Map<string, "ok" | "transient" | "final">();
+    let threw = false;
+    const rank = { ok: 2, transient: 1, final: 0 } as const;
+    try {
+      const key = await importVapidKey(this.env);
+      // Push only after the D1 mirror write: the service worker reads /api/chats.
+      if (o.gate) await o.gate;
+      const merge = (userId: string, oc: "ok" | "transient" | "final"): void => {
+        const prev = outcome.get(userId);
+        if (!prev || rank[oc] > rank[prev]) outcome.set(userId, oc);
+      };
+      const settled = await Promise.allSettled(
+        targets.map(async ({ endpoint: ep, userId }) => {
+          const status = await sendPush(ep, this.env, now, fetch, key);
+          // Delivery observability: ONLY the push service's HTTP status and its host
+          // family — never the endpoint URL, keys, user or chat ids.
+          const prune = status === 404 || status === 410 || status === 403;
+          console.log(`push_delivery status=${status} service=${pushHostFamily(ep)}${status === 403 ? " pruned=1" : ""}`);
+          if (prune && budget.ext < EXTERNAL_BUDGET) {
+            budget.ext++;
+            await deleteDeadPushSubscription(this.d1(), ep, userId, now).catch(() => {});
+          }
+          const oc = status >= 200 && status < 300 ? "ok" : status === 0 || status === 429 || status >= 500 ? "transient" : "final";
+          merge(userId, oc);
+        }),
+      );
+      // A rejected send leaves the recipient's other endpoints' outcomes intact (a 2xx is
+      // never retried); the rejection itself counts as transient (first send and follow-up
+      // alike), so recipients who already got a 2xx in this round are not re-pushed.
+      const rejected = settled.findIndex((r) => r.status === "rejected");
+      if (rejected >= 0) {
+        console.log(`push_decision send_error ${(settled[rejected] as PromiseRejectedResult).reason instanceof Error ? ((settled[rejected] as PromiseRejectedResult).reason as Error).name : "unknown"}`);
+        settled.forEach((r, i) => {
+          if (r.status !== "rejected") return;
+          const u = targets[i]!.userId;
+          // No known outcome: release the debounce reservation (as a thrown send always did)
+          // so the next message can still push, and retry via the queue.
+          if (!outcome.has(u) && this.lastPush.get(u) === now) this.lastPush.delete(u);
+          merge(u, "transient");
+        });
+      }
+    } catch (e) {
+      // Release the reservation so the next round can still push these recipients. On the
+      // first invocation recipients whose outcome is already known keep theirs.
+      for (const u of reserved) if (this.lastPush.get(u) === now && (o.followup || !outcome.has(u))) this.lastPush.delete(u);
+      // A follow-up rethrows (runOverflow re-queues the whole run with a back-off). The
+      // first invocation must not lose its recipients: those without a known outcome are
+      // handled below as transient failures (attempt + 1), and `cut` is returned as is.
+      if (o.followup) throw e;
+      threw = true;
+      console.log(`push_decision send_error ${e instanceof Error ? e.name : "unknown"}`);
+    }
+    // A recipient whose pushes all failed transiently is retried after PUSH_RETRY_MS
+    // (never immediately, so an outage can't turn every message into a retry storm).
+    for (const u of reserved) {
+      if (outcome.get(u) === "transient" && this.lastPush.get(u) === now) {
+        this.lastPush.set(u, now - PUSH_DEBOUNCE_MS + PUSH_RETRY_MS);
+      }
+    }
+    // Per-recipient outcome counts (no identities). `eligible` = recipients with a
+    // subscription that were not excluded as active/sender; `suppressed_active` =
+    // subscribed recipients excluded as active; `deferred` = queued for the alarm.
+    // Active exclusion is per USER: any non-away socket in this room suppresses push on
+    // all of that user's devices.
+    for (const u of reserved) {
+      const oc = outcome.get(u);
+      if (oc === "ok") accepted++;
+      else if (oc === "transient" || (threw && oc === undefined)) {
+        transientFailed++;
+        const n = (o.prior[u] ?? 0) + 1;
+        if (n >= MAX_PUSH_ATTEMPTS) dropped++; else retry[u] = n;
+      } else permanentFailed++;
+    }
+    outcomeLine();
+    return { cut, retry, dropped };
+  }
+
+  // ---- follow-up fan-out (DO alarm) ---------------------------------------------
+
+  /** Arm the alarm for `at` unless one is already due sooner (the purge alarm shares
+   *  this single slot). */
+  private async armAlarm(at: number): Promise<void> {
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur == null || at < cur) await this.ctx.storage.setAlarm(at);
+  }
+
+  /** The queued record, normalised (older records lack the retry fields). */
+  private async readOverflow(): Promise<Overflow | undefined> {
+    const raw = await this.ctx.storage.get<Partial<Overflow>>(OVERFLOW_KEY);
+    if (!raw) return undefined;
+    const push = raw.push ?? [], inbox = raw.inbox ?? [];
+    return {
+      chatId: raw.chatId ?? "", push, inbox,
+      attempts: raw.attempts ?? {}, notBefore: raw.notBefore ?? {},
+      rounds: raw.rounds ?? 0, total: raw.total ?? 0,
+      ceiling: Math.max(raw.ceiling ?? 0, roundCeiling(push.length + inbox.length)), seq: raw.seq ?? 0,
+    };
+  }
+
+  /** When the queued work next has something to do: now for inbox work or a due push
+   *  recipient, else the earliest retry time. */
+  private nextDue(o: Overflow, now: number): number {
+    if (o.inbox.length > 0) return now;
+    let at = Infinity;
+    for (const u of o.push) at = Math.min(at, o.notBefore[u] ?? 0);
+    return Math.max(now, at === Infinity ? now : at);
+  }
+
+  /** Persist recipients (ids and attempt counts only) that the first invocation could
+   *  not serve or that failed transiently (`retry`: id → attempts made), merged with any
+   *  work already queued by earlier messages, and arm the alarm: immediately for new
+   *  work, at now + PUSH_RETRY_MS when only retries are waiting. The current sender is
+   *  never a queued push target (they are looking at the chat). */
+  private async queueOverflow(chatId: string, senderId: string, push: string[], inbox: string[], retry: Record<string, number>): Promise<void> {
+    const retryIds = Object.keys(retry).filter((u) => u !== senderId);
+    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0) return;
+    const now = Date.now();
+    const prev = (await this.readOverflow()) ?? { chatId, push: [], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 0, ceiling: 0, seq: 0 };
+    const all = [...new Set([...prev.push, ...push, ...retryIds])].filter((u) => u !== senderId);
+    const attempts: Record<string, number> = {};
+    const notBefore: Record<string, number> = {};
+    for (const u of all) {
+      if (prev.attempts[u] !== undefined) attempts[u] = prev.attempts[u]!;
+      if (prev.notBefore[u] !== undefined) notBefore[u] = prev.notBefore[u]!;
+    }
+    // This message's own recipients that were cut start a fresh attempt allowance, due now.
+    for (const u of push) { delete attempts[u]; delete notBefore[u]; }
+    for (const u of retryIds) { attempts[u] = retry[u]!; notBefore[u] = now + PUSH_RETRY_MS; }
+    const nextInbox = [...new Set([...prev.inbox, ...inbox])];
+    const next: Overflow = {
+      chatId,
+      push: all,
+      inbox: nextInbox,
+      attempts, notBefore,
+      rounds: 0, // new work: a fresh follow-up allowance
+      total: 0,
+      ceiling: roundCeiling(all.length + nextInbox.length),
+      seq: prev.seq + 1,
+    };
+    await this.ctx.storage.put(OVERFLOW_KEY, next);
+    await this.armAlarm(this.nextDue(next, now));
+  }
+
+  /** Write back the outcome of one follow-up run WITHOUT losing work queued meanwhile:
+   *  keep everything in the current record that the run did not start with (new work),
+   *  plus this run's leftovers that are still queued (dropUser may have pruned some).
+   *  If `queueOverflow` ran meanwhile (seq changed) its reset counters stand and EVERY
+   *  id it holds is kept — even one this run also started with, which a new message may
+   *  have re-queued (a redundant invalidation/push is cheap; a lost one is not). */
+  private async settleOverflow(
+    work: Overflow,
+    r: { push: string[]; inbox: string[]; attempts: Record<string, number>; notBefore: Record<string, number>; progress: boolean; attempted: boolean; failed: boolean },
+  ): Promise<void> {
+    const cur = await this.readOverflow();
+    if (!cur) return; // pruned empty by dropUser: nothing left to serve
+    const seqChanged = cur.seq !== work.seq;
+    const hadPush = new Set(work.push);
+    const hadInbox = new Set(work.inbox);
+    const curPush = new Set(cur.push);
+    const curInbox = new Set(cur.inbox);
+    const runPush = new Set(r.push);
+    const push = [...new Set([...cur.push.filter((u) => seqChanged || !hadPush.has(u)), ...r.push.filter((u) => curPush.has(u))])];
+    const inbox = [...new Set([...cur.inbox.filter((u) => seqChanged || !hadInbox.has(u)), ...r.inbox.filter((u) => curInbox.has(u))])];
+    if (push.length === 0 && inbox.length === 0) { await this.ctx.storage.delete(OVERFLOW_KEY); return; }
+    const attempts: Record<string, number> = {};
+    const notBefore: Record<string, number> = {};
+    for (const u of push) {
+      const a = runPush.has(u) ? r.attempts[u] : cur.attempts[u];
+      const n = runPush.has(u) ? r.notBefore[u] : cur.notBefore[u];
+      if (a !== undefined) attempts[u] = a;
+      if (n !== undefined) notBefore[u] = n;
+    }
+    const rounds = seqChanged ? cur.rounds : work.rounds + (!r.progress && r.attempted ? 1 : 0);
+    const total = seqChanged ? cur.total : work.total + 1;
+    const ceiling = seqChanged ? cur.ceiling : work.ceiling;
+    const next: Overflow = { chatId: work.chatId, push, inbox, attempts, notBefore, rounds, total, ceiling, seq: cur.seq };
+    await this.ctx.storage.put(OVERFLOW_KEY, next);
+    const now = Date.now();
+    // A failed run backs off; otherwise continue as soon as something is due.
+    await this.armAlarm(r.failed ? now + PUSH_RETRY_MS : this.nextDue(next, now));
+  }
+
+  /** One follow-up invocation: pushes first (re-read, so removed members and users now
+   *  looking at the chat drop out) to recipients that are due (a transiently-failed one
+   *  waits PUSH_RETRY_MS, at most MAX_PUSH_ATTEMPTS attempts), then content-free
+   *  `{chatId, invalidate}` inbox signals to members beyond the inline budget (client
+   *  refetches the list). Anything still cut by this invocation's own budgets is
+   *  re-queued. Rounds that made progress continue (each is bounded by the budgets);
+   *  only MAX_FOLLOWUPS no-progress/failed rounds, or the per-batch round ceiling in all, drop the
+   *  rest (logged). A failure re-queues the whole run, backing off PUSH_RETRY_MS. */
+  private async runOverflow(): Promise<void> {
+    const work = await this.readOverflow();
+    if (!work) return;
+    // A round where nothing is due still counts toward the ceiling; harmless in production (monotonic clock, early alarms just re-arm).
+    if (work.rounds >= MAX_FOLLOWUPS || work.total >= work.ceiling) {
+      console.log(`push_decision overflow_dropped push=${work.push.length} inbox=${work.inbox.length}${work.rounds >= MAX_FOLLOWUPS ? "" : " reason=ceiling"}`);
+      if (work.push.length > 0) logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: work.push.length, suppressed: "n/a", debounced: 0, deferred: 0 });
+      await this.ctx.storage.delete(OVERFLOW_KEY);
+      return;
+    }
+    const now = Date.now();
+    const budget: SubBudget = { ext: 0, int: 0 };
+    const vapid = !!this.env.VAPID_PRIVATE_JWK;
+    const due = vapid ? work.push.filter((u) => (work.notBefore[u] ?? 0) <= now) : [];
+    const dueSet = new Set(due);
+    let pushLeft: string[] = vapid ? work.push : [];
+    let inboxLeft: string[] = this.env.USER_INBOX ? work.inbox : [];
+    let attempts = { ...work.attempts };
+    let notBefore = { ...work.notBefore };
+    let pushResolved = 0, retried = 0, inboxResolved = 0, failed = false, outcomeLogged = false;
+    try {
+      if (due.length > 0) {
+        const pending = new Set(due);
+        const active = this.activeUsers();
+        for (const u of active) this.lastPush.delete(u);
+        budget.ext++;
+        const skipped = new Set<string>();
+        const all = await pushTargetsForChat(this.d1(), work.chatId, active, skipped); // join on chat_members: removed users drop out
+        const r = await this.fanPush(all.filter((t) => pending.has(t.userId)), budget, { suppressedActive: [...skipped].filter((u) => pending.has(u)).length, followup: true, prior: work.attempts });
+        outcomeLogged = true;
+        const retryIds = Object.keys(r.retry);
+        pushLeft = [...work.push.filter((u) => !dueSet.has(u)), ...r.cut, ...retryIds];
+        attempts = { ...work.attempts };
+        notBefore = { ...work.notBefore };
+        for (const u of due) { delete attempts[u]; delete notBefore[u]; }
+        for (const u of r.cut) if (work.attempts[u] !== undefined) attempts[u] = work.attempts[u]!;
+        for (const u of retryIds) { attempts[u] = r.retry[u]!; notBefore[u] = Date.now() + PUSH_RETRY_MS; }
+        pushResolved = due.length - r.cut.length - retryIds.length;
+        retried = retryIds.length; // an attempt was made (and counted) for each of these
+      } else if (vapid && work.push.length > 0) {
+        // Only transiently-failed recipients still waiting: nothing attempted this round,
+        // but the invocation still reports exactly one outcome line.
+        await this.fanPush([], budget, { suppressedActive: null, followup: true, prior: work.attempts });
+        outcomeLogged = true;
+      }
+      const ns = this.env.USER_INBOX;
+      if (work.inbox.length > 0 && ns) {
+        budget.ext++;
+        const members = new Set(await chatMemberIds(this.d1(), work.chatId));
+        const pending = work.inbox.filter((u) => members.has(u));
+        const take = Math.max(0, this.internalBudget - budget.int);
+        const now2 = pending.slice(0, take);
+        inboxLeft = pending.slice(take);
+        inboxResolved = work.inbox.length - inboxLeft.length;
+        budget.int += now2.length;
+        const body = JSON.stringify({ chatId: work.chatId, invalidate: true });
+        await Promise.all(
+          now2.map((id) => ns.get(ns.idFromName("inbox:" + id)).fetch("https://do/notify", { method: "POST", body }).catch(() => {})),
+        );
+      }
+    } catch (e) {
+      failed = true;
+      console.log(`push_decision overflow_error ${e instanceof Error ? e.name : "unknown"}`);
+      // A push round that failed before reporting still logs its one outcome line.
+      if (due.length > 0 && !outcomeLogged) logOutcome({ eligible: 0, attempted: 0, accepted: 0, transient: 0, permanent: 0, dropped: 0, suppressed: "n/a", debounced: 0, deferred: due.length });
+    }
+    await this.settleOverflow(work, {
+      push: pushLeft, inbox: inboxLeft, attempts, notBefore,
+      progress: !failed && (pushResolved + retried > 0 || inboxResolved > 0),
+      attempted: due.length > 0 || work.inbox.length > 0,
+      failed,
+    });
   }
 
   /**
@@ -537,6 +995,19 @@ export class Conversation extends DurableObject<Env> {
    * anyway). Closing runs the normal presence cleanup via webSocketClose.
    */
   async dropUser(userId: string, revoked: boolean): Promise<void> {
+    // The cached member list (inbox fan-out) may still contain a just-removed user;
+    // drop it so the next message re-reads chat_members and the removed user's inbox
+    // gets no further previews. Also forget their push window.
+    this.inboxMembers.clear();
+    this.membershipGen++;
+    this.lastPush.delete(userId);
+    // Drop the user from any queued follow-up fan-out too.
+    const queued = await this.readOverflow();
+    if (queued && (queued.push.includes(userId) || queued.inbox.includes(userId))) {
+      const { [userId]: _a, ...attempts } = queued.attempts;
+      const { [userId]: _n, ...notBefore } = queued.notBefore;
+      await this.ctx.storage.put(OVERFLOW_KEY, { ...queued, push: queued.push.filter((u) => u !== userId), inbox: queued.inbox.filter((u) => u !== userId), attempts, notBefore });
+    }
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attach | null;
       if (a?.userId !== userId) continue;
@@ -665,7 +1136,8 @@ export class Conversation extends DurableObject<Env> {
     );
     this.broadcast({ type: "deleted", id });
     // Schedule the hard purge for just after this row ages out of the window.
-    this.ctx.storage.setAlarm(Date.now() + PURGE_AFTER_MS + 60_000);
+    // never postpones a sooner alarm (e.g. a queued fan-out); failure is logged, not floating
+    this.ctx.waitUntil(this.armAlarm(Date.now() + PURGE_AFTER_MS + 60_000).catch(() => console.log("purge_arm_failed")));
   }
 
   /**
@@ -744,8 +1216,9 @@ export class Conversation extends DurableObject<Env> {
       .exec("SELECT MIN(deleted_at) AS oldest FROM messages WHERE is_deleted = 1")
       .toArray()[0]?.oldest;
     if (remaining != null) {
-      this.ctx.storage.setAlarm(Number(remaining) + PURGE_AFTER_MS + 60_000);
+      await this.armAlarm(Number(remaining) + PURGE_AFTER_MS + 60_000);
     }
+    await this.runOverflow();
   }
 
   /**
@@ -974,20 +1447,11 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /**
-   * Minimal D1 adapter (same shape as `d1Client` in db.ts) for the mirror write.
-   * The DO only ever needs `run`; `all`/`first` are stubbed to satisfy DbClient.
+   * D1 adapter (shared `d1Client`). It MUST implement `all`/`first` for real: the DO
+   * reads chat membership (inbox fan-out) and push targets through them. They were
+   * once stubbed to `[]`, which made every push/inbox target list silently empty.
    */
   private d1(): DbClient {
-    const db = this.env.DB;
-    return {
-      all: async () => [],
-      first: async () => undefined,
-      run: async (sql: string, params: unknown[] = []) => {
-        await db
-          .prepare(sql)
-          .bind(...params)
-          .run();
-      },
-    };
+    return d1Client(this.env.DB);
   }
 }
