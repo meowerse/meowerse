@@ -132,7 +132,7 @@ test("GET /api/account reports deleteEnabled true only for flag \"1\"/\"true\"",
     const b = (await (await get(env, deps, "/api/account", sess)).json()) as { deleteEnabled: unknown };
     expect(b.deleteEnabled).toBe(want);
   }
-});
+}, 20000); // heavy: many real PBKDF2 (600k) logins; >5s on loaded CI runners (flaked 3x). Assertions unchanged.
 
 test("POST /api/account/delete with the flag off/unset → 503 deletion_unavailable, nothing changes, no audit row", async () => {
   for (const extra of [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }]) {

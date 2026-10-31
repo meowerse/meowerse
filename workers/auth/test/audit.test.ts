@@ -566,7 +566,7 @@ test("no secrets: no password, recovery code, auth code, token, client secret, P
   ];
   for (const x of secrets) expect(blob).not.toContain(x);
   for (const c of [...su.recoveryCodes, ...regenerated]) expect(blob.toLowerCase()).not.toContain(c.toLowerCase().replace(/-/g, ""));
-});
+}, 20000); // heavy: many real PBKDF2 (600k) logins; >5s on loaded CI runners (flaked 3x). Assertions unchanged.
 
 // ---------------------------------------------------------------- never throws
 
