@@ -32,3 +32,10 @@ describe("meowsenger /privacy and /terms point at the shared pages", () => {
     expect(layout).toContain('href: "/terms"');
   });
 });
+
+describe("brand spelling", () => {
+  it("says meowerse, never meowverse (owner, 2026-10-31)", () => {
+    for (const f of ["privacy.astro", "terms.astro"]) expect(page(f), f).not.toMatch(/meowverse/i);
+    expect(readFileSync(join(__dirname, "seo.ts"), "utf8")).not.toMatch(/meowverse/i);
+  });
+});

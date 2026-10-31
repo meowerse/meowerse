@@ -242,3 +242,11 @@ describe("privacy copy stays anchored to the code it describes", () => {
     expect(table).toContain('content: attr(data-label) ": "; content: attr(data-label) ": " / ""');
   });
 });
+
+describe("brand spelling", () => {
+  it("says meowerse, never meowverse (owner, 2026-10-31)", () => {
+    for (const f of ["src/pages/privacy.astro", "src/pages/terms.astro", "src/lib/seo.ts", "src/lib/legal.ts"]) {
+      expect(readFileSync(join(__dirname, "../..", f), "utf8"), f).not.toMatch(/meowverse/i);
+    }
+  });
+});
