@@ -1,6 +1,7 @@
 // Copy that tests assert on, shared by /privacy and /terms. Keep every claim true of the running system:
 // each row names the code/config it was checked against in the PR that wrote it.
-// Minecraft facts in privacy.astro were checked on the live server on 2026-10-31 (not in this repo): AuthMe
+// Minecraft facts in privacy.astro were checked on the live server on 2026-10-31 (not in this repo): FastStats
+// plugins/faststats/config.properties submitErrors=false (NexusCore 2.1.8 decompiled for the payload); AuthMe
 // sessions.enabled=false; cron "17 4 * * * mc-log-retention --apply" (source: minicraft/go-live/mc-log-retention)
 // deletes rotated logs older than 30 days and trims plugins/AuthMe/authme.log to its last 30 days.
 export const POLICY_VERSION = "v2, 2026-10-31";
@@ -33,7 +34,8 @@ export const PARTNERS: readonly Partner[] = [
   { partner: "Hetzner", why: "runs the meow-sim server", gets: "your connection (IP address) while you watch the sim", when: "when you open sim" },
   { partner: "Mojang / MineSkin (via SkinsRestorer)", why: "Minecraft skins", gets: "your Minecraft username, to fetch its skin", when: "when you join the Minecraft server" },
   { partner: "bStats (bstats.org)", why: "anonymous plugin and server statistics; bStats is built into most of the server's plugins", gets: "statistics about the server and its plugins (a random server ID, versions, counts), not your name or IP", when: "continuously, while the Minecraft server runs" },
-  { partner: "FastStats (inside the NexusCore plugin)", why: "plugin usage statistics and error reports; error reporting is switched on in the plugin's settings (submitErrors=true)", gets: "plugin usage data and error reports, which may contain player names", when: "while the Minecraft server runs" },
+  { partner: "FastStats (inside the NexusCore plugin)", why: "plugin usage statistics; its error reporting is switched off (submitErrors=false)", gets: "a random server ID, the server, Java and OS versions, the CPU core count, the number of players online (not their names) and which of that developer's plugins are installed", when: "every 30 minutes while the Minecraft server runs" },
+  { partner: "synkdev.cc (the NexusCore plugin's developer)", why: "NexusCore checks for plugin updates and downloads its settings and translations from there (automatic updates are off)", gets: "the Minecraft server's IP address and the request itself, no player data", when: "when the Minecraft server starts, then hourly" },
   { partner: "Cloudflare Email Routing", why: "receives and forwards messages sent to our role addresses", gets: "the messages you send to privacy@, security@ or contact@alxnko.dev (sender address, subject, content)", when: "only if you email us" },
   { partner: "Google (Gmail)", why: "stores the forwarded messages in the owner's mailbox", gets: "the same forwarded messages", when: "only if you email us" },
   { partner: "Us (alxnko.dev, meow, auth, Meowsenger, sim, Minecraft)", why: "the services themselves", gets: "what each service needs; see \"what each service keeps\"", when: "when you use them" },

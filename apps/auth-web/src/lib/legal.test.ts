@@ -145,7 +145,10 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(rendered + terms).not.toMatch(/minekube/i);
     const fs = PARTNERS.find((p) => p.partner.startsWith("FastStats"))!;
     expect(fs.partner).toContain("NexusCore");
-    expect(fs.gets).toContain("error reports");
+    expect(fs.why).toContain("submitErrors=false");
+    expect(fs.gets).toContain("not their names");
+    expect(fs.gets).not.toContain("error reports");
+    expect(PARTNERS.find((p) => p.partner.startsWith("synkdev.cc"))!.gets).toContain("no player data");
     expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("built into most of the server's plugins");
     expect(privacy).toContain("kept for 30 days and then deleted automatically");
     expect(privacy).toContain("does not remember a login by IP address");
