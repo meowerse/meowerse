@@ -163,6 +163,9 @@ function logOutcome(c: { eligible: number; attempted: number; accepted: number; 
   );
 }
 const OVERFLOW_KEY = "fanout_overflow";
+/** Last issued overflow `seq`. Monotonic across deletes of OVERFLOW_KEY, so a record created after
+ *  a delete never reuses a seq an in-flight run started from. Written in the same put as the record. */
+const SEQ_KEY = "fanout_seq";
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
 const MAX_EMOJI_LEN = 8;
@@ -887,7 +890,7 @@ export class Conversation extends DurableObject<Env> {
     // A fully delivered message that supersedes nothing queued must not rewrite the record:
     // that would reset rounds/total/ceiling (the MAX_FOLLOWUPS and ceiling bounds) of unrelated
     // queued work on every message in a busy chat.
-    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0 && !mirrorPending && !done.some((u) => prev.push.includes(u))) return;
+    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0 && !mirrorPending && !prev.push.includes(senderId) && !done.some((u) => prev.push.includes(u))) return;
     // `done`: this message reached EVERY device of these users, which supersedes any queued
     // retry for them (push entry, owed, attempts, notBefore all go with them).
     const doneSet = new Set(done.filter((u) => !push.includes(u) && !retryIds.includes(u)));
@@ -910,7 +913,9 @@ export class Conversation extends DurableObject<Env> {
       if (o) nextOwed[u] = o;
     }
     // Mark every user this message (re)queues with the new seq (see `Overflow.touched`).
-    const newSeq = prev.seq + 1;
+    // The floor survives deletes of the record (see SEQ_KEY); old data without it falls back to the record seq.
+    const floor = (await this.ctx.storage.get<number>(SEQ_KEY)) ?? 0;
+    const newSeq = Math.max(floor, prev.seq, 0) + 1;
     const touched: Record<string, number> = {};
     for (const u of all) {
       const t = prev.touched?.[u];
@@ -920,7 +925,10 @@ export class Conversation extends DurableObject<Env> {
     const nextInbox = [...new Set([...prev.inbox, ...inbox])];
     if (all.length === 0 && nextInbox.length === 0) {
       // Nothing left to serve (e.g. the only queued retry was superseded): clean the key.
-      if (prev.seq > 0) await this.ctx.storage.delete(OVERFLOW_KEY);
+      if (prev.seq > 0) {
+        await this.ctx.storage.put(SEQ_KEY, Math.max(floor, prev.seq)); // keep the floor (legacy data had none)
+        await this.ctx.storage.delete(OVERFLOW_KEY);
+      }
       return;
     }
     const next: Overflow = {
@@ -936,7 +944,7 @@ export class Conversation extends DurableObject<Env> {
       touched,
       mirrorPending: prev.mirrorPending === true || mirrorPending,
     };
-    await this.ctx.storage.put(OVERFLOW_KEY, next);
+    await this.ctx.storage.put({ [OVERFLOW_KEY]: next, [SEQ_KEY]: newSeq });
     await this.armAlarm(this.nextDue(next, now));
   }
 
@@ -953,6 +961,9 @@ export class Conversation extends DurableObject<Env> {
     const cur = await this.readOverflow();
     if (!cur) return; // pruned empty by dropUser: nothing left to serve
     const seqChanged = cur.seq !== work.seq;
+    // Defence in depth: seq is monotonic (SEQ_KEY), so cur.seq < work.seq should be impossible; if it
+    // ever happens, treat every entry as touched so the newer message's coverage wins.
+    const allTouched = cur.seq < work.seq;
     const hadPush = new Set(work.push);
     const hadInbox = new Set(work.inbox);
     const curPush = new Set(cur.push);
@@ -960,7 +971,12 @@ export class Conversation extends DurableObject<Env> {
     const runPush = new Set(r.push);
     const push = [...new Set([...cur.push.filter((u) => seqChanged || !hadPush.has(u)), ...r.push.filter((u) => curPush.has(u))])];
     const inbox = [...new Set([...cur.inbox.filter((u) => seqChanged || !hadInbox.has(u)), ...r.inbox.filter((u) => curInbox.has(u))])];
-    if (push.length === 0 && inbox.length === 0) { await this.ctx.storage.delete(OVERFLOW_KEY); return; }
+    if (push.length === 0 && inbox.length === 0) {
+      const floor = (await this.ctx.storage.get<number>(SEQ_KEY)) ?? 0;
+      await this.ctx.storage.put(SEQ_KEY, Math.max(floor, cur.seq, work.seq));
+      await this.ctx.storage.delete(OVERFLOW_KEY);
+      return;
+    }
     const attempts: Record<string, number> = {};
     const notBefore: Record<string, number> = {};
     for (const u of push) {
@@ -982,7 +998,7 @@ export class Conversation extends DurableObject<Env> {
       const mine = r.owed[u], theirs = cur.owed?.[u];
       let o: string[] | undefined;
       if (!runPush.has(u)) o = theirs;
-      else if ((cur.touched?.[u] ?? 0) <= work.seq) o = mine; // no newer message touched this entry
+      else if (!allTouched && (cur.touched?.[u] ?? 0) <= work.seq) o = mine; // no newer message touched this entry
       else o = mine && theirs ? [...new Set([...mine, ...theirs])] : undefined;
       if (o) owed[u] = o;
       if (cur.touched?.[u] !== undefined) touched[u] = cur.touched[u]!;
@@ -1149,7 +1165,8 @@ export class Conversation extends DurableObject<Env> {
       const { [userId]: _a, ...attempts } = queued.attempts;
       const { [userId]: _n, ...notBefore } = queued.notBefore;
       const { [userId]: _o, ...owed } = queued.owed ?? {};
-      await this.ctx.storage.put(OVERFLOW_KEY, { ...queued, push: queued.push.filter((u) => u !== userId), inbox: queued.inbox.filter((u) => u !== userId), attempts, notBefore, owed });
+      const { [userId]: _t, ...touched } = queued.touched ?? {};
+      await this.ctx.storage.put(OVERFLOW_KEY, { ...queued, push: queued.push.filter((u) => u !== userId), inbox: queued.inbox.filter((u) => u !== userId), attempts, notBefore, owed, touched });
     }
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attach | null;

@@ -1474,6 +1474,61 @@ describe("Conversation offline push decision", () => {
     });
   });
 
+  /** M1 fully delivers `rcpt` (the queued key is deleted), then M2 is cut/failed for them. */
+  const m1ThenM2 = (c: string, m2: (inst: Conversation) => Promise<void>) => async (inst: Conversation) => {
+    await (inst as unknown as { queueOverflow(...a: unknown[]): Promise<void> }).queueOverflow(c, "sender", [], [], {}, {}, false, ["rcpt"]);
+    expect(await internals(inst).ctx.storage.get("fanout_overflow")).toBeUndefined();
+    await m2(inst);
+  };
+  const seedRun = async (c: string, seq: number, owed: Record<string, string[]>) => runInDurableObject(stub(c), async (inst: Conversation) => {
+    await internals(inst).ctx.storage.put("fanout_overflow", { chatId: c, push: ["rcpt"], inbox: [], attempts: { rcpt: 1 }, notBefore: { rcpt: 0 }, rounds: 0, total: 0, ceiling: 50, seq, owed, mirrorPending: false });
+  });
+
+  it("(bi) run in flight; M1 fully delivers the user (key deleted), M2 is cut for them: the seq never resets, so the user is owed ALL devices and gets M2", async () => {
+    await withFakeTime(23_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      const runAlarm = await manualAlarms(c);
+      await seedRun(c, 5, {});
+      await runWithMidRunQueue(c, at, runAlarm, b, m1ThenM2(c, queueM2(c, ["rcpt"], {}, {})));
+      const q = (await q2(c))!;
+      expect(q.push).toEqual(["rcpt"]);
+      expect(q.owed).toEqual({}); // ALL devices, not this run's {B}
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 201 }));
+      at(60_000); await runAlarm();
+      expect(countTo(a)).toBe(2); // run 1 + M2
+    });
+  });
+
+  it("(bj) same, but M2 fails on device A: the final owed list includes A", async () => {
+    await withFakeTime(23_200_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      const runAlarm = await manualAlarms(c);
+      const fpA = await fp16(a), fpB = await fp16(b);
+      await seedRun(c, 5, { rcpt: [fpB] });
+      await runWithMidRunQueue(c, at, runAlarm, b, m1ThenM2(c, queueM2(c, [], { rcpt: 1 }, { rcpt: [fpA] })));
+      const q = (await q2(c))!;
+      expect(q.owed!.rcpt).toContain(fpA);
+      expect([...q.owed!.rcpt!].sort()).toEqual([fpA, fpB].sort());
+    });
+  });
+
+  it("(bk) equal-seq ABA: the run started at seq 1, M1 deletes the key, M2 re-queues: M2 must not look untouched", async () => {
+    await withFakeTime(23_400_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "rcpt"], ["rcpt"]); await configureVapid(c);
+      const { a, b } = await addDevice(c, "rcpt");
+      const runAlarm = await manualAlarms(c);
+      await seedRun(c, 1, {});
+      await runWithMidRunQueue(c, at, runAlarm, b, m1ThenM2(c, queueM2(c, ["rcpt"], {}, {})));
+      const q = (await q2(c))!;
+      expect(q.owed).toEqual({});
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 201 }));
+      at(60_000); await runAlarm();
+      expect(countTo(a)).toBe(2);
+    });
+  });
+
   it("(s) per-message cost: DM and 10-member group", async () => {
     for (const [label, n] of [["DM", 1], ["10-member group", 9]] as const) {
       const users = Array.from({ length: n }, (_, i) => `${label[0]}${n}x${i}`);
