@@ -28,14 +28,14 @@ describe("shared privacy page copy", () => {
   });
   it("has every live partner row and no analytics rows yet", () => {
     const names = PARTNERS.map((p) => p.partner);
-    for (const n of ["Cloudflare", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
+    for (const n of ["Cloudflare", "Cloudflare Turnstile", "Turso", "Telegram", "push service", "Hetzner", "Mojang / MineSkin", "bStats", "FastStats", "synkdev.cc", "Cloudflare Email Routing", "Google (Gmail)", "Us ("]) {
       expect(names.some((x) => x.includes(n)), n).toBe(true);
     }
     for (const p of PARTNERS) for (const f of [p.partner, p.why, p.gets, p.when]) expect(f.length).toBeGreaterThan(0);
     expect(rendered).not.toMatch(/Google Analytics|Cloudflare Web Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v1, 2026-10-30");
+    expect(POLICY_VERSION).toBe("v2, 2026-10-31");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
@@ -56,7 +56,8 @@ describe("shared privacy page copy", () => {
     expect(privacy + terms + legalSrc).not.toMatch(/gmail\.com|@gmail|@proton|@icloud/i);
   });
   it("states analytics as today's state, with placeholders for the next release, not a permanent promise", () => {
-    expect(privacy).toContain("Today we run no analytics");
+    expect(privacy).toContain("Today our websites run no visitor analytics");
+    expect(privacy).toContain("bStats and FastStats; see the Minecraft section");
     expect(privacy).not.toMatch(/never (use|run|load) analytics|no third-party trackers\./i);
     expect(privacy).toContain("TODAY-ONLY");
     expect(legalSrc).toContain("NEXT RELEASE");
@@ -144,9 +145,14 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(rendered + terms).not.toMatch(/minekube/i);
     const fs = PARTNERS.find((p) => p.partner.startsWith("FastStats"))!;
     expect(fs.partner).toContain("NexusCore");
-    expect(fs.gets).toContain("error reports");
+    expect(fs.why).toContain("submitErrors=false");
+    expect(fs.gets).toContain("not their names");
+    expect(fs.gets).toContain("IP address (from the connection itself)");
+    expect(fs.gets).not.toContain("error reports");
+    expect(PARTNERS.find((p) => p.partner.startsWith("synkdev.cc"))!.gets).toContain("no player data");
     expect(PARTNERS.find((p) => p.partner.startsWith("bStats"))!.why).toContain("built into most of the server's plugins");
-    expect(privacy).toContain("There is no retention limit today");
+    expect(privacy).toContain("kept for 30 days and then deleted automatically");
+    expect(privacy).toContain("does not remember a login by IP address");
     expect(privacy).toContain("chat and commands");
     expect(privacy).toContain("voice-chat group (any distance)");
     expect(privacy).toContain("kept in the operator's Gmail mailbox, with no automatic deletion today");
@@ -172,8 +178,9 @@ describe("shared privacy page: recipients, retention and honest state", () => {
     expect(privacy).toContain("so up to about 31 days after you signed in");
     expect(privacy).toContain("last 60 seconds");
   });
-  it("discloses the Minecraft facts and home hosting, and not a blanket Cloudflare claim", () => {
-    for (const w of ["log-ips=true", "online-mode=false", "bcrypt", "registered from", "Simple Voice Chat", "operator's home"]) expect(privacy, w).toContain(w);
+  it("discloses the Minecraft facts and self-managed hosting, and not a blanket Cloudflare claim", () => {
+    for (const w of ["log-ips=true", "online-mode=false", "bcrypt", "registered from", "Simple Voice Chat", "manages directly"]) expect(privacy, w).toContain(w);
+    expect(privacy).not.toContain("operator's home");
     expect(JSON.stringify(PARTNERS)).not.toContain("runs all our websites and servers");
     expect(JSON.stringify(PARTNERS)).toContain("NOT behind Cloudflare");
     const bstats = PARTNERS.find((p) => p.partner.startsWith("bStats"))!;

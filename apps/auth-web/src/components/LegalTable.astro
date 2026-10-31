@@ -22,6 +22,7 @@ const { caption, head, rows, class: cls } = Astro.props;
   .mw-prose .legal-table { display: table; width: 100%; overflow: visible; border-collapse: collapse; font-size: var(--fs-2); table-layout: fixed; }
   .mw-prose .legal-table th, .mw-prose .legal-table td { white-space: normal; overflow-wrap: anywhere; text-align: start; vertical-align: top; padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--c-line); }
   .mw-prose .legal-table thead th { color: var(--c-fg-muted); font-weight: 600; }
+  .mw-prose .legal-table thead th:first-child { width: 20%; }
   @media (max-width: 599px) {
     .mw-prose .legal-table, .mw-prose .legal-table tbody, .mw-prose .legal-table tr, .mw-prose .legal-table th, .mw-prose .legal-table td { display: block; width: 100%; }
     .mw-prose .legal-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
