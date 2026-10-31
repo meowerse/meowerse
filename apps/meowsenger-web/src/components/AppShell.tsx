@@ -25,7 +25,10 @@ function EndedBanner({ base, onContinue }: { base: string; onContinue?: () => vo
   const linkRef = useRef<HTMLAnchorElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const [copied, setCopied] = useState<"" | "yes" | "no">("");
-  useEffect(() => { linkRef.current?.focus(); }, []);
+  const continueRef = useRef<HTMLButtonElement | null>(null);
+  // Re-run when the banner switches to "signed in again": the focused sign-in link is
+  // replaced by the continue button, so move focus there instead of losing it to <body>.
+  useEffect(() => { (onContinue ? continueRef.current : linkRef.current)?.focus(); }, [!!onContinue]);
   async function copy() {
     try {
       await navigator.clipboard.writeText(snap?.draft ?? "");
@@ -52,7 +55,7 @@ function EndedBanner({ base, onContinue }: { base: string; onContinue?: () => vo
         </div>
       ) : null}
       {onContinue
-        ? <button type="button" className="mw-btn mw-btn--primary" onClick={onContinue}>continue</button>
+        ? <button ref={continueRef} type="button" className="mw-btn mw-btn--primary" onClick={onContinue}>continue</button>
         : <a ref={linkRef} className="mw-btn mw-btn--primary" href={loginUrl(base)}>sign in</a>}
     </div>
   );
@@ -176,6 +179,7 @@ export default function AppShell({ base }: { base: string }) {
     };
     function wipeAppState() {
       heldUserRef.current = null;
+      setResumed(false);
       setBoot(null);
       resetSessionEnded(); // drops the previous account's handed-back draft
       recordPushError(null);

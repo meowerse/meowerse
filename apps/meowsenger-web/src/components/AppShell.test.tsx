@@ -414,6 +414,24 @@ describe("AppShell", () => {
       expect(getEndedSnapshot()).toBeNull();
     });
 
+    it("resumed banner focuses continue; a DIFFERENT user restoring then still wipes the draft", async () => {
+      draftSource();
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      act(() => { notifySessionEnded(); });
+      await screen.findByText(/your session ended/);
+      H.results = [authed];
+      await restore();
+      await screen.findByText(/you're signed in again/);
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "continue" }));
+      setSnapshotSource(null);
+      H.results = [{ ok: true, status: 200, data: { authenticated: true, user: { id: "someone-else" } } }, { ok: true, status: 200, data: { authenticated: true, user: { id: "someone-else" } } }];
+      await restore();
+      await screen.findByTestId("chat");
+      expect(getEndedSnapshot()).toBeNull();
+      expect(screen.queryByText(/my unsent words|signed in again/)).toBeNull();
+    });
+
     it("ended without a draft, then a same-user restore: banner cleared and the app boots straight away", async () => {
       render(<AppShell base="" />);
       await screen.findByTestId("chat");
