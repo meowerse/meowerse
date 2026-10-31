@@ -4,7 +4,7 @@
 // plugins/faststats/config.properties submitErrors=false (NexusCore 2.1.8 decompiled for the payload); AuthMe
 // sessions.enabled=false; cron "17 4 * * * mc-log-retention --apply" (source: minicraft/go-live/mc-log-retention)
 // deletes rotated logs older than 30 days and trims plugins/AuthMe/authme.log to its last 30 days.
-export const POLICY_VERSION = "v3, 2026-10-31";
+export const POLICY_VERSION = "v4, 2026-10-31";
 
 export const CONTACTS = {
   privacy: "privacy@alxnko.dev",
