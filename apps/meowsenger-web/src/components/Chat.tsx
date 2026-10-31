@@ -62,6 +62,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
   // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
   const draftRef = useRef("");
+  // A refused send turned back into composer text ("not sent -- edit"); nonce re-applies it.
+  const [restoreText, setRestoreText] = useState<{ text: string; nonce: number } | null>(null);
 
   // Slice 4 — message-actions UI state.
   const [replyingTo, setReplyingTo] = useState<Bubble | null>(null); // armed reply
@@ -262,7 +264,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
+    send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onMessageDeleted, consumeReply, onRevoked });
 
@@ -919,6 +921,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                     onToggleReaction={sendReact}
                     onJumpToReply={jumpToMessage}
                     registerRef={registerRow}
+                    onRetrySend={retrySend}
+                    onEditFailedSend={(mm) => { const text = discardFailedSend(mm); setRestoreText((r) => ({ text, nonce: (r?.nonce ?? 0) + 1 })); }}
                     />
                   </Fragment>
                 );
@@ -996,6 +1000,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 replyTo={replyDraft}
                 onCancelReply={() => setReplyingTo(null)}
                 onDraftChange={(t) => { draftRef.current = t; }}
+                restore={restoreText}
               />
             )}
           </>

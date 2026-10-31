@@ -969,3 +969,101 @@ describe("useConversation — PR-3 review fixes", () => {
     expect(s.result.current.queuedCount()).toBe(3);
   });
 });
+
+describe("useConversation — idempotent resend + correlated errors (PR-4)", () => {
+  it("a lost ack, then reconnect + resend with the SAME tempId, gives exactly one bubble", async () => {
+    const { result, ws } = await open([]);
+    act(() => { result.current.send("hello"); });
+    const first = ws.sentFrames().find((f) => f.type === "send")!;
+    expect(result.current.messages.filter((m) => m.body === "hello")).toHaveLength(1);
+    // The server persisted it but the ack never arrived; the socket drops.
+    act(() => ws.mockDrop());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2), { timeout: 2000 });
+    const ws2 = MockWebSocket.last;
+    act(() => ws2.mockOpen());
+    const resent = ws2.sentFrames().filter((f) => f.type === "send");
+    expect(resent).toHaveLength(1);
+    expect(resent[0]).toMatchObject({ tempId: first.tempId, body: "hello" });
+    // The server re-acks the original row.
+    act(() => ws2.mockEmit({ type: "sent", tempId: first.tempId, message: msg({ id: "srv1", senderId: "u1", body: "hello", createdAt: 5000 }) }));
+    expect(result.current.messages.filter((m) => m.body === "hello")).toHaveLength(1);
+    expect(result.current.messages.some((m) => m.pending)).toBe(false);
+    // Once acked, a later reconnect does NOT resend it.
+    act(() => ws2.mockDrop());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(3), { timeout: 3000 });
+    act(() => MockWebSocket.last.mockOpen());
+    expect(MockWebSocket.last.sentFrames().some((f) => f.type === "send")).toBe(false);
+  });
+
+  it("an unacked send older than 23 h is NOT auto-resent (server dedupe is 24 h): marked 'couldn't confirm'", async () => {
+    const { result, ws } = await open([]);
+    const t0 = Date.now();
+    act(() => { result.current.send("old one"); });
+    expect(ws.sentFrames().filter((f) => f.type === "send")).toHaveLength(1);
+    const now = vi.spyOn(Date, "now").mockReturnValue(t0 + 23 * 60 * 60 * 1000 + 1000);
+    act(() => ws.mockDrop());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2), { timeout: 2000 });
+    act(() => MockWebSocket.last.mockOpen());
+    expect(MockWebSocket.last.sentFrames().some((f) => f.type === "send")).toBe(false);
+    const b = result.current.messages.find((m) => m.body === "old one")!;
+    expect(b).toMatchObject({ pending: false, sendFailed: true, unconfirmed: true });
+    now.mockRestore();
+  });
+
+  it("a double ack (original + re-ack) still leaves one bubble", async () => {
+    const { result, ws } = await open([]);
+    act(() => { result.current.send("twice"); });
+    const tempId = ws.sentFrames().find((f) => f.type === "send")!.tempId as string;
+    const m = msg({ id: "srv2", senderId: "u1", body: "twice", createdAt: 5000 });
+    act(() => ws.mockEmit({ type: "sent", tempId, message: m }));
+    act(() => ws.mockEmit({ type: "sent", tempId, message: m }));
+    expect(result.current.messages.filter((b) => b.body === "twice")).toHaveLength(1);
+  });
+
+  it("a refused edit reverts exactly the right message even with two edits in flight", async () => {
+    const { result, ws } = await open([
+      msg({ id: "a", senderId: "u1", body: "a-orig", createdAt: 1000 }),
+      msg({ id: "b", senderId: "u1", body: "b-orig", createdAt: 2000 }),
+    ]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "a-new"); });
+    act(() => { result.current.sendEdit(result.current.messages[1], "b-new"); });
+    // The server refuses the SECOND edit (b); FIFO would wrongly revert a.
+    act(() => ws.mockEmit({ type: "error", code: "cannot_edit", messageId: "b" }));
+    const byId = (id: string) => result.current.messages.find((x) => x.id === id)!;
+    expect(byId("b")).toMatchObject({ body: "b-orig", editFailed: true });
+    expect(byId("a")).toMatchObject({ body: "a-new" });
+    expect(byId("a").editFailed).toBeUndefined();
+  });
+
+  it("a rate_limited send turns the bubble into 'not sent'; retry re-sends with the SAME tempId", async () => {
+    const { result, ws } = await open([]);
+    act(() => { result.current.send("slow down"); });
+    const tempId = ws.sentFrames().find((f) => f.type === "send")!.tempId as string;
+    act(() => ws.mockEmit({ type: "error", code: "rate_limited", tempId }));
+    const failed = result.current.messages.find((b) => b.tempId === tempId)!;
+    expect(failed).toMatchObject({ sendFailed: true, pending: false });
+    act(() => { result.current.retrySend(failed); });
+    const sends = ws.sentFrames().filter((f) => f.type === "send");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]).toMatchObject({ tempId, body: "slow down" });
+    const again = result.current.messages.filter((b) => b.tempId === tempId);
+    expect(again).toHaveLength(1);
+    expect(again[0]).toMatchObject({ pending: true });
+    expect(again[0].sendFailed).toBeUndefined();
+  });
+
+  it("'edit' on a refused send drops the bubble and returns its text; it is not resent on reconnect", async () => {
+    const { result, ws } = await open([]);
+    act(() => { result.current.send("fix me"); });
+    const tempId = ws.sentFrames().find((f) => f.type === "send")!.tempId as string;
+    act(() => ws.mockEmit({ type: "error", code: "bad_body", tempId }));
+    let text = "";
+    act(() => { text = result.current.discardFailedSend(result.current.messages.find((b) => b.tempId === tempId)!); });
+    expect(text).toBe("fix me");
+    expect(result.current.messages.some((b) => b.tempId === tempId)).toBe(false);
+    act(() => ws.mockDrop());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2), { timeout: 2000 });
+    act(() => MockWebSocket.last.mockOpen());
+    expect(MockWebSocket.last.sentFrames().some((f) => f.type === "send")).toBe(false);
+  });
+});

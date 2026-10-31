@@ -37,6 +37,12 @@ interface ReactionAgg {
   mine: boolean;
 }
 /** A message as it goes over the wire / out of history (see Shared contracts §6). */
+/** Correlation fields echoed on error frames (see webSocketMessage). */
+interface Corr {
+  messageId?: string;
+  tempId?: string;
+}
+
 interface Wire {
   id: string;
   chatId: string;
@@ -169,6 +175,13 @@ const SEQ_KEY = "fanout_seq";
 /** Reaction emoji length cap (Slice 9): non-empty, ≤ 8 chars (a couple of
  *  multi-codepoint emoji fit; anything longer is almost certainly abuse). */
 const MAX_EMOJI_LEN = 8;
+/** Client-minted send ids (`t-<ms>-<rand>`): validated server-side before they key the
+ *  dedupe table or are echoed back. Short, URL-safe charset only. */
+const TEMP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** A (sender, tempId) dedupe entry is honoured, and pruned, after this long. */
+const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
+/** Max dedupe rows deleted per write, so the on-write prune stays bounded. */
+const DEDUPE_PRUNE_LIMIT = 200;
 /** Cap on distinct emojis one user may hold on a single message — a toggle that
  *  would exceed this is refused so a user can't spam a message with reactions. */
 const MAX_REACTIONS_PER_USER = 12;
@@ -224,7 +237,9 @@ export class Conversation extends DurableObject<Env> {
         `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, reply_to_id TEXT, edited_at INTEGER, is_deleted INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, is_forwarded INTEGER NOT NULL DEFAULT 0);
          CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
          CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, user_id TEXT NOT NULL, emoji TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (message_id, user_id, emoji));
-         CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);`,
+         CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
+         CREATE TABLE IF NOT EXISTS send_dedupe (sender_id TEXT NOT NULL, temp_id TEXT NOT NULL, message_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (sender_id, temp_id));
+         CREATE INDEX IF NOT EXISTS idx_send_dedupe_created ON send_dedupe(created_at);`,
       );
     });
     // Answer keepalive ping/pong in the runtime without waking the DO.
@@ -369,20 +384,29 @@ export class Conversation extends DurableObject<Env> {
       return;
     }
 
+    // Correlation fields echoed on every error frame so the client can resolve the exact
+    // optimistic item (send -> tempId, edit/delete/react -> messageId). A tempId is only
+    // echoed when it passes validation (never reflect arbitrary client input).
+    const validTemp = typeof msg.tempId === "string" && TEMP_ID_RE.test(msg.tempId) ? msg.tempId : undefined;
+    const corr: Corr = {
+      ...(typeof msg.id === "string" && msg.id.length <= 64 ? { messageId: msg.id } : {}),
+      ...(validTemp ? { tempId: validTemp } : {}),
+    };
+
     // Edit: own message, within the 1h window, not soft-deleted. All checks are
     // server-side — never trust the client's view of ownership or the clock.
     if (msg.type === "edit") {
-      this.handleEdit(ws, att, msg.id, msg.body);
+      this.handleEdit(ws, att, msg.id, msg.body, corr);
       return;
     }
     // Delete: own message, within the 24h window, soft (keep the row + placeholder).
     if (msg.type === "delete") {
-      this.handleDelete(ws, att, msg.id);
+      this.handleDelete(ws, att, msg.id, corr);
       return;
     }
     // React: toggle this user's emoji on a live message, broadcast to ALL (Slice 9).
     if (msg.type === "react") {
-      this.handleReact(ws, att, msg.id, msg.emoji);
+      this.handleReact(ws, att, msg.id, msg.emoji, corr);
       return;
     }
 
@@ -391,8 +415,20 @@ export class Conversation extends DurableObject<Env> {
     // post; a plain member is read-only. Server-enforced here (the socket's type +
     // role come from the gated router's D1 read, never the client), so no persist
     // and no broadcast. DMs/groups aren't 'channel', so they're unaffected.
+    // tempId is optional (older clients), but when present it must be well-formed: it
+    // keys the dedupe table. Oversized/odd values are refused (and not echoed).
+    if (msg.tempId != null && !validTemp) {
+      ws.send(JSON.stringify({ type: "error", code: "bad_body" }));
+      return;
+    }
+    // Idempotent resend: a (sender, tempId) already persisted is re-acked with the
+    // original row -- no insert, no broadcast, no push, and it is NOT metered (it is a
+    // retransmit of work already done, so a reconnect burst can't rate-limit itself).
+    // Checked BEFORE the role gate: a member demoted after their send landed still gets
+    // the ack for it (a re-ack writes nothing), not a false "not sent".
+    if (validTemp && this.reackDuplicate(ws, att.userId, att.chatId, validTemp)) return;
     if (att.type === "channel" && att.role !== "owner" && att.role !== "admin") {
-      ws.send(JSON.stringify({ type: "error", code: "read_only" }));
+      ws.send(JSON.stringify({ type: "error", code: "read_only", ...corr }));
       return;
     }
     // Per-connection flood protection (Slice 8): drop this socket's `send`
@@ -401,12 +437,12 @@ export class Conversation extends DurableObject<Env> {
     // stays open; a flood is throttled, not disconnected). Metered here so
     // typing/read/edit/delete stay unaffected.
     if (this.isRateLimited(ws)) {
-      ws.send(JSON.stringify({ type: "error", code: "rate_limited" }));
+      ws.send(JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
       return;
     }
     const body = (msg.body ?? "").trim();
     if (!body || body.length > MAX_BODY) {
-      ws.send(JSON.stringify({ type: "error", code: "bad_body" }));
+      ws.send(JSON.stringify({ type: "error", code: "bad_body", ...corr }));
       return;
     }
 
@@ -416,7 +452,41 @@ export class Conversation extends DurableObject<Env> {
     let replyToId: string | undefined;
     if (typeof msg.replyToId === "string" && msg.replyToId) replyToId = msg.replyToId;
 
-    this.insertAndBroadcast(att.userId, att.chatId, body, { replyToId, tempId: msg.tempId, ackTo: ws });
+    this.insertAndBroadcast(att.userId, att.chatId, body, { replyToId, tempId: validTemp, ackTo: ws });
+  }
+
+  /**
+   * If `(senderId, tempId)` was already persisted within the dedupe TTL, re-ack the
+   * sender's socket with the ORIGINAL row and return true (caller stops: no insert,
+   * no broadcast). The key is per sender, so another user's tempId can never surface
+   * someone else's message. If the original row has since been purged, answer with a
+   * correlated error rather than silently inserting a second copy.
+   */
+  private reackDuplicate(ws: WebSocket, senderId: string, chatId: string, tempId: string): boolean {
+    const hit = this.ctx.storage.sql
+      .exec(
+        "SELECT message_id FROM send_dedupe WHERE sender_id = ? AND temp_id = ? AND created_at >= ?",
+        senderId,
+        tempId,
+        Date.now() - DEDUPE_TTL_MS,
+      )
+      .toArray()[0];
+    if (!hit) return false;
+    const row = this.ctx.storage.sql
+      .exec(
+        `SELECT ${HISTORY_COLS} FROM messages m LEFT JOIN messages r ON m.reply_to_id = r.id WHERE m.id = ?`,
+        String(hit.message_id),
+      )
+      .toArray()[0];
+    if (!row) {
+      // The original was purged: drop the stale key (so an explicit user retry can send
+      // fresh) and answer with a correlated error rather than silently inserting a copy.
+      this.ctx.storage.sql.exec("DELETE FROM send_dedupe WHERE sender_id = ? AND temp_id = ?", senderId, tempId);
+      ws.send(JSON.stringify({ type: "error", code: "bad_body", tempId }));
+      return true;
+    }
+    this.safeSend(ws, JSON.stringify({ type: "sent", tempId, message: this.rowToWire(row as Row, chatId) }));
+    return true;
   }
 
   /**
@@ -484,6 +554,24 @@ export class Conversation extends DurableObject<Env> {
       replyToId,
       forwarded ? 1 : 0,
     );
+    // Record (sender, tempId) -> message id (ids only, never the body) so a resend after
+    // a lost ack is re-acked instead of re-inserted; prune expired rows in the same
+    // write, bounded by LIMIT. The lookup in the send branch ran first, so this INSERT
+    // OR IGNORE only ever races with itself (DO events are serialized -- it can't).
+    if (opts.tempId && opts.ackTo) {
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO send_dedupe (sender_id, temp_id, message_id, created_at) VALUES (?, ?, ?, ?)",
+        senderId,
+        opts.tempId,
+        id,
+        Date.now(),
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM send_dedupe WHERE rowid IN (SELECT rowid FROM send_dedupe WHERE created_at < ? LIMIT ?)",
+        Date.now() - DEDUPE_TTL_MS,
+        DEDUPE_PRUNE_LIMIT,
+      );
+    }
     const message: Wire = {
       id,
       chatId,
@@ -1246,10 +1334,10 @@ export class Conversation extends DurableObject<Env> {
    * On success, broadcast {edited} to ALL sockets (incl. the sender) so a user's
    * other tabs converge; on any failure, reply {error, cannot_edit} to the sender.
    */
-  private handleEdit(ws: WebSocket, att: Attach, id: string | undefined, rawBody: string | undefined): void {
+  private handleEdit(ws: WebSocket, att: Attach, id: string | undefined, rawBody: string | undefined, corr: Corr = {}): void {
     const body = (rawBody ?? "").trim();
     if (!id || !body || body.length > MAX_BODY) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_edit" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_edit", ...corr }));
       return;
     }
     const row = this.ctx.storage.sql
@@ -1258,7 +1346,7 @@ export class Conversation extends DurableObject<Env> {
     const own = row && String(row.sender_id) === att.userId;
     const within = row && Date.now() - Number(row.created_at) <= EDIT_WINDOW_MS;
     if (!row || Number(row.is_deleted) === 1 || !own || !within) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_edit" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_edit", ...corr }));
       return;
     }
     const editedAt = Date.now();
@@ -1275,9 +1363,9 @@ export class Conversation extends DurableObject<Env> {
    * is_deleted=1 + blank body (history renders a placeholder); an alarm hard-purges
    * it once it ages out. Broadcast {deleted} to ALL; on failure {error, cannot_delete}.
    */
-  private handleDelete(ws: WebSocket, att: Attach, id: string | undefined): void {
+  private handleDelete(ws: WebSocket, att: Attach, id: string | undefined, corr: Corr = {}): void {
     if (!id) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_delete" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_delete", ...corr }));
       return;
     }
     const row = this.ctx.storage.sql
@@ -1289,7 +1377,7 @@ export class Conversation extends DurableObject<Env> {
     // Own+recent OR moderator. Admins may delete any message at any time.
     const allowed = (own && within) || isAdmin;
     if (!row || Number(row.is_deleted) === 1 || !allowed) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_delete" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_delete", ...corr }));
       return;
     }
     this.ctx.storage.sql.exec(
@@ -1314,10 +1402,10 @@ export class Conversation extends DurableObject<Env> {
    * {reaction, id, emoji, userId, on} to ALL sockets (incl. the actor, so their
    * own tabs and optimistic UI converge on the authoritative state).
    */
-  private handleReact(ws: WebSocket, att: Attach, id: string | undefined, rawEmoji: string | undefined): void {
+  private handleReact(ws: WebSocket, att: Attach, id: string | undefined, rawEmoji: string | undefined, corr: Corr = {}): void {
     const emoji = (rawEmoji ?? "").trim();
     if (!id || !emoji || emoji.length > MAX_EMOJI_LEN) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_react" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_react", ...corr }));
       return;
     }
     // Only react to a live message in this room — never a soft-deleted or unknown one.
@@ -1325,7 +1413,7 @@ export class Conversation extends DurableObject<Env> {
       .exec("SELECT is_deleted FROM messages WHERE id = ?", id)
       .toArray()[0];
     if (!target || Number(target.is_deleted) === 1) {
-      ws.send(JSON.stringify({ type: "error", code: "cannot_react" }));
+      ws.send(JSON.stringify({ type: "error", code: "cannot_react", ...corr }));
       return;
     }
     const existing = this.ctx.storage.sql
@@ -1346,7 +1434,7 @@ export class Conversation extends DurableObject<Env> {
         .exec("SELECT COUNT(*) AS n FROM reactions WHERE message_id = ? AND user_id = ?", id, att.userId)
         .toArray()[0]?.n;
       if (Number(mine ?? 0) >= MAX_REACTIONS_PER_USER) {
-        ws.send(JSON.stringify({ type: "error", code: "too_many_reactions" }));
+        ws.send(JSON.stringify({ type: "error", code: "too_many_reactions", ...corr }));
         return;
       }
       this.ctx.storage.sql.exec(
