@@ -17,7 +17,7 @@ describe("meowsenger /privacy and /terms point at the shared pages", () => {
     expect(p).toContain("last member leaves a group or channel");
     expect(p).toContain("Direct chats are never deleted");
     expect(p).not.toContain("when the last member leaves a chat its stored");
-    expect(p).toContain("passes to another member");
+    expect(p).toContain("passes to its oldest admin, or else its oldest member"); // members.ts leave()
     expect(p).not.toContain("solely own");
     expect(p).toContain("receives mail only");
   });
