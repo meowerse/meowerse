@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCsp, dataUrls, inlineBlocks, MAX_HEADER, probeOrigins, sha256, styleAttrs } from "./csp";
+import { buildCsp, CF_BEACON_ORIGIN, CF_INSIGHTS_ORIGIN, dataUrls, inlineBlocks, MAX_HEADER, probeOrigins, sha256, styleAttrs } from "./csp";
 
 describe("csp", () => {
   it("hashes like the browser (sha256, base64)", () =>
@@ -18,13 +18,15 @@ describe("csp", () => {
   });
   it("builds one strict policy with Trusted Types and the probe origins", () => {
     const csp = buildCsp(["<script>a()</script><style>p{}</style>", "<script>a()</script>"], ["https://b.example", "https://a.example"]);
-    expect(csp).toContain(`script-src 'self' ${sha256("a()")};`);
+    expect(csp).toContain(`script-src 'self' ${sha256("a()")} https://static.cloudflareinsights.com/beacon.min.js/;`);
     expect(csp).toContain(`style-src 'self' ${sha256("p{}")};`);
-    expect(csp).toContain("connect-src 'self' https://a.example https://b.example;");
+    expect(csp).toContain("connect-src 'self' https://a.example https://b.example https://cloudflareinsights.com;");
     for (const d of ["default-src 'none'", "img-src 'self'", "font-src 'self'", "base-uri 'none'", "form-action 'none'",
       "frame-ancestors 'none'", "upgrade-insecure-requests", "require-trusted-types-for 'script'", "trusted-types 'none'"])
       expect(csp).toContain(d);
     expect(csp).not.toMatch(/unsafe-(inline|eval)/);
+    expect(CF_BEACON_ORIGIN).toBe("https://static.cloudflareinsights.com/beacon.min.js/");
+    expect(CF_INSIGHTS_ORIGIN).toBe("https://cloudflareinsights.com");
     expect(MAX_HEADER).toBe(2000);
   });
   it("takes connect-src origins from probe statuses only, deduplicated", () =>

@@ -4,7 +4,7 @@
 // plugins/faststats/config.properties submitErrors=false (NexusCore 2.1.8 decompiled for the payload); AuthMe
 // sessions.enabled=false; cron "17 4 * * * mc-log-retention --apply" (source: minicraft/go-live/mc-log-retention)
 // deletes rotated logs older than 30 days and trims plugins/AuthMe/authme.log to its last 30 days.
-export const POLICY_VERSION = "v2, 2026-10-31";
+export const POLICY_VERSION = "v3, 2026-10-31";
 
 export const CONTACTS = {
   privacy: "privacy@alxnko.dev",
@@ -23,10 +23,11 @@ export interface Partner {
 // release that turns each feature on (never before).
 // NEXT RELEASE: insert "Google Analytics" (consent-gated; Google's data-sharing settings may let Google use the data
 // for its own purposes, say so plainly) right after the "Cloudflare" row below, describe our own first-party
-// anonymous counts, and replace the "today" analytics section in privacy.astro. No Cloudflare Web Analytics beacon
-// (owner decision D3, 2026-10-30).
+// anonymous counts, and extend the "analytics today" section in privacy.astro. Cloudflare Web Analytics (cookieless) IS
+// live since owner decision D7 (2026-10-31, reverses D3 of 2026-10-30): the zone injects its beacon and the CSPs allow it.
 export const PARTNERS: readonly Partner[] = [
   { partner: "Cloudflare", why: "hosts our websites and web services (Pages, Workers, D1, Durable Objects). The Minecraft server is NOT behind Cloudflare", gets: "every request to those sites: IP address, browser info, the page or API you asked for. Cloudflare keeps short-lived edge request logs", when: "always (hosting)" },
+  { partner: "Cloudflare Web Analytics", why: "cookieless page-view and performance statistics for our websites", gets: "the page address you visit, the referring page, your browser, operating system and device type, your country (Cloudflare derives it from your IP address) and page-load timings. No cookies and no cross-site identifier", when: "on every page of our websites" },
   { partner: "Cloudflare Turnstile", why: "stops bots at sign-up and sign-in; its script loads in your browser from challenges.cloudflare.com", gets: "your IP address (we pass it on to check the result), plus whatever the browser check collects", when: "when you sign up or sign in" },
   { partner: "Turso", why: "stores the meowerse accounts database (region: AWS eu-west-1, Ireland)", gets: "your account: username, display name, avatar link, password hash, recovery-code hashes, Telegram link, sessions, app consents, the security audit log (truncated IP, browser hash) and abuse-counter hashes", when: "if you have an account" },
   { partner: "Telegram", why: "optional sign-in, and our Telegram bot", gets: "we RECEIVE your Telegram ID, username, name and photo from Telegram when you use Telegram login. Telegram receives your use of our bot. Our public /avatar/<account id> address also fetches your current Telegram photo from Telegram on demand and serves it to anyone who has your account ID", when: "only if you use Telegram sign-in or link Telegram" },

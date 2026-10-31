@@ -1,6 +1,6 @@
 import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
-import { corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
+import { CF_BEACON_CSP, corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
 import { sha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
@@ -73,7 +73,7 @@ function json(body: unknown, status: number, headers: Record<string, string> = {
 
 function htmlError(status: number, message: string, cors: Record<string, string>): Response {
   const body = `<!doctype html><html><head><meta charset="utf-8"><title>Auth error</title></head><body><h1>Authorization error</h1><p>${message}</p></body></html>`;
-  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8", ...securityHeaders(), ...cors } });
+  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8", ...securityHeaders(CF_BEACON_CSP), ...cors } });
 }
 
 function redirect(location: string, headers: Record<string, string> = {}): Response {

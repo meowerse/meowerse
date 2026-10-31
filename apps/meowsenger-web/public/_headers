@@ -6,7 +6,7 @@
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-  Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https://auth.alxnko.dev https://auth.alxnko.eu.org https://t.me https://*.telegram.org data:; connect-src 'self' wss://meowsenger.alxnko.dev wss://meowsenger.alxnko.eu.org https://auth.alxnko.dev https://auth.alxnko.eu.org
+  Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com/beacon.min.js/; style-src 'self' 'unsafe-inline'; img-src 'self' https://auth.alxnko.dev https://auth.alxnko.eu.org https://t.me https://*.telegram.org data:; connect-src 'self' wss://meowsenger.alxnko.dev wss://meowsenger.alxnko.eu.org https://auth.alxnko.dev https://auth.alxnko.eu.org https://cloudflareinsights.com
 
 /_astro/*
   Cache-Control: public, max-age=31536000, immutable
