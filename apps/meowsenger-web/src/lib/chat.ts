@@ -11,10 +11,10 @@ import { notifySessionEnded } from "./sessionEnded";
  * see sessionEnded.ts); network/timeout/5xx/403 are returned for the caller to
  * show a retryable error while keeping its last good data.
  */
-async function read<B, T>(url: string, pick: (body: B) => T): Promise<RequestResult<T>> {
+async function read<B, T>(url: string, pick: (body: B) => T, quiet = false): Promise<RequestResult<T>> {
   const r = await request<B>(url);
   if (!r.ok) {
-    if (r.error.kind === "unauthorized") notifySessionEnded();
+    if (r.error.kind === "unauthorized" && !quiet) notifySessionEnded();
     return r;
   }
   return { ok: true, status: r.status, data: pick((r.data ?? {}) as B) };
@@ -196,8 +196,8 @@ export interface Message {
 }
 
 /** GET /api/chats — the caller's sidebar list. A failure is a typed error, NOT []. */
-export function listChats(base: string): Promise<RequestResult<ChatSummary[]>> {
-  return read<{ chats?: ChatSummary[] }, ChatSummary[]>(`${base}/api/chats`, (d) => d.chats ?? []);
+export function listChats(base: string, opts?: { quiet?: boolean }): Promise<RequestResult<ChatSummary[]>> {
+  return read<{ chats?: ChatSummary[] }, ChatSummary[]>(`${base}/api/chats`, (d) => d.chats ?? [], opts?.quiet === true);
 }
 
 /** POST /api/chats { username } — open-or-create a DM. Returns the chatId or an error code. */

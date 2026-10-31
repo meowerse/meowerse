@@ -22,7 +22,9 @@ export function getEndedSnapshot(): EndedSnapshot | null { return snapshot; }
 export function notifySessionEnded(): void {
   if (ended) return;
   ended = true;
-  try { snapshot = source ? source() : null; } catch { snapshot = null; }
+  // No chat view mounted (e.g. ended again while the banner shows): keep the draft we
+  // already hold instead of replacing it with nothing.
+  try { snapshot = source ? source() : snapshot; } catch { snapshot = null; }
   for (const l of [...listeners]) l();
 }
 
@@ -35,3 +37,6 @@ export function subscribeSessionEnded(l: Listener): () => void {
 
 /** Test/sign-in reset. */
 export function resetSessionEnded(): void { ended = false; snapshot = null; }
+
+/** Signed in again as the same user: lift the ended state but keep the handed-back draft. */
+export function clearSessionEndedFlag(): void { ended = false; }

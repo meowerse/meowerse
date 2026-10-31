@@ -68,6 +68,18 @@ describe("listChats", () => {
   });
 });
 
+describe("listChats quiet (boot prefetch)", () => {
+  it("a quiet 401 returns the typed error WITHOUT raising sessionEnded (a signed-out visitor must redirect, not see the banner)", async () => {
+    resetSessionEnded();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    expect(await listChats(BASE, { quiet: true })).toEqual({ ok: false, error: { kind: "unauthorized", status: 401 } });
+    expect(hasSessionEnded()).toBe(false);
+    expect(await listChats(BASE)).toEqual({ ok: false, error: { kind: "unauthorized", status: 401 } });
+    expect(hasSessionEnded()).toBe(true);
+    resetSessionEnded();
+  });
+});
+
 describe("openDirect", () => {
   it("POSTs the username and returns the parsed result", async () => {
     const mock = stubFetch({ chatId: "c9", created: true });
