@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   pushSupported, pushPermission, pushConfirmedFor, pushDiagnostics, describePushFailure, enablePush, disablePush,
   recordPushError, isIos, isStandalone, PushError, type PushDiagnostics,
@@ -36,11 +36,18 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   const labelId = useId();
   const statusId = useId();
 
+  // Each refresh/turn-on/turn-off bumps the sequence; a slower, older read never overwrites
+  // a newer state (e.g. a pre-enable "not confirmed" landing after a successful turn-on).
+  const seq = useRef(0);
   async function refresh() {
+    const my = ++seq.current;
     setEnv(detectEnv());
     setPerm(pushPermission());
-    setConfirmed(userId ? await pushConfirmedFor(userId) : false);
-    setDiag(await pushDiagnostics());
+    const c = userId ? await pushConfirmedFor(userId) : false;
+    const d = await pushDiagnostics();
+    if (my !== seq.current) return;
+    setConfirmed(c);
+    setDiag(d);
   }
   useEffect(() => {
     if (!open) return;
@@ -62,7 +69,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   // NOT async-before-permission: enablePush() runs synchronously up to requestPermission().
   function turnOn() {
     if (busy || !userId) return;
-    setBusy("on"); setErr(null);
+    seq.current++; setBusy("on"); setErr(null);
     enablePush(base, userId).then(
       (result) => {
         setPerm(pushPermission());
@@ -82,7 +89,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
           code === "unauthorized"
             ? "your session expired — log in again, then turn notifications on."
             : abort
-            ? `your browser couldn't register with its push service. this is a browser/phone issue, not your settings: fully close and reopen Chrome, then try again.${isAndroid() ? " if it still fails, restart the phone and make sure Google Play services is up to date." : ""}`
+            ? `your browser couldn't register with its push service. this is a browser/phone issue, not your settings: fully close and reopen your browser, then try again.${isAndroid() ? " if it still fails, restart the phone and make sure Google Play services is up to date." : ""}`
             : "couldn't turn on notifications — try again. if it keeps failing, your browser may block push (e.g. private window, or push services disabled).",
         );
       },
@@ -90,7 +97,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   }
   function turnOff() {
     if (busy) return;
-    setBusy("off"); setErr(null);
+    seq.current++; setBusy("off"); setErr(null);
     disablePush(base, userId)
       .then(() => setConfirmed(false))
       .catch(() => { recordPushError("disable"); setErr("couldn't turn off notifications — try again."); })

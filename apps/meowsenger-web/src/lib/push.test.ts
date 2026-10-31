@@ -743,6 +743,10 @@ describe("opt-in id is written to IndexedDB directly (not only posted)", () => {
 });
 
 describe("describePushFailure", () => {
+  it("drops a browser message carrying a UUID or a 24+ char token", () => {
+    expect(describePushFailure(new DOMException("bad sub 123e4567-e89b-12d3-a456-426614174000", "InvalidStateError"))).toBe("InvalidStateError");
+    expect(describePushFailure(new DOMException("key AbCdEfGhIjKlMnOpQrStUvWxYz", "InvalidAccessError"))).toBe("InvalidAccessError");
+  });
   it("names DOMExceptions with a short generic message", () => {
     expect(describePushFailure(new DOMException("Registration failed - push service error", "AbortError")))
       .toBe("AbortError — Registration failed - push service error");

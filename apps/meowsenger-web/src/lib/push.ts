@@ -46,7 +46,7 @@ export function describePushFailure(e: unknown): string {
   const name = e && typeof (e as { name?: unknown }).name === "string" ? (e as { name: string }).name.trim() : "";
   const raw = e && typeof (e as { message?: unknown }).message === "string" ? (e as { message: string }).message.trim() : "";
   if (!name || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) return "unknown";
-  const message = raw && raw.length <= 80 && !/:\/\/|https?|[A-Za-z0-9_-]{40,}/i.test(raw) ? raw : "";
+  const message = raw && raw.length <= 80 && !/:\/\/|https?|[A-Za-z0-9_-]{24,}|[0-9a-f]{8}-[0-9a-f]{4}-/i.test(raw) ? raw : "";
   const out = message ? `${name} — ${message}` : name;
   return out.length > 120 ? out.slice(0, 119) + "…" : out;
 }
