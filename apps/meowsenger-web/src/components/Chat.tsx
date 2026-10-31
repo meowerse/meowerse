@@ -261,7 +261,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, queuedCount, sendReact, sendTyping,
+    send, sendEdit, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onMessageDeleted, consumeReply, onRevoked });
 
@@ -477,6 +477,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     return send(body, replyingTo?.id ?? null);
   }
   function onSaveEdit(m: Bubble, body: string) {
+    // Saving unchanged text is a no-op: just close the editor.
+    if (body.trim() === m.body) { setEditingId(null); return; }
     // Keep the editor open (and the typed text) if nothing was sent or queued.
     if (sendEdit(m, body) !== "rejected") setEditingId(null);
   }
@@ -550,11 +552,11 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setConfirmBulk(true);
   }
   function confirmDeleteSelected() {
-    // Bulk-delete only my own, still-deletable messages; silently skip the rest.
-    for (const m of messages) {
-      if (selected.has(m.id) && canDelete(m)) sendDelete(m);
-    }
+    // Bulk-delete only my own, still-deletable messages; silently skip the rest. The
+    // outbox capacity is checked once for the lot: all queued/sent, or none (one toast).
+    const eligible = messages.filter((m) => selected.has(m.id) && canDelete(m));
     setConfirmBulk(false);
+    if (eligible.length > 0 && sendDeleteMany(eligible) === "rejected") return; // keep the selection
     exitSelect();
   }
 
@@ -701,6 +703,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         onNewChatClick={() => setNewChatOpen(true)}
         onSettingsClick={() => setSettingsOpen(true)}
         onLogout={onLogout}
+        unsent={queuedByChat}
         loading={loadingChats}
         error={chatsError}
         onRetry={() => { void refreshChats(); }}
@@ -926,6 +929,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               <button className="mw-chat__tolatest" onClick={() => void jumpToLatest()} aria-label="jump to latest messages">
                 jump to latest ↓
               </button>
+            )}
+
+            {sentUnseen && (
+              <div className="mw-chat__sentnote" role="status">
+                <span>sent — jump to latest to see it</span>
+                <button className="mw-btn mw-btn--ghost mw-btn--sm" onClick={() => void jumpToLatest()}>jump to latest</button>
+              </div>
             )}
 
             {selectMode ? (

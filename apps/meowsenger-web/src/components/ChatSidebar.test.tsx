@@ -42,3 +42,32 @@ describe("ChatSidebar — chat-type a11y label (#35)", () => {
     }
   });
 });
+
+describe("ChatSidebar — unsent badge (PR-3 review)", () => {
+  function renderWith(unsent: Map<string, number>, activeId: string | null) {
+    render(
+      <ChatSidebar
+        chats={[chat({ id: "c1", peerDisplayName: "Bob" }), chat({ id: "c2", peerDisplayName: "Cy", peerId: "u3" })]}
+        activeId={activeId}
+        online={new Set()}
+        base=""
+        unsent={unsent}
+        onSelect={() => {}}
+        onOpenResult={() => {}}
+        onNewChatClick={() => {}}
+        loading={false}
+      />,
+    );
+  }
+  it("shows glyph + text + accessible name for a NON-open chat with queued items, with an 'opens to send' title", () => {
+    renderWith(new Map([["c1", 2]]), "c2");
+    const badge = screen.getByLabelText("2 unsent");
+    expect(badge.textContent).toContain("2 unsent");
+    expect(badge.getAttribute("title")).toBe("opens to send");
+    expect(badge.querySelector("svg")).toBeTruthy();
+  });
+  it("does not show it for the open chat or a chat with nothing queued", () => {
+    renderWith(new Map([["c1", 2]]), "c1");
+    expect(screen.queryByLabelText(/unsent/)).toBeNull();
+  });
+});

@@ -47,6 +47,47 @@ type OutboxItem =
   | { kind: "edit"; id: string; body: string; editedAt: number }
   | { kind: "delete"; id: string };
 
+/** The single insertion point for server messages: replace the row with this id (or this
+ *  `tempId`, for an ack of an optimistic bubble) in place, drop any later duplicate, else
+ *  append. An ack plus a history row (or a broadcast) for the same message is therefore
+ *  always ONE row. The local `tempId` is kept so a later history load still recognises
+ *  the bubble as ours. */
+export function upsertById(list: Bubble[], incoming: Message, tempId?: string): Bubble[] {
+  const out: Bubble[] = [];
+  let placed = false;
+  for (const b of list) {
+    const match = b.id === incoming.id || (tempId != null && b.tempId === tempId);
+    if (!match) { out.push(b); continue; }
+    if (placed) continue; // a duplicate of the same message: drop it
+    placed = true;
+    const keepTemp = tempId ?? b.tempId;
+    const { pending: _p, queued: _q, ...rest } = b;
+    out.push({ ...rest, ...incoming, ...(keepTemp ? { tempId: keepTemp } : {}) });
+  }
+  if (!placed) out.push({ ...incoming, ...(tempId ? { tempId } : {}) });
+  return out;
+}
+
+/** Merge a page of server rows into the log through `upsertById`. `prepend` puts rows
+ *  that are new to the log before it (older history); otherwise they go after. */
+function mergeRows(prev: Bubble[], rows: Message[], where: "append" | "prepend"): Bubble[] {
+  const have = new Set(prev.map((b) => b.id));
+  const fresh = rows.filter((m) => !have.has(m.id));
+  let next = prev;
+  for (const m of rows) if (have.has(m.id)) next = upsertById(next, m);
+  if (fresh.length === 0) return next;
+  let added: Bubble[] = [];
+  for (const m of fresh) added = upsertById(added, m);
+  return where === "prepend" ? [...added, ...next] : [...next, ...added];
+}
+
+/** A history page replaced the log: keep EVERY local bubble that carries a tempId
+ *  (still pending OR already acked) that the page doesn't already contain by id. */
+function keepLocalOwn(hist: Message[], prev: Bubble[]): Bubble[] {
+  const have = new Set(hist.map((m) => m.id));
+  return [...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.tempId && !have.has(b.id))];
+}
+
 /** Human-readable copy for the transient error toast the server can send. */
 const ERROR_COPY: Record<string, string> = {
   cannot_edit: "can't edit this message anymore",
@@ -55,6 +96,8 @@ const ERROR_COPY: Record<string, string> = {
   read_only: "this is a broadcast channel — only admins can post",
   rate_limited: "you're sending too fast — slow down a moment",
 };
+
+const OUTBOX_FULL_COPY = "too many changes waiting — reconnect first";
 
 /** Same tag the service worker uses (public/sw.js), so an in-page and a push
  *  notification for the same burst collapse into one. */
@@ -140,6 +183,12 @@ export interface UseConversation {
   send: (body: string, replyToId?: string | null) => SendResult;
   sendEdit: (m: Bubble, body: string) => SendResult;
   sendDelete: (m: Bubble) => SendResult;
+  /** Bulk delete: the capacity is checked ONCE; if it doesn't fit nothing is queued/sent. */
+  sendDeleteMany: (ms: Bubble[]) => SendResult;
+  /** Queued (unsent) action count per chat id -- drives the sidebar "unsent" badge. */
+  queuedByChat: Map<string, number>;
+  /** A message was sent from a detached view but the jump to the live tail failed. */
+  sentUnseen: boolean;
   /** How many actions are queued (unsent) across ALL chats; for the session-ended snapshot. */
   queuedCount: () => number;
   sendReact: (m: Bubble, emoji: string) => void;
@@ -192,6 +241,32 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const outboxRef = useRef<Map<string, OutboxItem[]>>(new Map());
   const [outboxTick, setOutboxTick] = useState(0);
   const bumpOutbox = useCallback(() => setOutboxTick((n) => n + 1), []);
+
+  // Edits that left the outbox (or were sent live) and await the server's `edited` /
+  // `error` answer, oldest first, plus the last server-confirmed text of each so a
+  // refused edit can be reverted. (Memory only.)
+  const inflightEditsRef = useRef<string[]>([]);
+  const editBaselineRef = useRef<Map<string, { body: string; editedAt?: number | null }>>(new Map());
+  const settleEdit = useCallback((id: string, body: string, editedAt: number | null | undefined) => {
+    const i = inflightEditsRef.current.indexOf(id);
+    if (i < 0) return;
+    inflightEditsRef.current.splice(i, 1);
+    if (inflightEditsRef.current.includes(id)) editBaselineRef.current.set(id, { body, editedAt });
+    else editBaselineRef.current.delete(id);
+  }, []);
+  const revertRefusedEdit = useCallback(() => {
+    const id = inflightEditsRef.current.shift();
+    if (id === undefined) return;
+    const baseline = editBaselineRef.current.get(id);
+    if (!inflightEditsRef.current.includes(id)) editBaselineRef.current.delete(id);
+    if (!baseline) return;
+    setMessages((prev) => prev.map((b) => (b.id === id ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)));
+  }, []);
+
+  // A send went out while the view was detached and the jump to the live tail failed.
+  const [sentUnseen, setSentUnseen] = useState(false);
+  const jumpingAfterSendRef = useRef(false);
+  const jumpAfterSendRef = useRef<() => void>(() => {});
 
   const messagesRef = useRef<Bubble[]>([]);
   const hasMoreRef = useRef(false);
@@ -255,6 +330,15 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // The view is (back) on the live tail: clear detached state and flush anything held.
+  const flushOutboxRef = useRef<() => void>(() => {});
+  const markAttached = useCallback(() => {
+    hasNewerRef.current = false;
+    setHasNewer(false);
+    setSentUnseen(false);
+    flushOutboxRef.current();
+  }, []);
+
   // Infinite scroll up: load an older page via before=<oldestId> and prepend it,
   // preserving the visual scroll position.
   const loadOlder = useCallback(async () => {
@@ -277,7 +361,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     setOlderError(false);
     const older = olderRes.data;
     setHasMore(older.length >= 50);
-    setMessages((prev) => [...older.map((m) => ({ ...m })), ...prev]);
+    setMessages((prev) => mergeRows(prev, older, "prepend"));
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
       const now = logRef.current;
       if (now) now.scrollTop = now.scrollHeight - prevHeight;
@@ -300,29 +384,22 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (!rowsRes.ok) return; // stay detached; the next scroll retries
       const rows = rowsRes.data;
       if (rows.length > 0) {
-        setMessages((prev) => {
-          const have = new Set(prev.map((b) => b.id));
-          return [...prev, ...rows.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
-        });
+        setMessages((prev) => mergeRows(prev, rows, "append"));
       }
       if (rows.length < 50) {
-        hasNewerRef.current = false;
-        setHasNewer(false);
+        markAttached();
         // Catch a message that landed AFTER the historyAfter query but was suppressed
         // while detached: pull the newest page + merge (it overlaps the window's end).
         const tailRes = await loadHistory(base, chatId);
         if (activeRef.current === chatId && tailRes.ok && tailRes.data.length > 0) {
           const tail = tailRes.data;
-          setMessages((prev) => {
-            const have = new Set(prev.map((b) => b.id));
-            return [...prev, ...tail.filter((m) => !have.has(m.id)).map((m) => ({ ...m }))];
-          });
+          setMessages((prev) => mergeRows(prev, tail, "append"));
         }
       }
     } finally {
       loadingNewerRef.current = false;
     }
-  }, [base]);
+  }, [base, markAttached]);
 
   const onLogScroll = useCallback(() => {
     const el = logRef.current;
@@ -337,7 +414,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   const applyFrame = useCallback((frame: Frame) => {
     if (frame.type === "sent") {
-      setMessages((prev) => prev.map((b) => (b.tempId && b.tempId === frame.tempId ? { ...frame.message } : b)));
+      setMessages((prev) => upsertById(prev, frame.message, frame.tempId));
       onActiveMessageRef.current?.(frame.message); // my own send → refresh this chat's sidebar row
     } else if (frame.type === "message") {
       // A live message belongs at the tail. In a DETACHED window (hasNewer) the tail
@@ -346,7 +423,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (!hasNewerRef.current) {
         setMessages((prev) => {
           if (prev.some((b) => b.id === frame.message.id)) return prev;
-          const next = [...prev, { ...frame.message }];
+          const next = upsertById(prev, frame.message);
           if (atBottomRef.current) sendRead(next);
           return next;
         });
@@ -376,7 +453,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     } else if (frame.type === "read_receipt") {
       setPeerLastReadAt((prev) => Math.max(prev, frame.upTo));
     } else if (frame.type === "edited") {
-      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, body: frame.body, editedAt: frame.editedAt } : b)));
+      settleEdit(frame.id, frame.body, frame.editedAt);
+      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, body: frame.body, editedAt: frame.editedAt, editFailed: undefined } : b)));
     } else if (frame.type === "deleted") {
       setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b)));
       onMessageDeletedRef.current(frame.id);
@@ -392,6 +470,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
       onRevokedRef.current();
     } else if (frame.type === "error") {
       onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
+      // PR-4: correlate by messageId (error frames carry none today, so we assume the
+      // OLDEST in-flight edit is the refused one -- the server answers in order).
+      if (frame.code === "cannot_edit") revertRefusedEdit();
     }
   }, [sendRead]);
 
@@ -443,10 +524,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const chatId = activeRef.current;
     const ws = socketRef.current;
     const myId = meIdRef.current;
-    if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId || hasNewerRef.current) return;
+    // Edits/deletes/sends do NOT depend on the live tail: only the socket gates a flush.
+    if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const q = outboxRef.current.get(chatId);
     if (!q || q.length === 0) return;
     let changed = false;
+    let sentNew = false;
     while (q.length > 0) {
       const item = q[0];
       try {
@@ -467,14 +550,21 @@ export function useConversation(input: UseConversationInput): UseConversation {
         };
         setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
         atBottomRef.current = true;
+        sentNew = true;
         onActiveMessageRef.current?.(optimistic);
       } else if (item.kind === "edit") {
-        setMessages((prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt } : b)));
+        const cur = messagesRef.current.find((b) => b.id === item.id);
+        if (cur && !editBaselineRef.current.has(item.id)) editBaselineRef.current.set(item.id, { body: cur.body, editedAt: cur.editedAt });
+        inflightEditsRef.current.push(item.id);
+        setMessages((prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt, editFailed: undefined } : b)));
       }
     }
     if (q.length === 0) outboxRef.current.delete(chatId);
     if (changed) bumpOutbox();
+    // A new message went out from a detached view: bring the live tail in so it is seen.
+    if (sentNew && hasNewerRef.current) jumpAfterSendRef.current();
   }, [bumpOutbox]);
+  flushOutboxRef.current = flushOutbox;
 
   // Open exactly ONE socket to the active chat; reload history on select. The view's
   // per-chat UI resets (menus/selection/etc.) live in a SEPARATE view-side effect.
@@ -488,6 +578,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     sentReadUpToRef.current = 0;
     atBottomRef.current = true;
     revokedRef.current = false;
+    inflightEditsRef.current = [];
+    editBaselineRef.current.clear();
+    setSentUnseen(false);
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
     if (!activeId) return;
@@ -519,10 +612,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       const hist = res.data;
       // Keep in-flight (flushed, un-acked) bubbles: a fast socket can flush the outbox
       // before this history read lands, and it must not wipe them.
-      setMessages((prev) => {
-        const have = new Set(hist.map((m) => m.id));
-        return [...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.pending && !have.has(b.id))];
-      });
+      setMessages((prev) => keepLocalOwn(hist, prev));
       setHasMore(hist.length >= 50);
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
       if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
@@ -557,6 +647,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (cancelled || closingRef.current || activeRef.current !== chatId) return;
         setConnected(false);
         sentTypingRef.current = false;
+        // Unanswered edits have an unknown outcome now; PR-5's reconnect catch-up reconciles.
+        inflightEditsRef.current = [];
+        editBaselineRef.current.clear();
         // Membership was revoked → don't reconnect (the /ws gate would reject us now).
         if (revokedRef.current) return;
         const n = Math.min(reconnectRef.current.attempts++, 10);
@@ -600,7 +693,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   function enqueue(chatId: string, item: OutboxItem): boolean {
     const q = outboxRef.current.get(chatId) ?? [];
-    if (q.length >= OUTBOX_MAX) { onToastRef.current("too many unsent changes — wait for the connection to return"); return false; }
+    if (q.length >= OUTBOX_MAX) { onToastRef.current(OUTBOX_FULL_COPY); return false; }
     q.push(item);
     outboxRef.current.set(chatId, q);
     bumpOutbox();
@@ -634,13 +727,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!enqueue(chatId, item)) return "rejected";
     atBottomRef.current = true;
     input.consumeReply();
-    // A detached (jumped) window snaps back to the live tail first so the bubble lands
-    // in context; the item stays queued (and visible state is unchanged) until then, and
-    // is flushed once the tail is loaded -- never dropped if the reload is slow or fails.
-    if (hasNewerRef.current) {
-      void jumpToLatest(); // flushes the outbox itself once the live tail is attached
-      return "queued";
-    }
+    // The socket decides, not the view: with it OPEN the message goes out now even from a
+    // detached window (the server has it whatever happens next), and the flush then
+    // jumps to the live tail; with it closed the item stays queued (and visible).
     return settle(chatId, item);
   }
 
@@ -660,6 +749,18 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const item: OutboxItem = { kind: "delete", id: m.id };
     if (!enqueue(chatId, item)) return "rejected";
     return settle(chatId, item);
+  }
+  function sendDeleteMany(ms: Bubble[]): SendResult {
+    if (!activeId || ms.length === 0) return "rejected";
+    const chatId = activeId;
+    const ids = new Set(ms.map((m) => m.id));
+    // One capacity check for the whole action (queued items for these messages are about
+    // to be superseded, so they don't count): if it can't all fit, queue nothing.
+    const held = (outboxRef.current.get(chatId) ?? []).filter((i) => !((i.kind === "edit" || i.kind === "delete") && ids.has(i.id))).length;
+    if (held + ms.length > OUTBOX_MAX) { onToastRef.current(OUTBOX_FULL_COPY); return "rejected"; }
+    let result: SendResult = "sent";
+    for (const m of ms) if (sendDelete(m) === "queued") result = "queued";
+    return result;
   }
   function sendReact(m: Bubble, emoji: string) {
     if (m.pending || m.isDeleted) return;
@@ -717,6 +818,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     setMessages(around.messages.map((m) => ({ ...m })));
     setHasMore(around.hasOlder);
     setHasNewer(around.hasNewer);
+    if (!around.hasNewer) { hasNewerRef.current = false; setSentUnseen(false); flushOutbox(); }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     prependingRef.current = false;
@@ -724,24 +826,37 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }
 
   // Snap back to the live tail from a detached window: reload the newest page + reattach.
-  const jumpToLatest = useCallback(async () => {
+  // Resolves true once attached. `silent` leaves the failure toast to the caller.
+  const attachLatest = useCallback(async (silent: boolean): Promise<boolean> => {
     const chatId = activeRef.current;
-    if (!chatId) return;
+    if (!chatId) return false;
     const histRes = await loadHistory(base, chatId);
-    if (activeRef.current !== chatId) return;
-    if (!histRes.ok) { onToastRef.current("couldn't load the latest messages. try again."); return; }
+    if (activeRef.current !== chatId) return false;
+    if (!histRes.ok) { if (!silent) onToastRef.current("couldn't load the latest messages. try again."); return false; }
     const hist = histRes.data;
-    hasNewerRef.current = false;
-    setHasNewer(false);
-    setMessages(hist.map((m) => ({ ...m })));
+    // Local bubbles (a just-sent message still pending, or acked but not yet in this
+    // page) survive the reload.
+    setMessages((prev) => keepLocalOwn(hist, prev));
     setHasMore(hist.length >= 50);
     atBottomRef.current = true;
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
+    markAttached(); // flushes anything queued while detached
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-    flushOutbox(); // anything queued while detached can go now that the tail is live
-  }, [base, sendRead, flushOutbox]);
+    return true;
+  }, [base, sendRead, markAttached]);
+  const jumpToLatest = useCallback(async () => { await attachLatest(false); }, [attachLatest]);
+
+  // After a send from a detached window: attach the live tail. If that fails the message
+  // is STILL sent -- say so, with the jump as the action (never a silent invisible send).
+  jumpAfterSendRef.current = () => {
+    if (jumpingAfterSendRef.current) return;
+    jumpingAfterSendRef.current = true;
+    void attachLatest(true)
+      .then((ok) => { if (!ok && activeRef.current) setSentUnseen(true); })
+      .finally(() => { jumpingAfterSendRef.current = false; });
+  };
 
   // Retry a failed initial history load for the open chat.
   const retryHistory = useCallback(async () => {
@@ -758,11 +873,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
       return;
     }
     const hist = res.data;
-    setMessages((prev) => {
-      // A live frame may have landed while the load failed; keep it, add history.
-      const have = new Set(prev.map((b) => b.id));
-      return [...hist.filter((m) => !have.has(m.id)).map((m) => ({ ...m })), ...prev];
-    });
+    // A live frame may have landed while the load failed; keep it, add history.
+    setMessages((prev) => mergeRows(prev, hist, "prepend"));
     setHasMore(hist.length >= 50);
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
   }, [base, sendRead]);
@@ -773,12 +885,19 @@ export function useConversation(input: UseConversationInput): UseConversation {
     return n;
   }, []);
 
+  const queuedByChat = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const [id, q] of outboxRef.current) if (q.length > 0) out.set(id, q.length);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outboxTick]);
+
   // What the view renders: the loaded log, with this chat's queued edits/deletes laid
   // over their messages and its queued sends appended as pending bubbles. Derived (not
   // stored) so a chat switch -- which reloads `messages` -- still shows that chat's own
   // queue and no other's.
   const shown = useMemo<Bubble[]>(() => {
-    const q = activeId && !hasNewer ? outboxRef.current.get(activeId) : undefined;
+    const q = activeId ? outboxRef.current.get(activeId) : undefined;
     if (!q || q.length === 0 || !me) return messages;
     const edits = new Map<string, Extract<OutboxItem, { kind: "edit" }>>();
     const dels = new Set<string>();
@@ -801,14 +920,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     return [...base2, ...sends];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, outboxTick, activeId, hasNewer, me]);
+  }, [messages, outboxTick, activeId, me]);
 
   const armJump = useCallback((msgId: string) => { pendingJumpRef.current = msgId; }, []);
 
   return {
     messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
-    send, sendEdit, sendDelete, queuedCount, sendReact, sendTyping,
+    send, sendEdit, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };
 }

@@ -713,11 +713,11 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     fireEvent.click(screen.getByRole("button", { name: "send" }));
     await waitFor(() => expect(input.value).toBe("")); // cleared: queued counts as accepted
     expect(within(logEl()).getByText("typed early")).toBeTruthy();
-    expect(within(logEl()).getByText("will send when reconnected")).toBeTruthy();
+    expect(within(logEl()).getByText("not sent yet · sends when you're back online (kept only while this tab is open)")).toBeTruthy();
     expect(ws.sentFrames().some((f) => f.type === "send")).toBe(false);
     open(ws);
     await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "send" && f.body === "typed early")).toBe(true));
-    expect(screen.queryByText("will send when reconnected")).toBeNull();
+    expect(screen.queryByText("not sent yet · sends when you're back online (kept only while this tab is open)")).toBeNull();
     expect(within(logEl()).getByText("sending…")).toBeTruthy();
     expect(input.disabled).toBe(false);
   });
@@ -750,6 +750,18 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     expect(ws.sentFrames().some((f) => f.type === "edit")).toBe(false);
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(ws.sentFrames().some((f) => f.type === "edit" && f.body === "mine!")).toBe(true));
+  });
+
+  it("saving an unchanged edit closes the editor as a no-op (nothing sent, not 'rejected')", async () => {
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "mine", createdAt: Date.now() - 1000 })] };
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(within(logEl()).getByText("mine")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "edit" }));
+    const box = await screen.findByLabelText("edit message") as HTMLTextAreaElement;
+    fireEvent.keyDown(box, { key: "Enter" }); // text untouched
+    await waitFor(() => expect(screen.queryByLabelText("edit message")).toBeNull());
+    expect(ws.sentFrames().some((f) => f.type === "edit")).toBe(false);
   });
 
   it("caps the composer at 4000 characters with a counter that appears near the limit", async () => {
@@ -819,7 +831,7 @@ describe("Chat island — session ended (real Chat under AppShell)", () => {
     const input = screen.getByLabelText("message") as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "queued secret" } });
     fireEvent.click(screen.getByRole("button", { name: "send" }));
-    await waitFor(() => expect(screen.getByText("will send when reconnected")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("not sent yet · sends when you're back online (kept only while this tab is open)")).toBeTruthy());
     H.failChats = { kind: "unauthorized", status: 401 };
     act(() => { window.dispatchEvent(new Event("focus")); });
     await screen.findByText(/a message may not have been sent/);

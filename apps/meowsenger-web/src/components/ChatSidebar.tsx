@@ -45,8 +45,11 @@ export function ChatSidebar({
   loading,
   error,
   onRetry,
+  unsent,
 }: {
   chats: ChatSummary[];
+  /** Per-chat count of queued (unsent) actions held in memory; badge shows for non-open chats. */
+  unsent?: Map<string, number>;
   activeId: string | null;
   online: Set<string>;
   // The signed-in user's id — to prefix their own last message with "you:".
@@ -197,6 +200,15 @@ export function ChatSidebar({
                     : "no messages yet"}
                 </span>
               </span>
+              {(() => {
+                const n = c.id !== activeId ? unsent?.get(c.id) ?? 0 : 0;
+                return n > 0 ? (
+                  <span className="mw-chatrow__unsent" title="opens to send" aria-label={`${n} unsent`}>
+                    <Icon name="refresh" size={11} />
+                    <span>{n} unsent</span>
+                  </span>
+                ) : null;
+              })()}
               {unread && <span className="mw-chatrow__unread" aria-label="unread" />}
             </button>
           );

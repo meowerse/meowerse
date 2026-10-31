@@ -11,7 +11,12 @@ export interface Bubble extends Message {
   pending?: boolean;
   /** Set while the action sits in the in-memory outbox (socket not open); cleared on flush. */
   queued?: "send" | "edit" | "delete";
+  /** A queued/in-flight edit was refused by the server and reverted locally. */
+  editFailed?: boolean;
 }
+
+/** The outbox is memory-only: say so, so nobody trusts it across a reload. */
+const QUEUE_TAIL = "sends when you're back online (kept only while this tab is open)";
 
 function fmtTime(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
@@ -178,10 +183,11 @@ export function MessageItem({
   // Glyph + text (never opacity alone). "queued" = held in this tab's memory until the
   // socket reopens; it is not saved anywhere, so a reload loses it (say so).
   const pendingState: { icon: string; text: string } | null =
-    m.queued === "delete" ? { icon: "trash", text: "will delete when reconnected" }
-    : m.queued === "edit" ? { icon: "edit", text: "edit will send when reconnected" }
-    : m.queued === "send" ? { icon: "refresh", text: "will send when reconnected" }
+    m.queued === "delete" ? { icon: "trash", text: `delete not sent yet · ${QUEUE_TAIL}` }
+    : m.queued === "edit" ? { icon: "edit", text: `edit not sent yet · ${QUEUE_TAIL}` }
+    : m.queued === "send" ? { icon: "refresh", text: `not sent yet · ${QUEUE_TAIL}` }
     : m.pending ? { icon: "refresh", text: "sending…" }
+    : m.editFailed ? { icon: "edit", text: "edit couldn't be saved" }
     : null;
 
   return (
