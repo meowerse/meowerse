@@ -5,8 +5,8 @@ import { runInNewContext } from "node:vm";
 // public/sw-core.js is a classic worker script (importScripts); evaluate it the way a
 // worker does, with `self` as the global, and read back self.mwPushCore.
 type Store = { get(): Promise<string | null>; set(id: string): Promise<unknown>; clear(): Promise<unknown> };
-type Decision = { show: boolean; reason?: string; title?: string; body?: string; chatId?: string };
-const sandbox: { self: Record<string, unknown> } = { self: {} };
+type Decision = { show: boolean; reason?: string; title?: string; body?: string; chatId?: string; icon?: string };
+const sandbox: { self: Record<string, unknown>; URL: typeof URL } = { self: {}, URL }; // URL is a worker global
 runInNewContext(readFileSync(new URL("../../public/sw-core.js", import.meta.url), "utf8"), sandbox);
 const core = sandbox.self.mwPushCore as {
   decidePush(d: { store: Store; fetchFn: unknown; registration: unknown }): Promise<Decision>;
@@ -42,7 +42,7 @@ describe("decidePush — identity gate", () => {
     const { t, registration } = swReg();
     const { fetchFn, urls } = net(signedIn("uA"));
     const d = await core.decidePush({ store, fetchFn, registration });
-    expect(d).toMatchObject({ show: true, title: "Secret chat", body: "private text", chatId: "c1" });
+    expect(d).toMatchObject({ show: true, title: "Secret chat", body: "private text", chatId: "c1", icon: "/icon-192.png" });
     expect(urls).toEqual(["/api/session", "/api/chats"]);
     expect(t.unsubscribed).toBe(0);
     expect(store.value()).toBe("uA");
@@ -167,7 +167,7 @@ describe("decidePush — identity gate", () => {
       { id: "c2", peerUsername: "bob", lastMessage: "new", unreadCount: 3, lastActivity: 9 },
     ] });
     const d = await core.decidePush({ store: memStore("uA"), fetchFn: net(signedIn("uA"), chats).fetchFn, registration: swReg().registration });
-    expect(d).toMatchObject({ show: true, title: "bob", chatId: "c2", body: "new · 4 unread in 2 chats" });
+    expect(d).toMatchObject({ show: true, title: "bob", chatId: "c2", body: "new · 4 unread in 2 chats", icon: "/icon-192.png" });
   });
 });
 
@@ -196,4 +196,29 @@ describe("service worker caching headers", () => {
       expect(block![1]).toMatch(/Cache-Control:\s*no-cache\s*$/m);
     });
   }
+});
+
+describe("decidePush — notification icon", () => {
+  const one = (c: Record<string, unknown>) => () => json({ viewerId: "uA", chats: [{ id: "c1", lastMessage: "hi", unreadCount: 1, lastActivity: 5, ...c }] });
+  it("uses the peer's https avatar for a single direct chat", async () => {
+    const { registration } = swReg();
+    const d = await core.decidePush({ store: memStore("uA"), fetchFn: net(signedIn("uA"), one({ peerAvatarUrl: "https://auth.alxnko.dev/avatar/u1" })).fetchFn, registration });
+    expect(d).toMatchObject({ show: true, icon: "https://auth.alxnko.dev/avatar/u1" });
+  });
+  it("falls back to the app icon for non-https or malformed avatar urls", async () => {
+    for (const bad of ["http://x/a.png", "data:image/png;base64,AAAA", "javascript:alert(1)", "/relative.png", "not a url", 42, null]) {
+      const { registration } = swReg();
+      const d = await core.decidePush({ store: memStore("uA"), fetchFn: net(signedIn("uA"), one({ peerAvatarUrl: bad })).fetchFn, registration });
+      expect(d, String(bad)).toMatchObject({ show: true, icon: "/icon-192.png" });
+    }
+  });
+  it("uses the app icon when several chats are unread (one notification summarises them)", async () => {
+    const { registration } = swReg();
+    const chats = () => json({ viewerId: "uA", chats: [
+      { id: "c1", lastMessage: "a", unreadCount: 1, lastActivity: 9, peerAvatarUrl: "https://auth.alxnko.dev/avatar/u1" },
+      { id: "c2", lastMessage: "b", unreadCount: 1, lastActivity: 5 },
+    ] });
+    const d = await core.decidePush({ store: memStore("uA"), fetchFn: net(signedIn("uA"), chats).fetchFn, registration });
+    expect(d).toMatchObject({ show: true, icon: "/icon-192.png" });
+  });
 });
