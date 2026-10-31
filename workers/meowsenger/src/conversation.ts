@@ -415,10 +415,6 @@ export class Conversation extends DurableObject<Env> {
     // post; a plain member is read-only. Server-enforced here (the socket's type +
     // role come from the gated router's D1 read, never the client), so no persist
     // and no broadcast. DMs/groups aren't 'channel', so they're unaffected.
-    if (att.type === "channel" && att.role !== "owner" && att.role !== "admin") {
-      ws.send(JSON.stringify({ type: "error", code: "read_only", ...corr }));
-      return;
-    }
     // tempId is optional (older clients), but when present it must be well-formed: it
     // keys the dedupe table. Oversized/odd values are refused (and not echoed).
     if (msg.tempId != null && !validTemp) {
@@ -428,7 +424,13 @@ export class Conversation extends DurableObject<Env> {
     // Idempotent resend: a (sender, tempId) already persisted is re-acked with the
     // original row -- no insert, no broadcast, no push, and it is NOT metered (it is a
     // retransmit of work already done, so a reconnect burst can't rate-limit itself).
+    // Checked BEFORE the role gate: a member demoted after their send landed still gets
+    // the ack for it (a re-ack writes nothing), not a false "not sent".
     if (validTemp && this.reackDuplicate(ws, att.userId, att.chatId, validTemp)) return;
+    if (att.type === "channel" && att.role !== "owner" && att.role !== "admin") {
+      ws.send(JSON.stringify({ type: "error", code: "read_only", ...corr }));
+      return;
+    }
     // Per-connection flood protection (Slice 8): drop this socket's `send`
     // timestamps older than the window, then refuse if it's already at the cap —
     // no insert, no broadcast, just a {rate_limited} error frame (the socket

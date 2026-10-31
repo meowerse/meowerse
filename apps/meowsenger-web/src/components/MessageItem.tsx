@@ -15,6 +15,8 @@ export interface Bubble extends Message {
   editFailed?: boolean;
   /** The server refused this send (tempId-correlated error): shows "not sent -- retry / edit". */
   sendFailed?: boolean;
+  /** Unacked for too long to resend safely: it may already have been sent. */
+  unconfirmed?: boolean;
 }
 
 /** The outbox is memory-only: say so, so nobody trusts it across a reload. */
@@ -193,6 +195,7 @@ export function MessageItem({
     m.queued === "delete" ? { icon: "trash", text: `delete not sent yet · ${QUEUE_TAIL}` }
     : m.queued === "edit" ? { icon: "edit", text: `edit not sent yet · ${QUEUE_TAIL}` }
     : m.queued === "send" ? { icon: "refresh", text: `not sent yet · ${QUEUE_TAIL}` }
+    : m.sendFailed && m.unconfirmed ? { icon: "refresh", text: "couldn't confirm — it may have been sent; check the chat before retrying" }
     : m.sendFailed ? { icon: "refresh", text: "not sent" }
     : m.pending ? { icon: "refresh", text: "sending…" }
     : m.editFailed ? { icon: "edit", text: "edit couldn't be saved" }

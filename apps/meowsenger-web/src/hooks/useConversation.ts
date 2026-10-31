@@ -44,6 +44,8 @@ export type SendResult = "sent" | "queued" | "rejected";
  *  localStorage/sessionStorage/IndexedDB). A send keeps the client `tempId` it was
  *  given at enqueue time and reuses it on flush AND on any reconnect resend / retry --
  *  never regenerated -- so the server dedupes on (senderId, tempId). */
+/** Below the server's 24 h dedupe window (send_dedupe), with margin. */
+const UNACKED_MAX_AGE_MS = 23 * 60 * 60 * 1000;
 type SendItem = { kind: "send"; tempId: string; body: string; replyToId: string | null; replyTo: Bubble["replyTo"]; createdAt: number };
 type OutboxItem =
   | SendItem
@@ -614,7 +616,15 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const pending = unackedRef.current.get(chatId);
     if (!pending || pending.size === 0) return;
-    for (const item of pending.values()) {
+    for (const item of [...pending.values()]) {
+      // The server remembers (sender, tempId) for 24 h. An older unacked send may already
+      // be in history, and a resend could then post it twice: never auto-resend it; say
+      // "couldn't confirm" so the user checks before retrying.
+      if (Date.now() - item.createdAt > UNACKED_MAX_AGE_MS) {
+        pending.delete(item.tempId);
+        setMessages((prev) => prev.map((b) => (b.tempId === item.tempId && b.id === item.tempId ? { ...b, pending: false, sendFailed: true, unconfirmed: true } : b)));
+        continue;
+      }
       try { ws.send(sendFrame(item)); } catch { break; }
       const optimistic = optimisticBubble(item, chatId, myId);
       setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));

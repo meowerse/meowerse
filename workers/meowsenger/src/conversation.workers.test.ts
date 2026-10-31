@@ -1032,6 +1032,25 @@ describe("Conversation DO", () => {
     expect(hist.filter((m) => m.body === "once")).toHaveLength(1);
   });
 
+  it("dedupe before the role gate: a channel admin demoted after their send landed gets the re-ack, not read_only", async () => {
+    await seedChat("d9-demote");
+    const wa = await connect("d9-demote", "u1", "admin", "channel");
+    const aFrames = collect(wa);
+    wa.send(JSON.stringify({ type: "send", tempId: "t-demoted", body: "posted" }));
+    await until(() => aFrames.some((f) => f.type === "sent"));
+    // Reconnect as a plain member (demoted meanwhile) and resend the same tempId.
+    const wa2 = await connect("d9-demote", "u1", "member", "channel");
+    const a2Frames = collect(wa2);
+    wa2.send(JSON.stringify({ type: "send", tempId: "t-demoted", body: "posted" }));
+    await until(() => a2Frames.some((f) => f.type === "sent" || f.type === "error"));
+    expect(a2Frames.find((f) => f.type === "error")).toBeUndefined();
+    expect(a2Frames.find((f) => f.type === "sent")).toMatchObject({ tempId: "t-demoted" });
+    // A NEW send from the demoted member is still refused.
+    wa2.send(JSON.stringify({ type: "send", tempId: "t-new", body: "nope" }));
+    await until(() => a2Frames.some((f) => f.type === "error"));
+    expect(a2Frames.find((f) => f.type === "error")).toMatchObject({ code: "read_only", tempId: "t-new" });
+  });
+
   it("dedupe: the same tempId from a DIFFERENT sender inserts a separate message", async () => {
     await seedChat("d2");
     const wa = await connect("d2", "u1");

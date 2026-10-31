@@ -995,6 +995,21 @@ describe("useConversation — idempotent resend + correlated errors (PR-4)", () 
     expect(MockWebSocket.last.sentFrames().some((f) => f.type === "send")).toBe(false);
   });
 
+  it("an unacked send older than 23 h is NOT auto-resent (server dedupe is 24 h): marked 'couldn't confirm'", async () => {
+    const { result, ws } = await open([]);
+    const t0 = Date.now();
+    act(() => { result.current.send("old one"); });
+    expect(ws.sentFrames().filter((f) => f.type === "send")).toHaveLength(1);
+    const now = vi.spyOn(Date, "now").mockReturnValue(t0 + 23 * 60 * 60 * 1000 + 1000);
+    act(() => ws.mockDrop());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2), { timeout: 2000 });
+    act(() => MockWebSocket.last.mockOpen());
+    expect(MockWebSocket.last.sentFrames().some((f) => f.type === "send")).toBe(false);
+    const b = result.current.messages.find((m) => m.body === "old one")!;
+    expect(b).toMatchObject({ pending: false, sendFailed: true, unconfirmed: true });
+    now.mockRestore();
+  });
+
   it("a double ack (original + re-ack) still leaves one bubble", async () => {
     const { result, ws } = await open([]);
     act(() => { result.current.send("twice"); });
