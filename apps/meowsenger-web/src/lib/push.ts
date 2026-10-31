@@ -39,6 +39,18 @@ export function isStandalone(): boolean {
 let lastPushError: string | null = null;
 export function recordPushError(code: string | null): void { lastPushError = code; }
 
+/** Privacy-safe one-line description of a non-PushError failure: the error `name`
+ *  (e.g. AbortError) plus the browser's message only when it is short and generic (no URLs,
+ *  so no endpoints/keys/ids). Capped at 120 characters. */
+export function describePushFailure(e: unknown): string {
+  const name = e && typeof (e as { name?: unknown }).name === "string" ? (e as { name: string }).name.trim() : "";
+  const raw = e && typeof (e as { message?: unknown }).message === "string" ? (e as { message: string }).message.trim() : "";
+  if (!name || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) return "unknown";
+  const message = raw && raw.length <= 80 && !/:\/\/|https?|[A-Za-z0-9_-]{24,}|[0-9a-f]{8}-[0-9a-f]{4}-/i.test(raw) ? raw : "";
+  const out = message ? `${name} — ${message}` : name;
+  return out.length > 120 ? out.slice(0, 119) + "…" : out;
+}
+
 export type PushDiagnostics = { permission: string; serviceWorker: boolean; subscription: boolean; lastError: string | null };
 
 /** Privacy-safe state snapshot for the Settings "details" line: no endpoints, no ids. */

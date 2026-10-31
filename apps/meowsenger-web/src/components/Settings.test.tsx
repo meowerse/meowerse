@@ -16,6 +16,8 @@ const H = vi.hoisted(() => ({
   supported: true,
   perm: "granted",
   subscribed: false,
+  confirmed: null as boolean | null,
+  lastError: null as string | null,
   ios: false,
   standalone: false,
 }));
@@ -32,6 +34,9 @@ vi.mock("../lib/push", async (importActual) => {
     pushSupported: () => H.supported,
     pushPermission: () => (H.supported ? H.perm : "unsupported"),
     pushSubscribed: async () => H.subscribed,
+    pushConfirmedFor: async () => H.confirmed ?? H.subscribed,
+    pushDiagnostics: async () => ({ permission: H.supported ? H.perm : "unsupported", serviceWorker: false, subscription: H.subscribed, lastError: H.lastError }),
+    recordPushError: (c: string | null) => { H.lastError = c; actual.recordPushError(c); },
     isIos: () => H.ios,
     isStandalone: () => H.standalone,
     disablePush: async () => { H.subscribed = false; },
@@ -49,7 +54,7 @@ function toggle() {
 const state = () => toggle().getAttribute("aria-checked");
 
 describe("Settings — notifications toggle", () => {
-  beforeEach(() => { H.calls = []; H.supported = true; H.perm = "granted"; H.subscribed = false; H.ios = false; H.standalone = false; });
+  beforeEach(() => { H.calls = []; H.supported = true; H.perm = "granted"; H.subscribed = false; H.confirmed = null; H.lastError = null; H.ios = false; H.standalone = false; });
 
   it("shows an error and stays off when the server rejects the subscription", async () => {
     H.impl = async () => { throw new PushError("bad_endpoint"); };
@@ -85,7 +90,7 @@ describe("Settings — notifications toggle", () => {
 });
 
 describe("Settings — push switch states", () => {
-  beforeEach(() => { H.calls = []; H.supported = true; H.perm = "default"; H.subscribed = false; H.ios = false; H.standalone = false; });
+  beforeEach(() => { H.calls = []; H.supported = true; H.perm = "default"; H.subscribed = false; H.confirmed = null; H.lastError = null; H.ios = false; H.standalone = false; });
 
   it("off: unchecked, enabled, visible state word and status", async () => {
     render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
@@ -103,6 +108,54 @@ describe("Settings — push switch states", () => {
     fireEvent.click(toggle());
     await waitFor(() => expect(state()).toBe("false"));
     expect(H.calls).toEqual([]);
+  });
+
+  it("off when the browser has a subscription but this account is not confirmed", async () => {
+    H.subscribed = true; H.confirmed = false;
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/push subscription on this device: yes/)).toBeTruthy());
+    expect(state()).toBe("false");
+    expect(screen.getByText(/registered for this account: no/)).toBeTruthy();
+  });
+
+  it("on when the subscription is confirmed for this account", async () => {
+    H.subscribed = true; H.confirmed = true;
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    await waitFor(() => expect(state()).toBe("true"));
+    expect(screen.getByText(/registered for this account: yes/)).toBeTruthy();
+  });
+
+  it("never on while the user id is unknown", async () => {
+    H.subscribed = true; H.confirmed = true;
+    render(<Settings base="https://x" open onClose={() => {}} />);
+    expect(await screen.findByText("loading…")).toBeTruthy();
+    expect(state()).toBe("false");
+  });
+
+  it("AbortError from subscribe: specific message (Android part only on Android) and name in details", async () => {
+    H.impl = async () => { throw new DOMException("Registration failed - push service error", "AbortError"); };
+    const ua = vi.spyOn(navigator, "userAgent", "get");
+    ua.mockReturnValue("Mozilla/5.0 (X11; Linux x86_64) Chrome/120");
+    const first = render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(toggle());
+    const text = (await screen.findByRole("alert")).textContent!;
+    expect(text).toMatch(/couldn't register with its push service/);
+    expect(text).not.toMatch(/google play/i);
+    await waitFor(() => expect(screen.getByText("last error: AbortError — Registration failed - push service error")).toBeTruthy());
+    first.unmount();
+    ua.mockReturnValue("Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile");
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(toggle());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/google play services/i);
+    ua.mockRestore();
+  });
+
+  it("an unknown thrown value still records unknown", async () => {
+    H.impl = async () => { throw "boom"; };
+    render(<Settings base="https://x" userId="u1" open onClose={() => {}} />);
+    fireEvent.click(toggle());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/couldn't turn on notifications/);
+    await waitFor(() => expect(screen.getByText("last error: unknown")).toBeTruthy());
   });
 
   it("busy: shows turning on… and disables the switch", async () => {

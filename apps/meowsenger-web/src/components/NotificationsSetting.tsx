@@ -1,6 +1,6 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
-  pushSupported, pushPermission, pushSubscribed, pushDiagnostics, enablePush, disablePush,
+  pushSupported, pushPermission, pushConfirmedFor, pushDiagnostics, describePushFailure, enablePush, disablePush,
   recordPushError, isIos, isStandalone, PushError, type PushDiagnostics,
 } from "../lib/push";
 
@@ -27,7 +27,8 @@ function detectEnv(): Env {
 export default function NotificationsSetting({ base, userId, open }: { base: string; userId?: string; open: boolean }) {
   const [env, setEnv] = useState<Env>(detectEnv);
   const [perm, setPerm] = useState<string>(pushPermission);
-  const [subscribed, setSubscribed] = useState(false);
+  // True only when this device's subscription is confirmed for THIS account (not merely present).
+  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"on" | "off" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [diag, setDiag] = useState<PushDiagnostics | null>(null);
@@ -35,17 +36,28 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   const labelId = useId();
   const statusId = useId();
 
+  // Each refresh/turn-on/turn-off bumps the sequence; a slower, older read never overwrites
+  // a newer state (e.g. a pre-enable "not confirmed" landing after a successful turn-on).
+  const seq = useRef(0);
   async function refresh() {
+    const my = ++seq.current;
     setEnv(detectEnv());
     setPerm(pushPermission());
-    setSubscribed(await pushSubscribed());
-    setDiag(await pushDiagnostics());
+    const c = userId ? await pushConfirmedFor(userId) : false;
+    const d = await pushDiagnostics();
+    if (my !== seq.current) return;
+    setConfirmed(c);
+    setDiag(d);
   }
   useEffect(() => {
     if (!open) return;
     setErr(null);
-    void refresh();
   }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, userId]);
 
   // The account id arrives asynchronously; if it never does, say so instead of "loading…".
   useEffect(() => {
@@ -57,24 +69,27 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   // NOT async-before-permission: enablePush() runs synchronously up to requestPermission().
   function turnOn() {
     if (busy || !userId) return;
-    setBusy("on"); setErr(null);
+    seq.current++; setBusy("on"); setErr(null);
     enablePush(base, userId).then(
       (result) => {
         setPerm(pushPermission());
-        if (result === "granted") { setSubscribed(true); recordPushError(null); return; }
+        if (result === "granted") { setConfirmed(true); recordPushError(null); return; }
         recordPushError(result);
         if (result === "unsupported") setErr("notifications aren't available right now — try again later.");
         else if (result === "denied") setErr(`notifications were blocked. if you never saw a prompt, Chrome may have hidden it — tap the lock icon in the address bar, allow notifications for ${SITE}, then try again.${isAndroid() ? " also check android settings → apps → chrome → notifications." : ""}`);
         else setErr("the permission prompt was dismissed or hidden — tap the switch again and choose allow. if nothing appears, tap the bell/lock icon in the address bar and allow notifications.");
       },
       (e: unknown) => {
-        const code = e instanceof PushError ? e.code : "unknown";
+        const code = e instanceof PushError ? e.code : describePushFailure(e);
         recordPushError(code);
-        setSubscribed(false);
+        setConfirmed(false);
         setPerm(pushPermission());
+        const abort = !(e instanceof PushError) && (e as { name?: unknown } | null)?.name === "AbortError";
         setErr(
           code === "unauthorized"
             ? "your session expired — log in again, then turn notifications on."
+            : abort
+            ? `your browser couldn't register with its push service. this is a browser/phone issue, not your settings: fully close and reopen your browser, then try again.${isAndroid() ? " if it still fails, restart the phone and make sure Google Play services is up to date." : ""}`
             : "couldn't turn on notifications — try again. if it keeps failing, your browser may block push (e.g. private window, or push services disabled).",
         );
       },
@@ -82,16 +97,16 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
   }
   function turnOff() {
     if (busy) return;
-    setBusy("off"); setErr(null);
+    seq.current++; setBusy("off"); setErr(null);
     disablePush(base, userId)
-      .then(() => setSubscribed(false))
+      .then(() => setConfirmed(false))
       .catch(() => { recordPushError("disable"); setErr("couldn't turn off notifications — try again."); })
       .finally(() => { setBusy(null); void pushDiagnostics().then(setDiag); });
   }
 
   const supported = env === "supported";
   const blocked = supported && perm === "denied";
-  const on = supported && subscribed;
+  const on = supported && !!userId && confirmed;
   const loading = supported && !userId;
   const disabled = !supported || loading || busy !== null || (blocked && !on);
 
@@ -134,6 +149,7 @@ export default function NotificationsSetting({ base, userId, open }: { base: str
           <li>permission: {diag?.permission ?? perm}</li>
           <li>service worker active: {diag?.serviceWorker ? "yes" : "no"}</li>
           <li>push subscription on this device: {diag?.subscription ? "yes" : "no"}</li>
+          <li>registered for this account: {confirmed ? "yes" : "no"}</li>
           <li>last error: {diag?.lastError ?? "none"}</li>
         </ul>
       </details>
