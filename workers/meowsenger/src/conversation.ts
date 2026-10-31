@@ -134,6 +134,11 @@ interface Overflow {
    *  got it, or failed for good). Absent entry = ALL of the user's endpoints. Old stored records
    *  lack the field (readOverflow normalises it to {}). Fingerprints only: never an endpoint URL. */
   owed: Record<string, string[]>;
+  /** userId -> the overflow `seq` of the last message that queued or re-queued that user.
+   *  settleOverflow uses it to tell whether a newer message touched a user's entry while a
+   *  run was in flight (set contents cannot express that). Optional: old records lack it
+   *  (absent = 0 = untouched since before any run). */
+  touched?: Record<string, number>;
   /** The D1 chat-preview mirror write failed for this batch: re-mirror before any push. */
   mirrorPending?: boolean;
 }
@@ -172,12 +177,6 @@ const MAX_REACTIONS_PER_USER = 12;
  * that would broaden (or slow) the scan. The backslash is escaped FIRST so the
  * escapes added for `%`/`_` aren't themselves re-escaped.
  */
-/** Same fingerprint set (order-insensitive); both undefined counts as equal. */
-function sameSet(a: string[] | undefined, b: string[] | undefined): boolean {
-  if (!a || !b) return a === b;
-  return a.length === b.length && a.every((x) => b.includes(x));
-}
-
 function escapeLike(term: string): string {
   return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
@@ -862,7 +861,7 @@ export class Conversation extends DurableObject<Env> {
       attempts: raw.attempts ?? {}, notBefore: raw.notBefore ?? {},
       rounds: raw.rounds ?? 0, total: raw.total ?? 0,
       ceiling: Math.max(raw.ceiling ?? 0, roundCeiling(push.length + inbox.length)), seq: raw.seq ?? 0,
-      owed: raw.owed ?? {}, mirrorPending: raw.mirrorPending === true,
+      owed: raw.owed ?? {}, touched: raw.touched ?? {}, mirrorPending: raw.mirrorPending === true,
     };
   }
 
@@ -885,6 +884,10 @@ export class Conversation extends DurableObject<Env> {
     if (push.length === 0 && inbox.length === 0 && retryIds.length === 0 && done.length === 0) return;
     const now = Date.now();
     const prev = (await this.readOverflow()) ?? { chatId, push: [], inbox: [], attempts: {}, notBefore: {}, rounds: 0, total: 0, ceiling: 0, seq: 0, owed: {}, mirrorPending: false };
+    // A fully delivered message that supersedes nothing queued must not rewrite the record:
+    // that would reset rounds/total/ceiling (the MAX_FOLLOWUPS and ceiling bounds) of unrelated
+    // queued work on every message in a busy chat.
+    if (push.length === 0 && inbox.length === 0 && retryIds.length === 0 && !mirrorPending && !done.some((u) => prev.push.includes(u))) return;
     // `done`: this message reached EVERY device of these users, which supersedes any queued
     // retry for them (push entry, owed, attempts, notBefore all go with them).
     const doneSet = new Set(done.filter((u) => !push.includes(u) && !retryIds.includes(u)));
@@ -906,6 +909,14 @@ export class Conversation extends DurableObject<Env> {
       const o = retryIds.includes(u) ? owed[u] : prev.owed?.[u];
       if (o) nextOwed[u] = o;
     }
+    // Mark every user this message (re)queues with the new seq (see `Overflow.touched`).
+    const newSeq = prev.seq + 1;
+    const touched: Record<string, number> = {};
+    for (const u of all) {
+      const t = prev.touched?.[u];
+      if (t !== undefined) touched[u] = t;
+      if (push.includes(u) || retryIds.includes(u)) touched[u] = newSeq;
+    }
     const nextInbox = [...new Set([...prev.inbox, ...inbox])];
     if (all.length === 0 && nextInbox.length === 0) {
       // Nothing left to serve (e.g. the only queued retry was superseded): clean the key.
@@ -920,8 +931,9 @@ export class Conversation extends DurableObject<Env> {
       rounds: 0, // new work: a fresh follow-up allowance
       total: 0,
       ceiling: roundCeiling(all.length + nextInbox.length),
-      seq: prev.seq + 1,
+      seq: newSeq,
       owed: nextOwed,
+      touched,
       mirrorPending: prev.mirrorPending === true || mirrorPending,
     };
     await this.ctx.storage.put(OVERFLOW_KEY, next);
@@ -961,19 +973,22 @@ export class Conversation extends DurableObject<Env> {
     const total = seqChanged ? cur.total : work.total + 1;
     const ceiling = seqChanged ? cur.ceiling : work.ceiling;
     // `owed` narrows a user to some devices. Where this run still holds the user AND a newer
-    // message re-queued them, the two narrowings concern different messages: keep a device
-    // only if both want it (union), and drop the narrowing (= all devices) if either side has none.
+    // message (re)queued them (`touched[u]` is newer than the seq this run started from), the two
+    // narrowings concern different messages and the newer message's coverage wins: its `owed`
+    // undefined = ALL devices (result undefined); else union with this run's leftovers.
     const owed: Record<string, string[]> = {};
+    const touched: Record<string, number> = {};
     for (const u of push) {
       const mine = r.owed[u], theirs = cur.owed?.[u];
       let o: string[] | undefined;
       if (!runPush.has(u)) o = theirs;
-      else if (!seqChanged || sameSet(theirs, work.owed?.[u])) o = mine; // a newer message did not touch this entry
+      else if ((cur.touched?.[u] ?? 0) <= work.seq) o = mine; // no newer message touched this entry
       else o = mine && theirs ? [...new Set([...mine, ...theirs])] : undefined;
       if (o) owed[u] = o;
+      if (cur.touched?.[u] !== undefined) touched[u] = cur.touched[u]!;
     }
     const mirrorPending = r.mirrorPending || (seqChanged && cur.mirrorPending === true);
-    const next: Overflow = { chatId: work.chatId, push, inbox, attempts, notBefore, rounds, total, ceiling, seq: cur.seq, owed, mirrorPending };
+    const next: Overflow = { chatId: work.chatId, push, inbox, attempts, notBefore, rounds, total, ceiling, seq: cur.seq, owed, touched, mirrorPending };
     await this.ctx.storage.put(OVERFLOW_KEY, next);
     const now = Date.now();
     // A failed run backs off; otherwise continue as soon as something is due.

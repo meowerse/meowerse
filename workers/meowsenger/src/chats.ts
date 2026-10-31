@@ -83,6 +83,11 @@ export async function createOrGetDirect(
  * Resolves on success AND when the guard skips (a newer message is already mirrored: the
  * preview is current or newer, which counts as success for push gating); it throws only on a
  * real D1 failure, and only a throw is a failure.
+ *
+ * Accepted edge cases: (1) same millisecond: `<=` lets the last write win, so two sends in one
+ * ms may leave either preview. (2) If the DO clock is behind the creation-time `last_activity`
+ * of a brand-new chat, the first mirror is skipped by the guard and treated as success (the
+ * preview stays empty until the next message).
  */
 export async function mirrorLastMessage(
   db: DbClient, chatId: string, body: string, senderId: string, now: number,
