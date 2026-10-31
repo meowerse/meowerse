@@ -6,7 +6,7 @@ test("every response carries the strict security headers, 404s included", async 
     const h = (await request.get(path)).headers();
     const csp = h["content-security-policy"] ?? "";
     expect(csp, path).toContain("default-src 'none'");
-    expect(csp, path).toMatch(/script-src 'self'( 'sha256-[A-Za-z0-9+/=]+')+ https:\/\/static\.cloudflareinsights\.com;/);
+    expect(csp, path).toMatch(/script-src 'self'( 'sha256-[A-Za-z0-9+/=]+')+ https:\/\/static\.cloudflareinsights\.com\/beacon\.min\.js\/;/);
     expect(csp, path).toContain("frame-ancestors 'none'");
     expect(csp, path).toContain("require-trusted-types-for 'script'; trusted-types 'none'");
     expect(csp, path).not.toMatch(/unsafe-(inline|eval)/);

@@ -82,9 +82,9 @@ test("securityHeaders sets no-referrer, no-store, frame-ancestors none; extra CS
 });
 
 test("CF_BEACON_CSP allows exactly the Cloudflare Web Analytics script host (D7)", () => {
-  expect(CF_BEACON_CSP).toBe("script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
+  expect(CF_BEACON_CSP).toBe("script-src 'self' https://static.cloudflareinsights.com/beacon.min.js/; connect-src 'self' https://cloudflareinsights.com");
   const csp = securityHeaders(CF_BEACON_CSP)["Content-Security-Policy"] ?? "";
-  expect(csp).toContain("default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
+  expect(csp).toContain("default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self' https://static.cloudflareinsights.com/beacon.min.js/; connect-src 'self' https://cloudflareinsights.com");
   expect(csp).not.toMatch(/unsafe-/);
 });
 

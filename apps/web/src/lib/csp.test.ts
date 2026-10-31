@@ -18,14 +18,14 @@ describe("csp", () => {
   });
   it("builds one strict policy with Trusted Types and the probe origins", () => {
     const csp = buildCsp(["<script>a()</script><style>p{}</style>", "<script>a()</script>"], ["https://b.example", "https://a.example"]);
-    expect(csp).toContain(`script-src 'self' ${sha256("a()")} https://static.cloudflareinsights.com;`);
+    expect(csp).toContain(`script-src 'self' ${sha256("a()")} https://static.cloudflareinsights.com/beacon.min.js/;`);
     expect(csp).toContain(`style-src 'self' ${sha256("p{}")};`);
     expect(csp).toContain("connect-src 'self' https://a.example https://b.example https://cloudflareinsights.com;");
     for (const d of ["default-src 'none'", "img-src 'self'", "font-src 'self'", "base-uri 'none'", "form-action 'none'",
       "frame-ancestors 'none'", "upgrade-insecure-requests", "require-trusted-types-for 'script'", "trusted-types 'none'"])
       expect(csp).toContain(d);
     expect(csp).not.toMatch(/unsafe-(inline|eval)/);
-    expect(CF_BEACON_ORIGIN).toBe("https://static.cloudflareinsights.com");
+    expect(CF_BEACON_ORIGIN).toBe("https://static.cloudflareinsights.com/beacon.min.js/");
     expect(CF_INSIGHTS_ORIGIN).toBe("https://cloudflareinsights.com");
     expect(MAX_HEADER).toBe(2000);
   });
