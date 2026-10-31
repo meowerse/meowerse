@@ -241,12 +241,20 @@ export async function loadHistoryAround(
 }
 
 /** GET ?after=<msgId> — the next page of NEWER messages (forward paging in a
- *  detached window), ascending. A failure is a typed error. */
-export function loadHistoryAfter(base: string, chatId: string, afterId: string): Promise<RequestResult<Message[]>> {
-  return read<{ messages?: Message[] }, Message[]>(
+ *  detached window, and the reconnect catch-up), ascending. A failure is a typed
+ *  error. `unknown: true` on success means the anchor id is not a row of the room
+ *  (the server's `found:false`): the empty page is NOT "nothing newer". */
+export async function loadHistoryAfter(
+  base: string,
+  chatId: string,
+  afterId: string,
+): Promise<RequestResult<Message[]> & { unknown?: boolean }> {
+  let unknown = false;
+  const r = await read<{ messages?: Message[]; found?: boolean }, Message[]>(
     `${base}/api/chats/${encodeURIComponent(chatId)}/messages?after=${encodeURIComponent(afterId)}`,
-    (d) => d.messages ?? [],
+    (d) => { unknown = d.found === false; return d.messages ?? []; },
   );
+  return r.ok && unknown ? { ...r, unknown: true } : r;
 }
 
 /** Fields a resolved chat carries for a shareable deep-link (mirrors the worker's

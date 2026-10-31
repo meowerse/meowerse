@@ -3,6 +3,9 @@ import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction,
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
 import { pushConfirmedFor } from "../lib/push";
+import { retryDelay } from "../lib/backoff";
+import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
+import { hasSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
 
 /** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
  *  edit/delete, spec §6). */
@@ -33,6 +36,12 @@ const NEAR_BOTTOM_PX = 80;
 
 /** The server's message-body limit (conversation DO `bad_body`). Mirrored client-side. */
 export const MAX_BODY = 4000;
+/** The server's history page size (a page this long may have more behind it). */
+const HISTORY_PAGE = 50;
+/** Reconnect catch-up pages at most this many forward pages before falling back to the newest page. */
+const CATCHUP_MAX_PAGES = 5;
+/** A failed catch-up is retried (with backoff) this many times, then left for the next reconnect. */
+const CATCHUP_MAX_RETRIES = 4;
 /** Per-chat cap on queued (unsent) items, so a long offline stretch can't grow without bound. */
 const OUTBOX_MAX = 100;
 
@@ -86,11 +95,34 @@ function mergeRows(prev: Bubble[], rows: Message[], where: "append" | "prepend")
   return where === "prepend" ? [...added, ...next] : [...next, ...added];
 }
 
+/** A bubble the server has not confirmed (an optimistic send awaiting its ack, or a refused one). */
+function isUnconfirmed(b: Bubble): boolean {
+  return b.pending === true || b.sendFailed === true || (b.tempId != null && b.id === b.tempId);
+}
+
+/** Confirmed rows in server order (createdAt ascending, stable so ties keep their relative
+ *  order), then the unconfirmed local bubbles, which are always the newest from our side. */
+function orderLog(list: Bubble[]): Bubble[] {
+  const confirmed = list.filter((b) => !isUnconfirmed(b));
+  const local = list.filter(isUnconfirmed);
+  // Array.prototype.sort is stable.
+  confirmed.sort((a, b) => a.createdAt - b.createdAt);
+  return [...confirmed, ...local];
+}
+
 /** A history page replaced the log: keep EVERY local bubble that carries a tempId
- *  (still pending OR already acked) that the page doesn't already contain by id. */
+ *  (still pending OR already acked) that the page doesn't already contain by id. An acked
+ *  one older than the page's tail is placed by createdAt (never after a newer server row);
+ *  unconfirmed ones stay at the tail. */
 function keepLocalOwn(hist: Message[], prev: Bubble[]): Bubble[] {
   const have = new Set(hist.map((m) => m.id));
-  return [...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.tempId && !have.has(b.id))];
+  return orderLog([...hist.map((m) => ({ ...m })), ...prev.filter((b) => b.tempId && !have.has(b.id))]);
+}
+
+/** Reconnect catch-up: fold server rows (older-to-newer) into the log by id (server state
+ *  wins for rows already there), then restore server order. */
+function mergeCatchUp(prev: Bubble[], rows: Message[]): Bubble[] {
+  return orderLog(mergeRows(prev, rows, "append"));
 }
 
 /** The wire frame for a send (flush, reconnect resend and retry all use this -- one tempId). */
@@ -265,17 +297,29 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // Edits that left the outbox (or were sent live) and await the server's `edited` /
   // `error` answer, oldest first, plus the last server-confirmed text of each so a
   // refused edit can be reverted. (Memory only.)
-  const inflightEditsRef = useRef<string[]>([]);
+  // Each entry keeps the text it sent so an `edited` broadcast is only taken as the answer
+  // to OUR edit when it carries that text (our other tab editing the same message is not).
+  const inflightEditsRef = useRef<Array<{ id: string; body: string }>>([]);
+  // Edits whose answer was lost with a socket drop: id -> last server-confirmed text. The
+  // reconnect catch-up replaces them with the server's state (the server wins).
+  const staleEditsRef = useRef<Map<string, { body: string; editedAt?: number | null }>>(new Map());
   // Sends that left the outbox but have no `sent` ack yet, per chat, oldest first. If the
   // socket drops they are resent on reconnect WITH THE SAME tempId (the server re-acks the
   // original row instead of inserting twice). Memory only. An ack or a tempId error removes.
   const unackedRef = useRef<Map<string, Map<string, SendItem>>>(new Map());
   const editBaselineRef = useRef<Map<string, { body: string; editedAt?: number | null }>>(new Map());
   const settleEdit = useCallback((id: string, body: string, editedAt: number | null | undefined) => {
-    const i = inflightEditsRef.current.indexOf(id);
-    if (i < 0) return;
+    // Correlate by message id AND text: an `edited` for the same message with other text is
+    // someone else's edit (our other tab, or a peer) and must not consume our in-flight entry.
+    const i = inflightEditsRef.current.findIndex((e) => e.id === id && e.body === body);
+    if (i < 0) {
+      // Someone else's edit of a message we also have in flight: it is now the last
+      // server-confirmed text, which a refusal of OUR edit must revert to.
+      if (inflightEditsRef.current.some((e) => e.id === id)) editBaselineRef.current.set(id, { body, editedAt });
+      return;
+    }
     inflightEditsRef.current.splice(i, 1);
-    if (inflightEditsRef.current.includes(id)) editBaselineRef.current.set(id, { body, editedAt });
+    if (inflightEditsRef.current.some((e) => e.id === id)) editBaselineRef.current.set(id, { body, editedAt });
     else editBaselineRef.current.delete(id);
   }, []);
   /** Revert the refused edit of message `messageId` (exact). Without a messageId (an older
@@ -283,15 +327,15 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const revertRefusedEdit = useCallback((messageId?: string) => {
     let id: string | undefined;
     if (messageId !== undefined) {
-      const i = inflightEditsRef.current.indexOf(messageId);
+      const i = inflightEditsRef.current.findIndex((e) => e.id === messageId);
       if (i < 0) return; // not in flight (e.g. the socket dropped first) -> nothing to revert
-      id = inflightEditsRef.current.splice(i, 1)[0];
+      id = inflightEditsRef.current.splice(i, 1)[0].id;
     } else {
-      id = inflightEditsRef.current.shift();
+      id = inflightEditsRef.current.shift()?.id;
     }
     if (id === undefined) return;
     const baseline = editBaselineRef.current.get(id);
-    if (!inflightEditsRef.current.includes(id)) editBaselineRef.current.delete(id);
+    if (!inflightEditsRef.current.some((e) => e.id === id)) editBaselineRef.current.delete(id);
     if (!baseline) return;
     setMessages((prev) => prev.map((b) => (b.id === id && !b.isDeleted ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)));
   }, []);
@@ -594,7 +638,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       } else if (item.kind === "edit") {
         const cur = messagesRef.current.find((b) => b.id === item.id);
         if (cur && !editBaselineRef.current.has(item.id)) editBaselineRef.current.set(item.id, { body: cur.body, editedAt: cur.editedAt });
-        inflightEditsRef.current.push(item.id);
+        inflightEditsRef.current.push({ id: item.id, body: item.body });
         setMessages((prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt, editFailed: undefined } : b)));
       }
     }
@@ -645,6 +689,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     revokedRef.current = false;
     inflightEditsRef.current = [];
     editBaselineRef.current.clear();
+    staleEditsRef.current.clear();
     setSentUnseen(false);
     rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
@@ -678,7 +723,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // Keep in-flight (flushed, un-acked) bubbles: a fast socket can flush the outbox
       // before this history read lands, and it must not wipe them.
       setMessages((prev) => keepLocalOwn(hist, prev));
-      setHasMore(hist.length >= 50);
+      setHasMore(hist.length >= HISTORY_PAGE);
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
       if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
     });
@@ -690,39 +735,154 @@ export function useConversation(input: UseConversationInput): UseConversation {
       }
     }
 
+    // ---- reconnect catch-up -------------------------------------------------------
+    // After every open but the first: fetch what was missed (?after=<newest confirmed id>,
+    // paging until short, bounded), merge by id, then reconcile edits whose answer was lost
+    // with the old socket. Runs AFTER the unacked resend and the outbox flush (see onopen).
+    let catchGen = 0;
+    let catchTimer: number | null = null;
+    const newestConfirmedId = (): string | null => {
+      const list = messagesRef.current;
+      for (let i = list.length - 1; i >= 0; i--) if (!isUnconfirmed(list[i]) && !list[i].queued) return list[i].id;
+      return null;
+    };
+    async function catchUp(retry = 0): Promise<void> {
+      const gen = ++catchGen;
+      const alive = () => !cancelled && activeRef.current === chatId && catchGen === gen;
+      const again = () => {
+        if (retry >= CATCHUP_MAX_RETRIES || !alive()) return;
+        catchTimer = window.setTimeout(() => { catchTimer = null; void catchUp(retry + 1); }, retryDelay(retry));
+      };
+      // A detached (jumped) window has no live tail to extend; the user pages forward instead.
+      if (hasNewerRef.current) return;
+      let anchor = newestConfirmedId();
+      let rows: Message[] = [];
+      let replaceWithNewest = anchor == null; // nothing to anchor on: take the newest page
+      let overflow = false;
+      for (let page = 0; anchor != null && page < CATCHUP_MAX_PAGES; page++) {
+        const res = await loadHistoryAfter(base, chatId, anchor);
+        if (!alive()) return;
+        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(); else again(); return; }
+        if (res.unknown) { replaceWithNewest = true; break; } // our anchor is gone: reconcile on the newest page
+        rows = rows.concat(res.data);
+        if (res.data.length < HISTORY_PAGE) break;
+        anchor = res.data[res.data.length - 1].id;
+        if (page === CATCHUP_MAX_PAGES - 1) overflow = true;
+      }
+      let fetched = rows;
+      if (replaceWithNewest || overflow) {
+        const res = await loadHistory(base, chatId);
+        if (!alive()) return;
+        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(); else again(); return; }
+        fetched = res.data;
+        setMessages((prev) => keepLocalOwn(fetched, prev));
+        setHasMore(fetched.length >= HISTORY_PAGE);
+        if (overflow) onToastRef.current("lots of new messages while you were away — showing the latest");
+      } else if (rows.length > 0) {
+        setMessages((prev) => mergeCatchUp(prev, rows));
+      }
+      if (!(await reconcileStaleEdits(fetched, alive))) { if (alive()) again(); return; }
+      if (!alive()) return;
+      if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+    }
+    // Edits that were in flight when the old socket closed: the server's state replaces the
+    // optimistic text (the answer to those frames is lost; it either landed or it did not).
+    // Skips an id re-sent on THIS socket (answer pending) or still queued. Resolves false if a
+    // lookup failed (the caller retries the whole catch-up; the entries are kept).
+    async function reconcileStaleEdits(fetched: Message[], alive: () => boolean): Promise<boolean> {
+      const stale = staleEditsRef.current;
+      if (stale.size === 0) return true;
+      const queued = outboxRef.current.get(chatId) ?? [];
+      const mine = new Map(fetched.map((m) => [m.id, m]));
+      for (const [id, baseline] of [...stale]) {
+        if (inflightEditsRef.current.some((e) => e.id === id) || queued.some((i) => i.kind !== "send" && i.id === id)) { stale.delete(id); continue; }
+        let server: Message | undefined = mine.get(id);
+        if (!server) {
+          try {
+            const around = await loadHistoryAround(base, chatId, id);
+            if (!alive()) return true;
+            server = around.found ? around.messages.find((m) => m.id === id) : undefined;
+          } catch { return false; }
+        }
+        stale.delete(id);
+        const next = server ?? baseline; // gone from the server: fall back to the last confirmed text
+        setMessages((prev) => prev.map((b) => (b.id === id
+          ? { ...b, body: next.body, editedAt: next.editedAt, ...(server ? { isDeleted: server.isDeleted } : {}), editFailed: undefined }
+          : b)));
+      }
+      return true;
+    }
+
+    // ---- socket lifecycle ---------------------------------------------------------
+    let opens = 0;
+    let failedOpens = 0; // consecutive closes without an open in between
+    let stopped = false; // session ended: never reconnect
+    let hb: ReturnType<typeof startHeartbeat> | null = null;
+    const stopHb = () => { hb?.stop(); hb = null; };
+    const unsubEnded = subscribeSessionEnded(() => {
+      stopped = true;
+      clearReconnect();
+      stopHb();
+      const ws = socketRef.current;
+      if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
+      setConnected(false);
+    });
+
+    // The socket closed (or was declared dead by the heartbeat).
+    function handleClosed(): void {
+      stopHb();
+      if (cancelled || closingRef.current || stopped || activeRef.current !== chatId) return;
+      setConnected(false);
+      sentTypingRef.current = false;
+      // Unanswered edits have an unknown outcome now: remember them for the catch-up,
+      // which replaces their optimistic text with the server's.
+      for (const e of inflightEditsRef.current) {
+        const b = editBaselineRef.current.get(e.id);
+        if (b && !staleEditsRef.current.has(e.id)) staleEditsRef.current.set(e.id, b);
+      }
+      inflightEditsRef.current = [];
+      editBaselineRef.current.clear();
+      // Membership was revoked -> don't reconnect (the /ws gate would reject us now).
+      if (revokedRef.current) return;
+      failedOpens++;
+      if (failedOpens % PROBE_AFTER_FAILED_OPENS === 0) void probeSession(base); // 401 -> sessionEnded -> stop
+      clearReconnect();
+      reconnectRef.current.timer = window.setTimeout(connect, retryDelay(reconnectRef.current.attempts++));
+    }
+
     function connect() {
-      if (cancelled || activeRef.current !== chatId) return;
+      if (cancelled || stopped || hasSessionEnded() || activeRef.current !== chatId) return;
       closingRef.current = false;
       const ws = new WebSocket(wsUrl(base, chatId));
       socketRef.current = ws;
       ws.onopen = () => {
-        if (cancelled) return;
+        if (cancelled || socketRef.current !== ws) return;
         reconnectRef.current.attempts = 0;
+        failedOpens = 0;
+        const reopened = opens++ > 0;
         setConnected(true);
+        stopHb();
+        hb = startHeartbeat(ws, () => {
+          // No pong: the connection is dead. Detach it (closing a dead TCP connection can
+          // take minutes to report) and reconnect now.
+          ws.onclose = null; ws.onmessage = null;
+          try { ws.close(); } catch { /* already closed */ }
+          handleClosed();
+        });
+        // Order matters: unacked resend, then outbox flush, then the catch-up merge by id.
         resendUnacked();
         flushOutbox();
         sentReadUpToRef.current = 0;
         if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
         if (typeof document !== "undefined") sendAway(document.visibilityState !== "visible");
+        if (reopened) void catchUp();
       };
       ws.onmessage = (ev) => {
         if (cancelled) return;
+        if (hb?.onFrame(ev.data)) return;
         try { applyFrame(JSON.parse(ev.data as string) as Frame); } catch { /* ignore junk */ }
       };
-      ws.onclose = () => {
-        if (cancelled || closingRef.current || activeRef.current !== chatId) return;
-        setConnected(false);
-        sentTypingRef.current = false;
-        // Unanswered edits have an unknown outcome now; PR-5's reconnect catch-up reconciles.
-        inflightEditsRef.current = [];
-        editBaselineRef.current.clear();
-        // Membership was revoked → don't reconnect (the /ws gate would reject us now).
-        if (revokedRef.current) return;
-        const n = Math.min(reconnectRef.current.attempts++, 10);
-        const delay = Math.min(500 * 2 ** n, 5000);
-        clearReconnect();
-        reconnectRef.current.timer = window.setTimeout(connect, delay);
-      };
+      ws.onclose = () => { if (socketRef.current === ws) handleClosed(); };
     }
 
     connect();
@@ -731,6 +891,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (cancelled || closingRef.current || revokedRef.current || activeRef.current !== chatId) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       const ws = socketRef.current;
+      if (stopped) return;
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         clearReconnect();
         reconnectRef.current.attempts = 0;
@@ -746,6 +907,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
       cancelled = true;
       closingRef.current = true;
       clearReconnect();
+      stopHb();
+      unsubEnded();
+      if (catchTimer != null) clearTimeout(catchTimer);
       reconnectRef.current.attempts = 0;
       if (typeof window !== "undefined") {
         window.removeEventListener("online", onWake);
@@ -932,6 +1096,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
     atBottomRef.current = true;
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
     markAttached(); // flushes anything queued while detached
+    // Catch a peer message that landed AFTER the page above was read but was suppressed while
+    // we were still detached (as loadNewer does): pull the newest page again and merge it in.
+    const tailRes = await loadHistory(base, chatId);
+    if (activeRef.current !== chatId) return false;
+    if (tailRes.ok && tailRes.data.length > 0) {
+      const tail = tailRes.data;
+      setMessages((prev) => mergeCatchUp(prev, tail));
+    }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
