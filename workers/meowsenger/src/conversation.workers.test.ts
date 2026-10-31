@@ -167,6 +167,17 @@ describe("Conversation DO", () => {
     });
     expect((await s.historyAfter("cafter", "f3")).map((m) => m.id)).toEqual(["f4", "f5"]);
     expect(await s.historyAfter("cafter", "nope")).toEqual([]);
+    // found distinguishes "nothing newer" from "the anchor is gone" (reconnect catch-up).
+    expect(await s.historyAfterEx("cafter", "f5")).toEqual({ messages: [], found: true });
+    expect(await s.historyAfterEx("cafter", "nope")).toEqual({ messages: [], found: false });
+  });
+
+  it("auto-responds to the client heartbeat ping with pong (keeps the DO hibernated)", async () => {
+    await seedChat("cping");
+    const w = await connect("cping", "u1");
+    const pong = waitFor(w, (t) => t === "pong");
+    w.send("ping");
+    expect(await pong).toBe("pong");
   });
 
   it("persists a message sent over the socket and mirrors it into historyFor", async () => {

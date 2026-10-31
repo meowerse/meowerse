@@ -1523,10 +1523,16 @@ export class Conversation extends DurableObject<Env> {
    * Reactions attach for `viewerId`.
    */
   async historyAfter(chatId: string, afterId: string, viewerId?: string): Promise<Wire[]> {
+    return (await this.historyAfterEx(chatId, afterId, viewerId)).messages;
+  }
+
+  /** `historyAfter` plus `found`: false when `afterId` is not a row of this room, so a
+   *  reconnect catch-up can tell "nothing newer" from "my anchor is gone" (both are []). */
+  async historyAfterEx(chatId: string, afterId: string, viewerId?: string): Promise<{ messages: Wire[]; found: boolean }> {
     const at = this.ctx.storage.sql
       .exec("SELECT created_at FROM messages WHERE id = ?", afterId)
       .toArray()[0]?.created_at;
-    if (at == null) return [];
+    if (at == null) return { messages: [], found: false };
     const cols = HISTORY_COLS;
     const rows = this.ctx.storage.sql
       .exec(
@@ -1539,7 +1545,7 @@ export class Conversation extends DurableObject<Env> {
     // Already ascending — do NOT reverse.
     const wires = rows.map((r: Row) => this.rowToWire(r, chatId));
     this.attachReactions(wires, viewerId);
-    return wires;
+    return { messages: wires, found: true };
   }
 
   /**

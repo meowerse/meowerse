@@ -315,23 +315,23 @@ describe("handleHistory", () => {
     expect(seenAround).toBe("m5");
     expect(await res.json()).toEqual({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
   });
-  it("?after=<id> routes to historyAfter (forward page)", async () => {
+  it("?after=<id> routes to historyAfterEx (forward page + found)", async () => {
     let seenAfter: string | undefined = "UNSET";
     const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
     const env = {
       CONVERSATION: {
         idFromName: (n: string) => n,
         get: () => ({
-          historyAfter: async (_c: string, id: string) => {
+          historyAfterEx: async (_c: string, id: string) => {
             seenAfter = id;
-            return [{ id: "m6" }];
+            return { messages: [{ id: "m6" }], found: true };
           },
         }),
       },
     } as unknown as Env;
     const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?after=m6", "s1"), env, db, now, "c1", cors);
     expect(seenAfter).toBe("m6");
-    expect(await res.json()).toEqual({ messages: [{ id: "m6" }] });
+    expect(await res.json()).toEqual({ messages: [{ id: "m6" }], found: true });
   });
 });
 

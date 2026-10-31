@@ -166,8 +166,8 @@ export async function handleHistory(
   }
   const after = q.get("after");
   if (after) {
-    const messages = await stub.historyAfter(chatId, after, me);
-    return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
+    const r = await stub.historyAfterEx(chatId, after, me);
+    return json({ messages: r.messages, found: r.found }, 200, cors, { "Cache-Control": "no-store" });
   }
   const messages = await stub.historyFor(chatId, q.get("before"), me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });

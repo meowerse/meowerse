@@ -75,9 +75,14 @@ export class MockWebSocket {
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.();
   }
-  /** Parsed view of everything the client sent over this socket. */
+  /** Parsed view of every JSON frame the client sent over this socket (the bare "ping"
+   *  heartbeat is not JSON: read it from `sent` / `pings()`). */
   sentFrames(): Array<Record<string, unknown>> {
-    return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
+    return this.sent.filter((s) => s !== "ping").map((s) => JSON.parse(s) as Record<string, unknown>);
+  }
+  /** How many heartbeat pings the client sent. */
+  pings(): number {
+    return this.sent.filter((s) => s === "ping").length;
   }
 }
 

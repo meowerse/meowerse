@@ -283,7 +283,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     },
     [applySidebarDelta, activeRef, refetchOnInvalidate],
   );
-  useInbox(base, me != null, onInboxDelta);
+  // A reopened inbox socket missed deltas while it was down: one coalesced list refresh.
+  useInbox(base, me != null, onInboxDelta, refetchOnInvalidate);
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.

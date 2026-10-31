@@ -226,7 +226,9 @@ export function loadHistory(base: string, chatId: string, before?: string): Prom
 }
 
 /** GET ?around=<msgId> — a window centered on a message (deep-link jump), ascending,
- *  with hasOlder/hasNewer (more to page each side) + found (false ⇒ unknown id). */
+ *  with hasOlder/hasNewer (more to page each side) + found (false ⇒ unknown id).
+ *  REJECTS on a network error or a non-2xx answer (5xx/401/403 carry JSON bodies that would
+ *  otherwise parse as `found:false`): only a SUCCESSFUL response may say "not found". */
 export async function loadHistoryAround(
   base: string,
   chatId: string,
@@ -236,17 +238,26 @@ export async function loadHistoryAround(
     `${base}/api/chats/${encodeURIComponent(chatId)}/messages?around=${encodeURIComponent(msgId)}`,
     { credentials: "include" },
   );
+  if (!r.ok) throw new Error(`history around failed: ${r.status}`);
   const d = (await r.json()) as { messages?: Message[]; hasOlder?: boolean; hasNewer?: boolean; found?: boolean };
   return { messages: d.messages ?? [], hasOlder: !!d.hasOlder, hasNewer: !!d.hasNewer, found: !!d.found };
 }
 
 /** GET ?after=<msgId> — the next page of NEWER messages (forward paging in a
- *  detached window), ascending. A failure is a typed error. */
-export function loadHistoryAfter(base: string, chatId: string, afterId: string): Promise<RequestResult<Message[]>> {
-  return read<{ messages?: Message[] }, Message[]>(
+ *  detached window, and the reconnect catch-up), ascending. A failure is a typed
+ *  error. `unknown: true` on success means the anchor id is not a row of the room
+ *  (the server's `found:false`): the empty page is NOT "nothing newer". */
+export async function loadHistoryAfter(
+  base: string,
+  chatId: string,
+  afterId: string,
+): Promise<RequestResult<Message[]> & { unknown?: boolean }> {
+  let unknown = false;
+  const r = await read<{ messages?: Message[]; found?: boolean }, Message[]>(
     `${base}/api/chats/${encodeURIComponent(chatId)}/messages?after=${encodeURIComponent(afterId)}`,
-    (d) => d.messages ?? [],
+    (d) => { unknown = d.found === false; return d.messages ?? []; },
   );
+  return r.ok && unknown ? { ...r, unknown: true } : r;
 }
 
 /** Fields a resolved chat carries for a shareable deep-link (mirrors the worker's
