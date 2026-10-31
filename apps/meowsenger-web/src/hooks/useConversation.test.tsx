@@ -835,6 +835,18 @@ describe("useConversation — PR-3 review fixes", () => {
     expect(result.current.sentUnseen).toBe(false);
   });
 
+  it("a FAILED post-send jump never shows the 'sent' notice in a chat the user switched to meanwhile", async () => {
+    const { result, rerender } = await detach();
+    H.failLatest = true;
+    let release!: () => void;
+    H.gate = new Promise<void>((r) => { release = r; }); // hold the post-send jump in flight
+    await act(async () => { result.current.send("from afar"); });
+    await act(async () => { rerender({ activeId: "c2" }); }); // user switches chat while it loads
+    await act(async () => { release(); H.gate = null; await new Promise((r) => setTimeout(r, 20)); });
+    expect(result.current.sentUnseen).toBe(false);
+    H.failLatest = false;
+  });
+
   it("a FAILED jump after a detached send still counts as sent: notice shown, bubble kept, nothing stuck", async () => {
     const { result, ws } = await detach();
     H.failLatest = true;
@@ -927,6 +939,17 @@ describe("useConversation — PR-3 review fixes", () => {
     expect(s.result.current.messages[0].editFailed).toBeUndefined();
     act(() => ws.mockEmit({ type: "error", code: "cannot_edit" })); // nothing in flight: no revert
     expect(s.result.current.messages[0].body).toBe("v2");
+  });
+
+  it("ONLINE, a bulk delete of more than 100 messages goes straight out (the cap only limits queued work)", async () => {
+    const own = Array.from({ length: 101 }, (_, i) => msg({ id: `o${i}`, senderId: "u1", body: `m${i}`, createdAt: 1000 + i }));
+    const s = await open(own);
+    let r = "";
+    act(() => { r = s.result.current.sendDeleteMany(s.result.current.messages); });
+    expect(r).toBe("sent");
+    expect(frames(s.ws, "delete")).toHaveLength(101);
+    expect(s.onToast).not.toHaveBeenCalled();
+    expect(s.result.current.queuedCount()).toBe(0);
   });
 
   // (7) bulk delete capacity

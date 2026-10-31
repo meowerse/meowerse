@@ -260,7 +260,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const baseline = editBaselineRef.current.get(id);
     if (!inflightEditsRef.current.includes(id)) editBaselineRef.current.delete(id);
     if (!baseline) return;
-    setMessages((prev) => prev.map((b) => (b.id === id ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)));
+    setMessages((prev) => prev.map((b) => (b.id === id && !b.isDeleted ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)));
   }, []);
 
   // A send went out while the view was detached and the jump to the live tail failed.
@@ -756,8 +756,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const ids = new Set(ms.map((m) => m.id));
     // One capacity check for the whole action (queued items for these messages are about
     // to be superseded, so they don't count): if it can't all fit, queue nothing.
-    const held = (outboxRef.current.get(chatId) ?? []).filter((i) => !((i.kind === "edit" || i.kind === "delete") && ids.has(i.id))).length;
-    if (held + ms.length > OUTBOX_MAX) { onToastRef.current(OUTBOX_FULL_COPY); return "rejected"; }
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // Only queued work is capped; online deletes go straight out, any number of them.
+      const held = (outboxRef.current.get(chatId) ?? []).filter((i) => !((i.kind === "edit" || i.kind === "delete") && ids.has(i.id))).length;
+      if (held + ms.length > OUTBOX_MAX) { onToastRef.current(OUTBOX_FULL_COPY); return "rejected"; }
+    }
     let result: SendResult = "sent";
     for (const m of ms) if (sendDelete(m) === "queued") result = "queued";
     return result;
@@ -815,7 +819,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (activeRef.current !== chatId) return;
     if (!around.found) { onToastRef.current("message not found"); return; }
     prependingRef.current = true;
-    setMessages(around.messages.map((m) => ({ ...m })));
+    setMessages((prev) => keepLocalOwn(around.messages, prev));
     setHasMore(around.hasOlder);
     setHasNewer(around.hasNewer);
     if (!around.hasNewer) { hasNewerRef.current = false; setSentUnseen(false); flushOutbox(); }
@@ -853,8 +857,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
   jumpAfterSendRef.current = () => {
     if (jumpingAfterSendRef.current) return;
     jumpingAfterSendRef.current = true;
+    const sentIn = activeRef.current; // the user may switch chats while the jump loads
     void attachLatest(true)
-      .then((ok) => { if (!ok && activeRef.current) setSentUnseen(true); })
+      .then((ok) => { if (!ok && sentIn && activeRef.current === sentIn) setSentUnseen(true); })
       .finally(() => { jumpingAfterSendRef.current = false; });
   };
 
