@@ -18,7 +18,9 @@ function retryDelay(failures: number): number {
 /** The "session ended" banner. Focus lands on the sign-in link. When the active
  *  composer held unsent text it is handed back here (in memory only, read-only,
  *  with copy); no other chat content is shown. */
-function EndedBanner({ base }: { base: string }) {
+/** `onContinue` set: the same user is signed in again but a handed-back draft is still
+ *  only here, so keep it visible (copy, then continue) instead of losing it on remount. */
+function EndedBanner({ base, onContinue }: { base: string; onContinue?: () => void }) {
   const snap = getEndedSnapshot();
   const linkRef = useRef<HTMLAnchorElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -36,7 +38,7 @@ function EndedBanner({ base }: { base: string }) {
   }
   return (
     <div className="mw-gate">
-      <p role="alert">your session ended. sign in again to keep going.</p>
+      <p role="alert">{onContinue ? "you're signed in again. your unsent message is below — copy it, then continue." : "your session ended. sign in again to keep going."}</p>
       {snap?.pendingSend && (
         <p className="mw-muted">a message may not have been sent — check after signing in.</p>
       )}
@@ -49,7 +51,9 @@ function EndedBanner({ base }: { base: string }) {
           {copied === "no" && <span className="mw-muted" role="status">couldn't copy — the text is selected, copy it manually.</span>}
         </div>
       ) : null}
-      <a ref={linkRef} className="mw-btn mw-btn--primary" href={loginUrl(base)}>sign in</a>
+      {onContinue
+        ? <button type="button" className="mw-btn mw-btn--primary" onClick={onContinue}>continue</button>
+        : <a ref={linkRef} className="mw-btn mw-btn--primary" href={loginUrl(base)}>sign in</a>}
     </div>
   );
 }
@@ -114,10 +118,11 @@ export default function AppShell({ base }: { base: string }) {
   // bfcache restore can tell "same user" from "someone else signed in meanwhile").
   const heldUserRef = useRef<string | null>(null);
   const pageshowSeqRef = useRef(0);
+  const [resumed, setResumed] = useState(false);
   const gateRef = useRef<Gate>(gate);
   gateRef.current = gate;
 
-  useEffect(() => subscribeSessionEnded(() => setGate("ended")), []);
+  useEffect(() => subscribeSessionEnded(() => { setResumed(false); setGate("ended"); }), []);
 
   // bfcache restore: the frozen page may show a user who has since signed out or been
   // replaced. Re-check the session (same shape as auth-web's useSession pageshow).
@@ -155,6 +160,13 @@ export default function AppShell({ base }: { base: string }) {
         }
         // Same user, or nothing held yet. Quiet while mounted; otherwise recover from
         // "ended"/"unreachable" without losing a handed-back draft or the address bar.
+        if (gateRef.current === "ended" && getEndedSnapshot()?.draft) {
+          // Signed in again with an unsent draft that lives only in the banner: keep it
+          // on screen until the user copies it and continues (Chat can't re-seed it).
+          clearSessionEndedFlag();
+          setResumed(true);
+          return;
+        }
         if (gateRef.current === "ended" || gateRef.current === "unreachable") {
           clearSessionEndedFlag();
           setGate("loading");
@@ -247,7 +259,14 @@ export default function AppShell({ base }: { base: string }) {
     if (gate === "out") window.location.replace(loginUrl(base));
   }, [gate, base]);
 
-  if (gate === "ended") return <EndedBanner base={base} />;
+  if (gate === "ended") {
+    return (
+      <EndedBanner
+        base={base}
+        onContinue={resumed ? () => { resetSessionEnded(); setResumed(false); setGate("loading"); setAttempt((n) => n + 1); } : undefined}
+      />
+    );
+  }
   if (gate === "unreachable") {
     return (
       <div className="mw-gate">

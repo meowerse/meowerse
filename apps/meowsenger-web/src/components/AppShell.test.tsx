@@ -392,7 +392,7 @@ describe("AppShell", () => {
       expect(replaceState).not.toHaveBeenCalled();
     });
 
-    it("ended (in-session), then a same-user restore: banner cleared, draft kept, app boots again", async () => {
+    it("ended (in-session), then a same-user restore: the draft stays VISIBLE until the user continues", async () => {
       draftSource();
       render(<AppShell base="" />);
       await screen.findByTestId("chat");
@@ -401,10 +401,44 @@ describe("AppShell", () => {
       H.results = [authed];
       H.calls = 0;
       await restore();
-      await screen.findByTestId("chat");
+      // signed in again: no "session ended", but the unsent text is still on screen
+      await screen.findByText(/you're signed in again/);
       expect(screen.queryByText(/your session ended/)).toBeNull();
-      expect(getEndedSnapshot()?.draft).toBe("my unsent words");
+      expect((screen.getByLabelText(/your unsent message/) as HTMLTextAreaElement).value).toBe("my unsent words");
+      expect(screen.queryByTestId("chat")).toBeNull();
       expect(replace).not.toHaveBeenCalled();
+      // continue: the app boots again and the held draft is released
+      H.results = [authed];
+      fireEvent.click(screen.getByRole("button", { name: "continue" }));
+      await screen.findByTestId("chat");
+      expect(getEndedSnapshot()).toBeNull();
+    });
+
+    it("ended without a draft, then a same-user restore: banner cleared and the app boots straight away", async () => {
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      act(() => { notifySessionEnded(); });
+      await screen.findByText(/your session ended/);
+      H.results = [authed];
+      await restore();
+      await screen.findByTestId("chat");
+      expect(screen.queryByText(/your session ended|signed in again/)).toBeNull();
+    });
+
+    it("ended again while the resumed banner shows: the held draft is not replaced with nothing", async () => {
+      draftSource();
+      render(<AppShell base="" />);
+      await screen.findByTestId("chat");
+      act(() => { notifySessionEnded(); });
+      await screen.findByText(/your session ended/);
+      H.results = [authed];
+      await restore();
+      await screen.findByText(/you're signed in again/);
+      setSnapshotSource(null); // as the real Chat does on unmount: no view can re-supply the draft
+      H.results = [{ ok: false, error: { kind: "unauthorized", status: 401 } }];
+      await restore();
+      await screen.findByText(/your session ended/);
+      expect(getEndedSnapshot()?.draft).toBe("my unsent words");
     });
 
     it("a network error or 5xx on the re-check keeps the current state (no wipe, no redirect)", async () => {
