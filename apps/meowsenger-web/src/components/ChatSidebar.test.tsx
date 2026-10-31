@@ -42,3 +42,21 @@ describe("ChatSidebar — chat-type a11y label (#35)", () => {
     }
   });
 });
+
+describe("ChatSidebar — released usernames never render raw", () => {
+  const props = { activeId: null, online: new Set<string>(), base: "", onSelect: () => {}, onOpenResult: () => {}, onNewChatClick: () => {}, loading: false };
+  it("shows the display name, else 'former user', for a DM peer whose username was released", () => {
+    render(<ChatSidebar {...props} chats={[
+      chat({ id: "d1", peerUsername: "~u2", peerDisplayName: "Bob" }),
+      chat({ id: "d2", peerId: "u3", peerUsername: "~u3", peerDisplayName: null }),
+    ]} />);
+    expect(screen.getByText("Bob")).toBeTruthy();
+    expect(screen.getByText("former user")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("~");
+  });
+  it("hides the @handle line in the account footer for a released own username", () => {
+    render(<ChatSidebar {...props} chats={[]} me={{ username: "~me", displayName: null }} />);
+    expect(screen.getByText("former user")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("~me");
+  });
+});

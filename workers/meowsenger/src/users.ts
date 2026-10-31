@@ -17,13 +17,46 @@ export interface User {
 }
 
 /**
+ * Prefix of a RELEASED username. meowerse auth only allows `[a-zA-Z0-9_]{3,32}`
+ * (workers/auth/src/accounts.ts), so a name starting with `~` can never be a real
+ * username, never collides with one, and is never resolvable by username.
+ */
+export const RELEASED_USERNAME_PREFIX = "~";
+
+/** True for a placeholder left on a profile whose username was handed to another account. */
+export function isReleasedUsername(username: string): boolean {
+  return username.startsWith(RELEASED_USERNAME_PREFIX);
+}
+
+/**
  * Upsert the caller into the messenger's own user directory from OIDC /userinfo
- * claims. Keyed by `sub`; refreshed on every login. ON CONFLICT keeps the row
- * current without a second round-trip.
+ * claims. Keyed by `sub`; refreshed on every login.
+ *
+ * Auth is the source of truth: a username belongs to exactly one `sub` at a time, so
+ * any OTHER row holding the incoming username is stale (its account was deleted or
+ * renamed). Because `users.username` is UNIQUE, that row is first moved to the
+ * placeholder `~<its id>` (deterministic, unique, unresolvable); display name, avatar,
+ * messages and memberships are untouched. Both statements run in ONE D1 batch
+ * (atomic). If the stale account signs in again, its own upsert writes its current
+ * username back over the placeholder. A UNIQUE race between two batches is retried
+ * once.
  */
 export async function upsertUser(db: DbClient, info: UserInfo, now: number): Promise<void> {
-  await db.run(
-    `INSERT INTO users (id, username, display_name, avatar_url, verified, updated_at)
+  // An account without a username (Telegram-only) is stored under the unaddressable
+  // placeholder form, never under its bare id: an id-shaped username could otherwise
+  // be registered in auth and claim this row's handle through the release below.
+  const claimsName = typeof info.preferred_username === "string" && info.preferred_username.length > 0;
+  const username = claimsName ? info.preferred_username! : RELEASED_USERNAME_PREFIX + info.sub;
+  const release = {
+    // Never release a legacy row whose username is its own id (pre-placeholder data).
+    sql: `UPDATE users SET username = '${RELEASED_USERNAME_PREFIX}' || id WHERE username = ? AND id != ? AND username != id`,
+    params: [username, info.sub],
+  };
+  const stmts = [
+    // Only a real auth username can be claimed from another row.
+    ...(claimsName ? [release] : []),
+    {
+      sql: `INSERT INTO users (id, username, display_name, avatar_url, verified, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        username = excluded.username,
@@ -31,8 +64,20 @@ export async function upsertUser(db: DbClient, info: UserInfo, now: number): Pro
        avatar_url = excluded.avatar_url,
        verified = excluded.verified,
        updated_at = excluded.updated_at`,
-    [info.sub, info.preferred_username ?? info.sub, info.name ?? null, info.picture ?? null, info.verified ? 1 : 0, now],
-  );
+      params: [info.sub, username, info.name ?? null, info.picture ?? null, info.verified ? 1 : 0, now],
+    },
+  ];
+  const batch = db.batch?.bind(db);
+  if (!batch) throw new Error("upsertUser requires an atomic db.batch");
+  let changes: number[];
+  try {
+    changes = await batch(stmts);
+  } catch (e) {
+    if (!/UNIQUE/i.test(String(e))) throw e;
+    changes = await batch(stmts); // lost a race with a concurrent sign-in: re-release, then claim
+  }
+  const released = claimsName ? (changes[0] ?? 0) : 0;
+  if (released > 0) console.log(`user_username_released count=${released}`);
 }
 
 /**
@@ -46,8 +91,10 @@ export async function upsertUser(db: DbClient, info: UserInfo, now: number): Pro
 export async function userIdsByNames(db: DbClient, names: string[]): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   if (names.length === 0) return map;
+  names = names.filter((n) => !isReleasedUsername(n)); // a released placeholder is never addressable
+  if (names.length === 0) return map;
   const placeholders = names.map(() => "?").join(", ");
-  const rows = await db.all(`SELECT id, username FROM users WHERE username IN (${placeholders})`, names);
+  const rows = await db.all(`SELECT id, username FROM users WHERE username IN (${placeholders}) AND username NOT LIKE '~%'`, names);
   for (const r of rows) map.set(String(r.username), String(r.id));
   return map;
 }

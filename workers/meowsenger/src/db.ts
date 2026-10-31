@@ -19,5 +19,9 @@ export function d1Client(db: D1Database): DbClient {
     async run(sql, params = []) {
       await stmt(sql, params).run();
     },
+    async batch(stmts) {
+      const res = await db.batch(stmts.map((s) => stmt(s.sql, s.params)));
+      return res.map((r) => r.meta?.changes ?? 0);
+    },
   };
 }
