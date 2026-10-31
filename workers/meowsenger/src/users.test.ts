@@ -51,10 +51,10 @@ describe("upsertUser", () => {
     await upsertUser(db, { sub: "u2", preferred_username: "bob" }, now);
     expect(u.get("u2")).toMatchObject({ display_name: null, avatar_url: null, verified: 0 });
   });
-  it("falls back to sub for username when preferred_username is absent", async () => {
+  it("a username-less account is stored under the unaddressable placeholder (never its bare id)", async () => {
     const { db, u } = memDb();
     await upsertUser(db, { sub: "u3" }, now);
-    expect(u.get("u3")).toMatchObject({ username: "u3" });
+    expect(u.get("u3")).toMatchObject({ username: "~u3" });
   });
   it("getUser returns the typed row", async () => {
     const { db } = memDb();
