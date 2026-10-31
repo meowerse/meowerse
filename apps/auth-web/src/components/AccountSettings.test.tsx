@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@meowerse/ui";
-import AccountSettings from "./AccountSettings";
+import AccountSettings, { MEOWSENGER_NOTICE } from "./AccountSettings";
 
 afterEach(() => {
   cleanup();
@@ -72,6 +72,23 @@ describe("AccountSettings", () => {
     await screen.findByText("alxnko");
     expect(screen.queryByRole("button", { name: "delete account" })).toBeNull();
     expect(screen.getByText(/handled on request for now/)).not.toBeNull();
+  });
+
+  it("the delete UI says explicitly that Meowsenger messages and data are NOT deleted, and to delete them first", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json({ ...ACCOUNT, deleteEnabled: true }));
+    page();
+    await screen.findByText("alxnko");
+    const notice = screen.getByTestId("delete-meowsenger-notice").textContent ?? "";
+    expect(notice).toBe(MEOWSENGER_NOTICE);
+    expect(MEOWSENGER_NOTICE).toMatch(/does not delete anything in meowsenger/);
+    expect(MEOWSENGER_NOTICE).toMatch(/messages you sent stay in their chats/);
+    expect(MEOWSENGER_NOTICE).toMatch(/do that first/);
+    expect(MEOWSENGER_NOTICE).toMatch(/messages you already sent are not deleted/);
+    expect(MEOWSENGER_NOTICE).not.toMatch(/meowverse/i);
+    // The confirm dialog repeats it (the last thing read before confirming).
+    fireEvent.click(screen.getByRole("button", { name: "delete account" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain(MEOWSENGER_NOTICE);
   });
 
   it("deleteEnabled true keeps the delete button", async () => {

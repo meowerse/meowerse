@@ -48,13 +48,11 @@
     "WEB_ORIGIN": "https://auth.alxnko.dev",
     "RESOURCE_AUD": "https://api.meow.alxnko.dev",
     "BOT_USERNAME": "meowersebot",
-    "SKIP_MIGRATIONS": "1"
-    // Account self-deletion (POST /api/account/delete) is OFF unless this is "1"/"true".
-    // Left disabled. To enable, add "ACCOUNT_DELETE_ENABLED": "1" HERE in this file's vars (a dashboard-only
-    // var is overwritten by the next deploy; add a comma after the previous entry), and only after the hardening
-    // PRs B-D have shipped (audit in the delete transaction + refusing owners of active clients, account-exists
-    // guards on credential inserts, step-up auth) and the privacy/settings copy is updated in the same PR.
-    // Until then requests are only acknowledged and queued: docs/runbooks/account-deletion-requests.md.
+    "SKIP_MIGRATIONS": "1",
+    // Account self-deletion (POST /api/account/delete) is ON ("1" or "true" enables it). It must stay in this file's vars
+    // (a dashboard-only var is overwritten by the next deploy). Keep apps/auth-web privacy/terms copy in sync.
+    // Request intake for people who cannot sign in: docs/runbooks/account-deletion-requests.md.
+    "ACCOUNT_DELETE_ENABLED": "1"
   },
   // Daily housekeeping (src/housekeeping.ts): bounded deletes of expired audit/ticket/session/access-token rows and refresh-token/auth-code rows 30d past family expiry.
   "triggers": { "crons": ["17 3 * * *"] },

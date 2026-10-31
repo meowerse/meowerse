@@ -39,15 +39,39 @@ describe("shared privacy page copy", () => {
     expect(rendered).not.toMatch(/Google Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v3, 2026-10-31");
+    expect(POLICY_VERSION).toBe("v4, 2026-10-31");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
     expect(privacy).toContain("ACCOUNT_DELETE_ENABLED");
-    expect(privacy).toContain("Nothing is deleted from an email");
+    expect(privacy).toContain("nothing is deleted from an email");
+    expect(privacy).not.toContain("not self-service");
+    expect(privacy).not.toContain("once in-account deletion is live");
+    expect(terms).not.toContain("handled on request");
     expect(privacy).toMatch(/16 is the minimum age/);
     expect(privacy).toMatch(/do not verify age/);
     expect(privacy).toMatch(/supervisory authority/);
+  });
+  it("states the real self-service deletion behaviour, what remains, and the Meowsenger caveat", () => {
+    for (const t of [
+      "delete your meowerse account yourself",
+      "fresh confirmation with your password or Telegram",
+      "single-use confirmation",
+      "recovery codes, sessions, app consents, access and refresh tokens and login codes at once",
+      "deleted after 365 days",
+      "ages out in about 7 days",
+      "Turso point-in-time, 1 day",
+      "up to 15 minutes at services that check them offline",
+      "Meowsenger sessions can stay valid for up to 7 days",
+      "does NOT delete your Meowsenger data or the messages you sent",
+      "Delete your Meowsenger data first",
+      "username may be released to a new owner",
+      "account.delete_stepup_fail",
+    ]) expect(privacy, t).toContain(t);
+    expect(privacy).toMatch(/<code[^>]*>account\.delete<\/code>/);
+    expect(terms).toContain("delete your meowerse account yourself");
+    expect(terms).toContain("does not delete your Meowsenger data");
+    expect(`${privacy}${terms}`).not.toMatch(/meowverse/i);
   });
   it("lists the role addresses and no personal email address", () => {
     expect(CONTACTS).toEqual({ privacy: "privacy@alxnko.dev", security: "security@alxnko.dev", general: "contact@alxnko.dev" });

@@ -2,6 +2,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, StatusLine, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
+/**
+ * What auth deletion does NOT do to Meowsenger (nothing links them: Meowsenger keeps its own copy keyed by the old
+ * account id). Shown in the danger zone and in the confirm dialog. Keep in sync with privacy.astro.
+ */
+export const MEOWSENGER_NOTICE =
+  "this does not delete anything in meowsenger: messages you sent stay in their chats, and your meowsenger profile, memberships and notification subscriptions stay until you delete them in meowsenger (settings → danger zone → delete my meowsenger data). do that first: once your meowerse account is deleted you can't sign back in to meowsenger to remove them. even then, messages you already sent are not deleted.";
+
 export default function AccountSettings({ base }: { base: string }) {
   const toast = useToast();
   const [acct, setAcct] = useState<AccountInfo | null>(null);
@@ -149,7 +156,8 @@ export default function AccountSettings({ base }: { base: string }) {
       <Card title="danger zone">
         {acct.deleteEnabled ? (
           <>
-            <p className="mw-muted">deleting your meowerse account is permanent. it erases your auth account data, but not data held by other services such as meowsenger.</p>
+            <p className="mw-muted">deleting your meowerse account is permanent. it erases your meowerse login methods, sessions, app permissions and tokens.</p>
+            <p className="mw-muted" data-testid="delete-meowsenger-notice">{MEOWSENGER_NOTICE}</p>
             <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
             {needTelegram && (
               <Alert variant="error">
@@ -174,7 +182,7 @@ export default function AccountSettings({ base }: { base: string }) {
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
         <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
-          title="delete your account?" description="this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. data held by other services (e.g. meowsenger) is not; delete it there separately."
+          title="delete your account?" description={`this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. ${MEOWSENGER_NOTICE}`}
           confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
       )}
     </div>
