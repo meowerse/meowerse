@@ -110,13 +110,16 @@ const MAX_FOLLOWUPS = 5;
 const MAX_PUSH_ATTEMPTS = 3;
 /** Hard safety ceiling on TOTAL rounds per queued batch (progress or not), logged when
  *  hit; only a backstop (progress counting already guarantees termination). Sized for the
- *  worst case: the round budget is spent per ENDPOINT, not per recipient, and a user can
- *  have up to MAX_PUSH_SUBS_PER_USER endpoints, each needing up to MAX_PUSH_ATTEMPTS
- *  attempts; a round serves at most EXTERNAL_BUDGET - 1 endpoints (one subrequest is the
- *  target read). */
+ *  worst case: the round budget is spent per ENDPOINT, and fanPush only ever packs WHOLE
+ *  users into a round (a user's devices are never split across rounds). A follow-up round
+ *  spends one subrequest on the push-target read, leaving ROUND_CAPACITY endpoints, so at
+ *  worst only floor(ROUND_CAPACITY / MAX_PUSH_SUBS_PER_USER) users fit per round, and each
+ *  user needs up to MAX_PUSH_ATTEMPTS rounds. */
 const ROUND_CAPACITY = EXTERNAL_BUDGET - 1;
-const roundCeiling = (batchSize: number): number =>
-  10 + MAX_PUSH_ATTEMPTS * Math.ceil((batchSize * MAX_PUSH_SUBS_PER_USER) / ROUND_CAPACITY);
+const roundCeiling = (batchSize: number): number => {
+  const usersPerRound = Math.max(1, Math.floor(ROUND_CAPACITY / MAX_PUSH_SUBS_PER_USER));
+  return 10 + MAX_PUSH_ATTEMPTS * Math.ceil(batchSize / usersPerRound);
+};
 /** Pending fan-out work persisted in DO storage: recipient ids and the chat id only
  *  (never message text, endpoints or keys). `seq` increments on every queueOverflow so
  *  a running follow-up can tell that new work arrived while it awaited. `attempts` /
@@ -708,11 +711,10 @@ export class Conversation extends DurableObject<Env> {
         }),
       );
       // A rejected send leaves the recipient's other endpoints' outcomes intact (a 2xx is
-      // never retried); on the first invocation the rejection itself counts as transient.
-      // A follow-up rethrows so runOverflow re-queues the run with a back-off.
+      // never retried); the rejection itself counts as transient (first send and follow-up
+      // alike), so recipients who already got a 2xx in this round are not re-pushed.
       const rejected = settled.findIndex((r) => r.status === "rejected");
       if (rejected >= 0) {
-        if (o.followup) throw (settled[rejected] as PromiseRejectedResult).reason;
         console.log(`push_decision send_error ${(settled[rejected] as PromiseRejectedResult).reason instanceof Error ? ((settled[rejected] as PromiseRejectedResult).reason as Error).name : "unknown"}`);
         settled.forEach((r, i) => {
           if (r.status !== "rejected") return;

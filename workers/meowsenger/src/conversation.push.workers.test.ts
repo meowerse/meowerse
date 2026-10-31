@@ -2,6 +2,7 @@
 import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import type { Conversation } from "./conversation";
+import { MAX_PUSH_SUBS_PER_USER } from "./push";
 
 // Offline-push decision inside the Conversation DO: who is skipped (only users with a
 // NON-away socket + the sender), when the 30 s debounce is stamped (only when something
@@ -841,12 +842,12 @@ describe("Conversation offline push decision", () => {
       const sender = await connect(c, "sender");
       await send(sender, "one");
       await vi.waitFor(async () => expect((await queued(c))?.push).toHaveLength(300));
-      expect((await queued(c))!.ceiling).toBe(10 + 3 * Math.ceil((300 * 10) / 44)); // worst case: 10 endpoints per recipient
+      expect((await queued(c))!.ceiling).toBe(10 + 3 * Math.ceil(300 / Math.floor(44 / MAX_PUSH_SUBS_PER_USER))); // worst case: whole users packed per round, 4 per 44-endpoint round
       const rounds = await runUntilDone(runAlarm, c, at);
       expect(await queued(c)).toBeUndefined();
       const counts = countsByEndpoint();
       expect(counts.size).toBe(300);
-      console.info(`COST 300-push-target room under a 503 outage: pushes=${pushCalls().length} alarm_rounds=${rounds} (ceiling 217)`);
+      console.info(`COST 300-push-target room under a 503 outage: pushes=${pushCalls().length} alarm_rounds=${rounds} (ceiling 235)`);
       for (const [, n] of counts) expect(n).toBe(3); // exactly 3: none dropped early, none retried again
       const dropped = outcomeLogs().reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0);
       expect(dropped).toBe(300);
@@ -986,7 +987,7 @@ describe("Conversation offline push decision", () => {
       await send(sender, "one");
       await vi.waitFor(async () => expect((await queued(c))?.push?.length).toBeGreaterThan(0));
       const ceiling = (await queued(c))!.ceiling!;
-      expect(ceiling).toBe(10 + 3 * Math.ceil((100 * 10) / 44));
+      expect(ceiling).toBe(10 + 3 * Math.ceil(100 / Math.floor(44 / MAX_PUSH_SUBS_PER_USER)));
       const rounds = await runUntilDone(runAlarm, c, at);
       expect(await queued(c)).toBeUndefined();
       expect(rounds).toBeLessThan(ceiling);
@@ -998,6 +999,73 @@ describe("Conversation offline push decision", () => {
       expect(allDecisionLogs().some((l) => l.startsWith("push_decision overflow_dropped"))).toBe(false);
     });
   }, 90_000);
+
+  it("(ar2) 300 members x MAX_PUSH_SUBS_PER_USER devices in a sustained 503 outage: whole users pack per round, every endpoint gets exactly 3 attempts, the ceiling is never hit", async () => {
+    await withFakeTime(14_000_000, async (at) => {
+      fetchSpy.mockImplementation(async () => new Response(null, { status: 503 }));
+      const N = 300;
+      const users = Array.from({ length: N }, (_, i) => `u${i}`);
+      const c = newChat(); await seed(c, ["sender", ...users], users); await configureVapid(c);
+      const stmts = [];
+      for (const u of users) for (let d = 2; d <= MAX_PUSH_SUBS_PER_USER; d++) {
+        stmts.push(DB.prepare("INSERT OR REPLACE INTO push_subscriptions (endpoint, user_id, created_at) VALUES (?, ?, 1)").bind(EP(`${c}-${u}-d${d}`), u));
+      }
+      for (let i = 0; i < stmts.length; i += 500) await DB.batch(stmts.slice(i, i + 500));
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      await send(sender, "one");
+      await vi.waitFor(async () => expect((await queued(c))?.push?.length).toBeGreaterThan(0));
+      const ceiling = (await queued(c))!.ceiling!;
+      const usersPerRound = Math.floor(44 / MAX_PUSH_SUBS_PER_USER);
+      expect(ceiling).toBe(10 + 3 * Math.ceil(N / usersPerRound));
+      const rounds = await runUntilDone(runAlarm, c, at, 0, 400);
+      expect(await queued(c)).toBeUndefined();
+      expect(rounds).toBeGreaterThan(10 + 3 * Math.ceil((N * MAX_PUSH_SUBS_PER_USER) / 44)); // beyond the OLD ceiling
+      expect(rounds).toBeLessThanOrEqual(ceiling);
+      const counts = countsByEndpoint();
+      expect(counts.size).toBe(N * MAX_PUSH_SUBS_PER_USER);
+      for (const [, n] of counts) expect(n).toBe(3);
+      // (A stale single-recipient ceiling drop from an earlier test's Durable Object can interleave
+      // here, so single-recipient lines are skipped; a ceiling drop of THIS batch's tail would
+      // also fail the exact-3-attempts assertion above.)
+      expect(allDecisionLogs().filter((l) => (l.startsWith("push_decision overflow_dropped") || l.includes("reason=ceiling")) && !l.includes("push=1 "))).toEqual([]);
+      const logs = outcomeLogs().filter((l) => !l.includes("eligible=0 ")); // same stale-DO caveat: ceiling-drop lines have eligible=0
+      expect(logs.reduce((t, l) => t + Number(/dropped=(\d+)/.exec(l)![1]), 0)).toBe(N);
+      expect(logs.reduce((t, l) => t + Number(/accepted=(\d+)/.exec(l)![1]), 0)).toBe(0);
+    });
+  }, 300_000);
+
+  it("(av) follow-up: a rejected send does not re-push a recipient who already got a 2xx in that round", async () => {
+    await withFakeTime(15_000_000, async (at) => {
+      const c = newChat(); await seed(c, ["sender", "okU", "rejU"], ["okU", "rejU"]); await configureVapid(c);
+      const runAlarm = await manualAlarms(c);
+      const sender = await connect(c, "sender");
+      let phase: "outage" | "followup" | "healed" = "outage";
+      let broken = false;
+      await runInDurableObject(stub(c), async (inst: Conversation) => {
+        Object.defineProperty(internals(inst).env, "DB", { configurable: true, get() { if (broken) throw new Error("d1 gone"); return DB; } });
+      });
+      fetchSpy.mockImplementation(async (url: string) => {
+        if (phase === "outage") return new Response(null, { status: 503 });
+        if (phase === "followup" && String(url).includes("rejU")) { broken = true; return new Response(null, { status: 404 }); } // prune -> d1() throws -> REJECTS
+        if (phase === "followup") await new Promise((r) => setTimeout(r, 60)); // okU finishes AFTER the rejection
+        return new Response(null, { status: 201 });
+      });
+      await send(sender, "one");
+      await vi.waitFor(async () => expect([...((await queued(c))?.push ?? [])].sort()).toEqual(["okU", "rejU"]));
+      phase = "followup";
+      at(10_000); await runAlarm();
+      broken = false;
+      phase = "healed";
+      expect(pushedTo().filter((u) => u.includes("okU"))).toHaveLength(2); // first send + this follow-up
+      expect((await queued(c))?.push).toEqual(["rejU"]);
+      at(20_000); await runAlarm();
+      at(30_000); await runAlarm();
+      expect(pushedTo().filter((u) => u.includes("okU"))).toHaveLength(2); // never re-pushed
+      expect(pushedTo().filter((u) => u.includes("rejU")).length).toBeGreaterThanOrEqual(3);
+      expect(await queued(c)).toBeUndefined();
+    });
+  }, 30_000);
 
   it("(as) first send: a rejected send does not lose its recipient, and a recipient who got a 2xx is never retried", async () => {
     await withFakeTime(12_000_000, async (at) => {
@@ -1061,6 +1129,9 @@ describe("Conversation offline push decision", () => {
     const sender = await connect(c, "sender");
     await send(sender, "one");
     await vi.waitFor(() => expect(allDecisionLogs()).toContain("push_decision overflow_error Error queue_write_failed push=19 inbox=0"));
+    // the planted error message must never reach any log line
+    expect(allDecisionLogs().some((l) => l.includes("SECRET") || l.includes("storage down"))).toBe(false);
+    expect(logSpy.mock.calls.some((x: unknown[]) => x.some((a) => String(a).includes("SECRET") || String(a).includes("storage down")))).toBe(false);
   });
 
   it("(s) per-message cost: DM and 10-member group", async () => {
