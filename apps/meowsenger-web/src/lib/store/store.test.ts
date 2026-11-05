@@ -211,6 +211,29 @@ describe("chat list: no scope, no data", () => {
   });
 });
 
+describe("scope binding epochs", () => {
+  it("a token taken while unbound is never current after the next user binds", () => {
+    setScope("A");
+    clearAll();
+    const t = begin();
+    expect(t.signal.aborted).toBe(true);
+    setScope("B");
+    expect(isCurrent(t.epoch)).toBe(false);
+    expect(cc.put("x", entry(), t.epoch)).toBe(false);
+    expect(cc.peek("x")).toBeUndefined();
+    clearAll();
+  });
+  it("re-binding the same user keeps the epoch (no needless wipe)", () => {
+    setScope("A");
+    const e = getEpoch();
+    cc.put("k", entry(), e);
+    setScope("A");
+    expect(getEpoch()).toBe(e);
+    expect(cc.peek("k")).toBeDefined();
+    clearAll();
+  });
+});
+
 describe("cross-tab auth channel", () => {
   const instances: FakeBC[] = [];
   class FakeBC {
@@ -259,6 +282,13 @@ describe("cross-tab auth channel", () => {
     expect(heard).toEqual([{ type: "logout" }]);
     expect(bus).toHaveLength(2); // no extra channel object was created for the post
     _resetAuthChannelForTests();
+  });
+  it("a cross-tab logout in a tab with no signed-in view wipes but raises no banner", () => {
+    installAuthChannel();
+    clearAll(); // nothing bound: e.g. the login redirect / boot gate
+    const listener = instances.find((i) => i.onmessage)!;
+    listener.onmessage!({ data: { type: "logout" } } as MessageEvent);
+    expect(hasSessionEnded()).toBe(false);
   });
   it("session ended clears the store", () => {
     installAuthChannel();

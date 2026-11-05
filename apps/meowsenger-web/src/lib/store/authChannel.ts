@@ -1,7 +1,7 @@
 // Cross-tab logout + session-ended wiring. The message carries ONLY its type: no user
 // id, chat data or tokens.
 import { notifySessionEnded, subscribeSessionEnded } from "../sessionEnded";
-import { clearAll } from "./scope";
+import { clearAll, getScope } from "./scope";
 
 const NAME = "mw-auth";
 let installed = false;
@@ -24,8 +24,10 @@ export function installAuthChannel(): void {
       const d = ev.data as unknown;
       if (d === null || typeof d !== "object" || Array.isArray(d)) return;
       if ((d as { type?: unknown }).type !== "logout" || Object.keys(d).length !== 1) return;
+      // Only a tab that holds a signed-in view raises the banner; any tab still wipes.
+      const held = getScope() !== null;
       clearAll();
-      notifySessionEnded();
+      if (held) notifySessionEnded();
     };
   } catch { /* no cross-tab logout; this tab still clears itself */ }
 }

@@ -725,6 +725,23 @@ describe("Chat island — revoked purges the store", () => {
   });
 });
 
+describe("Chat island — a members 403 purges that chat", () => {
+  it("a forbidden roster read purges the group from the cache; others stay", async () => {
+    const { getMembers } = await import("../lib/chat");
+    H.chats = [dm({ id: "c1", type: "group", name: "team", peerId: null, peerUsername: null, peerDisplayName: null })];
+    vi.mocked(getMembers).mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "http" as const, status: 403 } }) as never);
+    setScope("u1");
+    const e = getEpoch();
+    conversationCache.put("c1", { messages: [], hasMore: false, fetchedAt: 1 }, e);
+    conversationCache.put("c9", { messages: [], hasMore: false, fetchedAt: 1 }, e);
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalled());
+    await waitFor(() => expect(conversationCache.peek("c1")).toBeUndefined());
+    expect(conversationCache.peek("c9")).toBeDefined();
+    clearAll();
+  });
+});
+
 describe("Chat island — one session source (real Chat under AppShell)", () => {
   it("boot makes exactly one session read and one chats read (no second fetch in Chat)", async () => {
     const { getSession } = await import("../lib/meowsengerApi");

@@ -51,7 +51,11 @@ export function begin(): Token {
 /** Bind the store to a user. A different non-null scope wipes first, so data left over
  *  from user A can never be read under user B, whichever trigger was missed. */
 export function setScope(userId: string): void {
-  if (scope !== null && scope !== userId) clearAll();
+  if (scope === userId) return;
+  if (scope !== null) clearAll();
+  // Any binding change (including null -> user) starts a new epoch, so a token taken
+  // while unbound (or under the previous user) can never become current again.
+  epoch++;
   scope = userId;
 }
 

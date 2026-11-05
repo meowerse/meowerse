@@ -4,7 +4,7 @@ import { getSession, loginUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, type ChatSummary } from "../lib/chat";
 import { recordPushError } from "../lib/push";
 import { getEndedSnapshot, hasSessionEnded, notifySessionEnded, resetSessionEnded, clearSessionEndedFlag, subscribeSessionEnded } from "../lib/sessionEnded";
-import { clearAll, installAuthChannel } from "../lib/store";
+import { clearAll, installAuthChannel, setScope } from "../lib/store";
 import Chat from "./Chat";
 
 const RETRY_BASE_MS = 2_000;
@@ -234,6 +234,7 @@ export default function AppShell({ base }: { base: string }) {
         }
         failuresRef.current = 0;
         heldUserRef.current = user.id;
+        setScope(user.id); // bind the store before Chat renders (a different user wipes it)
         setBoot({ user, chats });
         setGate("in");
       } else if (r.ok && !r.data.authenticated) {

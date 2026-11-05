@@ -4,7 +4,7 @@ import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { shownName } from "../lib/userName";
 import { fmtDay } from "../lib/messageText";
-import { useConversation, type SendResult } from "../hooks/useConversation";
+import { useConversation, type SendResult, isForbidden } from "../hooks/useConversation";
 import { useInbox } from "../hooks/useInbox";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
@@ -219,11 +219,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
   // a member). The socket already stopped reconnecting on the `revoked` frame.
-  const onRevoked = useCallback(() => {
-    // Both callers (the `revoked` frame and a 403 on the active chat's history) can only
-    // concern the active chat: the room socket / history fetch is for activeId.
-    const gone = activeIdRef.current;
-    if (gone) purgeChat(gone);
+  const onRevoked = useCallback((gone: string) => {
+    // Purge exactly the chat the revoke / 403 was for (not whichever chat is active by
+    // the time it lands), so a late frame can never purge the wrong chat or spare this one.
+    purgeChat(gone);
     showToast("you're no longer a member of this chat");
     setActiveId(null);
     void refreshChats();
@@ -301,7 +300,11 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const loadMembers = useCallback(async (chatId: string) => {
     const res = await getMembers(base, chatId);
     if (activeRef.current !== chatId) return; // switched away mid-fetch
-    if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
+    if (!res.ok) {
+      // A 403 means we're no longer a member: drop that chat from every cache.
+      if (isForbidden(res)) purgeChat(chatId);
+      return; // otherwise keep the last known roster; never blank it on a failed fetch
+    }
     const list: Member[] = res.data;
     const map = new Map<string, SenderInfo>();
     for (const m of list) {
