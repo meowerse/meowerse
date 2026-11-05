@@ -19,6 +19,7 @@ import { Avatar } from "./Avatar";
 import Settings from "./Settings";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/push";
+import { setScope, clearAll, purgeChat, broadcastLogout } from "../lib/store";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -52,12 +53,17 @@ function lastSeenLabel(ms: number | null | undefined): string {
 export default function Chat({ base, user, initialChats }: { base: string; user: SessionUser; initialChats: RequestResult<ChatSummary[]> }) {
   // The signed-in user comes from AppShell's single /api/session read (no second fetch).
   const me: SessionUser = user;
+  // Bind the in-memory store to this user before any store read. A remount for the same
+  // user keeps the cache (instant re-entry); a different user wipes it first.
+  useState(() => { setScope(user.id); });
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
   // The last sidebar refresh failed. The previous list is KEPT (never replaced by an
   // empty state because a request failed); the sidebar shows a subtle retry instead.
   const [chatsError, setChatsError] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
   const deepLinkDoneRef = useRef(false);
   const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
   // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
@@ -214,6 +220,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
   // a member). The socket already stopped reconnecting on the `revoked` frame.
   const onRevoked = useCallback(() => {
+    // Both callers (the `revoked` frame and a 403 on the active chat's history) can only
+    // concern the active chat: the room socket / history fetch is for activeId.
+    const gone = activeIdRef.current;
+    if (gone) purgeChat(gone);
     showToast("you're no longer a member of this chat");
     setActiveId(null);
     void refreshChats();
@@ -643,6 +653,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // clear the active selection (the chat may have been deleted server-side).
   function onLeftGroup() {
     const left = activeRef.current;
+    if (left) purgeChat(left);
     setDrawerOpen(false);
     setActiveId(null);
     if (left) setChats((prev) => prev.filter((c) => c.id !== left));
@@ -650,6 +661,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   }
 
   const onLogout = useCallback(async () => {
+    // Wipe the in-memory store FIRST (before any await and before the POST), then tell
+    // the other tabs. The broadcast carries only its type and can never throw/hang.
+    clearAll();
+    broadcastLogout();
     // Drop this browser's push subscription (server row + local + marker) BEFORE the
     // session ends, so the next account on this browser can't inherit it. Best-effort
     // and time-boxed: logout must never hang on it.

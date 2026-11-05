@@ -1,0 +1,28 @@
+// Per-chat roster with a 5-minute TTL.
+import type { Member } from "../chat";
+import { isCurrent, notify, registerCache, useStore } from "./scope";
+
+export const MEMBER_TTL_MS = 5 * 60_000;
+const rosters = new Map<string, { roster: Member[]; at: number }>();
+registerCache(() => { rosters.clear(); });
+
+export function get(chatId: string): Member[] | undefined {
+  const e = rosters.get(chatId);
+  if (!e) return undefined;
+  if (Date.now() - e.at >= MEMBER_TTL_MS) { rosters.delete(chatId); return undefined; }
+  return e.roster;
+}
+export function put(chatId: string, roster: Member[], epoch: number): boolean {
+  if (!isCurrent(epoch)) return false;
+  rosters.set(chatId, { roster, at: Date.now() });
+  notify();
+  return true;
+}
+export function invalidate(chatId: string): void {
+  if (rosters.delete(chatId)) notify();
+}
+export const purge = invalidate;
+
+export function useMembers(chatId: string | null): Member[] | undefined {
+  return useStore(() => (chatId ? get(chatId) : undefined));
+}

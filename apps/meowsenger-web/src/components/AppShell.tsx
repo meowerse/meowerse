@@ -4,6 +4,7 @@ import { getSession, loginUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, type ChatSummary } from "../lib/chat";
 import { recordPushError } from "../lib/push";
 import { getEndedSnapshot, hasSessionEnded, notifySessionEnded, resetSessionEnded, clearSessionEndedFlag, subscribeSessionEnded } from "../lib/sessionEnded";
+import { clearAll, installAuthChannel } from "../lib/store";
 import Chat from "./Chat";
 
 const RETRY_BASE_MS = 2_000;
@@ -125,6 +126,9 @@ export default function AppShell({ base }: { base: string }) {
   const gateRef = useRef<Gate>(gate);
   gateRef.current = gate;
 
+  // Once per island: wipe the store on session-ended and on another tab's logout.
+  useEffect(() => { installAuthChannel(); }, []);
+
   useEffect(() => subscribeSessionEnded(() => { setResumed(false); setGate("ended"); }), []);
 
   // bfcache restore: the frozen page may show a user who has since signed out or been
@@ -178,6 +182,7 @@ export default function AppShell({ base }: { base: string }) {
       });
     };
     function wipeAppState() {
+      clearAll(); // the previous account's chats/messages/rosters must not survive
       heldUserRef.current = null;
       setResumed(false);
       setBoot(null);

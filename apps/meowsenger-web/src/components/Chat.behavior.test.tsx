@@ -71,6 +71,7 @@ import Chat from "./Chat";
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 import { listChats } from "../lib/chat";
+import { conversationCache, getEpoch, setScope, clearAll } from "../lib/store";
 
 /** Chat now receives the session user + first list from AppShell (one source of truth). */
 function ChatBoot() {
@@ -589,6 +590,29 @@ describe("Chat island — realtime sidebar", () => {
   });
 });
 
+describe("Chat island — logout wipes the in-memory store before the POST", () => {
+  it("clearAll happens before fetch(logoutUrl) and broadcasts only the type", async () => {
+    H.order = [];
+    H.disableImpl = async () => {};
+    const posted: unknown[] = [];
+    vi.stubGlobal("BroadcastChannel", class { postMessage(m: unknown) { posted.push(m); } close() {} });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      H.order.push(conversationCache.peek("secret") ? "fetch:store-NOT-cleared" : `fetch:${url}`);
+      return new Response("{}", { status: 200 });
+    }));
+    render(<ChatBoot />);
+    await screen.findByLabelText("log out");
+    conversationCache.put("secret", { messages: [], hasMore: false, fetchedAt: 1 }, getEpoch());
+    expect(conversationCache.peek("secret")).toBeDefined();
+    fireEvent.click(screen.getByLabelText("log out"));
+    await waitFor(() => expect(H.order).toContain("fetch:/auth/logout"));
+    expect(conversationCache.peek("secret")).toBeUndefined();
+    expect(posted).toEqual([{ type: "logout" }]);
+    vi.unstubAllGlobals();
+    setScope("u1"); clearAll();
+  });
+});
+
 describe("Chat island — logout drops the push subscription (cross-account privacy)", () => {
   async function logout(): Promise<void> {
     H.order = [];
@@ -682,6 +706,22 @@ describe("Chat island — history 403", () => {
     await mountOpen();
     await screen.findByText("you're no longer a member of this chat");
     expect(screen.queryByText("couldn't load messages.")).toBeNull();
+  });
+});
+
+describe("Chat island — revoked purges the store", () => {
+  it("a revoked frame purges the active chat from the cache, others stay", async () => {
+    setScope("u1");
+    const e = getEpoch();
+    conversationCache.put("c1", { messages: [], hasMore: false, fetchedAt: 1 }, e);
+    conversationCache.put("c9", { messages: [], hasMore: false, fetchedAt: 1 }, e);
+    const ws = await mountOpen();
+    expect(conversationCache.peek("c1")).toBeDefined(); // same-user mount keeps the cache
+    open(ws); emit(ws, { type: "revoked" });
+    await screen.findByText("you're no longer a member of this chat");
+    expect(conversationCache.peek("c1")).toBeUndefined();
+    expect(conversationCache.peek("c9")).toBeDefined();
+    clearAll();
   });
 });
 
