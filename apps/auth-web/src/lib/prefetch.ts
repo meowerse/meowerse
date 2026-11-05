@@ -23,3 +23,11 @@ export function isPrefetchable(href: string): boolean {
 export function prefetchAttr(href: string): { "data-astro-prefetch"?: "hover" } {
   return isPrefetchable(href) ? { "data-astro-prefetch": "hover" } : {};
 }
+
+/**
+ * Spread onto an <a>: {...linkProps(href)}. One value feeds both href and the prefetch decision.
+ * Prefer the trailing-slash form for static pages (Astro's canonical URL; the bare form costs a redirect per prefetch).
+ */
+export function linkProps(href: string): { href: string; "data-astro-prefetch"?: "hover" } {
+  return { href, ...prefetchAttr(href) };
+}

@@ -25,9 +25,9 @@ export interface AppHeaderLinks {
 /** Default nav for the auth app; other apps (or a docs preview) pass their own. */
 const DEFAULT_LINKS: AppHeaderLinks = {
   guest: [
-    { label: "about", href: "/about" },
+    { label: "about", href: "/about/" },
     { label: "developers", href: "/developers" },
-    { label: "docs", href: "/docs" },
+    { label: "docs", href: "/docs/" },
   ],
   guestActions: [
     { label: "log in", href: "/login" },
@@ -36,7 +36,7 @@ const DEFAULT_LINKS: AppHeaderLinks = {
   signedIn: [
     { label: "account", href: "/account" },
     { label: "developers", href: "/developers" },
-    { label: "docs", href: "/docs" },
+    { label: "docs", href: "/docs/" },
   ],
 };
 
@@ -48,7 +48,7 @@ export function AppHeader({ session, className, links = DEFAULT_LINKS, prefetch 
   className?: string;
   /** the nav links per session state; defaults to the auth app's set. A docs preview passes links that resolve on its own site. */
   links?: AppHeaderLinks;
-  /** opt-in: when given and it returns true for a link's href, that link gets data-astro-prefetch="hover". Absent: no attribute is rendered. */
+  /** opt-in: when given and it returns true for a link's href, that link gets data-astro-prefetch="hover". Absent: no attribute is rendered. The consumer owns the allowlist: the predicate MUST fail closed (true only for public, side-effect-free, cacheable pages), since a false positive prefetches session/CSRF flows. */
   prefetch?: (href: string) => boolean;
 }) {
   const [open, setOpen] = useState(false);

@@ -1,9 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { getViteConfig } from "astro/config";
 
 // Coverage is scoped to src/lib/** (the typed auth API client) — the only pure
 // TS logic here. The .astro pages and React islands are smoke-checked by
 // `astro check` + `astro build`, mirroring apps/web's honest 90% gate.
-export default defineConfig({
+// getViteConfig lets vitest import .astro files (src/lib/prefetch-render.test.ts renders real pages).
+export default getViteConfig({
   test: {
     coverage: {
       provider: "v8",

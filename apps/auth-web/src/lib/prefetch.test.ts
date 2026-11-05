@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrefetchable, prefetchAttr, PREFETCH_ALLOWED } from "./prefetch";
+import { isPrefetchable, linkProps, prefetchAttr, PREFETCH_ALLOWED } from "./prefetch";
 
 const FORBIDDEN = ["/login", "/signup", "/consent", "/verify", "/account", "/dashboard", "/error", "/authorize", "/logout", "/developers", "/api/session", "/.well-known/openid-configuration", "/token", "/userinfo", "/jwks.json"];
 
@@ -27,5 +27,12 @@ describe("prefetch allowlist", () => {
   });
   it("allowlist contains no forbidden path", () => {
     for (const p of FORBIDDEN) expect(PREFETCH_ALLOWED.has(p)).toBe(false);
+  });
+});
+
+describe("linkProps", () => {
+  it("returns href plus the attribute only for allowlisted targets (trailing slash tolerated)", () => {
+    expect(linkProps("/docs/")).toEqual({ href: "/docs/", "data-astro-prefetch": "hover" });
+    expect(linkProps("/login")).toEqual({ href: "/login" });
   });
 });

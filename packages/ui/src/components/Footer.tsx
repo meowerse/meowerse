@@ -10,9 +10,9 @@ export interface FooterLink {
 
 /** Default nav + legal line for the auth app; other apps pass their own. */
 const DEFAULT_LINKS: FooterLink[] = [
-  { label: "about", href: "/about" },
-  { label: "privacy", href: "/privacy" },
-  { label: "terms", href: "/terms" },
+  { label: "about", href: "/about/" },
+  { label: "privacy", href: "/privacy/" },
+  { label: "terms", href: "/terms/" },
   { label: "developers", href: "/developers" },
 ];
 const DEFAULT_LEGAL = "meowerse accounts — a personal project by alxnko";
@@ -30,7 +30,7 @@ export function Footer({
   links?: FooterLink[];
   /** the legal/attribution line; defaults to the auth app's. */
   legal?: string;
-  /** opt-in: when given and it returns true for a same-site link's href, that link gets data-astro-prefetch="hover". Absolute links never do. */
+  /** opt-in: when given and it returns true for a same-site link's href, that link gets data-astro-prefetch="hover". Absolute links never do. The consumer owns the allowlist: the predicate MUST fail closed (true only for public, side-effect-free, cacheable pages), since a false positive prefetches session/CSRF flows. */
   prefetch?: (href: string) => boolean;
 }) {
   return (
