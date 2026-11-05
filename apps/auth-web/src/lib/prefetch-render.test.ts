@@ -22,7 +22,7 @@ beforeAll(async () => {
   const container = await AstroContainer.create();
   container.addServerRenderer({ name: "@astrojs/react", renderer: reactRenderer });
   container.addClientRenderer({ name: "@astrojs/react", entrypoint: "@astrojs/react/client.js" });
-  for (const [path, page] of Object.entries(pages)) html[path] = await container.renderToString(page, { routePattern: path === "/" ? "/" : path.replace(/\/$/, "") });
+  for (const [path, page] of Object.entries(pages)) html[path] = await container.renderToString(page);
 }, 60_000);
 
 const anchorsOf = (h: string) => [...h.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]);
