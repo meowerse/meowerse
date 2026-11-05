@@ -5,6 +5,10 @@ import { clearAll } from "./scope";
 
 const NAME = "mw-auth";
 let installed = false;
+// The ONE channel object this tab listens on. Logout posts through it too: a
+// BroadcastChannel never delivers to its own sender object, so this tab does not
+// raise "session ended" on itself while it is logging out.
+let channel: BroadcastChannel | null = null;
 
 /** Install once (idempotent): wipe on session-ended and on another tab's logout. */
 export function installAuthChannel(): void {
@@ -15,6 +19,7 @@ export function installAuthChannel(): void {
   try {
     if (typeof BroadcastChannel === "undefined") return;
     const ch = new BroadcastChannel(NAME);
+    channel = ch;
     ch.onmessage = (ev: MessageEvent) => {
       const d = ev.data as unknown;
       if (d === null || typeof d !== "object" || Array.isArray(d)) return;
@@ -28,6 +33,7 @@ export function installAuthChannel(): void {
 /** Tell other tabs we logged out. Never throws. */
 export function broadcastLogout(): void {
   try {
+    if (channel) { channel.postMessage({ type: "logout" }); return; }
     if (typeof BroadcastChannel === "undefined") return;
     const ch = new BroadcastChannel(NAME);
     ch.postMessage({ type: "logout" });
@@ -36,4 +42,8 @@ export function broadcastLogout(): void {
 }
 
 /** Test-only: allow re-install in a fresh module state. */
-export function _resetAuthChannelForTests(): void { installed = false; }
+export function _resetAuthChannelForTests(): void {
+  installed = false;
+  try { channel?.close(); } catch { /* ignore */ }
+  channel = null;
+}

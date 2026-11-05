@@ -1,7 +1,7 @@
 // Last good chat list. Single-flight, sequence-guarded, epoch-guarded refresh.
 import type { RequestResult } from "@meowerse/ui";
 import type { ChatSummary } from "../chat";
-import { begin, isCurrent, notify, registerCache, useStore } from "./scope";
+import { begin, getEpoch, isCurrent, notify, registerCache, useStore } from "./scope";
 
 export type ListFetcher = (signal: AbortSignal) => Promise<RequestResult<ChatSummary[]>>;
 export interface ListState { list: ChatSummary[] | null; error: unknown }
@@ -20,9 +20,10 @@ export function subscribeRemoved(fn: (chatId: string) => void): () => void {
   return () => { removedHooks.delete(fn); };
 }
 
-/** Replace the list. Chats that vanished from it are purged from every cache. */
+/** Replace the list. Chats that vanished from it are purged from every cache.
+ *  `epoch` omitted = sync caller: still refused while no account scope is bound. */
 export function apply(list: ChatSummary[], epoch?: number): void {
-  if (epoch !== undefined && !isCurrent(epoch)) return;
+  if (!isCurrent(epoch ?? getEpoch())) return;
   const prev = state.list;
   state = { list, error: null };
   if (prev) {

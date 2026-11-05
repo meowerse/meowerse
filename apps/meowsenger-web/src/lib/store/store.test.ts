@@ -202,6 +202,15 @@ describe("purgeChat", () => {
   });
 });
 
+describe("chat list: no scope, no data", () => {
+  it("a sync apply() after clearAll (no scope bound) stores nothing", () => {
+    setScope("A");
+    clearAll();
+    cl.apply([{ id: "leak" } as never]);
+    expect(cl.getState().list).toBeNull();
+  });
+});
+
 describe("cross-tab auth channel", () => {
   const instances: FakeBC[] = [];
   class FakeBC {
@@ -228,6 +237,28 @@ describe("cross-tab auth channel", () => {
     listener.onmessage!({ data: { type: "logout" } } as MessageEvent);
     expect(cc.peek("c1")).toBeUndefined();
     expect(hasSessionEnded()).toBe(true);
+  });
+  it("logout in THIS tab posts through its own listening channel: no self 'session ended', other tabs still hear it", () => {
+    // Real BroadcastChannel semantics: delivered to every other object with the same
+    // name (including other objects in this same tab), never to the sender object.
+    const bus: BusBC[] = [];
+    class BusBC {
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      constructor(public name: string) { bus.push(this); }
+      postMessage(m: unknown) { for (const o of bus) if (o !== this && o.name === this.name) o.onmessage?.({ data: m } as MessageEvent); }
+      close() { const i = bus.indexOf(this); if (i >= 0) bus.splice(i, 1); }
+    }
+    vi.stubGlobal("BroadcastChannel", BusBC);
+    _resetAuthChannelForTests();
+    installAuthChannel();
+    const otherTab = new BusBC("mw-auth");
+    const heard: unknown[] = [];
+    otherTab.onmessage = (e) => heard.push(e.data);
+    broadcastLogout();
+    expect(hasSessionEnded()).toBe(false); // this tab is navigating to login, not showing the banner
+    expect(heard).toEqual([{ type: "logout" }]);
+    expect(bus).toHaveLength(2); // no extra channel object was created for the post
+    _resetAuthChannelForTests();
   });
   it("session ended clears the store", () => {
     installAuthChannel();
