@@ -223,8 +223,12 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     // Purge exactly the chat the revoke / 403 was for (not whichever chat is active by
     // the time it lands), so a late frame can never purge the wrong chat or spare this one.
     purgeChat(gone);
-    showToast("you're no longer a member of this chat");
-    setActiveId(null);
+    // Only close (and tell the user about) the chat if it is still the one on screen: a
+    // late revoke for a chat they already left must not close the chat they just opened.
+    if (activeIdRef.current === gone) {
+      showToast("you're no longer a member of this chat");
+      setActiveId(null);
+    }
     void refreshChats();
   }, [showToast, refreshChats]);
 
@@ -299,19 +303,18 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // MessageItem can render each sender's identity. No-op for DMs.
   const loadMembers = useCallback(async (chatId: string) => {
     const res = await getMembers(base, chatId);
+    // A 403 means we're no longer a member: handled like a revoke (purge that chat from
+    // every cache, and close it only if it's still open), even if we switched away.
+    if (isForbidden(res)) { onRevoked(chatId); return; }
     if (activeRef.current !== chatId) return; // switched away mid-fetch
-    if (!res.ok) {
-      // A 403 means we're no longer a member: drop that chat from every cache.
-      if (isForbidden(res)) purgeChat(chatId);
-      return; // otherwise keep the last known roster; never blank it on a failed fetch
-    }
+    if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
     const list: Member[] = res.data;
     const map = new Map<string, SenderInfo>();
     for (const m of list) {
       map.set(m.userId, { name: shownName(m.displayName, m.username), avatarUrl: m.avatarUrl, role: m.role });
     }
     setMemberMap(map);
-  }, [base, activeRef]);
+  }, [base, activeRef, onRevoked]);
 
   // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the
   // FIRST successful chat list (see applyChatList). The URL is kept in sync with the

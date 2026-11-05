@@ -738,6 +738,31 @@ describe("Chat island — a members 403 purges that chat", () => {
     await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalled());
     await waitFor(() => expect(conversationCache.peek("c1")).toBeUndefined());
     expect(conversationCache.peek("c9")).toBeDefined();
+    await screen.findByText("you're no longer a member of this chat"); // same as a revoke
+    clearAll();
+  });
+
+  it("a 403 that lands after switching away purges the old chat but keeps the new one open", async () => {
+    const { getMembers } = await import("../lib/chat");
+    H.chats = [
+      dm({ id: "c1", type: "group", name: "team", peerId: null, peerUsername: null, peerDisplayName: null }),
+      dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" }),
+    ];
+    H.history = { c1: [msg({ id: "m1", body: "team msg" })], c2: [msg({ id: "m2", chatId: "c2", body: "carol msg" })] };
+    let release!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => {
+      release = () => r({ ok: false as const, error: { kind: "http" as const, status: 403 } } as never);
+    }));
+    setScope("u1");
+    conversationCache.put("c1", { messages: [], hasMore: false, fetchedAt: 1 }, getEpoch());
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalled());
+    act(() => fireEvent.click(screen.getByText("Carol")));
+    await screen.findByText("carol msg");
+    await act(async () => { release(); });
+    await waitFor(() => expect(conversationCache.peek("c1")).toBeUndefined());
+    expect(screen.getByText("carol msg")).toBeTruthy(); // the chat they opened stays open
+    expect(screen.queryByText("you're no longer a member of this chat")).toBeNull();
     clearAll();
   });
 });
