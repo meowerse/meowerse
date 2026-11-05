@@ -11,6 +11,9 @@ export default defineConfig({
   output: "static",
   trailingSlash: "always",
   integrations: [react()],
+  // Hover prefetch of same-origin links only (Astro's canPrefetchUrl, astro/dist/prefetch/index.js, rejects other origins and
+  // skips Save-Data / 2g connections for non-"tap" strategies). Every route is static and side-effect free.
+  prefetch: { prefetchAll: true, defaultStrategy: "hover" },
   build: { inlineStylesheets: "always", format: "directory" },
   vite: { build: { assetsInlineLimit: 0 } },
   devToolbar: { enabled: false },
