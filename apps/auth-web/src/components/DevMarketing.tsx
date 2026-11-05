@@ -1,4 +1,5 @@
 import { Button, Card } from "@meowerse/ui";
+import { prefetchAttr } from "../lib/prefetch";
 
 export default function DevMarketing() {
   return (
@@ -15,7 +16,7 @@ export default function DevMarketing() {
       </Card>
       <p className="mw-row">
         <a href="/login?next=%2Fdevelopers"><Button variant="primary">sign in to manage your apps</Button></a>
-        <a href="/docs"><Button variant="ghost">read the integration docs</Button></a>
+        <a href="/docs" {...prefetchAttr("/docs")}><Button variant="ghost">read the integration docs</Button></a>
       </p>
     </div>
   );
