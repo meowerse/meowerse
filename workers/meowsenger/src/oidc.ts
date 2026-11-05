@@ -13,11 +13,11 @@ export async function handleLogin(auth: AuthClient): Promise<Response> {
   const payload = JSON.stringify({ state: txn.state, nonce: txn.nonce, codeVerifier: txn.codeVerifier });
   // 30-minute httpOnly txn cookie; consumed + cleared at /auth/callback.
   const cookie = `${TXN_COOKIE}=${encodeURIComponent(payload)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=1800`;
-  return new Response(null, { status: 302, headers: { Location: txn.url, "Set-Cookie": cookie } });
+  return new Response(null, { status: 302, headers: { Location: txn.url, "Set-Cookie": cookie, "Cache-Control": "no-store" } });
 }
 
 function redirectClearingTxn(location: string, extra: string[]): Response {
-  const headers = new Headers({ Location: location });
+  const headers = new Headers({ Location: location, "Cache-Control": "no-store" });
   for (const c of [clearCookie(TXN_COOKIE), ...extra]) headers.append("Set-Cookie", c);
   return new Response(null, { status: 302, headers });
 }
@@ -61,12 +61,13 @@ function bad(msg: string, req?: Request): Response {
 </html>`;
     const headers = new Headers({
       "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
       "Set-Cookie": clearCookie(TXN_COOKIE),
     });
     return new Response(html, { status: 400, headers });
   }
 
-  const headers = new Headers({ "Content-Type": "application/json" });
+  const headers = new Headers({ "Content-Type": "application/json", "Cache-Control": "no-store" });
   headers.append("Set-Cookie", clearCookie(TXN_COOKIE));
   return new Response(JSON.stringify({ error: msg }), { status: 400, headers });
 }
@@ -90,6 +91,7 @@ export async function handleCallback(req: Request, env: Env, deps: Deps): Promis
         headers: {
           Location: `${env.WEB_ORIGIN}/auth/login?retry=1`,
           "Set-Cookie": clearCookie(TXN_COOKIE),
+          "Cache-Control": "no-store",
         },
       });
     }
@@ -105,6 +107,7 @@ export async function handleCallback(req: Request, env: Env, deps: Deps): Promis
         headers: {
           Location: `${env.WEB_ORIGIN}/auth/login?retry=1`,
           "Set-Cookie": clearCookie(TXN_COOKIE),
+          "Cache-Control": "no-store",
         },
       });
     }

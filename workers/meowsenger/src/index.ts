@@ -3,7 +3,7 @@ import type { Env } from "./types";
 // can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
 export { Conversation } from "./conversation";
 export { UserInbox } from "./inbox";
-import { corsHeaders, json } from "./security";
+import { corsHeaders, json, NO_STORE } from "./security";
 import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
 import { handleSession, handleLogout } from "./api";
@@ -66,6 +66,8 @@ async function writeThrottle(env: Env, req: Request): Promise<boolean> {
   return success;
 }
 
+const NS = { "Cache-Control": NO_STORE };
+
 const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
 Preferred-Languages: en, ru
@@ -76,7 +78,7 @@ Canonical: https://meowsenger.alxnko.dev/.well-known/security.txt
 export async function handle(req: Request, env: Env, deps: Deps): Promise<Response> {
   const url = new URL(req.url);
   const cors = corsHeaders(req.headers.get("Origin"), env);
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Cache-Control": NO_STORE } });
 
   if (url.hostname.endsWith(".alxnko.eu.org")) {
     const newHost = url.hostname.replace(/\.alxnko\.eu\.org$/, ".alxnko.dev");
@@ -220,16 +222,16 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
  * upgrading; the happy path hands the socket back from the DO stub.
  */
 async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
-  if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+  if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
   const chatId = new URL(req.url).searchParams.get("chat");
-  if (!chatId) return new Response("chat required", { status: 400 });
+  if (!chatId) return new Response("chat required", { status: 400, headers: NS });
   const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401 });
+  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
   // A single membership lookup: getRole returns null for non-members (the gate)
   // and the caller's role otherwise. The role is forwarded to the DO so it can
   // authorize admin/owner message-delete (Slice 5) without a second D1 read.
   const role = await getRole(deps.getDb(), chatId, me);
-  if (role == null) return new Response("forbidden", { status: 403 });
+  if (role == null) return new Response("forbidden", { status: 403, headers: NS });
   // Slice 6: forward the chat's `type` too, so the DO can enforce the channel
   // read-only rule (member sockets on a channel can't post) without a D1 read.
   const type = (await chatType(deps.getDb(), chatId)) ?? "group";
@@ -251,11 +253,11 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
  * own id (`inbox:<me>`), so a user can only ever open their own inbox.
  */
 async function handleInboxWs(req: Request, env: Env, deps: Deps): Promise<Response> {
-  if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+  if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
   const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401 });
+  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
   const ns = env.USER_INBOX;
-  if (!ns) return new Response("inbox unavailable", { status: 503 });
+  if (!ns) return new Response("inbox unavailable", { status: 503, headers: NS });
   const stub = ns.get(ns.idFromName("inbox:" + me));
   return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}`, req));
 }

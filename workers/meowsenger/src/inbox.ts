@@ -40,9 +40,9 @@ export class UserInbox extends DurableObject<Env> {
     }
 
     // WS upgrade — the router already validated the session and passes ?user=<id>.
-    if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+    if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: { "Cache-Control": "no-store" } });
     const userId = url.searchParams.get("user");
-    if (!userId) return new Response("bad ws params", { status: 400 });
+    if (!userId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
     const pair = new WebSocketPair();
     // Accept into the Hibernation API so the inbox sleeps between deltas.
     this.ctx.acceptWebSocket(pair[1]);
