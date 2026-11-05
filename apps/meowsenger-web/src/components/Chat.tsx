@@ -4,7 +4,7 @@ import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { shownName } from "../lib/userName";
 import { fmtDay } from "../lib/messageText";
-import { useConversation, type SendResult } from "../hooks/useConversation";
+import { useConversation, type SendResult, isForbidden } from "../hooks/useConversation";
 import { useInbox } from "../hooks/useInbox";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
@@ -19,6 +19,7 @@ import { Avatar } from "./Avatar";
 import Settings from "./Settings";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/push";
+import { setScope, clearAll, purgeChat, broadcastLogout } from "../lib/store";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -52,12 +53,17 @@ function lastSeenLabel(ms: number | null | undefined): string {
 export default function Chat({ base, user, initialChats }: { base: string; user: SessionUser; initialChats: RequestResult<ChatSummary[]> }) {
   // The signed-in user comes from AppShell's single /api/session read (no second fetch).
   const me: SessionUser = user;
+  // Bind the in-memory store to this user before any store read. A remount for the same
+  // user keeps the cache (instant re-entry); a different user wipes it first.
+  useState(() => { setScope(user.id); });
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
   // The last sidebar refresh failed. The previous list is KEPT (never replaced by an
   // empty state because a request failed); the sidebar shows a subtle retry instead.
   const [chatsError, setChatsError] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
   const deepLinkDoneRef = useRef(false);
   const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
   // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
@@ -213,9 +219,16 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
   // a member). The socket already stopped reconnecting on the `revoked` frame.
-  const onRevoked = useCallback(() => {
-    showToast("you're no longer a member of this chat");
-    setActiveId(null);
+  const onRevoked = useCallback((gone: string) => {
+    // Purge exactly the chat the revoke / 403 was for (not whichever chat is active by
+    // the time it lands), so a late frame can never purge the wrong chat or spare this one.
+    purgeChat(gone);
+    // Only close (and tell the user about) the chat if it is still the one on screen: a
+    // late revoke for a chat they already left must not close the chat they just opened.
+    if (activeIdRef.current === gone) {
+      showToast("you're no longer a member of this chat");
+      setActiveId(null);
+    }
     void refreshChats();
   }, [showToast, refreshChats]);
 
@@ -290,6 +303,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // MessageItem can render each sender's identity. No-op for DMs.
   const loadMembers = useCallback(async (chatId: string) => {
     const res = await getMembers(base, chatId);
+    // A 403 means we're no longer a member: handled like a revoke (purge that chat from
+    // every cache, and close it only if it's still open), even if we switched away.
+    if (isForbidden(res)) { onRevoked(chatId); return; }
     if (activeRef.current !== chatId) return; // switched away mid-fetch
     if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
     const list: Member[] = res.data;
@@ -298,7 +314,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
       map.set(m.userId, { name: shownName(m.displayName, m.username), avatarUrl: m.avatarUrl, role: m.role });
     }
     setMemberMap(map);
-  }, [base, activeRef]);
+  }, [base, activeRef, onRevoked]);
 
   // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the
   // FIRST successful chat list (see applyChatList). The URL is kept in sync with the
@@ -643,6 +659,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // clear the active selection (the chat may have been deleted server-side).
   function onLeftGroup() {
     const left = activeRef.current;
+    if (left) purgeChat(left);
     setDrawerOpen(false);
     setActiveId(null);
     if (left) setChats((prev) => prev.filter((c) => c.id !== left));
@@ -650,6 +667,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   }
 
   const onLogout = useCallback(async () => {
+    // Wipe the in-memory store FIRST (before any await and before the POST), then tell
+    // the other tabs. The broadcast carries only its type and can never throw/hang.
+    clearAll();
+    broadcastLogout();
     // Drop this browser's push subscription (server row + local + marker) BEFORE the
     // session ends, so the next account on this browser can't inherit it. Best-effort
     // and time-boxed: logout must never hang on it.

@@ -228,11 +228,12 @@ export interface UseConversationInput {
   /** Called at the EXACT send-dispatch point → the view clears its armed reply. */
   consumeReply: () => void;
   /** The server revoked membership (removed/left) → the view drops the chat + toasts. */
-  onRevoked: () => void;
+  /** The chat whose membership is gone (its socket's chat / the forbidden read's chat). */
+  onRevoked: (chatId: string) => void;
 }
 
 /** A definitive 403 from a history read: the caller is no longer a member of the chat. */
-function isForbidden(res: { ok: boolean; error?: { kind: string; status?: number } }): boolean {
+export function isForbidden(res: { ok: boolean; error?: { kind: string; status?: number } }): boolean {
   return !res.ok && res.error?.kind === "http" && res.error.status === 403;
 }
 
@@ -469,7 +470,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const olderRes = await loadHistory(base, chatId, oldest.id);
     if (activeRef.current !== chatId) { prependingRef.current = false; return; }
     if (!olderRes.ok) {
-      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(); return; }
+      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(chatId); return; }
       // Keep paging possible + show a retry row; never treat a failure as "start of chat".
       prependingRef.current = false;
       setOlderError(true);
@@ -591,8 +592,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // Membership revoked (removed/left). Mark it so the imminent onclose does NOT
       // reconnect, then let the view drop the chat + toast.
       revokedRef.current = true;
-      if (activeRef.current) unackedRef.current.delete(activeRef.current);
-      onRevokedRef.current();
+      const gone = activeRef.current;
+      if (gone) { unackedRef.current.delete(gone); onRevokedRef.current(gone); }
     } else if (frame.type === "error") {
       onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
       if (frame.tempId) {
@@ -764,7 +765,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       setLoadingHistory(false);
       if (!res.ok) {
         // 403 = no longer a member: close the chat with the revoked copy, no retry loop.
-        if (isForbidden(res)) { onRevokedRef.current(); return; }
+        if (isForbidden(res)) { onRevokedRef.current(chatId); return; }
         setHistoryError(true);
         return;
       }
@@ -815,7 +816,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       for (let page = 0; anchor != null && page < CATCHUP_MAX_PAGES; page++) {
         const res = await loadHistoryAfter(base, chatId, anchor);
         if (!alive()) return;
-        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(); else again(); return; }
+        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(chatId); else again(); return; }
         if (res.unknown) { replaceWithNewest = true; break; } // our anchor is gone: reconcile on the newest page
         rows = rows.concat(res.data);
         if (res.data.length < HISTORY_PAGE) break;
@@ -826,7 +827,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (replaceWithNewest || overflow) {
         const res = await loadHistory(base, chatId);
         if (!alive()) return;
-        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(); else again(); return; }
+        if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(chatId); else again(); return; }
         fetched = res.data;
         setMessages((prev) => keepLocalOwn(fetched, prev, live));
         setHasMore(fetched.length >= HISTORY_PAGE);
@@ -1189,7 +1190,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (activeRef.current !== chatId) return;
     setLoadingHistory(false);
     if (!res.ok) {
-      if (isForbidden(res)) { onRevokedRef.current(); return; }
+      if (isForbidden(res)) { onRevokedRef.current(chatId); return; }
       setHistoryError(true);
       return;
     }

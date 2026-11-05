@@ -37,16 +37,25 @@ export function corsHeaders(origin: string | null, env: Env): Record<string, str
   if (origin && isOriginAllowed(origin, env)) h["Access-Control-Allow-Origin"] = origin;
   return h;
 }
+/** Cache-Control for every private/authenticated response (safe-by-default). */
+export const NO_STORE = "no-store";
+
+/**
+ * JSON response. Safe by default: `Cache-Control: private, no-store` unless the
+ * caller's `extra` supplies its own Cache-Control (matched case-insensitively, since
+ * header names are), so a route that forgets the header can never become edge- or
+ * browser-cacheable while carrying private data.
+ */
 export function json(body: unknown, status: number, cors: Record<string, string>, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
-      ...cors,
-      ...extra,
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+    ...cors,
+    ...extra,
+  };
+  const hasCacheControl = Object.keys(headers).some((k) => k.toLowerCase() === "cache-control");
+  if (!hasCacheControl) headers["Cache-Control"] = "private, no-store";
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 // Unambiguous alphabet for human-shareable codes: no 0/O/1/I/l to avoid misreads.
