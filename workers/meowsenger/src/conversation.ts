@@ -258,7 +258,7 @@ export class Conversation extends DurableObject<Env> {
     // Type is likewise router-derived from D1. Only 'channel' matters (read-only
     // for members); a missing/other value leaves posting unchanged (DMs/groups).
     const type = url.searchParams.get("type") || "group";
-    if (!userId || !chatId) return new Response("bad ws params", { status: 400 });
+    if (!userId || !chatId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
 
     const pair = new WebSocketPair();
     // WebSocketPair is a tuple-shaped { 0: client, 1: server }.
