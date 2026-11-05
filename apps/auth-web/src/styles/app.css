@@ -35,3 +35,13 @@ main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
     text-decoration: var(--shiki-light-text-decoration) !important;
   }
 }
+
+/* Cross-document view transition: a subtle root fade between same-origin pages. CSS only, no router.
+   Navigations and form POSTs are untouched; browsers without support ignore the at-rule. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+  ::view-transition-old(root) { animation: 160ms cubic-bezier(.22, 1, .36, 1) both mw-vt-out; }
+  ::view-transition-new(root) { animation: 260ms cubic-bezier(.22, 1, .36, 1) both mw-vt-in; }
+  @keyframes mw-vt-out { to { opacity: 0; } }
+  @keyframes mw-vt-in { from { opacity: 0; } }
+}

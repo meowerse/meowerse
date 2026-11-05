@@ -20,9 +20,9 @@ describe("AppHeader", () => {
   });
   it("exposes the docs link to guests and authed users", () => {
     const { rerender } = render(<AppHeader session={{ loading: false, authenticated: false }} />);
-    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "/docs");
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "/docs/");
     rerender(<AppHeader session={{ loading: false, authenticated: true, username: "alex", verified: true }} />);
-    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "/docs");
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "/docs/");
   });
   it("while loading shows public nav but not log in / account (U-02: no vanishing nav)", () => {
     render(<AppHeader session={{ loading: true, authenticated: false }} />);
@@ -82,5 +82,18 @@ describe("AppHeader", () => {
       document.removeEventListener("click", noNavigate, { capture: true });
     }
     expect(nav.className).not.toContain("is-open");
+  });
+  it("prefetch: absent renders no data-astro-prefetch; present marks only accepted hrefs (brand included)", () => {
+    const guest = { loading: false, authenticated: false } as const;
+    const { container, rerender } = render(<AppHeader session={guest} />);
+    expect(container.querySelectorAll("[data-astro-prefetch]")).toHaveLength(0);
+    rerender(<AppHeader session={guest} prefetch={(h) => ["/", "/about/", "/docs/"].includes(h)} />);
+    const marked = [...container.querySelectorAll("a[data-astro-prefetch]")].map((a) => a.getAttribute("href"));
+    expect(marked.sort()).toEqual(["/", "/about/", "/docs/"]);
+    expect(screen.getByRole("link", { name: "log in" })).not.toHaveAttribute("data-astro-prefetch");
+    expect(screen.getByRole("link", { name: "developers" })).not.toHaveAttribute("data-astro-prefetch");
+    rerender(<AppHeader session={{ loading: false, authenticated: true, username: "alex", verified: true }} prefetch={(h) => h === "/docs/"} />);
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("data-astro-prefetch", "hover");
+    expect(screen.getByRole("link", { name: "account" })).not.toHaveAttribute("data-astro-prefetch");
   });
 });

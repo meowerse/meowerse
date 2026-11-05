@@ -4,6 +4,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
 import { cx } from "../lib/cx";
+import { prefetchProps } from "../lib/prefetch";
 
 /** one link in an AppHeader's nav. */
 export interface AppHeaderLink {
@@ -24,9 +25,9 @@ export interface AppHeaderLinks {
 /** Default nav for the auth app; other apps (or a docs preview) pass their own. */
 const DEFAULT_LINKS: AppHeaderLinks = {
   guest: [
-    { label: "about", href: "/about" },
+    { label: "about", href: "/about/" },
     { label: "developers", href: "/developers" },
-    { label: "docs", href: "/docs" },
+    { label: "docs", href: "/docs/" },
   ],
   guestActions: [
     { label: "log in", href: "/login" },
@@ -35,37 +36,39 @@ const DEFAULT_LINKS: AppHeaderLinks = {
   signedIn: [
     { label: "account", href: "/account" },
     { label: "developers", href: "/developers" },
-    { label: "docs", href: "/docs" },
+    { label: "docs", href: "/docs/" },
   ],
 };
 
 /** the header of meowerse accounts: brand, session-aware navigation, the theme toggle and a phone menu button. */
-export function AppHeader({ session, className, links = DEFAULT_LINKS }: {
+export function AppHeader({ session, className, links = DEFAULT_LINKS, prefetch }: {
   /** the current session, from useSession(); its loading/authenticated state decides which links show. */
   session: Session;
   /** extra class names to append. */
   className?: string;
   /** the nav links per session state; defaults to the auth app's set. A docs preview passes links that resolve on its own site. */
   links?: AppHeaderLinks;
+  /** opt-in: when given and it returns true for a link's href, that link gets data-astro-prefetch="hover". Absent: no attribute is rendered. The consumer owns the allowlist: the predicate MUST fail closed (true only for public, side-effect-free, cacheable pages), since a false positive prefetches session/CSRF flows. */
+  prefetch?: (href: string) => boolean;
 }) {
   const [open, setOpen] = useState(false);
   const known = !session.loading && !("error" in session && session.error);
   return (
     <header className={cx("mw-header", className)}>
-      <a className="mw-header__brand" href="/" aria-label="meowerse auth — home">
+      <a className="mw-header__brand" href="/" {...prefetchProps(prefetch, "/")} aria-label="meowerse auth — home">
         <span className="mw-brand-meow">meowerse</span><span className="mw-brand-auth">auth</span>
       </a>
       <div className="mw-header__actions">
         <nav className={cx("mw-header__nav", open && "is-open")} aria-label="primary" onClick={() => setOpen(false)}>
           {!session.authenticated && (
             <>
-              {links.guest.map((l) => <a key={l.href} href={l.href}>{l.label}</a>)}
-              {known && links.guestActions.map((l) => <a key={l.href} href={l.href}>{l.label}</a>)}
+              {links.guest.map((l) => <a key={l.href} href={l.href} {...prefetchProps(prefetch, l.href)}>{l.label}</a>)}
+              {known && links.guestActions.map((l) => <a key={l.href} href={l.href} {...prefetchProps(prefetch, l.href)}>{l.label}</a>)}
             </>
           )}
           {!session.loading && session.authenticated && (
             <>
-              {links.signedIn.map((l) => <a key={l.href} href={l.href}>{l.label}</a>)}
+              {links.signedIn.map((l) => <a key={l.href} href={l.href} {...prefetchProps(prefetch, l.href)}>{l.label}</a>)}
               <span className="mw-header__user"><Avatar name={session.username} size="sm" decorative /> {session.username}</span>
             </>
           )}

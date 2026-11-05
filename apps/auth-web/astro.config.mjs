@@ -9,5 +9,7 @@ export default defineConfig({
   // The canonical host (src/lib/seo.ts SITE; a test keeps the two equal).
   site: "https://auth.alxnko.dev",
   integrations: [react()],
+  // Opt-in only: just links carrying data-astro-prefetch (see src/lib/prefetch.ts allowlist) prefetch, on hover.
+  prefetch: { prefetchAll: false, defaultStrategy: "hover" },
   vite: { build: { assetsInlineLimit: 0 } },
 });
