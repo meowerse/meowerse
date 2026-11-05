@@ -289,11 +289,14 @@ a.mw-btn:hover { text-decoration: none; }
 
 /* Cross-document view transitions (CSS only, no ClientRouter): a quick root fade between pages.
    Motion-gated: under prefers-reduced-motion: reduce the at-rule is not applied at all.
+   Same idea as the plain root fade in Talasia (src/styles/global.css:610-615); a partial match only: no named
+   elements (header/logo/footer groups), just old/new root.
    Timings are literal (160 ms out, 260 ms in): they sit between the --d-fast (120) and --d-base (240) tokens. */
 @media (prefers-reduced-motion: no-preference) {
   @view-transition { navigation: auto; }
   ::view-transition-old(root) { animation: 160ms cubic-bezier(.22, 1, .36, 1) both mw-vt-out; }
   ::view-transition-new(root) { animation: 260ms cubic-bezier(.22, 1, .36, 1) both mw-vt-in; }
+  /* Guard: a smooth-scroll rule must not animate scroll position while the transition snapshots the page. */
   html:active-view-transition { scroll-behavior: auto; }
   @keyframes mw-vt-out { to { opacity: 0; } }
   @keyframes mw-vt-in { from { opacity: 0; } }
