@@ -4,6 +4,7 @@ import "../styles/app.css";
 import { THEME_INIT_SCRIPT } from "@meowerse/ui";
 import { Footer } from "@meowerse/ui";
 import SiteHeader from "../components/SiteHeader.tsx";
+import { isPrefetchable } from "../lib/prefetch";
 import { pageSeo } from "@meowerse/ui/seo";
 import { PAGES, SITE } from "../lib/seo";
 interface Props { title: string; wide?: boolean }
@@ -41,6 +42,6 @@ const base = import.meta.env.PUBLIC_AUTH_API_URL ?? "";
     <main class:list={["mw-container", wide && "mw-container--wide"]}>
       <slot />
     </main>
-    <Footer />
+    <Footer prefetch={isPrefetchable} />
   </body>
 </html>

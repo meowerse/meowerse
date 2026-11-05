@@ -1,5 +1,6 @@
 import { ContactLinks } from "./ContactLinks";
 import { cx } from "../lib/cx";
+import { prefetchProps } from "../lib/prefetch";
 
 /** one link in a Footer's site navigation. */
 export interface FooterLink {
@@ -21,6 +22,7 @@ export function Footer({
   className,
   links = DEFAULT_LINKS,
   legal = DEFAULT_LEGAL,
+  prefetch,
 }: {
   /** extra class names to append. */
   className?: string;
@@ -28,6 +30,8 @@ export function Footer({
   links?: FooterLink[];
   /** the legal/attribution line; defaults to the auth app's. */
   legal?: string;
+  /** opt-in: when given and it returns true for a same-site link's href, that link gets data-astro-prefetch="hover". Absolute links never do. */
+  prefetch?: (href: string) => boolean;
 }) {
   return (
     <footer className={cx("mw-footer", className)}>
@@ -35,7 +39,7 @@ export function Footer({
         {links.map((l) =>
           /^https?:\/\//.test(l.href)
             ? <a key={l.href} href={l.href} target="_blank" rel="noopener noreferrer">{l.label}</a>
-            : <a key={l.href} href={l.href}>{l.label}</a>)}
+            : <a key={l.href} href={l.href} {...prefetchProps(prefetch, l.href)}>{l.label}</a>)}
       </nav>
       <ContactLinks />
       <p className="mw-footer__legal">{legal}</p>
