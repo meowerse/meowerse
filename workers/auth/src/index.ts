@@ -850,7 +850,7 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
   // The attempt is spent atomically BEFORE comparing: at most CODE_MAX_ATTEMPTS comparisons ever happen per ticket.
   if (!(await spendCodeAttempt(db, ticket.ticket_id))) {
     await burnAndAudit(db, deps, req, ticket);
-    return tooMany("too_many_attempts", 600, cors);
+    return json({ error: "too_many_attempts" }, 429, cors); // ticket is burned: no Retry-After (retrying this ticket never helps)
   }
   const expected = await tgCodeHash(env.INTERNAL_HMAC_KEY, ticket.ticket_id, code ?? "x");
   if (!code || !constantTimeEqual(expected, ctx.code_hash)) {
@@ -858,7 +858,7 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
     const left = CODE_MAX_ATTEMPTS - Number((await getTicketContext(db, ticket.ticket_id))?.attempts ?? CODE_MAX_ATTEMPTS);
     if (left <= 0) {
       await burnAndAudit(db, deps, req, ticket);
-      return tooMany("too_many_attempts", 600, cors);
+      return json({ error: "too_many_attempts" }, 429, cors);
     }
     return json({ error: "wrong_code", attemptsLeft: left }, 400, cors);
   }
@@ -930,6 +930,10 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
 
 /** POST /tg/widget — Telegram Login Widget sign-in/up. */
 async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  // Same guards as /login: it creates a session cookie from a (replayable-within-its-window) signed widget payload,
+  // so a cross-site form post must not be able to sign a victim browser into an attacker-chosen account.
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
+  if (!(await ipThrottle(req, env, deps, "tgwidget", 30, 600))) return tooMany("rate_limited", 600, cors);
   const data = await readParams(req);
   if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram_unconfigured" }, 503, cors);
   const v = await verifyLoginWidget(data, env.TELEGRAM_BOT_TOKEN, now(deps));

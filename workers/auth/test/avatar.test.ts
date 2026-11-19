@@ -375,3 +375,18 @@ test("a non-image upstream Content-Type is never echoed (text/html → image/jpe
   const res = await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, deps, ACCT, CORS);
   expect(res.headers.get("Content-Type")).toBe("image/jpeg");
 });
+
+test("an SVG upstream Content-Type is never echoed (image/svg+xml → image/jpeg); real image types still pass through", async () => {
+  const mk = (ct: string) =>
+    ({
+      getDb: () => routedDb([linkRoute(42)]),
+      fetch: fakeFetch({
+        photos: { ok: true, result: { total_count: 1, photos: [[{ file_id: "big", width: 640, height: 640 }]] } },
+        file: { ok: true, result: { file_path: "photos/x.jpg" } },
+        imgContentType: ct,
+        urls: [],
+      }),
+    }) as unknown as Deps;
+  expect((await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, mk("image/svg+xml"), ACCT, CORS)).headers.get("Content-Type")).toBe("image/jpeg");
+  expect((await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, mk("image/png"), ACCT, CORS)).headers.get("Content-Type")).toBe("image/png");
+});

@@ -431,3 +431,39 @@ test("cancel by another Telegram user racing the confirm is refused atomically (
   expect(ticketRow(tables, sb.ticketId).status).toBe("pending");
   expect(ctxRow(tables, sb.ticketId).tg_id).toBe("97");
 });
+
+test("/tg/widget: cross-site form post and foreign Origin → 403 bad_origin (no session); same-site ok; IP-throttled (429)", async () => {
+  const { env, deps, tables } = await fixture();
+  const data: Record<string, string> = { id: "78", first_name: "Tg", username: "tguser2", auth_date: "1000" };
+  data.hash = await signWidget(data);
+  const post = (h: Record<string, string>) => handle(new Request("https://iss/tg/widget", { method: "POST", headers: { "Content-Type": "application/json", ...h }, body: JSON.stringify(data) }), env as never, deps as never);
+  const evil = await post({ Origin: "https://evil.example" });
+  expect(evil.status).toBe(403);
+  expect(((await evil.json()) as { error: string }).error).toBe("bad_origin");
+  expect((await post({ "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+  expect((tables.sessions as Row[]).length).toBe(0);
+  const ok = await post({ Origin: "https://web" });
+  expect(ok.status).toBe(200);
+  expect(cookieValue(ok.headers.get("Set-Cookie"), "__Host-mw_sess")).toBeTruthy();
+
+  const bucket = "tgwidget:" + (await rlKey(env as never, new Request("https://iss/"), "tgwidget"));
+  const row = (tables.rate_limits as Row[]).find((r) => r.bucket === bucket);
+  expect(row).toBeTruthy(); // the widget endpoint is counted per IP
+  row!.count = 30;
+  expect((await post({})).status).toBe(429);
+});
+
+test("tg/verify: the burned-ticket 'too_many_attempts' 429 carries no Retry-After (a generic IP throttle still does)", async () => {
+  const { env, deps } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  const { code } = await botConfirm(handle, env, deps, { nonce: new URL(sb.deepLink).searchParams.get("start")!, tgId: "93" });
+  const wrong = code === "00000000" ? "11111111" : "00000000";
+  const rs: Response[] = [];
+  for (let i = 0; i < 6; i++) rs.push(await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code: wrong, owner }));
+  const burned = rs.find((r) => r.status === 429)!;
+  expect(burned).toBeTruthy();
+  expect(((await burned.json()) as { error: string }).error).toBe("too_many_attempts");
+  expect(burned.headers.get("Retry-After")).toBeNull();
+});

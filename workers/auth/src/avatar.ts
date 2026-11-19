@@ -92,7 +92,8 @@ export async function handleAvatar(
     headers: {
       // Only ever serve an image type: a non-image upstream type (or none) becomes image/jpeg, and nosniff +
       // a sandboxing CSP stop the browser treating the proxied bytes as a document if opened directly.
-      "Content-Type": /^image\/[a-z0-9.+-]+$/i.test(imgRes.headers.get("Content-Type") ?? "") ? imgRes.headers.get("Content-Type")! : "image/jpeg",
+      // SVG is excluded too (scriptable image type): it also becomes image/jpeg.
+      "Content-Type": /^image\/[a-z0-9.+-]+$/i.test(imgRes.headers.get("Content-Type") ?? "") && !/^image\/svg/i.test(imgRes.headers.get("Content-Type")!) ? imgRes.headers.get("Content-Type")! : "image/jpeg",
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "public, max-age=21600",
