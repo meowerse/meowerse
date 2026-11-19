@@ -5,11 +5,11 @@
  * authority: every write is authorised by an entry token taken at chat entry, so a wipe,
  * a purge or an account switch can never be undone by a late write or the leave-save.
  */
-import { Activity, StrictMode, useLayoutEffect, useRef } from "react";
+import { Activity, StrictMode, useEffect, useLayoutEffect, useRef } from "react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, act, waitFor, MockWebSocket } from "../test/rtl";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, renderHook, act, waitFor, fireEvent, MockWebSocket } from "../test/rtl";
 import type { Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 
@@ -22,14 +22,17 @@ const H = vi.hoisted(() => ({
   /** queued answers for the NEXT unpaged loadHistory calls (consumed in order) */
   once: [] as Message[][],
   after: null as Message[] | null,
+  /** takes over every loadHistory call when set (returns a loadHistory result) */
+  handler: null as null | ((chatId: string, before: string | undefined, init?: { signal?: AbortSignal }) => Promise<unknown>),
 }));
 
 vi.mock("../lib/chat", async (importActual) => {
   const actual = await importActual<typeof import("../lib/chat")>();
   return {
     ...actual,
-    loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => {
+    loadHistory: vi.fn(async (_b: string, chatId: string, before?: string, init?: { signal?: AbortSignal }) => {
       H.calls.push(`${chatId}:${before ?? ""}`);
+      if (H.handler) return H.handler(chatId, before, init);
       if (H.gate) await H.gate;
       if (H.fail) return { ok: false as const, status: 500 };
       if (!before && H.once.length > 0) return { ok: true as const, status: 200, data: H.once.shift()! };
@@ -41,7 +44,10 @@ vi.mock("../lib/chat", async (importActual) => {
 });
 
 import { useConversation } from "./useConversation";
-import { clearAll, setScope, purgeChat, getEpoch, conversationCache as cc, conversationTokens as tk } from "../lib/store";
+import { clearAll, setScope, purgeChat, getEpoch, pendingWork, conversationCache as cc, conversationTokens as tk } from "../lib/store";
+import { mergeRange } from "./useConversation";
+import { retryDelay } from "../lib/backoff";
+import { loadHistoryAround } from "../lib/chat";
 
 const ME: SessionUser = { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true };
 const row = (id: string, createdAt: number, over: Partial<Message> = {}): Message => ({ id, chatId: "c1", senderId: "u2", body: `b-${id}`, createdAt, ...over });
@@ -96,7 +102,7 @@ beforeEach(() => {
   clearAll();
   setScope("A");
   MockWebSocket.reset();
-  H.history = {}; H.around = null; H.gate = null; H.calls = []; H.fail = false; H.once = []; H.after = null;
+  H.history = {}; H.around = null; H.gate = null; H.calls = []; H.fail = false; H.once = []; H.after = null; H.handler = null;
 });
 
 describe("PR-7a write path", () => {
@@ -439,6 +445,25 @@ describe("PR-7a write path", () => {
     a.rerender({ activeId: "c2" });
     const sent = wsA.sentFrames().slice(before);
     expect(sent.filter((f) => f.type === "typing" || f.type === "send" || f.type === "read")).toEqual([]);
+    // ...and once B's OWN socket opens, the queued send goes out exactly once, on B's socket.
+    const wsB = MockWebSocket.room;
+    expect(wsB).not.toBe(wsA);
+    act(() => wsB.mockOpen());
+    const onB = wsB.sentFrames().filter((f) => f.type === "send");
+    expect(onB).toHaveLength(1);
+    expect(onB[0]!.body).toBe("for B");
+    expect(wsA.sentFrames().slice(before).filter((f) => f.type === "send")).toEqual([]);
+  });
+
+  it("T7a-17b: in that same gap sendReact does not optimistically react / send on A's socket for B", async () => {
+    const a = await open("c1", [row("x", 1000)]);
+    const wsA = a.ws;
+    const before = wsA.sentFrames().length;
+    H.gate = new Promise<void>(() => {});
+    H.history.c2 = [];
+    a.inject.fn = (r) => { r.sendReact({ ...row("x", 1000) }, "👍"); };
+    a.rerender({ activeId: "c2" });
+    expect(wsA.sentFrames().slice(before).filter((f) => f.type === "react")).toEqual([]);
   });
 
   it("T7a-18: leaving a detached window via attachLatest / loadNewer's short page writes through once attached (W1)", async () => {
@@ -468,5 +493,508 @@ describe("PR-7a write path", () => {
     await act(async () => { await result.current.jumpToLatest(); });
     expect(ids("c1")).toEqual(["t1", "t2", "t3", "t4"]);
     unmount();
+  });
+});
+
+// ====================================================================================
+// PR-7b: the read path. A warm entry paints from the cache, then P0 (+ a bounded sweep)
+// revalidates it with a range-replace merge; nothing a live frame says is ever undone.
+// ====================================================================================
+type Res = { ok: true; status: number; data: Message[]; unknown?: boolean } | { ok: false; error: { kind: string; status?: number } };
+const okp = (data: Message[], unknown = false): Res => ({ ok: true, status: 200, data, ...(unknown ? { unknown: true } : {}) });
+const warm = (chatId: string, messages: Message[], extra: Partial<cc.ConversationEntry> = {}) =>
+  cc.put(chatId, { messages, hasMore: false, fetchedAt: 1, ...extra }, getEpoch());
+function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
+/** A tiny server with the worker's paging: newest 50, or the 50 before a cursor row ({unknown} if it is gone). */
+function server(get: () => Message[]) {
+  return async (_c: string, before: string | undefined): Promise<Res> => {
+    const all = [...get()].sort((a, b) => a.createdAt - b.createdAt);
+    if (!before) return okp(all.slice(-50));
+    const i = all.findIndex((m) => m.id === before);
+    if (i < 0) return okp([], true);
+    return okp(all.slice(Math.max(0, i - 50), i));
+  };
+}
+const bodyOf = (m: Mounted, id: string) => m.result.current.messages.find((b) => b.id === id)?.body;
+const idsOf = (m: Mounted) => m.result.current.messages.map((b) => b.id);
+const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+describe("PR-7b read path", () => {
+  it("T7b-1: a warm re-entry paints the cached rows in the FIRST committed render, no skeleton", () => {
+    warm("c1", rows("a", 3));
+    H.gate = new Promise<void>(() => {});
+    const m = mount("c1");
+    expect(m.renders[0]).toEqual({ activeId: "c1", ids: ["a1", "a2", "a3"] });
+    expect(m.result.current.loadingHistory).toBe(false);
+  });
+
+  it("T7b-1b: StrictMode warm entry: the first committed render holds the cached rows, one revalidation read, no committed render pairs B with A's rows", async () => {
+    warm("c1", rows("a", 3));
+    warm("c2", rows("b", 2, "c2"));
+    H.handler = async (chatId) => okp(chatId === "c1" ? rows("a", 3) : rows("b", 2, "c2"));
+    const m = mount("c1", { strict: true });
+    expect(m.renders[0]).toEqual({ activeId: "c1", ids: ["a1", "a2", "a3"] });
+    expect(m.result.current.loadingHistory).toBe(false);
+    await flush();
+    H.calls = [];
+    m.rerender({ activeId: "c2" });
+    expect(m.renders.filter((r) => r.activeId === "c2")[0]!.ids).toEqual(["b1", "b2"]);
+    await flush();
+    for (const r of m.renders) if (r.activeId === "c2") expect(r.ids.every((id) => id.startsWith("b"))).toBe(true);
+    expect(H.calls.filter((c) => c === "c2:")).toHaveLength(1);
+    expect(ids("c1")).toEqual(["a1", "a2", "a3"]);
+  });
+
+  it("T7b-2: A -> B -> A with A1 in flight: only A2 commits (A1 resolving late does not overwrite)", async () => {
+    warm("c1", [row("x", 1000, { body: "cached" })]);
+    const ds: Array<(r: Message[]) => void> = [];
+    H.handler = (chatId) => (chatId === "c1" ? new Promise((res) => { ds.push((d) => res(okp(d))); }) : Promise.resolve(okp([])));
+    const m = mount("c1");
+    await waitFor(() => expect(ds).toHaveLength(1));
+    m.rerender({ activeId: "c2" });
+    m.rerender({ activeId: "c1" });
+    await waitFor(() => expect(ds).toHaveLength(2));
+    await act(async () => { ds[1]([row("x", 1000, { body: "new" })]); });
+    expect(bodyOf(m, "x")).toBe("new");
+    await act(async () => { ds[0]([row("x", 1000, { body: "old" })]); });
+    expect(bodyOf(m, "x")).toBe("new");
+  });
+
+  it("T7b-3: A -> B with A's P0 deferred: B's view and A's cache are untouched when it lands", async () => {
+    warm("c1", [row("x", 1000)]);
+    const before = cc.peek("c1")!;
+    const d = deferred<Res>();
+    H.handler = (chatId) => (chatId === "c1" ? d.promise : Promise.resolve(okp([row("b1", 5, { chatId: "c2" })])));
+    const m = mount("c1");
+    await flush();
+    m.rerender({ activeId: "c2" });
+    await waitFor(() => expect(idsOf(m)).toEqual(["b1"]));
+    await act(async () => { d.resolve(okp([row("x", 1000, { body: "server" }), row("y", 1500)])); });
+    expect(idsOf(m)).toEqual(["b1"]);
+    expect(cc.peek("c1")).toBe(before);
+    expect(cc.peek("c1")!.fetchedAt).toBe(1);
+  });
+
+  it("T7b-4: frames that land during P0 win over P0's older copy; one row each", async () => {
+    warm("c1", [row("x", 1000), row("y", 1001), row("z", 1002)]);
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    const m = mount("c1");
+    await flush();
+    const ws = MockWebSocket.room;
+    act(() => {
+      ws.mockEmit({ type: "message", message: row("m", 5000) });
+      ws.mockEmit({ type: "edited", id: "x", body: "live", editedAt: 9 });
+      ws.mockEmit({ type: "reaction", id: "y", emoji: "👍", userId: "u2", on: true });
+      ws.mockEmit({ type: "deleted", id: "z" });
+    });
+    await act(async () => { d.resolve(okp([row("x", 1000), row("y", 1001), row("z", 1002)])); });
+    expect(idsOf(m)).toEqual(["x", "y", "z", "m"]);
+    expect(bodyOf(m, "x")).toBe("live");
+    expect(m.result.current.messages.find((b) => b.id === "y")?.reactions?.[0]?.emoji).toBe("👍");
+    expect(m.result.current.messages.find((b) => b.id === "z")?.isDeleted).toBe(true);
+  });
+
+  it("T7b-5: a second client changed the room: the log becomes server truth across 3 re-entries with interleaved frames", async () => {
+    const srv = rows("s", 50);
+    warm("c1", srv.map((r) => (r.id === "s7" ? { ...r, tempId: "t7" } : r)));
+    let truth: Message[] = [
+      ...srv.filter((r) => r.id !== "s5" && r.id !== "s7").map((r) =>
+        r.id === "s10" ? { ...r, body: "edited", editedAt: 5 } : r.id === "s20" ? { ...r, isDeleted: true, body: "" }
+          : r.id === "s30" ? { ...r, reactions: [{ emoji: "👍", count: 1, mine: false }] } : r),
+      ...Array.from({ length: 5 }, (_, i) => row(`s${51 + i}`, 1050 + i)),
+    ];
+    H.handler = server(() => truth);
+    const m = mount("c1");
+    const expectIds = () => truth.map((r) => r.id);
+    await waitFor(() => expect(idsOf(m)).toEqual(expectIds()));
+    expect(bodyOf(m, "s10")).toBe("edited");
+    expect(m.result.current.messages.find((b) => b.id === "s20")?.isDeleted).toBe(true);
+    expect(m.result.current.messages.find((b) => b.id === "s30")?.reactions?.[0]?.emoji).toBe("👍");
+    expect(idsOf(m)).not.toContain("s5");
+    expect(idsOf(m)).not.toContain("s7"); // an acked own row (tempId kept) that the server purged is gone
+
+    // re-entry 2: a new server row + a live frame for a row the (stale) page does not hold
+    const d2 = deferred<Res>();
+    H.handler = (c, b) => (b ? server(() => truth)(c, b) : d2.promise);
+    m.rerender({ activeId: null });
+    m.rerender({ activeId: "c1" });
+    await flush();
+    truth = [...truth, row("s56", 1055)];
+    act(() => MockWebSocket.room.mockEmit({ type: "message", message: row("s57", 1056) }));
+    await act(async () => { d2.resolve(okp(truth.slice(-50))); });
+    await waitFor(() => expect(idsOf(m)).toEqual([...expectIds(), "s57"]));
+    truth = [...truth, row("s57", 1056)];
+
+    // re-entry 3: the server purged s8 and the live `edited` for s9 beats the page's older copy
+    const d3 = deferred<Res>();
+    H.handler = (c, b) => (b ? server(() => truth)(c, b) : d3.promise);
+    m.rerender({ activeId: null });
+    m.rerender({ activeId: "c1" });
+    await flush();
+    truth = truth.filter((r) => r.id !== "s8");
+    act(() => MockWebSocket.room.mockEmit({ type: "edited", id: "s9", body: "live9", editedAt: 9 }));
+    await act(async () => { d3.resolve(okp(truth.slice(-50))); });
+    await waitFor(() => expect(idsOf(m)).not.toContain("s8"));
+    expect(bodyOf(m, "s9")).toBe("live9");
+    // the leave-save kept the newest 50 only (older rows exist): the window is the newest rows of the truth
+    expect(idsOf(m).length).toBeGreaterThanOrEqual(50);
+    expect(idsOf(m)).toEqual(truth.slice(-idsOf(m).length).map((r) => r.id));
+  });
+
+  it("T7b-6: clearAll during P0 aborts the request, writes nothing; a normal run returns the scope's work count to 0", async () => {
+    warm("c1", [row("x", 1000)]);
+    let signal: AbortSignal | undefined;
+    const d = deferred<Res>();
+    H.handler = (_c, _b, init) => { signal = init?.signal; return d.promise; };
+    const m = mount("c1");
+    await flush();
+    expect(pendingWork()).toBe(1);
+    expect(signal?.aborted).toBe(false);
+    act(() => clearAll());
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { d.resolve(okp([row("x", 1000, { body: "late" }), row("y", 2000)])); });
+    expect(cc.peek("c1")).toBeUndefined();
+    expect(idsOf(m)).toEqual(["x"]); // the late result changed nothing
+    expect(pendingWork()).toBe(0);
+    // a normal settle calls done(): the count is back to 0 (setScope again: clearAll unset it)
+    setScope("A");
+    warm("c2", [row("q", 1000, { chatId: "c2" })]);
+    const d2 = deferred<Res>();
+    H.handler = () => d2.promise;
+    mount("c2");
+    await flush();
+    expect(pendingWork()).toBe(1);
+    await act(async () => { d2.resolve(okp([row("q", 1000, { chatId: "c2" })])); });
+    expect(pendingWork()).toBe(0);
+  });
+
+  it("T7b-7: P0 -> 403: onRevoked once, the entry is purged, the next entry is cold", async () => {
+    warm("c1", [row("x", 1000)]);
+    H.handler = async () => ({ ok: false, error: { kind: "http", status: 403 } });
+    const m = mount("c1");
+    await waitFor(() => expect(m.cb.onRevoked).toHaveBeenCalledTimes(1));
+    expect(m.cb.onRevoked).toHaveBeenCalledWith("c1");
+    expect(cc.peek("c1")).toBeUndefined();
+    m.unmount();
+    H.handler = () => new Promise(() => {});
+    const m2 = mount("c1");
+    expect(m2.renders[0]!.ids).toEqual([]);
+    expect(m2.result.current.loadingHistory).toBe(true);
+  });
+
+  it("T7b-8: an offline warm entry keeps its rows (no historyError); it retries on retryDelay(0) and on socket open", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      warm("c1", [row("x", 1000)]);
+      let n = 0;
+      H.handler = async () => (++n < 3 ? { ok: false, error: { kind: "network" } } : okp([row("x", 1000), row("y", 2000)]));
+      const m = mount("c1");
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(n).toBe(1);
+      expect(idsOf(m)).toEqual(["x"]);
+      expect(m.result.current.historyError).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(retryDelay(0, () => 1) + 1); });
+      expect(n).toBe(2); // the backoff retry
+      act(() => MockWebSocket.room.mockOpen()); // ...and the socket coming up retries at once
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(n).toBe(3);
+      expect(idsOf(m)).toEqual(["x", "y"]);
+      expect(m.result.current.historyError).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("T7b-9: catch-up rows newer than P0's newest that land before P0 are kept", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      warm("c1", rows("a", 3));
+      const d = deferred<Res>();
+      H.handler = () => d.promise;
+      H.after = [row("n1", 3000), row("n2", 3001)];
+      const m = mount("c1");
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      act(() => MockWebSocket.room.mockOpen());
+      act(() => MockWebSocket.room.mockDrop());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1001); }); // reconnect
+      act(() => MockWebSocket.room.mockOpen()); // reopened -> catch-up merges n1, n2
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(idsOf(m)).toEqual(["a1", "a2", "a3", "n1", "n2"]);
+      await act(async () => { d.resolve(okp(rows("a", 3))); });
+      expect(idsOf(m)).toEqual(["a1", "a2", "a3", "n1", "n2"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("T7b-10: an unacked send across leave and re-entry ends as one bubble, at the end", async () => {
+    const a = await open("c1", [row("a1", 1000)]);
+    act(() => { a.result.current.send("hi"); });
+    const tempId = (a.ws.sentFrames().find((f) => f.type === "send") as { tempId: string }).tempId;
+    a.rerender({ activeId: null });
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    a.rerender({ activeId: "c1" });
+    await flush();
+    act(() => MockWebSocket.room.mockOpen()); // resends the unacked send (same tempId)
+    const mine = row("m2", 2000, { senderId: "u1", body: "hi" });
+    await act(async () => { d.resolve(okp([row("a1", 1000), mine])); });
+    act(() => MockWebSocket.room.mockEmit({ type: "sent", tempId, message: mine }));
+    const hi = a.result.current.messages.filter((b) => b.body === "hi");
+    expect(hi).toHaveLength(1);
+    expect(a.result.current.messages.at(-1)!.body).toBe("hi");
+  });
+
+  it("T7b-12: a plain gap (no frames): the window becomes P0, hasMore, the cached rows are gone", async () => {
+    warm("c1", rows("old", 3));
+    const p0 = Array.from({ length: 50 }, (_, i) => row(`n${i + 1}`, 5000 + i));
+    H.handler = async () => okp(p0);
+    const m = mount("c1");
+    await waitFor(() => expect(idsOf(m)).toEqual(p0.map((r) => r.id)));
+    expect(cc.peek("c1")!.hasMore).toBe(true);
+    expect(ids("c1")).toEqual(p0.map((r) => r.id));
+    expect(H.calls).toEqual(["c1:"]); // a gap is not swept
+  });
+
+  it("T7b-13: a scrolled-up 120-row cache sweeps 2 older pages (cursors from pages[0]), then range-replaces; a sweep failure keeps rows and retries", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    const truth = all.map((r) => (r.id === "e100" ? { ...r, body: "edited" } : r));
+    H.handler = server(() => truth);
+    const m = mount("c1");
+    await waitFor(() => expect(bodyOf(m, "e100")).toBe("edited"));
+    expect(H.calls).toEqual(["c1:", "c1:e71", "c1:e21"]);
+    expect(new Set(H.calls).size).toBe(3); // distinct URLs
+    expect(idsOf(m)).toHaveLength(120);
+
+    // failure: the second `before` call fails -> older rows stay, it retries and finishes
+    H.calls = [];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const truth2 = all.map((r) => (r.id === "e100" ? { ...r, body: "edited-2" } : r));
+      let failOnce = true;
+      const srv = server(() => truth2);
+      H.handler = async (c, b) => { if (b === "e21" && failOnce) { failOnce = false; return { ok: false, error: { kind: "network" } }; } return srv(c, b); };
+      m.rerender({ activeId: null });
+      warm("c1", all); // the leave-save trims to 50 rows: re-seed the 120-row window
+      m.rerender({ activeId: "c1" });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(idsOf(m)).toHaveLength(120); // e1..e20 (below the fetched floor) were kept
+      expect(idsOf(m)).toContain("e1");
+      await act(async () => { await vi.advanceTimersByTimeAsync(retryDelay(0, () => 1) + 1); });
+      expect(H.calls.filter((c) => c === "c1:e21").length).toBe(2);
+      expect(bodyOf(m, "e100")).toBe("edited-2");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("T7b-19: an own reaction and an edit flushed before P0 beat P0's older copy (stamped live: no stale flash)", async () => {
+    warm("c1", [row("x", 1000, { body: "orig" }), row("y", 1001)]);
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    const m = mount("c1");
+    await flush();
+    const ws = MockWebSocket.room;
+    act(() => ws.mockOpen());
+    act(() => { m.result.current.sendReact(m.result.current.messages.find((b) => b.id === "y")!, "🔥"); });
+    act(() => { m.result.current.sendEdit(m.result.current.messages.find((b) => b.id === "x")!, "edited"); });
+    expect(bodyOf(m, "x")).toBe("edited");
+    await act(async () => { d.resolve(okp([row("x", 1000, { body: "orig" }), row("y", 1001)])); }); // P0 predates the server's answers
+    expect(bodyOf(m, "x")).toBe("edited");
+    expect(m.result.current.messages.find((b) => b.id === "y")!.reactions?.some((r) => r.emoji === "🔥" && r.mine)).toBe(true);
+  });
+
+  it("T7b-17 (C2): the cache is 300 rows behind; a live frame and an outbox flush land before P0: P0 + live + local, nothing older than P0", async () => {
+    warm("c1", rows("old", 50));
+    const p0 = Array.from({ length: 50 }, (_, i) => row(`n${i + 1}`, 5000 + i));
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    const m = mount("c1");
+    await flush();
+    const ws = MockWebSocket.room;
+    act(() => ws.mockOpen());
+    act(() => ws.mockEmit({ type: "message", message: row("live", 9000) }));
+    act(() => { m.result.current.send("local"); }); // flushed over the open socket before P0
+    await act(async () => { d.resolve(okp(p0)); });
+    const got = idsOf(m);
+    expect(got.slice(0, 50)).toEqual(p0.map((r) => r.id));
+    expect(got[50]).toBe("live");
+    expect(m.result.current.messages.at(-1)!.body).toBe("local");
+    expect(got.some((id) => id.startsWith("old"))).toBe(false);
+    expect(cc.peek("c1")!.hasMore).toBe(true);
+  });
+
+  it("T7b-18 (I3): loadOlder pages from the oldest NON-deleted row; when every tried cursor is `unknown` nothing merges and olderError shows", async () => {
+    const page = [row("t1", 1000, { isDeleted: true, body: "" }), ...Array.from({ length: 49 }, (_, i) => row(`r${i + 2}`, 1001 + i))];
+    H.handler = async (_c, before) => (before ? okp([], true) : okp(page));
+    const m = mount("c1");
+    await waitFor(() => expect(idsOf(m)).toHaveLength(50));
+    m.result.current.logRef.current = document.createElement("div");
+    await act(async () => { await m.result.current.retryOlder(); });
+    // not the tombstone t1; each unknown cursor is dropped and the next safe one is tried (3 tries)
+    expect(H.calls).toEqual(["c1:", "c1:r2", "c1:r3", "c1:r4"]);
+    expect(idsOf(m)).toHaveLength(47); // the three rows proven absent are gone; no page was merged
+    expect(idsOf(m)).not.toContain("r2");
+    expect(m.result.current.olderError).toBe(true);
+  });
+
+  it("T7b-18b: loadOlder on a purged first cursor (a cached row the server purged after 24 h) removes it and retries with the next safe cursor", async () => {
+    const page = Array.from({ length: 50 }, (_, i) => row(`r${i + 1}`, 1000 + i));
+    const older = [row("o1", 900)];
+    H.handler = async (_c, before) => (!before ? okp(page) : before === "r1" ? okp([], true) : before === "r2" ? okp(older) : okp([]));
+    const m = mount("c1");
+    await waitFor(() => expect(idsOf(m)).toHaveLength(50));
+    m.result.current.logRef.current = document.createElement("div");
+    await act(async () => { await m.result.current.retryOlder(); });
+    expect(H.calls).toEqual(["c1:", "c1:r1", "c1:r2"]);
+    expect(idsOf(m)[0]).toBe("o1");
+    expect(idsOf(m)).not.toContain("r1");
+    expect(m.result.current.olderError).toBe(false);
+  });
+
+  it("T7b-13b: a sweep cursor the server calls unknown is skipped (next safe cursor), the sweep still completes", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    const srv = server(() => all);
+    let first = true;
+    H.handler = async (c, b) => { if (b === "e71" && first) { first = false; return okp([], true); } return srv(c, b); };
+    const m = mount("c1");
+    await waitFor(() => expect(H.calls.length).toBeGreaterThanOrEqual(4));
+    await flush();
+    expect(H.calls.slice(0, 3)).toEqual(["c1:", "c1:e71", "c1:e72"]); // e71 unknown -> the next row of pages[0]
+    expect(idsOf(m)).toHaveLength(120);
+    expect(idsOf(m)).toContain("e1");
+    expect(m.result.current.olderError).toBe(false);
+  });
+
+  it("mergeRange (pure): keep rules", () => {
+    const E = { ids: new Set(["c1", "c2"]), newest: row("c2", 4200), oldest: row("c1", 4100) };
+    const live = { isLive: (id: string) => id === "lv", wasDeleted: () => false };
+    const cur = [
+      row("c1", 4100), row("c2", 4200), row("below", 10), row("lv", 20), row("catchup", 9000),
+      { ...row("t", 4500, { senderId: "u1" }), tempId: "tt" } as never, // acked own row: tempId is NOT a keep reason
+      { ...row("tmp", 9500), pending: true, tempId: "tmp" } as never,
+    ];
+    const out = mergeRange(cur, [row("p", 5000)], 4000, 5000, live, E).map((b) => b.id);
+    expect(out).toContain("below");   // older than the floor: unverified, kept
+    expect(out).toContain("catchup"); // newer than the page, not from the cache
+    expect(out).toContain("tmp");     // unconfirmed
+    expect(out).toContain("lv");
+    expect(out).not.toContain("c1");  // cached, in/above the range, missing from the server: purged
+    expect(out).not.toContain("t");
+    const gap = mergeRange(cur, [row("p", 5000)], 4000, 5000, live, E, { dropEntryBelowFloor: true }).map((b) => b.id);
+    expect(gap).not.toContain("below");
+    expect(gap).not.toContain("lv"); // a live-touched OLD row does not survive a gap either
+    expect(gap).toContain("tmp");
+  });
+});
+
+// ---- DOM-driven pieces: deep links into the warm cache and the scroll anchor ----------
+function Row({ id, reg }: { id: string; reg: (id: string, el: HTMLDivElement | null) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // MessageItem registers in a PASSIVE effect: it runs before the parent hook's passive effect.
+  useEffect(() => { reg(id, ref.current); return () => reg(id, null); }, [id, reg]);
+  return <div ref={ref} data-mid={id} />;
+}
+function Harness({ activeId, jump }: { activeId: string | null; jump?: string }) {
+  const r = useConversation({
+    base: "", activeId, me: ME, resolveSenderName: (id) => id,
+    onToast: vi.fn(), onActiveRead: vi.fn(), onMessageDeleted: vi.fn(), consumeReply: vi.fn(), onRevoked: vi.fn(),
+  });
+  const armed = useRef(false);
+  useLayoutEffect(() => { if (jump && !armed.current) { armed.current = true; r.armJump(jump); } });
+  return <div ref={r.logRef} onScroll={r.onLogScroll} data-log="1">{r.messages.map((m) => <Row key={m.id} id={m.id} reg={r.registerRow} />)}</div>;
+}
+
+describe("PR-7b deep link + anchor", () => {
+  it("T7b-11: a deep link to a row inside the warm cache flashes it with ZERO around requests", async () => {
+    warm("c1", rows("a", 5));
+    H.handler = () => new Promise(() => {});
+    vi.mocked(loadHistoryAround).mockClear();
+    render(<Harness activeId="c1" jump="a3" />);
+    await waitFor(() => expect(document.querySelector('[data-mid="a3"]')!.classList.contains("is-flash")).toBe(true));
+    expect(loadHistoryAround).not.toHaveBeenCalled();
+  });
+
+  it("T7b-11b: a P0 that resolves while the view is detached does not replace the window", async () => {
+    warm("c1", rows("a", 3));
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    H.around = { found: true, messages: [row("z1", 100), row("z2", 101)], hasOlder: true, hasNewer: true };
+    render(<Harness activeId="c1" jump="z1" />);
+    await waitFor(() => expect(document.querySelector('[data-mid="z1"]')).toBeTruthy());
+    expect(document.querySelector('[data-mid="a1"]')).toBeNull();
+    await act(async () => { d.resolve(okp(rows("a", 3))); });
+    expect(document.querySelector('[data-mid="z1"]')).toBeTruthy();
+    expect(document.querySelector('[data-mid="a1"]')).toBeNull();
+  });
+
+  it("T7b-11c: a deep link whose `around` resolves after the newest page but before the first sweep page: the window is unchanged and the cache never holds a gap", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    const truth = [...all, ...Array.from({ length: 5 }, (_, i) => row(`n${i + 1}`, 5000 + i))];
+    const srv = server(() => truth);
+    const sweepGate = deferred<void>();
+    H.handler = async (c, b) => { if (b) await sweepGate.promise; return srv(c, b); };
+    const aroundD = deferred<{ found: boolean; messages: Message[]; hasOlder: boolean; hasNewer: boolean }>();
+    vi.mocked(loadHistoryAround).mockImplementationOnce(() => aroundD.promise as never);
+    render(<Harness activeId="c1" jump="z1" />);
+    await waitFor(() => expect(loadHistoryAround).toHaveBeenCalled());
+    await waitFor(() => expect(H.calls.some((c) => c.startsWith("c1:e"))).toBe(true)); // P0 landed; the first sweep page is in flight
+    await act(async () => { aroundD.resolve({ found: true, messages: [row("z1", 100), row("z2", 101)], hasOlder: true, hasNewer: true }); });
+    await waitFor(() => expect(document.querySelector('[data-mid="z1"]')).toBeTruthy());
+    await act(async () => { sweepGate.resolve(); });
+    await flush(); await flush();
+    expect(Array.from(document.querySelectorAll("[data-mid]")).map((e) => e.getAttribute("data-mid"))).toEqual(["z1", "z2"]);
+    expect(ids("c1")).toEqual(all.map((r) => r.id)); // the cache never took the newest pages (no gap)
+  });
+
+  describe("T7b-14: scroll anchor (stubbed rects, row i top = i*40)", () => {
+    const top = new WeakMap<Element, number>();
+    const rectProto = HTMLElement.prototype.getBoundingClientRect;
+    const own = (k: string) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, k);
+    beforeEach(() => {
+      HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+        if (this.dataset.log) return { top: 0, bottom: 400, left: 0, right: 300, width: 300, height: 400, x: 0, y: 0, toJSON() {} } as DOMRect;
+        const i = this.parentElement ? Array.from(this.parentElement.children).indexOf(this) : 0;
+        const t = i * 40 - (this.parentElement ? top.get(this.parentElement) ?? 0 : 0);
+        return { top: t, bottom: t + 40, left: 0, right: 300, width: 300, height: 40, x: 0, y: t, toJSON() {} } as DOMRect;
+      };
+      Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get(this: HTMLElement) { return top.get(this) ?? 0; }, set(this: HTMLElement, v: number) { top.set(this, v); } });
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return 5000; } });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return 400; } });
+    });
+    afterEach(() => {
+      HTMLElement.prototype.getBoundingClientRect = rectProto;
+      for (const k of ["scrollTop", "scrollHeight", "clientHeight"]) { if (!own(k)) continue; delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k]; }
+    });
+    const cache = Array.from({ length: 60 }, (_, i) => row(`r${i + 1}`, 1000 + (i + 1) * 10));
+    const truth = [...cache, ...Array.from({ length: 5 }, (_, i) => row(`n${i + 1}`, 1291 + i))];
+    const logEl = () => document.querySelector('[data-log="1"]') as HTMLElement;
+    const rowTop = (id: string) => (document.querySelector(`[data-mid="${id}"]`) as HTMLElement).getBoundingClientRect().top;
+
+    it("restores row 30 at -12 within 40px, survives a P0 that inserts 5 rows above, and does not yank a user scroll", async () => {
+      warm("c1", cache, { scrollAnchor: { messageId: "r30", offsetPx: -12, atBottom: false } });
+      const d = deferred<Res>();
+      const srv = server(() => truth);
+      H.handler = (c, b) => (b ? srv(c, b) : d.promise);
+      render(<Harness activeId="c1" />);
+      expect(Math.abs(rowTop("r30") - -12)).toBeLessThanOrEqual(40);
+      await act(async () => { d.resolve(await srv("c1", undefined)); });
+      await waitFor(() => expect(document.querySelectorAll("[data-mid]")).toHaveLength(65));
+      expect(Math.abs(rowTop("r30") - -12)).toBeLessThanOrEqual(40);
+    });
+
+    it("a user scroll during P0 keeps the reader's top row at its offset (strengthened: it used to assert scrollTop===777, locking in a ~200px jump)", async () => {
+      warm("c1", cache, { scrollAnchor: { messageId: "r30", offsetPx: -12, atBottom: false } });
+      // the server purged r1..r5 (5 rows ABOVE the reader): the anchor row moves up in the DOM
+      const shifted = [...cache.slice(5), ...Array.from({ length: 5 }, (_, i) => row(`n${i + 1}`, 1291 + i))];
+      const d = deferred<Res>();
+      const srv = server(() => shifted);
+      H.handler = (c, b) => (b ? srv(c, b) : d.promise);
+      render(<Harness activeId="c1" />);
+      await act(async () => { await new Promise((r) => setTimeout(r, 60)); }); // our own restore settled (rAF)
+      act(() => { logEl().scrollTop = 777; fireEvent.scroll(logEl()); });
+      const before = rowTop("r20"); // the reader's top row (row i top = i*40 - scrollTop)
+      await act(async () => { d.resolve(await srv("c1", undefined)); });
+      await waitFor(() => expect(document.querySelector('[data-mid="r1"]')).toBeNull());
+      expect(Math.abs(rowTop("r20") - before)).toBeLessThanOrEqual(40);
+    });
   });
 });

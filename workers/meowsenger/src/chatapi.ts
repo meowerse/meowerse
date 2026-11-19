@@ -169,7 +169,14 @@ export async function handleHistory(
     const r = await stub.historyAfterEx(chatId, after, me);
     return json({ messages: r.messages, found: r.found }, 200, cors, { "Cache-Control": "no-store" });
   }
-  const messages = await stub.historyFor(chatId, q.get("before"), me);
+  const before = q.get("before");
+  if (before) {
+    // `found:false` = the cursor is not a row of the room (purged): an empty page that means
+    // "unknown", not "start of chat" (the client must never treat it as a page).
+    const r = await stub.historyForEx(chatId, before, me);
+    return json({ messages: r.messages, found: r.found }, 200, cors, { "Cache-Control": "no-store" });
+  }
+  const messages = await stub.historyFor(chatId, null, me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
 }
 

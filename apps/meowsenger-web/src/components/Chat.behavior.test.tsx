@@ -30,6 +30,10 @@ const H = vi.hoisted(() => ({
   failChats: null as null | { kind: string; status?: number },
   failHistory: null as null | { kind: string; status?: number },
   failSession: null as null | { kind: string; status?: number },
+  /** Holds every unpaged history read until released (null = no hold). */
+  historyGate: null as Promise<void> | null,
+  /** rows answered to a `before=` (older page) read */
+  older: [] as Message[],
   disableImpl: (async () => {}) as () => Promise<void>,
 }));
 
@@ -48,7 +52,9 @@ vi.mock("../lib/chat", async (importActual) => {
       if (H.failChats) { if (H.failChats.kind === "unauthorized" && !opts?.quiet) notifySessionEnded(); return { ok: false as const, error: H.failChats }; }
       return { ok: true as const, status: 200, data: H.chats };
     }),
-    loadHistory: vi.fn(async (_b: string, chatId: string) => {
+    loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => {
+      if (before) return { ok: true as const, status: 200, data: H.older };
+      if (H.historyGate) await H.historyGate;
       if (H.failHistory) { if (H.failHistory.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failHistory }; }
       return { ok: true as const, status: 200, data: H.history[chatId] ?? [] };
     }),
@@ -115,14 +121,17 @@ function emit(ws: MockWebSocket, frame: unknown): void {
 }
 
 beforeEach(() => {
+  clearAll(); // the in-memory conversation cache is module state: isolate each test (a warm entry would otherwise leak between tests)
   H.chats = [dm()];
   H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
   H.members = {};
   H.around = null;
   H.after = [];
+  H.older = [];
   H.failChats = null;
   H.failHistory = null;
   H.failSession = null;
+  H.historyGate = null;
   resetSessionEnded();
   H.session = { authenticated: true, user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true } };
   setUrl("/app");
@@ -333,6 +342,69 @@ describe("Chat island — SR announce of new incoming messages (#7)", () => {
     act(() => fireEvent.click(screen.getByRole("button", { name: "send" })));
     await waitFor(() => expect(within(logEl()).getByText("my own line")).toBeTruthy());
     expect(live.textContent ?? "").not.toContain("my own line");
+  });
+});
+
+describe("Chat island — SWR read path (PR-7b)", () => {
+  it("T7b-15: no announcement for the cache paint or a revalidation; one live peer message is announced once, own never", async () => {
+    setScope("u1");
+    conversationCache.put("c1", { messages: [msg({ id: "m1", body: "cached line", createdAt: 1000 })], hasMore: false, fetchedAt: 1 }, getEpoch());
+    // the server also holds a newer peer row the cache does not: the revalidation adds it SILENTLY
+    H.history = { c1: [msg({ id: "m1", body: "cached line", createdAt: 1000 }), msg({ id: "m2", body: "revalidated line", createdAt: 1500 })] };
+    const ws = await mountOpen();
+    await waitFor(() => expect(within(logEl()).getByText("revalidated line")).toBeTruthy());
+    const live = document.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(live.textContent ?? "").toBe("");
+    open(ws);
+    const frame = { type: "message", message: msg({ id: "m3", senderId: "u2", body: "a fresh line", createdAt: 2000 }) };
+    emit(ws, frame);
+    emit(ws, frame); // a duplicate frame
+    await waitFor(() => expect(live.textContent ?? "").toContain("a fresh line"));
+    expect((live.textContent ?? "").match(/a fresh line/g)).toHaveLength(1);
+    expect(live.textContent ?? "").not.toContain("revalidated line");
+    expect(live.textContent ?? "").not.toContain("cached line");
+    // my own message (a frame from me) is not announced
+    emit(ws, { type: "message", message: msg({ id: "m4", senderId: "u1", body: "my own line", createdAt: 3000 }) });
+    await waitFor(() => expect(within(logEl()).getByText("my own line")).toBeTruthy());
+    expect(live.textContent ?? "").not.toContain("my own line");
+  });
+
+  it("T7b-15b: older pages, a reconnect catch-up and a peer row delivered by the newest page BEFORE its live frame are never announced (D-PR7-1)", async () => {
+    // a full page so scrolling to the top pages older rows
+    H.history = { c1: Array.from({ length: 50 }, (_, i) => msg({ id: `h${i + 1}`, body: `row ${i + 1}`, createdAt: 1000 + i })) };
+    H.older = [msg({ id: "old1", senderId: "u2", body: "older peer line", createdAt: 900 })];
+    const ws = await mountOpen();
+    await waitFor(() => expect(within(logEl()).getByText("row 50")).toBeTruthy());
+    const live = document.querySelector('[aria-live="polite"]') as HTMLElement;
+    open(ws);
+    // older page (scrollTop is 0 in happy-dom, below the 60px trigger)
+    act(() => { fireEvent.scroll(logEl()); });
+    await waitFor(() => expect(within(logEl()).getByText("older peer line")).toBeTruthy());
+    expect(live.textContent ?? "").toBe("");
+    // reconnect catch-up delivers a peer row
+    H.after = [msg({ id: "cu1", senderId: "u2", body: "catch-up peer line", createdAt: 5000 })];
+    act(() => ws.mockDrop());
+    await waitFor(() => expect(MockWebSocket.room).not.toBe(ws), { timeout: 3000 });
+    const ws2 = MockWebSocket.room;
+    open(ws2);
+    await waitFor(() => expect(within(logEl()).getByText("catch-up peer line")).toBeTruthy());
+    expect(live.textContent ?? "").toBe("");
+    // the same row's LATE live frame (already present) is not announced either
+    emit(ws2, { type: "message", message: msg({ id: "cu1", senderId: "u2", body: "catch-up peer line", createdAt: 5000 }) });
+    expect(live.textContent ?? "").toBe("");
+  });
+
+  it("T7b-16: an EMPTY cached entry is cold: skeleton while loading, never an instant 'no messages yet'", async () => {
+    setScope("u1");
+    conversationCache.put("c1", { messages: [], hasMore: false, fetchedAt: 1 }, getEpoch());
+    let release!: () => void;
+    H.historyGate = new Promise<void>((r) => { release = r; });
+    await mountOpen();
+    await waitFor(() => expect(document.querySelector(".mw-skel-log")).toBeTruthy());
+    expect(screen.queryByText(/no messages yet/i)).toBeNull();
+    release();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    expect(document.querySelector(".mw-skel-log")).toBeNull();
   });
 });
 
