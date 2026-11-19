@@ -56,7 +56,7 @@ export function AppHeader({ session, className, links = DEFAULT_LINKS, prefetch 
   return (
     <header className={cx("mw-header", className)}>
       <a className="mw-header__brand" href="/" {...prefetchProps(prefetch, "/")} aria-label="meowerse auth — home">
-        <span className="mw-brand-meow">meowerse</span><span className="mw-brand-auth">auth</span>
+        <span className="mw-brand-meow">meowerse</span>{" "}<span className="mw-brand-auth">auth</span>
       </a>
       <div className="mw-header__actions">
         <nav className={cx("mw-header__nav", open && "is-open")} aria-label="primary" onClick={() => setOpen(false)}>
