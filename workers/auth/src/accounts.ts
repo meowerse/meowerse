@@ -203,7 +203,9 @@ export async function changePassword(
         sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND id_hash IS NOT ?",
         args: [i.accountId, i.keepSessionIdHash ?? null],
       },
-      { sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE account_id = ? AND used_at IS NULL", args: [i.accountId] },
+      // DELETE (not "mark used"): a used row would make the holder's next refresh look like token REUSE and raise a
+      // false token.reuse_detected audit. With no row it is a plain invalid_grant.
+      { sql: "DELETE FROM refresh_tokens WHERE account_id = ?", args: [i.accountId] },
       { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL", args: [i.accountId] },
     ],
     "write",

@@ -18,7 +18,7 @@ import { issueSession, lookupSession, rotateSession, revokeSession, whoami, roll
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
-import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, accountPresent, allOf, type Guard, type Stmt } from "./codeguard";
+import { codeSessionLive, codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, accountPresent, allOf, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -486,6 +486,8 @@ async function mintResponse(
      * write transaction.
      */
     atomic: { guard: Guard; consume: Stmt };
+    /** Extra issuance guard (code exchange: the originating session must still be live). A loss caused by it is not a replay. */
+    sessionGuard?: Guard;
     /** Called when the credential was already spent by another request (we are the loser). */
     onLost: (accountGone: boolean) => Promise<Response>;
   },
@@ -514,7 +516,7 @@ async function mintResponse(
   void _jti;
   // Second layer: also require the account to still exist, so no access/refresh token can be
   // inserted for a deleted account even when the credential row itself survived (leftover).
-  const guard = allOf(i.atomic.guard, accountPresent(i.accountId));
+  const guard = i.sessionGuard ? allOf(i.atomic.guard, accountPresent(i.accountId), i.sessionGuard) : allOf(i.atomic.guard, accountPresent(i.accountId));
   const { consume } = i.atomic;
   const stmts: Stmt[] = [accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, guard)];
   let refresh: string | undefined;
@@ -570,6 +572,10 @@ async function mintResponse(
     let accountGone = false;
     try {
       accountGone = (await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [i.accountId] })).rows.length === 0;
+      // Likewise a code whose originating session was revoked is dead, not replayed: no replay audit.
+      if (!accountGone && i.sessionGuard) {
+        accountGone = (await db.execute({ sql: `SELECT 1 WHERE NOT (${i.sessionGuard.sql})`, args: i.sessionGuard.args })).rows.length > 0;
+      }
     } catch {
       accountGone = false; // unknown: fall back to the conservative (audited) path
     }
@@ -655,6 +661,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       // A refresh token needs the offline_access scope AND the client's allow_offline_access flag (checked live).
       issueRefresh: ex.scope.includes("offline_access") && (await getClient(db, clientId))?.allowOfflineAccess === true,
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
+      sessionGuard: codeSessionLive(ex.codeHash, now(deps)),
       onLost: async (accountGone) => {
         await revokeLoserFamily(db, ex.family);
         if (!accountGone) await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });

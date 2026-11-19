@@ -135,3 +135,29 @@ test("prompt=login cannot be bypassed: the old live session goes to /consent and
   expect(ok.status).toBe(200);
   expect(new URL(((await ok.json()) as { redirect: string }).redirect).searchParams.get("code")).toBeTruthy();
 });
+
+test("I4: a code whose originating session was revoked after /authorize cannot be exchanged (invalid_grant, nothing issued, no replay audit)", async () => {
+  const f = await setup();
+  const { sess, code } = await firstLogin(f);
+  // sign-out / password change / revoke-all between the redirect and the /token call
+  await f.db.execute("UPDATE sessions SET revoked_at = datetime('now')");
+  const r = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
+  expect(r.status).toBe(400);
+  expect(((await r.json()) as { error: string }).error).toBe("invalid_grant");
+  const n = async (t: string, w = "1=1") => Number((await f.db.execute(`SELECT COUNT(*) AS n FROM ${t} WHERE ${w}`)).rows[0]!.n);
+  expect(await n("access_tokens")).toBe(0);
+  expect(await n("refresh_tokens")).toBe(0);
+  expect(await n("audit_log", "event = 'token.code_replay'")).toBe(0);
+  void sess;
+});
+
+test("I4: userinfo honours access_tokens.revoked_at (a revoked access token stops working immediately)", async () => {
+  const f = await setup();
+  const { code } = await firstLogin(f);
+  const r = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
+  const at = ((await r.json()) as { access_token: string }).access_token;
+  const ui = () => handle(new Request("https://iss/userinfo", { headers: { Authorization: `Bearer ${at}` } }), f.env as never, f.deps as never);
+  expect((await ui()).status).toBe(200);
+  await f.db.execute("UPDATE access_tokens SET revoked_at = datetime('now')");
+  expect((await ui()).status).toBe(401);
+});
