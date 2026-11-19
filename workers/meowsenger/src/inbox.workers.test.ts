@@ -21,9 +21,10 @@ async function open(user: string, sid: string): Promise<WebSocket> {
 const closedP = (ws: WebSocket) => new Promise<number>((resolve, reject) => { const t = setTimeout(() => reject(new Error("not closed")), 2000); ws.addEventListener("close", (e) => { clearTimeout(t); resolve(e.code); }); });
 type Att = { userId?: string; sid?: string; checkedAt?: number };
 /** Make the sockets' last session check look `ms` old (the verdict lives on the attachment). */
-const age = (user: string, ms: number) => runInDurableObject(stub(user), async (inst: UserInbox) => { for (const ws of inst.ctx.getWebSockets()) { const a = ws.deserializeAttachment() as Att; ws.serializeAttachment({ ...a, checkedAt: Date.now() - ms }); } });
+const socketsOf = (inst: UserInbox): WebSocket[] => (inst as unknown as { ctx: DurableObjectState }).ctx.getWebSockets();
+const age = (user: string, ms: number) => runInDurableObject(stub(user), async (inst: UserInbox) => { for (const ws of socketsOf(inst)) { const a = ws.deserializeAttachment() as Att; ws.serializeAttachment({ ...a, checkedAt: Date.now() - ms }); } });
 const expire = (user: string) => age(user, 40_000);
-const checkedAtOf = (user: string) => runInDurableObject(stub(user), async (inst: UserInbox) => (inst.ctx.getWebSockets()[0].deserializeAttachment() as Att).checkedAt);
+const checkedAtOf = (user: string) => runInDurableObject(stub(user), async (inst: UserInbox) => (socketsOf(inst)[0]!.deserializeAttachment() as Att).checkedAt);
 /** Swap the DO's D1 for a counting wrapper; `gate` (if set) holds every read until released; `fail` makes reads throw. */
 const instrument = (user: string, opts: { gate?: Promise<void>; fail?: boolean } = {}) => runInDurableObject(stub(user), async (inst: UserInbox) => {
   const real = bindings.DB;
