@@ -80,11 +80,11 @@ export function validateAuthorizeParams(p: AuthorizeParams, client: LoadedClient
   if (rawScopes.length === 0 || !rawScopes.includes("openid") || !rawScopes.every((s) => allowed.has(s))) {
     return { kind: "redirect_error", error: "invalid_scope", state };
   }
-  // offline_access (a refresh token) additionally needs the client's allow_offline_access flag, not just the scope allowlist.
-  if (rawScopes.includes("offline_access") && !client.allowOfflineAccess) {
-    return { kind: "redirect_error", error: "invalid_scope", state };
-  }
-  const requested = parseScope(p.scope);
+  // offline_access (a refresh token) additionally needs the client's allow_offline_access flag. Without it
+  // the scope is silently DROPPED from the grant (OIDC: the server may ignore offline_access) rather than
+  // failing the whole login, so clients registered before the flag existed keep signing in; they just get no
+  // refresh token (the token step also refuses to mint one).
+  const requested = parseScope(p.scope).filter((s) => s !== "offline_access" || client.allowOfflineAccess);
 
   let maxAge: number | undefined;
   if (p.max_age !== undefined && p.max_age !== "") {

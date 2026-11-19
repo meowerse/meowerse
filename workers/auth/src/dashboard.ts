@@ -101,13 +101,14 @@ export interface ClientSummary {
   clientType: string;
   allowedScopes: string[];
   verifiedOnly: boolean;
+  allowOfflineAccess: boolean;
   status: string;
 }
 
 /** List a developer's (non-deleted) clients. */
 export async function listClients(db: DbClient, ownerId: string): Promise<ClientSummary[]> {
   const r = await db.execute({
-    sql: `SELECT client_id, name, display_name, client_type, allowed_scopes, verified_only, status
+    sql: `SELECT client_id, name, display_name, client_type, allowed_scopes, verified_only, allow_offline_access, status
           FROM oauth_clients WHERE owner_account_id = ? AND deleted_at IS NULL ORDER BY created_at DESC`,
     args: [ownerId],
   });
@@ -118,6 +119,7 @@ export async function listClients(db: DbClient, ownerId: string): Promise<Client
     clientType: String(row.client_type),
     allowedScopes: safeArray(row.allowed_scopes),
     verifiedOnly: Number(row.verified_only) === 1,
+    allowOfflineAccess: Number(row.allow_offline_access) === 1,
     status: String(row.status),
   }));
 }

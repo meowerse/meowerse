@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Field, Card, Checkbox, RadioGroup, Code, Alert, ConfirmDialog, useToast, Spinner } from "@meowerse/ui";
-import { listClients, createClient, deleteClient, rotateClientSecret, postManagementToken, type ClientSummary } from "../lib/authApi";
+import { listClients, createClient, deleteClient, rotateClientSecret, updateClient, postManagementToken, type ClientSummary } from "../lib/authApi";
 
 const SCOPE_OPTIONS = ["openid", "profile", "telegram", "verified", "offline_access"];
 
@@ -21,6 +21,7 @@ export default function Dashboard({ base }: { base: string }) {
   const [redirect, setRedirect] = useState("");
   const [clientType, setClientType] = useState("public");
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [scopes, setScopes] = useState<string[]>(["openid", "profile"]);
 
   function reload() {
@@ -33,7 +34,7 @@ export default function Dashboard({ base }: { base: string }) {
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     setError(""); setBusy(true);
-    const r = await createClient(base, { csrf, name, display_name: displayName || undefined, client_type: clientType, redirect_uris: redirect, scopes: scopes.join(" "), verified_only: verifiedOnly ? "true" : "false" });
+    const r = await createClient(base, { csrf, name, display_name: displayName || undefined, client_type: clientType, redirect_uris: redirect, scopes: scopes.join(" "), verified_only: verifiedOnly ? "true" : "false", offline: offline ? "true" : "false" });
     setBusy(false);
     if (r.ok && r.clientId) { setCreated({ clientId: r.clientId, clientSecret: r.clientSecret }); setName(""); setDisplayName(""); setRedirect(""); reload(); toast({ message: "app created", variant: "success" }); }
     else setError(errorText(r.error));
@@ -50,6 +51,13 @@ export default function Dashboard({ base }: { base: string }) {
     const r = await rotateClientSecret(base, csrf, clientId);
     if (r.clientSecret) setRotated({ clientId, secret: r.clientSecret });
     else toast({ message: "only confidential apps have a secret to rotate", variant: "error" });
+  }
+
+  async function onToggleOffline(c: ClientSummary) {
+    const next = !c.allowOfflineAccess;
+    const r = await updateClient(base, { csrf, client_id: c.clientId, offline: next ? "true" : "false" });
+    if (r.ok) setClients((cur) => cur.map((x) => (x.clientId === c.clientId ? { ...x, allowOfflineAccess: next } : x)));
+    else toast({ message: "could not update the app", variant: "error" });
   }
 
   async function onMgmtToken() { const r = await postManagementToken(base, csrf); if (r.token) setMgmtToken(r.token); }
@@ -76,6 +84,7 @@ export default function Dashboard({ base }: { base: string }) {
                 <span><strong>{c.displayName ?? c.name}</strong> — <code className="mono" data-case="preserve">{c.clientId}</code> ({c.clientType}{c.verifiedOnly ? ", verified-only" : ""}) · {c.allowedScopes.join(", ")}</span>
                 <span style={{ display: "flex", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
                   {c.clientType === "confidential" && <Button size="sm" variant="secondary" onClick={() => onRotate(c.clientId)}>rotate secret</Button>}
+                  <Button size="sm" variant="secondary" aria-pressed={!!c.allowOfflineAccess} onClick={() => onToggleOffline(c)}>{c.allowOfflineAccess ? "refresh tokens: on" : "refresh tokens: off"}</Button>
                   <Button size="sm" variant="danger" onClick={() => setToDelete(c)}>delete</Button>
                 </span>
               </div>
@@ -97,6 +106,7 @@ export default function Dashboard({ base }: { base: string }) {
               {SCOPE_OPTIONS.map((s) => <Checkbox key={s} label={s} checked={scopes.includes(s)} disabled={s === "openid"} onChange={() => toggleScope(s)} />)}
             </div>
           </fieldset>
+          <Checkbox label="allow refresh tokens (needed for the offline_access scope)" checked={offline} onChange={(e) => setOffline(e.target.checked)} />
           <Checkbox label="only verified users may authorize" checked={verifiedOnly} onChange={(e) => setVerifiedOnly(e.target.checked)} />
           {error && <Alert variant="error">{error}</Alert>}
           <Button variant="primary" type="submit" loading={busy}>create app</Button>

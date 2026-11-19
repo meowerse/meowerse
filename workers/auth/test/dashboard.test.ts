@@ -29,9 +29,9 @@ test("isRegisterableRedirect: https ok, loopback http ok, junk rejected", () => 
 });
 
 test("listClients tolerates a null display_name", async () => {
-  const db = routedDb([[/FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [{ client_id: "mw_2", name: "b", display_name: null, client_type: "public", allowed_scopes: "[]", verified_only: 1, status: "active" }] })]]);
+  const db = routedDb([[/FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [{ client_id: "mw_2", name: "b", display_name: null, client_type: "public", allowed_scopes: "[]", verified_only: 1, allow_offline_access: 1, status: "active" }] })]]);
   const list = await listClients(db, "o");
-  expect(list[0]).toMatchObject({ clientId: "mw_2", displayName: null, verifiedOnly: true });
+  expect(list[0]).toMatchObject({ clientId: "mw_2", displayName: null, verifiedOnly: true, allowOfflineAccess: true });
 });
 
 test("createClient validates name/type/redirects before writing", async () => {

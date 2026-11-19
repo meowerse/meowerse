@@ -80,20 +80,21 @@ test("a refresh-grant id_token reports the original login time as auth_time, not
   expect(id3.payload.auth_time).toBe(1000);
 });
 
-test("M7: offline_access needs the client's allow_offline_access flag (authorize rejects; no refresh token; refresh stops when switched off)", async () => {
+test("M7: without allow_offline_access authorize DROPS offline_access (no invalid_scope); existing refresh tokens keep working; new codes yield no refresh token", async () => {
   const f = await setup();
-  const { code } = await firstLogin(f);
+  const { sess, code } = await firstLogin(f);
   const r4 = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
   const rt = ((await r4.json()) as Record<string, string>).refresh_token!;
   expect(rt).toBeTruthy();
 
-  // flag switched off: the existing refresh token no longer works, and authorize refuses the scope
   await f.db.execute("UPDATE oauth_clients SET allow_offline_access = 0 WHERE client_id = 'mw_demo'");
+  // existing refresh family is NOT hard-broken by the flag being off
   const r5 = await handle(tokenReq({ grant_type: "refresh_token", refresh_token: rt, client_id: "mw_demo" }), f.env as never, f.deps as never);
-  expect(r5.status).toBe(400);
-  expect(((await r5.json()) as { error: string }).error).toBe("invalid_grant");
-  const a = await handle(new Request(authorizeUrl()), f.env as never, f.deps as never);
-  expect(new URL(a.headers.get("Location")!).searchParams.get("error")).toBe("invalid_scope");
+  expect(r5.status).toBe(200);
+  // authorize with offline_access succeeds (scope silently dropped) instead of invalid_scope
+  const a = await handle(new Request(authorizeUrl(), { headers: { Cookie: `__Host-mw_sess=${sess}` } }), f.env as never, f.deps as never);
+  const loc = new URL(a.headers.get("Location") ?? "https://web/x");
+  expect(loc.searchParams.get("error")).toBeNull();
 });
 
 test("M7: a code that carries offline_access but whose client lacks the flag yields no refresh token", async () => {

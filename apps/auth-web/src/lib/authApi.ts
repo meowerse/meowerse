@@ -60,6 +60,7 @@ export interface ClientSummary {
   clientType: string;
   allowedScopes: string[];
   verifiedOnly: boolean;
+  allowOfflineAccess?: boolean;
   status: string;
 }
 
@@ -162,10 +163,18 @@ export function listClients(base: string): Promise<{ clients?: ClientSummary[]; 
 
 export async function createClient(
   base: string,
-  body: { csrf: string; name: string; display_name?: string; client_type: string; redirect_uris: string; scopes: string; verified_only?: string },
+  body: { csrf: string; name: string; display_name?: string; client_type: string; redirect_uris: string; scopes: string; verified_only?: string; offline?: string },
 ): Promise<{ ok?: boolean; clientId?: string; clientSecret?: string; error?: string }> {
   const res = await fetch(`${base}/api/dev/clients`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return (await res.json()) as { ok?: boolean; clientId?: string; clientSecret?: string; error?: string };
+}
+
+export async function updateClient(
+  base: string,
+  body: { csrf: string; client_id: string; offline?: string },
+): Promise<{ ok?: boolean; error?: string }> {
+  const res = await fetch(`${base}/api/dev/clients/update`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return (await res.json()) as { ok?: boolean; error?: string };
 }
 
 /** Where the browser should go for a given post-auth `next` step (pure, testable). */

@@ -669,8 +669,11 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
-    // The client's offline-access permission is re-checked on every refresh: turning it off ends refreshing.
-    if (rot.ok && (await getClient(db, clientId))?.allowOfflineAccess !== true) return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+    // The client's allow_offline_access flag is enforced at ISSUE time only (authorize drops offline_access from
+    // the grant; the code exchange refuses to mint a refresh token). It is deliberately NOT re-checked here:
+    // clients created before the flag existed (e.g. via the dashboard, which could not set it) already hold live
+    // refresh families, and re-checking would hard-break them on deploy. Existing families end at their natural
+    // expiry/rotation limit, or via revocation.
     if (!rot.ok) {
       // Refresh-token reuse: rotateRefresh revoked the family (with retry) before returning.
       // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
@@ -1088,6 +1091,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       redirectUris: p.redirect_uris !== undefined ? splitList(p.redirect_uris) : undefined,
       allowedScopes: p.scopes !== undefined ? splitList(p.scopes) : undefined,
       verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
+      allowOfflineAccess: p.offline !== undefined ? asBool(p.offline) : undefined,
       displayName: p.display_name,
     });
     if (r.ok) await recordAudit(deps, req, { event: "client.update", accountId: session.accountId, clientId: p.client_id });
