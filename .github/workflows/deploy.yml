@@ -23,7 +23,11 @@ jobs:
           fetch-depth: 0   # need previous commit to diff changed paths
 
       - uses: oven-sh/setup-bun@v2
-        with: { bun-version: "1.3.14" }
+        with: { bun-version: "1.4.5" }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
 
       - name: Detect changed services
         id: changed

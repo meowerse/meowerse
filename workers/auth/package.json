@@ -17,9 +17,9 @@
     "@meowerse/auth-shared": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260625.1",
+    "@cloudflare/workers-types": "^4.20260702.1",
     "@vitest/coverage-v8": "^5.1.1",
     "vitest": "^5.1.1",
-    "wrangler": "^4.105.0"
+    "wrangler": "4.116.0"
   }
 }

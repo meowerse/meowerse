@@ -104,7 +104,9 @@ test("a demo is inert with a visible wait until it hydrates, then it works", asy
 
 test("a demo whose chunk never arrives stays inert and turns into an error with a reload", async ({ page }) => {
   test.setTimeout(45_000);
-  await page.route(/\/_astro\/client\.[^/]*\.js$/, (route) => route.abort());
+  // astro 7.4's island retries a failed import once, ~1s later, as `client.<hash>.js?astro-retry=<ts>`:
+  // "never arrives" has to cover that retry too, or the second attempt succeeds and the demo just loads.
+  await page.route(/\/_astro\/client\.[^/?]*\.js(\?.*)?$/, (route) => route.abort());
   await page.goto("/ui/components/modal/");
   const shell = page.locator(".demo-stage [data-demo]");
   await shell.evaluate((el) => el.scrollIntoView({ block: "center" }));
@@ -117,7 +119,7 @@ test("a demo whose chunk never arrives stays inert and turns into an error with 
   expect(await shell.locator("button", { hasText: "rename chat" }).evaluate((b: HTMLButtonElement) => { b.focus(); return document.activeElement === b; })).toBe(false);
   await shell.locator("button", { hasText: "rename chat" }).click({ force: true });
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.unroute(/\/_astro\/client\.[^/]*\.js$/);
+  await page.unroute(/\/_astro\/client\.[^/?]*\.js(\?.*)?$/);
   await Promise.all([page.waitForEvent("load"), fail.getByRole("button", { name: "reload" }).click()]);
 });
 
