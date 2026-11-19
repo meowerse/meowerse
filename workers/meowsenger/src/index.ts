@@ -1,4 +1,4 @@
-import type { Env } from "./types";
+import { SID_HEADER, type Env } from "./types";
 // Durable Object class must be exported from the worker entrypoint so wrangler
 // can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
 export { Conversation } from "./conversation";
@@ -248,10 +248,13 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   const stub = ns.get(ns.idFromName(chatId));
   // Preserve the original request (carries the Upgrade header) while overriding
   // the URL so the DO receives the gated identity + role + type via query params.
+  // The session hash travels in an internal header, not the URL (URLs get logged). Built from
+  // a fresh Headers copy so any client-supplied X-MW-Sid is overwritten, never trusted.
   const fwd = new Request(
-    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}&sid=${encodeURIComponent(sess.id)}`,
+    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}`,
     req,
   );
+  fwd.headers.set(SID_HEADER, sess.id);
   return stub.fetch(fwd);
 }
 
@@ -269,7 +272,9 @@ async function handleInboxWs(req: Request, env: Env, deps: Deps): Promise<Respon
   const ns = env.USER_INBOX;
   if (!ns) return new Response("inbox unavailable", { status: 503, headers: NS });
   const stub = ns.get(ns.idFromName("inbox:" + me));
-  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}&sid=${encodeURIComponent(sess.id)}`, req));
+  const fwd = new Request(`https://do/ws?user=${encodeURIComponent(me)}`, req);
+  fwd.headers.set(SID_HEADER, sess.id); // overwrites any client-supplied value
+  return stub.fetch(fwd);
 }
 
 export default {

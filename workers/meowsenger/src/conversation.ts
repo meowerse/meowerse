@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
-import type { DbClient, Env, Row } from "./types";
+import { SID_HEADER, type DbClient, type Env, type Row } from "./types";
 import { markRead, syncLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { d1Client } from "./db";
@@ -281,7 +281,7 @@ export class Conversation extends DurableObject<Env> {
     // for members); a missing/other value leaves posting unchanged (DMs/groups).
     const type = url.searchParams.get("type") || "group";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
-    const sid = url.searchParams.get("sid") || undefined;
+    const sid = request.headers.get(SID_HEADER) || undefined;
 
     const pair = new WebSocketPair();
     // WebSocketPair is a tuple-shaped { 0: client, 1: server }.
@@ -415,6 +415,16 @@ export class Conversation extends DurableObject<Env> {
     return p;
   }
 
+  /** Why a definite "no" verdict happened: "session" when the socket's login row is gone/expired,
+   *  otherwise undefined (membership removed, or unknown because D1 failed). */
+  private async revokeReason(att: Attach): Promise<"session" | undefined> {
+    if (!att.sid) return undefined;
+    try {
+      const row = await this.d1().first("SELECT 1 AS ok FROM sessions WHERE id = ? AND user_id = ? AND expires_at >= ?", [att.sid, att.userId, Date.now()]);
+      return row === undefined ? "session" : undefined;
+    } catch { return undefined; }
+  }
+
   /** The socket's last GOOD (member + live session) verdict if it is within the stale-while-error window. */
   private memberStale(att: Attach): boolean {
     const v = this.memberVerdict.get(verdictKey(att));
@@ -508,7 +518,11 @@ export class Conversation extends DurableObject<Env> {
       if (ok === false) {
         // Exactly what dropUser does for a removed member: {revoked} stops the client's
         // reconnect loop, then close; the forbidden error stays for older clients.
-        this.safeSend(ws, JSON.stringify({ type: "revoked" }));
+        // `reason:"session"` tells the client its LOGIN ended (sign out), not that it was removed
+        // from this chat; decided by one extra read on this (once-per-socket) revoke path, and
+        // omitted when unknown (older clients ignore the field either way).
+        const reason = await this.revokeReason(att);
+        this.safeSend(ws, JSON.stringify({ type: "revoked", ...(reason ? { reason } : {}) }));
         this.safeSend(ws, JSON.stringify({ type: "error", code: "forbidden", ...corr }));
         try { ws.close(4001, "revoked"); } catch { /* already closing */ }
       } else if (interactive) {
@@ -554,7 +568,8 @@ export class Conversation extends DurableObject<Env> {
     // Edit: own message, within the 1h window, not soft-deleted. All checks are
     // server-side — never trust the client's view of ownership or the clock.
     if ((msg.type === "edit" || msg.type === "delete" || msg.type === "react") && this.isMutateRateLimited(att.userId)) {
-      this.safeSend(ws, JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
+      // `op` lets the client roll back exactly an optimistic EDIT (messageId alone also matches a react).
+      this.safeSend(ws, JSON.stringify({ type: "error", code: "rate_limited", ...corr, op: msg.type }));
       return;
     }
     if (msg.type === "edit") {

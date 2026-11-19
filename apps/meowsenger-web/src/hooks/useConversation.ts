@@ -5,7 +5,8 @@ import type { Bubble } from "../components/MessageItem";
 import { pushConfirmedFor } from "../lib/push";
 import { retryDelay } from "../lib/backoff";
 import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
-import { hasSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+import { hasSessionEnded, notifySessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+import { clearAll } from "../lib/store/scope";
 // The ONLY store import allowed here: token-authorised, memory-only cache writes.
 import { enter, valid, beginWork, touch, peekEntry, putT, patchT, type EntryToken, type ScrollAnchor } from "../lib/store/conversationTokens";
 
@@ -24,10 +25,11 @@ type Frame =
   | { type: "reaction"; id: string; emoji: string; userId: string; on: boolean }
   // The server closed this socket because the user was removed from / left the chat
   // (membership revoked) → the client drops the chat and stops reconnecting.
-  | { type: "revoked" }
+  // `reason:"session"`: the LOGIN ended (not a chat removal) -> treat as a signed-out session.
+  | { type: "revoked"; reason?: string }
   // `tempId` correlates a refused send; `messageId` a refused edit/delete/react (older
   // servers send neither -> the client falls back to the oldest in-flight edit).
-  | { type: "error"; code: string; tempId?: string; messageId?: string };
+  | { type: "error"; code: string; tempId?: string; messageId?: string; op?: string };
 
 // How long the ".is-flash" highlight lingers after a jump-to-original.
 const FLASH_MS = 1200;
@@ -865,7 +867,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // reconnect (only for the chat this socket serves), then let the view drop THAT chat.
       if (isActive) revokedRef.current = true;
       unackedRef.current.delete(chatId);
-      onRevokedRef.current(chatId);
+      if (frame.reason === "session") {
+        // The LOGIN ended, not this chat's membership: raise the app's existing session-ended
+        // path (banner, draft hand-back) and drop the account cache; no "removed" purge/toast.
+        // The snapshot is taken by notifySessionEnded BEFORE the wipe.
+        notifySessionEnded();
+        clearAll();
+      } else onRevokedRef.current(chatId);
       return;
     }
     if (frame.type === "sent") {
@@ -887,6 +895,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
         commitLog(chatId, (prev) => prev.map((b) => (b.tempId === tid && b.id === tid ? { ...b, pending: false, sendFailed: true } : b)), { src: "live" });
       }
       if (frame.code === "cannot_edit") revertRefusedEdit(chatId, frame.messageId);
+      // A rate-limited EDIT was refused too: roll its optimistic body back (never FIFO-guess: only with an exact id).
+      else if (frame.code === "rate_limited" && frame.op === "edit" && frame.messageId) revertRefusedEdit(chatId, frame.messageId);
       return;
     }
     if (!isActive) return; // every other frame only concerns the chat on screen

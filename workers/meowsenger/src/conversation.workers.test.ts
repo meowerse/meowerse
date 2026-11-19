@@ -28,10 +28,10 @@ beforeAll(async () => {
   );
 });
 
-/** Open a socket the way the router does for a session-bound upgrade (`&sid=<sessions.id>`). */
+/** Open a socket the way the router does for a session-bound upgrade (internal `X-MW-Sid` header). */
 async function connectSession(chatId: string, userId: string, sid: string): Promise<WebSocket> {
   await seedChatMember(chatId, userId, 0);
-  const res = await stub(chatId).fetch(`https://do/ws?user=${userId}&chat=${chatId}&sid=${sid}`, { headers: { Upgrade: "websocket" } });
+  const res = await stub(chatId).fetch(`https://do/ws?user=${userId}&chat=${chatId}`, { headers: { Upgrade: "websocket", "X-MW-Sid": sid } });
   expect(res.status).toBe(101);
   const ws = res.webSocket!;
   ws.accept();
@@ -1340,6 +1340,15 @@ describe("Conversation DO", () => {
     expect(String(rl!.tempId)).toMatch(/^f\d+$/);
   });
 
+  it("a rate-limited EDIT/DELETE/REACT error carries the messageId and the op (so the client can roll back exactly an edit)", async () => {
+    await seedChat("d9");
+    const wa = await connect("d9", "u1");
+    const frames = collect(wa);
+    for (let i = 0; i < 70; i++) wa.send(JSON.stringify({ type: "edit", id: "mX", body: `e${i}` }));
+    await until(() => frames.some((f) => f.code === "rate_limited"));
+    expect(frames.find((f) => f.code === "rate_limited")).toMatchObject({ type: "error", code: "rate_limited", messageId: "mX", op: "edit" });
+  });
+
   it("an oversized or malformed tempId is rejected (bad_body, not echoed, nothing persisted)", async () => {
     await seedChat("d9");
     const wa = await connect("d9", "u1");
@@ -1585,7 +1594,7 @@ describe("Conversation DO: security-review fixes", () => {
       const forbidden = waitFor(a, (t) => t.includes('"forbidden"'));
       const closed = waitForClose(a);
       a.send(JSON.stringify({ type: "send", tempId: "t-s1b", body: "after-logout" }));
-      expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked", reason: "session" });
       expect(JSON.parse(await forbidden)).toMatchObject({ code: "forbidden", tempId: "t-s1b" });
       await closed;
       expect((await stub("csess1").historyFor("csess1", null)).some((m) => m.body === "after-logout")).toBe(false);
@@ -1598,6 +1607,16 @@ describe("Conversation DO: security-review fixes", () => {
       await clearVerdicts("csess2");
       const revoked = waitFor(a, (t) => t.includes('"revoked"'));
       a.send(JSON.stringify({ type: "send", tempId: "t-s2", body: "late" }));
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked", reason: "session" });
+    });
+    it("membership removal on a session-bound socket stays reason-less (the session is still live)", async () => {
+      await seedChat("csess5");
+      await seedSession("sid-live", "u1", FAR);
+      const a = await connectSession("csess5", "u1", "sid-live");
+      await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind("csess5", "u1").run();
+      await clearVerdicts("csess5");
+      const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+      a.send(JSON.stringify({ type: "send", tempId: "t-s5", body: "x" }));
       expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
     });
     it("a session belonging to ANOTHER user does not satisfy the check", async () => {
@@ -1607,7 +1626,7 @@ describe("Conversation DO: security-review fixes", () => {
       await clearVerdicts("csess3");
       const revoked = waitFor(a, (t) => t.includes('"revoked"'));
       a.send(JSON.stringify({ type: "send", tempId: "t-s3", body: "x" }));
-      expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked", reason: "session" });
     });
     it("verdicts are per SESSION: logging out one login does not kill the user's other socket", async () => {
       await seedChat("csess4");

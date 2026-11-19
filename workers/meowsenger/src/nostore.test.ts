@@ -299,7 +299,7 @@ describe("Cache-Control: authenticated 200 responses are no-store", () => {
 const ALLOW: Array<{ file: string; snippet: string; count: number; why: string }> = [
   { file: "conversation.ts", snippet: "status: 101", count: 1, why: "WebSocket 101 upgrade (no body)" },
   { file: "inbox.ts", snippet: "status: 101", count: 1, why: "WebSocket 101 upgrade (no body)" },
-  { file: "inbox.ts", snippet: "{ status: 204 }", count: 2, why: "DO-internal /notify ack; never reaches a client" },
+  { file: "inbox.ts", snippet: "{ status: 204 }", count: 1, why: "DO-internal /notify ack; never reaches a client" },
   { file: "index.ts", snippet: "new Response(page.body", count: 1, why: "ASSETS 404 page passthrough: carries the asset's own headers" },
   // security.txt and the .eu.org 308 are public but set an explicit Cache-Control,
   // so the scan passes them on their own merits (no allowlist entry needed).

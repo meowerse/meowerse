@@ -206,9 +206,10 @@ export async function leave(
     ...reconcileStatements(chatId, actorId),
   ]);
 
-  if (actorRole !== "owner") return { ok: true };
   // Report what THIS batch did (a client that cannot report changes is read back instead).
+  // Also for a non-owner leaver: if the chat was ownerless/emptied the batch deleted it.
   if (removed !== undefined && removed > 0) return { ok: true, deleted: true };
+  if (actorRole !== "owner") return { ok: true };
   if (promoted === 0 && removed === 0) return { ok: true }; // someone else already owns it
   const owner = await db.first("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner' LIMIT 1", [chatId]);
   if (owner) return { ok: true, transferredTo: String(owner.user_id) };

@@ -291,6 +291,10 @@ describe("leave", () => {
     expect(await getRole(db, G, "mem")).toBeNull();
     expect(await getRole(db, G, "owner")).toBe("owner");
   });
+  it("a NON-owner leaver who empties an ownerless chat reports deleted:true (from the batch change counts)", async () => {
+    const { db } = memDb({ members: [{ chatId: G, userId: "mem", role: "member", joinedAt: 2 }] });
+    expect(await leave(db, G, "mem")).toEqual({ ok: true, deleted: true });
+  });
   it("a non-member leaving → not_member", async () => {
     const { db } = memDb({ members: [{ chatId: G, userId: "owner", role: "owner", joinedAt: 1 }] });
     expect(await leave(db, G, "stranger")).toEqual({ ok: false, error: "not_member" });

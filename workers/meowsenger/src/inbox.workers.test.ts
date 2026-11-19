@@ -13,13 +13,30 @@ const seedSession = (id: string, user: string, exp: number) =>
 const notify = (s: ReturnType<typeof stub>, preview: string) =>
   s.fetch("https://do/notify", { method: "POST", body: JSON.stringify({ chatId: "c1", preview, at: 1, senderId: "x" }) });
 async function open(user: string, sid: string): Promise<WebSocket> {
-  const res = await stub(user).fetch(`https://do/ws?user=${user}&sid=${sid}`, { headers: { Upgrade: "websocket" } });
+  const res = await stub(user).fetch(`https://do/ws?user=${user}`, { headers: { Upgrade: "websocket", "X-MW-Sid": sid } });
   const ws = res.webSocket!;
   ws.accept();
   return ws;
 }
 const closedP = (ws: WebSocket) => new Promise<number>((resolve, reject) => { const t = setTimeout(() => reject(new Error("not closed")), 2000); ws.addEventListener("close", (e) => { clearTimeout(t); resolve(e.code); }); });
-const expire = (user: string) => runInDurableObject(stub(user), async (inst: UserInbox) => { const m = (inst as unknown as { sessionVerdict: Map<string, { ok: boolean; at: number }> }).sessionVerdict; for (const [k, v] of m) m.set(k, { ...v, at: v.at - 40_000 }); });
+type Att = { userId?: string; sid?: string; checkedAt?: number };
+/** Make the sockets' last session check look `ms` old (the verdict lives on the attachment). */
+const age = (user: string, ms: number) => runInDurableObject(stub(user), async (inst: UserInbox) => { for (const ws of inst.ctx.getWebSockets()) { const a = ws.deserializeAttachment() as Att; ws.serializeAttachment({ ...a, checkedAt: Date.now() - ms }); } });
+const expire = (user: string) => age(user, 40_000);
+const checkedAtOf = (user: string) => runInDurableObject(stub(user), async (inst: UserInbox) => (inst.ctx.getWebSockets()[0].deserializeAttachment() as Att).checkedAt);
+/** Swap the DO's D1 for a counting wrapper; `gate` (if set) holds every read until released; `fail` makes reads throw. */
+const instrument = (user: string, opts: { gate?: Promise<void>; fail?: boolean } = {}) => runInDurableObject(stub(user), async (inst: UserInbox) => {
+  const real = bindings.DB;
+  const counter = { reads: 0 };
+  (inst as unknown as { env: unknown }).env = { DB: { prepare: (sql: string) => {
+    counter.reads++;
+    if (opts.fail) throw new Error("d1 down");
+    const st = real.prepare(sql);
+    return { bind: (...p: unknown[]) => { const b = st.bind(...p); return { first: async () => { if (opts.gate) await opts.gate; return b.first(); } }; } };
+  } } };
+  (globalThis as unknown as Record<string, unknown>)["__reads_" + user] = counter;
+});
+const reads = (user: string) => ((globalThis as unknown as Record<string, { reads: number }>)["__reads_" + user]).reads;
 
 function stub(userId: string) {
   return INBOX.get(INBOX.idFromName("inbox:" + userId));
@@ -107,20 +124,72 @@ describe("UserInbox DO", () => {
       expect(await closed).toBe(4001);
       expect(frames.some((f) => f.includes("late-preview"))).toBe(false);
     });
-    it("D1 outage: the last good verdict is honoured inside the stale window; past it the delta is withheld but the socket stays", async () => {
+    it("D1 outage: the last good check is honoured inside the stale window (measured from the socket's checkedAt); past it the delta is withheld but the socket stays", async () => {
       await seedSession("isid-st", "iu4", FAR);
       const ws = await open("iu4", "isid-st");
-      await runInDurableObject(stub("iu4"), async (inst: UserInbox) => { (inst as unknown as { env: unknown }).env = { DB: { prepare: () => { throw new Error("d1 down"); } } }; });
-      await expire("iu4"); // verdict older than TTL (30 s) but inside the 120 s stale window
+      await instrument("iu4", { fail: true });
+      await age("iu4", 60_000); // older than TTL (30 s), inside the 120 s stale window
       const got = nextFrame(ws, (t) => t.includes("during-outage"));
       await notify(stub("iu4"), "during-outage");
       expect(JSON.parse(await got).preview).toBe("during-outage");
-      await runInDurableObject(stub("iu4"), async (inst: UserInbox) => { const m = (inst as unknown as { sessionVerdict: Map<string, { ok: boolean; at: number }> }).sessionVerdict; for (const [k, v] of m) m.set(k, { ...v, at: Date.now() - 200_000 }); });
+      await age("iu4", 200_000);
       const frames: string[] = [];
       ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
       await notify(stub("iu4"), "past-window");
       await new Promise((r) => setTimeout(r, 100));
       expect(frames.some((f) => f.includes("past-window"))).toBe(false);
+    });
+    it("a D1 failure does NOT refresh checkedAt (the stale window cannot be extended by errors)", async () => {
+      await seedSession("isid-st2", "iu6", FAR);
+      const ws = await open("iu6", "isid-st2");
+      await instrument("iu6", { fail: true });
+      await age("iu6", 60_000);
+      const before = await checkedAtOf("iu6");
+      const got = nextFrame(ws, (t) => t.includes("x1"));
+      await notify(stub("iu6"), "x1");
+      await got;
+      expect(await checkedAtOf("iu6")).toBe(before);
+    });
+    it("normal flow: a fresh checkedAt (set at open) means NO D1 read per delta; a lapsed one reads once then refreshes", async () => {
+      await seedSession("isid-n", "iu7", FAR);
+      const ws = await open("iu7", "isid-n");
+      await instrument("iu7");
+      for (const p of ["n1", "n2", "n3"]) { const g = nextFrame(ws, (t) => t.includes(p)); await notify(stub("iu7"), p); await g; }
+      expect(reads("iu7")).toBe(0);
+      await expire("iu7");
+      const old = await checkedAtOf("iu7");
+      for (const p of ["n4", "n5"]) { const g = nextFrame(ws, (t) => t.includes(p)); await notify(stub("iu7"), p); await g; }
+      expect(reads("iu7")).toBe(1);
+      expect((await checkedAtOf("iu7"))!).toBeGreaterThan(old! + 30_000);
+    });
+    it("hibernation survival: the verdict is on the socket, not in DO memory (wiped memory + dead D1 still delivers inside the TTL)", async () => {
+      await seedSession("isid-h", "iu8", FAR);
+      const ws = await open("iu8", "isid-h");
+      await runInDurableObject(stub("iu8"), async (inst: UserInbox) => { (inst as unknown as { pending: Map<string, unknown> }).pending.clear(); });
+      await instrument("iu8", { fail: true }); // any D1 read would throw (and withhold if the TTL did not hold)
+      const got = nextFrame(ws, (t) => t.includes("after-wake"));
+      await notify(stub("iu8"), "after-wake");
+      expect(JSON.parse(await got).preview).toBe("after-wake");
+      expect(reads("iu8")).toBe(0);
+    });
+    it("ordering: two overlapping /notify with a slow session read arrive in order, over ONE shared read", async () => {
+      await seedSession("isid-o", "iu9", FAR);
+      const ws = await open("iu9", "isid-o");
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      await instrument("iu9", { gate });
+      await expire("iu9");
+      const seen: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => { const f = JSON.parse(String(e.data)); if (f.type === "chat_update") seen.push(f.preview); });
+      const p1 = notify(stub("iu9"), "first");
+      const p2 = notify(stub("iu9"), "second");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(seen).toEqual([]); // both are waiting on the same pending read
+      release();
+      await Promise.all([p1, p2]);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(seen).toEqual(["first", "second"]);
+      expect(reads("iu9")).toBe(1);
     });
     it("a legacy socket without a sid is not checked (unchanged behaviour)", async () => {
       const ws = (await stub("iu5").fetch("https://do/ws?user=iu5", { headers: { Upgrade: "websocket" } })).webSocket!;

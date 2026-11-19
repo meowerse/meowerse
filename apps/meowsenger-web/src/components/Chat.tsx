@@ -239,11 +239,15 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
           isUnindexed = true;
           return prev;
         }
+        // Deltas can arrive out of order (a reordered fan-out, a late replay): an OLDER message
+        // must never overwrite a newer preview. Equal `at` still applies (same-ms messages).
+        if (at < prev[idx].lastActivity) return prev;
         const isMine = meIdRef.current != null && senderId === meIdRef.current;
         const updated: ChatSummary = {
           ...prev[idx],
           lastMessage: preview,
           lastSenderId: senderId,
+          lastActivity: at,
           // User's own message: never unread. Active chat: preserve scroll-aware state (onActiveRead zeroes it).
           // Cross-chat from a peer: show has-unread dot (1).
           unreadCount: isMine ? 0 : (isActive ? prev[idx].unreadCount : 1),
