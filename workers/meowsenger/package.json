@@ -24,10 +24,10 @@
     "@meowerse/ts-shared": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.0",
-    "@cloudflare/workers-types": "^4.20260625.1",
-    "@vitest/coverage-v8": "^4.1.9",
-    "vitest": "^4.1.9",
-    "wrangler": "^4.105.0"
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@vitest/coverage-v8": "^4.1.12",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.165.0"
   }
 }
