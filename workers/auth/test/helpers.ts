@@ -57,6 +57,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
     consents: [],
     rate_limits: [],
     login_tickets: [],
+    login_ticket_ctx: [],
     audit_log: [],
     account_delete_confirmations: [],
   };
@@ -349,6 +350,34 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: t.login_tickets.filter((r) => r.nonce_hash === a[0]) };
       if (/SELECT \* FROM login_tickets WHERE ticket_id/.test(sql))
         return { rows: t.login_tickets.filter((r) => r.ticket_id === a[0]) };
+      // --- Telegram ticket context (code hash / attempts / identity) ---
+      if (/INSERT INTO login_ticket_ctx/.test(sql)) {
+        t.login_ticket_ctx.push({ ticket_id: a[0], country: a[1], browser: a[2], os: a[3], created_at: a[4], code_hash: null, attempts: 0, tg_id: null, tg_username: null, tg_display: null });
+        return { rows: [] };
+      }
+      if (/SELECT \* FROM login_ticket_ctx WHERE ticket_id/.test(sql)) return { rows: t.login_ticket_ctx.filter((r) => r.ticket_id === a[0]) };
+      if (/UPDATE login_ticket_ctx SET code_hash/.test(sql)) {
+        // args: hash, tg_id, username, display, ticket_id, ticket_id, now — only while the ticket is pending+unexpired and no code was issued
+        const row = t.login_ticket_ctx.find((r) => r.ticket_id === a[4] && r.code_hash == null);
+        const tk = t.login_tickets.find((r) => r.ticket_id === a[5] && r.status === "pending" && Number(r.expires_at) >= Number(a[6]));
+        if (row && tk) Object.assign(row, { code_hash: a[0], tg_id: a[1], tg_username: a[2], tg_display: a[3] });
+        return { rows: [], rowsAffected: row && tk ? 1 : 0 };
+      }
+      if (/UPDATE login_ticket_ctx SET attempts = attempts \+ 1/.test(sql)) {
+        const row = t.login_ticket_ctx.find((r) => r.ticket_id === a[0] && r.code_hash != null && Number(r.attempts) < Number(a[1]));
+        if (row) row.attempts = Number(row.attempts) + 1;
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
+      if (/UPDATE login_ticket_ctx SET tg_id = NULL/.test(sql)) {
+        const row = t.login_ticket_ctx.find((r) => r.ticket_id === a[0]);
+        if (row) Object.assign(row, { tg_id: null, tg_username: null, tg_display: null });
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
+      if (/UPDATE login_tickets SET status = 'burned'/.test(sql)) {
+        const row = t.login_tickets.find((r) => r.ticket_id === a[0] && r.status === "pending");
+        if (row) row.status = "burned";
+        return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
       if (/UPDATE login_tickets SET status = 'consumed' WHERE ticket_id = \? AND status = 'claimed'/.test(sql)) {
         const row = t.login_tickets.find((r) => r.ticket_id === a[0] && r.status === "claimed");
         if (row) row.status = "consumed";
@@ -614,4 +643,52 @@ export async function deleteAccountForTest(
   now = 1000,
 ): Promise<void> {
   await deleteAccount(db, accountId, audit, await seedDeleteConfirmation(db, accountId, now));
+}
+
+
+/**
+ * Drive the Telegram bot's side of the new flow against a worker `handle`: signed confirm (the user tapped
+ * "Yes") returning the one-time code. Returns the confirm response and the code the bot would show.
+ */
+export async function botConfirm(
+  handle: (req: Request, env: never, deps: never) => Promise<Response>,
+  env: unknown,
+  deps: unknown,
+  f: { nonce: string; tgId: string; username?: string; displayName?: string; ts?: string },
+): Promise<{ res: Response; code?: string }> {
+  const { hmacSha256Hex } = await import("../src/crypto");
+  const { internalConfirmString } = await import("@meowerse/auth-shared");
+  const ts = f.ts ?? "1000";
+  const username = f.username ?? "u";
+  const displayName = f.displayName ?? "U";
+  const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce: f.nonce, telegramId: f.tgId, username, displayName, avatarUrl: "", ts }));
+  const res = await handle(
+    new Request("https://iss/internal/tg/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Signature": sig },
+      body: JSON.stringify({ nonce: f.nonce, telegram_id: f.tgId, username, display_name: displayName, avatar_url: "", ts }),
+    }),
+    env as never,
+    deps as never,
+  );
+  const body = res.status === 200 ? ((await res.clone().json()) as { code?: string }) : {};
+  return { res, code: body.code };
+}
+
+/** The owning browser submits the code to /tg/verify. */
+export function tgVerify(
+  handle: (req: Request, env: never, deps: never) => Promise<Response>,
+  env: unknown,
+  deps: unknown,
+  f: { ticketId: string; code: string; owner: string; sess?: string },
+): Promise<Response> {
+  return handle(
+    new Request("https://iss/tg/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tgown=${f.owner}${f.sess ? `; __Host-mw_sess=${f.sess}` : ""}` },
+      body: JSON.stringify({ ticket: f.ticketId, code: f.code }),
+    }),
+    env as never,
+    deps as never,
+  );
 }

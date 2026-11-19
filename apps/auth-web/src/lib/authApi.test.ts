@@ -9,6 +9,7 @@ import {
   getPending,
   nextLocation,
   tgStart,
+  tgVerify,
   tgStatus,
   listClients,
   createClient,
@@ -63,6 +64,15 @@ test("getPending GETs credentialed", async () => {
   expect(m.mock.calls[0][0]).toBe("http://x/authorize/pending");
   expect(m.mock.calls[0][1].credentials).toBe("include");
   expect(p.client?.name).toBe("Demo");
+});
+
+test("tgVerify POSTs the ticket + code credentialed", async () => {
+  const m = mockJson({ error: "wrong_code", attemptsLeft: 4 });
+  const r = await tgVerify("http://x", "tkt_1", "1234 5678");
+  expect(m.mock.calls[0][0]).toBe("http://x/tg/verify");
+  expect(m.mock.calls[0][1].credentials).toBe("include");
+  expect(JSON.parse(m.mock.calls[0][1].body)).toEqual({ ticket: "tkt_1", code: "1234 5678" });
+  expect(r.attemptsLeft).toBe(4);
 });
 
 test("tgStart POSTs and tgStatus GETs credentialed", async () => {

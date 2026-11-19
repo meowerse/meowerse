@@ -67,11 +67,17 @@ export async function tgStart(
   base: string,
   kind?: "VERIFY_EXISTING",
   auth?: { csrf: string; currentPassword?: string },
-): Promise<{ ticketId?: string; deepLink?: string; matchCode?: string; error?: string; reauth?: string }> {
+): Promise<{ ticketId?: string; deepLink?: string; error?: string; reauth?: string }> {
   // VERIFY_EXISTING (linking) requires the session CSRF token and fresh authentication (recent login or current password).
   const body = kind ? { kind, ...(auth ? { csrf: auth.csrf, ...(auth.currentPassword ? { current_password: auth.currentPassword } : {}) } : {}) } : {};
   const res = await fetch(`${base}/tg/start`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  return (await res.json()) as { ticketId?: string; deepLink?: string; matchCode?: string; error?: string; reauth?: string };
+  return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string; reauth?: string };
+}
+
+/** Submit the one-time code Telegram showed; only the browser that started the ticket (its cookie) can complete it. */
+export async function tgVerify(base: string, ticketId: string, code: string): Promise<{ ok?: boolean; error?: string; attemptsLeft?: number }> {
+  const res = await fetch(`${base}/tg/verify`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket: ticketId, code }) });
+  return (await res.json().catch(() => ({ error: "network" }))) as { ok?: boolean; error?: string; attemptsLeft?: number };
 }
 
 // --- account self-service ---

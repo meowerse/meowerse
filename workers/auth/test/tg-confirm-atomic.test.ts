@@ -2,8 +2,8 @@ import { test, expect } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
-import { hmacSha256Hex } from "../src/crypto";
-import { createTicket, internalConfirmString } from "../src/telegram";
+import { sha256Hex } from "../src/crypto";
+import { createTicket, tgCodeHash } from "../src/telegram";
 import { genSigningKeys } from "./helpers";
 import type { DbClient } from "../src/types";
 
@@ -32,16 +32,25 @@ async function setup() {
     },
   };
   const deps = { getDb: () => wrapped, clock: () => NOW };
+  // "confirm" = the whole new completion path: the bot's Yes tap is modelled by seeding the code hash + Telegram
+  // identity on the ticket (so racing completions with different ids stay possible here), then the OWNING browser
+  // submits the code at /tg/verify, which is where the claim + link/account transaction now runs.
   const confirm = async (nonce: string, tgId: string, username = "u") => {
-    const body = { nonce, telegram_id: tgId, username, display_name: "U", avatar_url: "", ts: "1000" };
-    const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: tgId, username, displayName: "U", avatarUrl: "", ts: "1000" }));
-    return handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
+    const row = (await db.execute({ sql: "SELECT ticket_id FROM login_tickets WHERE nonce_hash = ?", args: [await sha256Hex(nonce)] })).rows[0];
+    if (!row) return new Response(JSON.stringify({ error: "invalid_ticket" }), { status: 400 });
+    const ticketId = String(row.ticket_id);
+    await db.execute({
+      sql: `INSERT INTO login_ticket_ctx (ticket_id, created_at, code_hash, attempts, tg_id, tg_username, tg_display) VALUES (?, ?, ?, 0, ?, ?, 'U')
+            ON CONFLICT(ticket_id) DO UPDATE SET code_hash = excluded.code_hash, tg_id = excluded.tg_id, tg_username = excluded.tg_username, tg_display = excluded.tg_display`,
+      args: [ticketId, NOW, await tgCodeHash("ikey", ticketId, "12345678"), tgId, username],
+    });
+    return handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: "__Host-mw_tgown=own" }, body: JSON.stringify({ ticket: ticketId, code: "12345678" }) }), env as never, deps as never);
   };
   const q = async (sql: string, args: unknown[] = []) => (await db.execute({ sql, args })).rows;
   const n = async (table: string) => Number((await q(`SELECT count(*) AS n FROM ${table}`))[0]!.n);
   const account = async (id: string) => db.execute({ sql: "INSERT INTO accounts (id, username, verified) VALUES (?, ?, 0)", args: [id, id] });
-  const ticket = (kind: "VERIFY_EXISTING" | "SIGNIN_OR_SIGNUP", accountId: string | null = null, now = NOW) =>
-    createTicket(db, { kind, ownerHash: "oh", accountId, now });
+  const ticket = async (kind: "VERIFY_EXISTING" | "SIGNIN_OR_SIGNUP", accountId: string | null = null, now = NOW) =>
+    createTicket(db, { kind, ownerHash: await sha256Hex("own"), accountId, now });
   const status = async (ticketId: string) => (await q("SELECT status, account_id FROM login_tickets WHERE ticket_id = ?", [ticketId]))[0]!;
   const setBefore = (fn: () => Promise<void>) => { beforeBatch = fn; };
   return { db, confirm, q, n, account, ticket, status, setBefore };

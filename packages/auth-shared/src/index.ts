@@ -4,4 +4,4 @@ export { CATALOG, parseScope, effectiveScope, isSubset } from "./scopes";
 export { TYP, TOKEN_USE, assertAccessToken, assertIdToken } from "./tokentype";
 export { genRecoveryCodes, normalizeRecoveryCode } from "./recovery";
 export { validatePassword, type PasswordResult } from "./password-policy";
-export { internalConfirmString, tgMatchCode, type InternalConfirmFields } from "./telegram";
+export { internalConfirmString, internalDescribeString, internalCancelString, type InternalConfirmFields } from "./telegram";

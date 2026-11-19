@@ -1,6 +1,6 @@
 import type { Deps } from "./db";
 import type { DbClient } from "./types";
-import { TICKET_CLAIM_GRACE } from "./telegram";
+import { TICKET_CLAIM_GRACE, TICKET_TTL } from "./telegram";
 import { REFRESH_ABS_TTL } from "./refresh";
 import { ACCESS_TTL } from "./token";
 
@@ -31,7 +31,7 @@ export interface HousekeepingResult {
 }
 
 /** Tables added after the manual prod migration baseline; pruning them is skipped silently while absent. */
-const OPTIONAL_TABLES = new Set(["account_delete_confirmations"]);
+const OPTIONAL_TABLES = new Set(["account_delete_confirmations", "login_ticket_ctx"]);
 
 interface Target {
   /** Result/failure key (a table may have more than one target). */
@@ -68,6 +68,8 @@ function targets(now: number): Target[] {
     { key: "audit_log", table: "audit_log", where: "ts < ?", args: [sqliteTs(now - AUDIT_RETENTION_DAYS * 86400)] },
     { key: "rate_limits", table: "rate_limits", where: "COALESCE(last_at, window_start) < ?", args: [now - RATE_LIMIT_RETENTION] },
     { key: "login_tickets", table: "login_tickets", where: "expires_at < ?", args: [now - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
+    // Per-ticket Telegram context (coarse UA/country, hashed code, identity): dead with its ticket.
+    { key: "login_ticket_ctx", table: "login_ticket_ctx", where: "created_at < ?", args: [now - TICKET_TTL - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN] },
     // lookupSession/whoami reject on absolute expiry; the row is dead one day past it.
     { key: "sessions", table: "sessions", where: "absolute_expires_at < ?", args: [cutoff] },
     // Delete confirmations live 5 min; used/expired rows are dead one day past expiry.

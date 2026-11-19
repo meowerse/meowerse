@@ -18,6 +18,8 @@ export type AuditEvent =
   | "telegram.login"
   | "telegram.link"
   | "telegram.unlink"
+  | "telegram.ticket_burned"
+  | "telegram.ticket_cancelled"
   | "consent.grant"
   | "consent.revoke"
   | "token.reuse_detected"

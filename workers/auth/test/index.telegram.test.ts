@@ -3,7 +3,7 @@ import { handle } from "../src/index";
 import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
 import { tgMatchCode } from "@meowerse/auth-shared";
-import { genSigningKeys, memStore, cookieValue } from "./helpers";
+import { genSigningKeys, memStore, cookieValue, botConfirm, tgVerify } from "./helpers";
 
 const enc = new TextEncoder();
 const BOT_TOKEN = "123456:bottoken";
@@ -51,6 +51,13 @@ test("deep-link: start → HMAC bot confirm → owner-bound status issues a sess
 
   const confirm = await handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
   expect(confirm.status).toBe(200);
+  const { code } = (await confirm.json()) as { code: string };
+  expect(code).toMatch(/^\d{8}$/);
+
+  // THE FIX: a bot confirmation alone finalizes nothing — even the owning browser is not signed in without the code
+  const early = await handle(new Request(`https://iss/tg/status?ticket=${sb.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${owner}` } }), env as never, deps as never);
+  expect(((await early.json()) as { ready: boolean }).ready).toBe(false);
+  expect((await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code, owner })).status).toBe(200);
 
   // wrong owner → not ready (ticket_id alone grants nothing)
   const bad = await handle(new Request(`https://iss/tg/status?ticket=${sb.ticketId}`, { headers: { Cookie: "__Host-mw_tgown=wrong" } }), env as never, deps as never);
@@ -68,10 +75,11 @@ async function startVerify(env: unknown, deps: unknown, sess: string, csrf: stri
   const sb = (await start.json()) as { ticketId: string; deepLink: string };
   return { ticketId: sb.ticketId, nonce: new URL(sb.deepLink).searchParams.get("start")!, owner: cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
 }
-async function confirm(env: unknown, deps: unknown, nonce: string, tgId: string) {
-  const body = { nonce, telegram_id: tgId, username: "u", display_name: "U", avatar_url: "", ts: "1000" };
-  const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: tgId, username: "u", displayName: "U", avatarUrl: "", ts: "1000" }));
-  return handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
+/** Bot Yes + owning browser submits the code; returns the verify response (or the failed confirm). */
+async function confirm(env: unknown, deps: unknown, t: { ticketId: string; nonce: string; owner: string }, tgId: string) {
+  const { res, code } = await botConfirm(handle, env, deps, { nonce: t.nonce, tgId });
+  if (!code) return res;
+  return tgVerify(handle, env, deps, { ticketId: t.ticketId, code, owner: t.owner });
 }
 
 test("verify-existing links Telegram to a logged-in account; a second account → linked_elsewhere (409)", async () => {
@@ -81,7 +89,7 @@ test("verify-existing links Telegram to a logged-in account; a second account �
   const csrfA = ((await suA.json()) as { csrf: string }).csrf;
   const sessA = cookieValue(suA.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const vA = await startVerify(env, deps, sessA, csrfA);
-  expect((await confirm(env, deps, vA.nonce, "55")).status).toBe(200);
+  expect((await confirm(env, deps, vA, "55")).status).toBe(200);
   const stA = await handle(new Request(`https://iss/tg/status?ticket=${vA.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${vA.owner}; __Host-mw_sess=${sessA}` } }), env as never, deps as never);
   expect(((await stA.json()) as { ready: boolean }).ready).toBe(true);
 
@@ -90,7 +98,7 @@ test("verify-existing links Telegram to a logged-in account; a second account �
   const csrfB = ((await suB.json()) as { csrf: string }).csrf;
   const sessB = cookieValue(suB.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const vB = await startVerify(env, deps, sessB, csrfB);
-  expect((await confirm(env, deps, vB.nonce, "55")).status).toBe(409);
+  expect((await confirm(env, deps, vB, "55")).status).toBe(409);
 });
 
 test("internal confirm with an unknown nonce → 400", async () => {
@@ -150,6 +158,8 @@ async function confirmedTicket(clock: { t: number }) {
   const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: "77", username: "once", displayName: "Once", avatarUrl: "", ts }));
   const c = await handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
   expect(c.status).toBe(200);
+  const v = await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code: ((await c.json()) as { code: string }).code, owner });
+  expect(v.status).toBe(200);
   const poll = () => handle(new Request(`https://iss/tg/status?ticket=${sb.ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${owner}` } }), env as never, deps as never);
   const sessionCount = () => (store.tables.sessions as unknown[]).length;
   const ticketStatus = () => (store.tables.login_tickets as { ticket_id: string; status: string }[]).find((r) => r.ticket_id === sb.ticketId)!.status;
@@ -220,31 +230,3 @@ async function startTicket(env: unknown, deps: unknown) {
   return { r, sb, nonce: new URL(sb.deepLink).searchParams.get("start")!, owner: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
 }
 
-test("tg/start returns a 4-digit match code equal to the bot's derivation; distinct nonces get distinct codes", async () => {
-  const { env, deps } = await fixture();
-  const a = await startTicket(env, deps);
-  expect(a.sb.matchCode).toMatch(/^\d{4}$/);
-  expect(a.sb.matchCode).toBe(await tgMatchCode("ikey", a.nonce)); // deterministic per nonce, same as the bot computes
-  const codes = new Set<string | undefined>([a.sb.matchCode]);
-  for (let i = 0; i < 12; i++) codes.add((await startTicket(env, deps)).sb.matchCode);
-  expect(codes.size).toBeGreaterThan(8); // not constant
-});
-
-test("tg/start omits the match code when the HMAC key is unset (no crash)", async () => {
-  const { env, deps } = await fixture();
-  const a = await startTicket({ ...(env as object), INTERNAL_HMAC_KEY: undefined }, deps);
-  expect(a.r.status).toBe(200);
-  expect(a.sb.matchCode).toBeUndefined();
-});
-
-test("the match code never appears in /tg/status (owner or another browser)", async () => {
-  const { env, deps } = await fixture();
-  const a = await startTicket(env, deps);
-  const code = a.sb.matchCode!;
-  for (const cookie of [`__Host-mw_tgown=${a.owner}`, "__Host-mw_tgown=other-browser"]) {
-    const s = await handle(new Request(`https://iss/tg/status?ticket=${a.sb.ticketId}`, { headers: { Cookie: cookie } }), env as never, deps as never);
-    const text = await s.text();
-    expect(text).not.toContain(code);
-    expect(text).not.toContain("matchCode");
-  }
-});
