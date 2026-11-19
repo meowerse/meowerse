@@ -143,6 +143,14 @@ export const SCHEMA: string[] = [
     rid TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at INTEGER NOT NULL
   )`,
+  // Per-ticket Telegram sign-in state: coarse context shown to the Telegram user, and (after the bot confirm) the
+  // HASH of the one-time code + attempt counter + the confirming identity until the owning browser proves the code.
+  `CREATE TABLE IF NOT EXISTS login_ticket_ctx (
+    ticket_id TEXT PRIMARY KEY, country TEXT, browser TEXT, os TEXT,
+    created_at INTEGER NOT NULL,
+    code_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+    tg_id TEXT, tg_username TEXT, tg_display TEXT
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_tickets_status ON login_tickets(status, expires_at)`,
   // findPendingTicketByNonce (the internal bot confirm) resolves a ticket by nonce_hash.
   `CREATE INDEX IF NOT EXISTS idx_tickets_nonce ON login_tickets(nonce_hash)`,
@@ -236,6 +244,16 @@ export function prodDeps(env: Env): Deps {
  *     CREATE INDEX IF NOT EXISTS idx_oauth_codes_exp ON oauth_codes(expires_at);"
  *
  * A fresh DB (tests, new deploy without SKIP_MIGRATIONS) gets them automatically.
+ *
+ * PROD ONE-SHOT (Telegram sign-in code confirmation; additive, idempotent). Apply BEFORE deploying the auth
+ * worker that writes it (/tg/start inserts a row here and fails closed without the table):
+ *
+ *   turso db shell <db> "CREATE TABLE IF NOT EXISTS login_ticket_ctx (
+ *     ticket_id TEXT PRIMARY KEY, country TEXT, browser TEXT, os TEXT,
+ *     created_at INTEGER NOT NULL,
+ *     code_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+ *     tg_id TEXT, tg_username TEXT, tg_display TEXT
+ *   );"
  *
  * PROD ONE-SHOT (account self-deletion step-up table; additive, idempotent, safe to re-run). Apply BEFORE
  * enabling ACCOUNT_DELETE_ENABLED. Until then the cron prune of this table is skipped (housekeeping checks

@@ -6,6 +6,7 @@ import { createAuthCode, accessTokenInsert } from "../src/token";
 import { codeUnconsumed, consumeCodeStmt } from "../src/codeguard";
 import { refreshTokenInsert } from "../src/refresh";
 import { sha256Hex } from "../src/crypto";
+import { burnTicket } from "../src/telegram";
 import { genSigningKeys, seedLiveSession } from "./helpers";
 import type { DbClient } from "../src/types";
 
@@ -296,4 +297,33 @@ test("(H) sequential code replay: in-request revokes all fail, background retry 
   expect(fr.st.calls).toBe(4); // 3 in-request failures + 1 successful background attempt
   expect((await f.refresh(rt)).status).toBe(400);
   expect(await n(f.real, "audit_log WHERE event = 'token.code_replay'")).toBe(1);
+});
+
+// ------------------------------------------------------------ burnTicket tg guard (real libSQL)
+test("burnTicket(onlyTgId): the guard is evaluated inside the UPDATE (real SQL)", async () => {
+  const db = await freshDb();
+  async function ticket(id: string, ctx: { code: string | null; tg: string | null }) {
+    await db.execute({ sql: "INSERT INTO login_tickets (ticket_id, nonce_hash, owner_hash, kind, expires_at) VALUES (?, ?, 'oh', 'SIGNIN_OR_SIGNUP', 9999999999)", args: [id, "nh_" + id] });
+    await db.execute({ sql: "INSERT INTO login_ticket_ctx (ticket_id, created_at, code_hash, tg_id) VALUES (?, 1000, ?, ?)", args: [id, ctx.code, ctx.tg] });
+  }
+  const status = async (id: string) => String((await db.execute({ sql: "SELECT status FROM login_tickets WHERE ticket_id = ?", args: [id] })).rows[0]!.status);
+  const tg = async (id: string) => (await db.execute({ sql: "SELECT tg_id FROM login_ticket_ctx WHERE ticket_id = ?", args: [id] })).rows[0]!.tg_id;
+
+  await ticket("t_stranger", { code: "h", tg: "42" });
+  expect(await burnTicket(db, "t_stranger", "43")).toBe(false);
+  expect(await status("t_stranger")).toBe("pending");
+  expect(await tg("t_stranger")).toBe("42"); // refused burn leaves the confirmer's identity alone
+
+  expect(await burnTicket(db, "t_stranger", "42")).toBe(true);
+  expect(await status("t_stranger")).toBe("burned");
+  expect(await tg("t_stranger")).toBeNull();
+
+  await ticket("t_nocode", { code: null, tg: null });
+  expect(await burnTicket(db, "t_nocode", "43")).toBe(true); // nothing issued yet: anyone holding the nonce may cancel
+
+  await ticket("t_nulltg", { code: "h", tg: null });
+  expect(await burnTicket(db, "t_nulltg", "43")).toBe(false); // code issued but no identity to match: refused
+
+  await ticket("t_plain", { code: "h", tg: "42" });
+  expect(await burnTicket(db, "t_plain")).toBe(true); // unguarded callers (too many attempts) still burn
 });

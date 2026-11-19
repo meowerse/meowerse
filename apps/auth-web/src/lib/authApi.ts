@@ -74,6 +74,12 @@ export async function tgStart(
   return (await res.json()) as { ticketId?: string; deepLink?: string; error?: string; reauth?: string };
 }
 
+/** Submit the one-time code Telegram showed; only the browser that started the ticket (its cookie) can complete it. */
+export async function tgVerify(base: string, ticketId: string, code: string): Promise<{ ok?: boolean; error?: string; attemptsLeft?: number }> {
+  const res = await fetch(`${base}/tg/verify`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket: ticketId, code }) });
+  return (await res.json().catch(() => ({ error: "network" }))) as { ok?: boolean; error?: string; attemptsLeft?: number };
+}
+
 // --- account self-service ---
 export interface AccountInfo {
   username: string | null;

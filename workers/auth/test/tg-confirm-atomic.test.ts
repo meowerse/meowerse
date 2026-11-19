@@ -2,9 +2,9 @@ import { test, expect } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
-import { hmacSha256Hex } from "../src/crypto";
-import { createTicket, internalConfirmString } from "../src/telegram";
-import { genSigningKeys } from "./helpers";
+import { sha256Hex } from "../src/crypto";
+import { createTicket, tgCodeHash } from "../src/telegram";
+import { genSigningKeys, seedLiveSession } from "./helpers";
 import type { DbClient } from "../src/types";
 
 // /internal/tg/confirm: the ticket claim and the link/account write are ONE write transaction, so a
@@ -32,16 +32,32 @@ async function setup() {
     },
   };
   const deps = { getDb: () => wrapped, clock: () => NOW };
+  // "confirm" = the whole new completion path: the bot's Yes tap is modelled by seeding the code hash + Telegram
+  // identity on the ticket (so racing completions with different ids stay possible here), then the OWNING browser
+  // submits the code at /tg/verify, which is where the claim + link/account transaction now runs.
   const confirm = async (nonce: string, tgId: string, username = "u") => {
-    const body = { nonce, telegram_id: tgId, username, display_name: "U", avatar_url: "", ts: "1000" };
-    const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: tgId, username, displayName: "U", avatarUrl: "", ts: "1000" }));
-    return handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify(body) }), env as never, deps as never);
+    const row = (await db.execute({ sql: "SELECT ticket_id FROM login_tickets WHERE nonce_hash = ?", args: [await sha256Hex(nonce)] })).rows[0];
+    if (!row) return new Response(JSON.stringify({ error: "invalid_ticket" }), { status: 400 });
+    const ticketId = String(row.ticket_id);
+    await db.execute({
+      sql: `INSERT INTO login_ticket_ctx (ticket_id, created_at, code_hash, attempts, tg_id, tg_username, tg_display) VALUES (?, ?, ?, 0, ?, ?, 'U')
+            ON CONFLICT(ticket_id) DO UPDATE SET code_hash = excluded.code_hash, tg_id = excluded.tg_id, tg_username = excluded.tg_username, tg_display = excluded.tg_display`,
+      args: [ticketId, NOW, await tgCodeHash("ikey", ticketId, "12345678"), tgId, username],
+    });
+    // A link completes only from the live session of its account: give VERIFY_EXISTING tickets one (if the account exists).
+    let cookie = "__Host-mw_tgown=own";
+    const acct = (await db.execute({ sql: "SELECT kind, account_id FROM login_tickets WHERE ticket_id = ?", args: [ticketId] })).rows[0];
+    if (acct?.kind === "VERIFY_EXISTING" && acct.account_id) {
+      await seedLiveSession(db, await sha256Hex("sess_" + acct.account_id), String(acct.account_id), NOW).catch(() => {});
+      cookie += "; __Host-mw_sess=sess_" + acct.account_id;
+    }
+    return handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ ticket: ticketId, code: "12345678" }) }), env as never, deps as never);
   };
   const q = async (sql: string, args: unknown[] = []) => (await db.execute({ sql, args })).rows;
   const n = async (table: string) => Number((await q(`SELECT count(*) AS n FROM ${table}`))[0]!.n);
   const account = async (id: string) => db.execute({ sql: "INSERT INTO accounts (id, username, verified) VALUES (?, ?, 0)", args: [id, id] });
-  const ticket = (kind: "VERIFY_EXISTING" | "SIGNIN_OR_SIGNUP", accountId: string | null = null, now = NOW) =>
-    createTicket(db, { kind, ownerHash: "oh", accountId, now });
+  const ticket = async (kind: "VERIFY_EXISTING" | "SIGNIN_OR_SIGNUP", accountId: string | null = null, now = NOW) =>
+    createTicket(db, { kind, ownerHash: await sha256Hex("own"), accountId, now });
   const status = async (ticketId: string) => (await q("SELECT status, account_id FROM login_tickets WHERE ticket_id = ?", [ticketId]))[0]!;
   const setBefore = (fn: () => Promise<void>) => { beforeBatch = fn; };
   return { db, confirm, q, n, account, ticket, status, setBefore };
@@ -140,7 +156,7 @@ test("expired ticket: nothing written (expiry re-checked inside the claim)", asy
   expect((await f.confirm(t.nonce, "55")).status).toBe(400);
 });
 
-test("telegram id already linked to another account: 409, ticket stays pending and the link is unchanged (retry possible)", async () => {
+test("telegram id already linked to another account: 409, ticket is burned (final error) and the link is unchanged", async () => {
   const f = await setup();
   await f.account("acct_v");
   await f.account("acct_other");
@@ -149,14 +165,14 @@ test("telegram id already linked to another account: 409, ticket stays pending a
   const r = await f.confirm(t.nonce, "55");
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "linked_elsewhere" });
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
   expect(await f.q("SELECT account_id FROM telegram_links")).toEqual([{ account_id: "acct_other" }]);
-  // The user retries with a different Telegram account on the same ticket.
-  expect((await f.confirm(t.nonce, "56")).status).toBe(200);
-  expect(await f.q("SELECT account_id FROM telegram_links WHERE telegram_id = 56")).toEqual([{ account_id: "acct_v" }]);
+  // The ticket is dead: a retry (even with another Telegram account) needs a fresh ticket and writes nothing.
+  expect((await f.confirm(t.nonce, "56")).status).toBe(400);
+  expect(await f.q("SELECT account_id FROM telegram_links WHERE telegram_id = 56")).toEqual([]);
 });
 
-test("telegram id taken by a concurrent link between the read and the batch: claim rolls back, 409 linked_elsewhere, ticket still pending", async () => {
+test("telegram id taken by a concurrent link between the read and the batch: claim rolls back, 409 linked_elsewhere, ticket burned", async () => {
   const f = await setup();
   await f.account("acct_v");
   await f.account("acct_other");
@@ -165,7 +181,7 @@ test("telegram id taken by a concurrent link between the read and the batch: cla
   const r = await f.confirm(t.nonce, "55");
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "linked_elsewhere" });
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
   expect(await f.n("audit_log")).toBe(0);
   expect((await f.q("SELECT verified FROM accounts WHERE id = 'acct_v'"))[0]!.verified).toBe(0);
 });
@@ -179,7 +195,7 @@ test("account deleted between the read and the batch: 409 account_gone, claim ro
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "account_gone" });
   expect(await f.n("telegram_links")).toBe(0);
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
 });
 
 test("concurrent sign-up with a DIFFERENT ticket linking the same Telegram id first: retries as sign-in, no duplicate account", async () => {
@@ -261,7 +277,7 @@ test("VERIFY already linked to this same account, link removed between the read 
   expect(await f.q("SELECT telegram_id FROM telegram_links")).toEqual([{ telegram_id: 55 }]);
 });
 
-test("VERIFY already linked to this same account, link moved to another account between the read and the batch: 409 linked_elsewhere, ticket pending", async () => {
+test("VERIFY already linked to this same account, link moved to another account between the read and the batch: 409 linked_elsewhere, ticket burned", async () => {
   const f = await setup();
   await f.account("acct_v");
   await f.account("acct_o");
@@ -274,11 +290,11 @@ test("VERIFY already linked to this same account, link moved to another account 
   const r = await f.confirm(t.nonce, "55");
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "linked_elsewhere" });
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
   expect(await f.q("SELECT account_id FROM telegram_links")).toEqual([{ account_id: "acct_o" }]);
 });
 
-test("VERIFY on an account that already has a DIFFERENT Telegram linked: 409 already_linked, ticket pending, nothing changed", async () => {
+test("VERIFY on an account that already has a DIFFERENT Telegram linked: 409 already_linked, ticket burned, nothing changed", async () => {
   const f = await setup();
   await f.account("acct_v");
   await f.db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id) VALUES (11, 'acct_v')", args: [] });
@@ -286,7 +302,7 @@ test("VERIFY on an account that already has a DIFFERENT Telegram linked: 409 alr
   const r = await f.confirm(t.nonce, "55");
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "already_linked" });
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
   expect(await f.q("SELECT telegram_id FROM telegram_links")).toEqual([{ telegram_id: 11 }]);
   expect(await f.n("audit_log")).toBe(0);
 });
@@ -299,7 +315,7 @@ test("a different Telegram linked to the account between the read and the batch:
   const r = await f.confirm(t.nonce, "55");
   expect(r.status).toBe(409);
   expect(await r.json()).toEqual({ error: "already_linked" });
-  expect(await f.status(t.ticketId)).toMatchObject({ status: "pending" });
+  expect(await f.status(t.ticketId)).toMatchObject({ status: "burned" });
 });
 
 test("two VERIFY tickets, same account and same Telegram id, concurrently: both succeed (loser via the same-account path), one link", async () => {

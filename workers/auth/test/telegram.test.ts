@@ -8,7 +8,6 @@ import {
   linkTelegramToAccount,
   createTicket,
   findPendingTicketByNonce,
-  consumeTicket,
   getTicket,
   getTelegramLink,
   unlinkTelegram,
@@ -114,7 +113,7 @@ test("getTelegramLink (linked/not) + unlinkTelegram clears link and verified", a
   expect(log.some((c) => c.sql.includes("UPDATE accounts SET verified = 0"))).toBe(true);
 });
 
-test("tickets: create, find-pending (status/expiry), consume race, get", async () => {
+test("tickets: create, find-pending (status/expiry), get", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const t = await createTicket(routedDb([], log), { kind: "SIGNIN_OR_SIGNUP", ownerHash: "oh", now: 1000 });
   expect(t.ticketId.startsWith("tkt_")).toBe(true);
@@ -124,9 +123,6 @@ test("tickets: create, find-pending (status/expiry), consume race, get", async (
   expect(await findPendingTicketByNonce(routedDb([pending]), "nonce", 1000)).not.toBeNull();
   expect(await findPendingTicketByNonce(routedDb([[/login_tickets WHERE nonce_hash/, () => ({ rows: [{ status: "consumed", expires_at: 9e9 }] })]]), "n", 1000)).toBeNull();
   expect(await findPendingTicketByNonce(routedDb([[/login_tickets WHERE nonce_hash/, () => ({ rows: [{ status: "pending", expires_at: 5 }] })]]), "n", 1000)).toBeNull();
-
-  expect(await consumeTicket(routedDb([[/UPDATE login_tickets SET status/, () => ({ rows: [], rowsAffected: 1 })]]), "tkt_1", "acct_1")).toBe(true);
-  expect(await consumeTicket(routedDb([[/UPDATE login_tickets SET status/, () => ({ rows: [], rowsAffected: 0 })]]), "tkt_1", "acct_1")).toBe(false);
 
   expect(await getTicket(routedDb([[/SELECT \* FROM login_tickets WHERE ticket_id/, () => ({ rows: [{ ticket_id: "tkt_1", status: "consumed", account_id: "acct_1", owner_hash: "oh", kind: "SIGNIN_OR_SIGNUP", rid: null }] })]]), "tkt_1")).toMatchObject({ status: "consumed" });
   expect(await getTicket(routedDb([]), "missing")).toBeNull();

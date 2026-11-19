@@ -16,3 +16,15 @@ export interface InternalConfirmFields {
 export function internalConfirmString(p: InternalConfirmFields): string {
   return [p.nonce, p.telegramId, p.username, p.displayName, p.avatarUrl, p.ts].join("\n");
 }
+
+/**
+ * Canonical strings for the bot's other two signed internal calls. Domain-separated from the confirm string
+ * (a leading label), so a signature for one call can never be replayed as another.
+ */
+export function internalDescribeString(p: { nonce: string; telegramId: string; ts: string }): string {
+  return ["describe", p.nonce, p.telegramId, p.ts].join("\n");
+}
+
+export function internalCancelString(p: { nonce: string; telegramId: string; ts: string }): string {
+  return ["cancel", p.nonce, p.telegramId, p.ts].join("\n");
+}

@@ -1,6 +1,6 @@
 import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
-import { CF_BEACON_CSP, corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
+import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
 import { sha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
@@ -22,15 +22,29 @@ import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, acc
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
+  findAccountByTelegram,
   signInOrSignUpTelegram,
   confirmTicketWithTelegram,
   createTicket,
   findPendingTicketByNonce,
+  findTicketByNonce,
   getTicket,
   claimTicket,
   unclaimTicket,
   unlinkTelegram,
   TICKET_TTL,
+  coarseUserAgent,
+  saveTicketContext,
+  getTicketContext,
+  verifyInternalAction,
+  generateTgCode,
+  tgCodeHash,
+  normaliseTgCode,
+  issueTicketCode,
+  spendCodeAttempt,
+  burnTicket,
+  clearTicketIdentity,
+  CODE_MAX_ATTEMPTS,
 } from "./telegram";
 import { constantTimeEqual, b64urlDecode } from "@meowerse/auth-shared";
 import {
@@ -662,6 +676,11 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   const ownerSecret = randomId(32);
   const t = await createTicket(db, { kind, ownerHash: await sha256Hex(ownerSecret), accountId, now: now(deps) });
   const botUser = env.BOT_USERNAME ?? "meowerse_auth_bot";
+  // Coarse context (shown to the Telegram user in the bot prompt): country from the edge, browser/OS family from the UA.
+  const rawCountry = (req as unknown as { cf?: { country?: string } }).cf?.country ?? req.headers.get("CF-IPCountry");
+  const country = rawCountry && /^[A-Za-z]{2}$/.test(rawCountry) ? rawCountry.toUpperCase() : null;
+  const ua = coarseUserAgent(req.headers.get("User-Agent"));
+  await saveTicketContext(db, { ticketId: t.ticketId, country, browser: ua.browser, os: ua.os, now: now(deps) });
   return json({ ticketId: t.ticketId, deepLink: `https://t.me/${botUser}?start=${t.nonce}` }, 200, {
     ...cors,
     ...securityHeaders(),
@@ -669,7 +688,59 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   });
 }
 
-/** POST /internal/tg/confirm — HMAC-signed callback from the auth-bot worker (no cookies). */
+/** Parse + authenticate a bot call for the describe/cancel actions; null = unauthorized. */
+async function botAction(req: Request, env: Env, deps: Deps, action: "describe" | "cancel"): Promise<Record<string, string> | null> {
+  const body = await readParams(req);
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!env.INTERNAL_HMAC_KEY || !(await verifyInternalAction(action, body, sig, env.INTERNAL_HMAC_KEY, now(deps)))) return null;
+  return body;
+}
+
+/** POST /internal/tg/describe — signed; tells the bot what the pending ticket is (kind + coarse context) so its prompt can be honest. */
+async function handleTgDescribe(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const body = await botAction(req, env, deps, "describe");
+  if (!body) return json({ error: "unauthorized" }, 401, cors);
+  const db = deps.getDb();
+  const ticket = await findPendingTicketByNonce(db, body.nonce ?? "", now(deps));
+  const ctx = ticket ? await getTicketContext(db, ticket.ticket_id) : null;
+  // A ticket whose code was already issued is no longer promptable (one confirmation per ticket).
+  if (!ticket || !ctx || ctx.code_hash) return json({ error: "invalid_ticket" }, 400, cors);
+  const kind = ticket.kind === "VERIFY_EXISTING" ? "link" : (await findAccountByTelegram(db, body.telegram_id ?? "")) ? "signin" : "signup";
+  return json({ kind, country: ctx.country, browser: ctx.browser, os: ctx.os, age: Math.max(0, now(deps) - Number(ctx.created_at)) }, 200, cors);
+}
+
+/** POST /internal/tg/cancel — signed; the Telegram user declined: burn the ticket so it can never complete. */
+async function handleTgCancel(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  const body = await botAction(req, env, deps, "cancel");
+  if (!body) return json({ error: "unauthorized" }, 401, cors);
+  const db = deps.getDb();
+  const tgId = body.telegram_id ?? "";
+  const ticket = await findTicketByNonce(db, body.nonce ?? "");
+  if (!ticket) return json({ error: "invalid_ticket" }, 400, cors);
+  // A completed ticket can no longer be cancelled. Only the Telegram user it was completed for is told so
+  // (identity is cleared on completion, so compare through the link table); anyone else learns nothing.
+  const usedFor = async (t: { account_id: string | null }) =>
+    t.account_id !== null && (await findAccountByTelegram(db, tgId)) === t.account_id ? json({ error: "already_used" }, 409, cors) : json({ error: "invalid_ticket" }, 400, cors);
+  if (ticket.status === "consumed" || ticket.status === "claimed") return usedFor(ticket);
+  if (ticket.status !== "pending" || Number(ticket.expires_at) < now(deps)) return json({ error: "invalid_ticket" }, 400, cors);
+  // Once a code was issued, only the Telegram user who confirmed may cancel (enforced atomically in the burn itself).
+  if (!(await burnTicket(db, ticket.ticket_id, tgId))) {
+    // Lost a race (completed/burned between the lookup and the burn) or not the confirming user: never answer ok.
+    const again = await findTicketByNonce(db, body.nonce ?? "");
+    if (again && (again.status === "consumed" || again.status === "claimed")) return usedFor(again);
+    return json({ error: "invalid_ticket" }, 400, cors);
+  }
+  await recordAudit(deps, req, { event: "telegram.ticket_cancelled", accountId: ticket.account_id }, { network: false });
+  return json({ ok: true }, 200, cors);
+}
+
+/**
+ * POST /internal/tg/confirm — HMAC-signed callback from the auth-bot worker (no cookies), sent only after the
+ * Telegram user tapped "Yes". It does NOT finalize anything: it issues a one-time code (only its keyed hash is
+ * stored) which is returned to the bot to show in Telegram. The session/link happens only when the browser that
+ * owns the ticket proves that code at /tg/verify. (A legacy bot that expects an immediate sign-in therefore
+ * cannot finalize: it never shows the code.)
+ */
 async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   const body = await readParams(req);
   const sig = req.headers.get("X-Signature") ?? "";
@@ -679,21 +750,77 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
   const db = deps.getDb();
   const ticket = await findPendingTicketByNonce(db, body.nonce ?? "", now(deps));
   if (!ticket) return json({ error: "invalid_ticket" }, 400, cors);
-  const tg = {
-    telegramId: body.telegram_id ?? "",
-    username: body.username || null,
-    displayName: body.display_name || null,
-    avatarUrl: body.avatar_url || null,
-  };
-  // Claim + link/account write are ONE transaction: a losing/duplicate confirmation writes nothing.
+  const code = generateTgCode();
+  const issued = await issueTicketCode(
+    db,
+    ticket.ticket_id,
+    await tgCodeHash(env.INTERNAL_HMAC_KEY, ticket.ticket_id, code),
+    { telegramId: body.telegram_id ?? "", username: body.username || null, displayName: body.display_name || null, avatarUrl: body.avatar_url || null },
+    now(deps),
+  );
+  if (!issued) return json({ error: "already_consumed" }, 409, cors);
+  return json({ ok: true, code }, 200, { ...cors, "Cache-Control": "no-store" });
+}
+
+/** POST /tg/verify — the ticket-owning browser submits the code the bot showed in Telegram; only now is the link/sign-in written. */
+async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (!(await ipThrottle(req, deps, "tgverify", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  // Browser CSRF-style defence in depth: a cross-site page must not be able to submit codes for the owner.
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !isOriginAllowed(origin, env)) return json({ error: "bad_origin" }, 403, cors);
+  const db = deps.getDb();
+  const p = await readParams(req);
+  const cookies = parseCookies(req.headers.get("Cookie"));
+  const owner = cookies[`__Host-${TGOWN_COOKIE}`];
+  const ticket = await getTicket(db, p.ticket ?? "");
+  // Only the owning browser may even attempt (a stranger can neither complete nor burn someone's ticket).
+  if (!ticket || !owner || !constantTimeEqual(await sha256Hex(owner), ticket.owner_hash) || !env.INTERNAL_HMAC_KEY) {
+    return json({ error: "invalid" }, 403, cors);
+  }
+  if (ticket.status !== "pending" || Number(ticket.expires_at) < now(deps)) return json({ error: "expired" }, 400, cors);
+  // Linking is not authentication: the browser must still hold the live session of the account the ticket was minted for
+  // (checked BEFORE spending an attempt, so a revoked session can neither complete the link nor burn the budget).
+  if (ticket.kind === "VERIFY_EXISTING") {
+    const cur = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+    if (!cur || cur.accountId !== ticket.account_id) return json({ error: "no_session" }, 401, cors);
+  }
+  const ctx = await getTicketContext(db, ticket.ticket_id);
+  if (!ctx || !ctx.code_hash || !ctx.tg_id) return json({ error: "not_confirmed" }, 409, cors);
+  const code = normaliseTgCode(p.code ?? "");
+  // The attempt is spent atomically BEFORE comparing: at most CODE_MAX_ATTEMPTS comparisons ever happen per ticket.
+  if (!(await spendCodeAttempt(db, ticket.ticket_id))) {
+    await burnAndAudit(db, deps, req, ticket);
+    return json({ error: "too_many_attempts" }, 429, cors);
+  }
+  const expected = await tgCodeHash(env.INTERNAL_HMAC_KEY, ticket.ticket_id, code ?? "x");
+  if (!code || !constantTimeEqual(expected, ctx.code_hash)) {
+    // Re-read AFTER the atomic spend so concurrent attempts are counted exactly.
+    const left = CODE_MAX_ATTEMPTS - Number((await getTicketContext(db, ticket.ticket_id))?.attempts ?? CODE_MAX_ATTEMPTS);
+    if (left <= 0) {
+      await burnAndAudit(db, deps, req, ticket);
+      return json({ error: "too_many_attempts" }, 429, cors);
+    }
+    return json({ error: "wrong_code", attemptsLeft: left }, 400, cors);
+  }
+  const tg = { telegramId: ctx.tg_id, username: ctx.tg_username, displayName: ctx.tg_display, avatarUrl: null };
+  // Claim + link/account write are ONE transaction: a losing/duplicate completion writes nothing.
   const r = await confirmTicketWithTelegram(db, ticket, tg, now(deps));
-  if (!r.ok) return json({ error: r.error }, r.error === "invalid_ticket" ? 400 : 409, cors);
+  if (!r.ok) {
+    // The code was correct but the write can never succeed: end the ticket now (final error) instead of letting
+    // retries spend attempts and end in a misleading "too many attempts".
+    if (r.error !== "already_consumed" && r.error !== "invalid_ticket") await burnTicket(db, ticket.ticket_id);
+    return json({ error: r.error }, r.error === "invalid_ticket" ? 400 : 409, cors);
+  }
+  await clearTicketIdentity(db, ticket.ticket_id);
   const { accountId, created } = r;
-  // The caller is the auth-bot Worker, not the user: its IP/UA must not be attributed to the account.
-  // telegram.login is recorded in handleTgStatus (the user's own browser request).
-  if (ticket.kind === "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.link", accountId }, { network: false });
-  else if (created) await recordAudit(deps, req, { event: "signup", accountId }, { network: false });
-  return json({ ok: true }, 200, cors);
+  if (ticket.kind === "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.link", accountId });
+  else if (created) await recordAudit(deps, req, { event: "signup", accountId });
+  // telegram.login is recorded in handleTgStatus when the session is issued.
+  return json({ ok: true }, 200, { ...cors, "Cache-Control": "no-store" });
+}
+
+async function burnAndAudit(db: DbClient, deps: Deps, req: Request, ticket: { ticket_id: string; account_id: string | null }): Promise<void> {
+  if (await burnTicket(db, ticket.ticket_id)) await recordAudit(deps, req, { event: "telegram.ticket_burned", accountId: ticket.account_id });
 }
 
 /** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
@@ -1191,6 +1318,9 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   if (pathname === "/token/introspect" && m === "POST") return handleIntrospect(req, env, d, cors);
   if (pathname === "/tg/start" && m === "POST") return handleTgStart(req, env, d, cors, ctx);
   if (pathname === "/internal/tg/confirm" && m === "POST") return handleTgConfirm(req, env, d, cors);
+  if (pathname === "/internal/tg/describe" && m === "POST") return handleTgDescribe(req, env, d, cors);
+  if (pathname === "/internal/tg/cancel" && m === "POST") return handleTgCancel(req, env, d, cors);
+  if (pathname === "/tg/verify" && m === "POST") return handleTgVerify(req, env, d, cors);
   if (pathname === "/tg/status" && m === "GET") return handleTgStatus(req, env, d, cors);
   if (pathname === "/tg/widget" && m === "POST") return handleTgWidget(req, env, d, cors);
   if (pathname.startsWith("/api/dev/") && (m === "GET" || m === "POST")) return handleDev(req, env, d, cors, pathname.slice("/api/dev/".length), ctx);

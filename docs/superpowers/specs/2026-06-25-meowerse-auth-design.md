@@ -324,14 +324,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 **Webhook auth (auth-bot).** Two layers, both constant-time: secret in the URL path (`PATH_SECRET`, bot0 pattern) **and** the `X-Telegram-Bot-Api-Secret-Token` header (set via `setWebhook`). Either fails → 403 before any parse.
 
-**Internal callback.** auth-bot → `POST /internal/tg/confirm` is HMAC-SHA256-signed over `{ticket_id, telegram_id, username, display_name, avatar_url, ts}` with a `ts` replay window; forged call → 401.
+**Confirmation code flow (takeover fix).** A deep-link tap alone never finalizes anything, because the link can be forwarded to a victim who taps "Start"/"Yes" for an attacker's ticket.
+1. The bot first asks the auth worker (`POST /internal/tg/describe`, HMAC-signed) what the pending ticket is and shows a kind-aware prompt (sign in / create account / link) with coarse context (country, browser/OS family, age), plus **Yes, it's me** and **Cancel**. **Cancel** (`/internal/tg/cancel`, signed) burns the ticket; it works at any point while the ticket is pending, including after Yes.
+2. **Yes** makes the bot call `POST /internal/tg/confirm` (HMAC-SHA256 over `{nonce, telegram_id, username, display_name, avatar_url, ts}` with a `ts` replay window; forged → 401). The worker does **not** sign anyone in: it issues an 8-digit one-time code, stores only its keyed hash (HMAC of `ticket_id` + code) with the Telegram identity, and returns the code to the bot, which shows it in Telegram together with a "That wasn't me - cancel" button.
+3. The browser that started the ticket (holder of the `__Host-mw_tgown` secret, only its hash stored) types the code and `POST /tg/verify`s it. Verify requires: owner cookie (constant-time), an allowlisted `Origin` when one is sent, and, for VERIFY_EXISTING, the live session of the ticket's account (checked before an attempt is spent). Attempts are spent atomically before comparing, at most 5 per ticket; the fifth wrong code burns the ticket. Only a correct code runs the one-transaction link/sign-up write. Errors after a correct code (linked elsewhere, already linked, account gone) burn the ticket as final errors.
+4. `GET /tg/status` then issues the session once (atomic claim), only to the owner browser; for links it re-checks the session and keeps its `auth_time`/`amr`. `ticket_id` is public and grants nothing.
+- Binding both ends (§10/#5,#6): the session is released only to the browser holding the binding secret, and the Telegram user's code is useless to anyone but that browser.
+- `/tg/start` and `/tg/verify` are IP-rate-limited.
 
-**Account-takeover & fixation fixes (§10/#5,#6) — binding both ends.**
-- The session minted on confirm is released **only** to the browser holding the binding secret. `GET /tg/ticket/<id>/status` and resume require the owner secret (constant-time) before returning any resume target or session. **`ticket_id` is public and grants nothing.**
-- SIGNIN_OR_SIGNUP that resolves an existing account requires an **in-Telegram confirmation interstitial** ("Sign in as @user?") as secondary defense; the owner-token binding is the primary, vigilance-independent control.
-- Deep-link path gets a replay/skew guard equivalent to the widget's `auth_date≤60s`: reject confirms whose Telegram message date predates the ticket or is outside a tight window. `/tg/start` is edge-rate-limited per IP/account.
-
-**Login Widget verification.** `data_check_string` = sorted `key=value` joined by `\n` excluding `hash`; `secret_key = SHA256(bot_token)`; `constantTimeEqual(hex HMAC-SHA256(dcs, secret_key), hash)`; reject `auth_date` older than 60s.
+**Login Widget verification.** `data_check_string` = sorted `key=value` joined by `\n` excluding `hash`; `secret_key = SHA256(bot_token)`; `constantTimeEqual(hex HMAC-SHA256(dcs, secret_key), hash)`; reject `auth_date` older than 60s. **Follow-up:** the widget payload is a bearer proof valid for its whole 60s window, so it needs one-time replay protection beyond the `auth_date` window (e.g. store/consume the `hash` or `(id, auth_date)` until it ages out) before it can be considered equivalent to the code flow.
 
 **Linking guard.** `telegram_id` UNIQUE; a VERIFY_EXISTING confirm where the `telegram_id` is linked to a different account surfaces an explicit "linked elsewhere" error, never a silent remap. **On unlink, bump `accounts.identity_epoch`** so any armed silent-consent path against a now-unverified identity cannot fire (§10/#9).
 

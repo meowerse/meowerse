@@ -1,4 +1,4 @@
-import { constantTimeEqual, internalConfirmString } from "@meowerse/auth-shared";
+import { constantTimeEqual, internalConfirmString, internalDescribeString, internalCancelString } from "@meowerse/auth-shared";
 import { sha256Hex, hmacSha256Hex } from "./crypto";
 
 export { internalConfirmString } from "@meowerse/auth-shared";
@@ -52,6 +52,8 @@ function tgUserFromWidget(d: Record<string, string>): TgUser {
   return { telegramId: String(d.id), username: d.username ?? null, displayName: name, avatarUrl: d.photo_url ?? null };
 }
 
+const INTERNAL_TS_WINDOW = 120;
+
 /** Verify the HMAC-signed internal callback from the auth-bot worker (spec §6). */
 export async function verifyInternalConfirm(
   body: Record<string, string>,
@@ -60,7 +62,7 @@ export async function verifyInternalConfirm(
   now: number,
 ): Promise<boolean> {
   const ts = Number(body.ts);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > 120) return false;
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > INTERNAL_TS_WINDOW) return false;
   const expected = await hmacSha256Hex(
     hmacKey,
     internalConfirmString({
@@ -73,6 +75,129 @@ export async function verifyInternalConfirm(
     }),
   );
   return constantTimeEqual(signature, expected);
+}
+
+/** Verify the bot's signed `describe` / `cancel` call (same key and ts window as confirm; domain-separated string). */
+export async function verifyInternalAction(
+  action: "describe" | "cancel",
+  body: Record<string, string>,
+  signature: string,
+  hmacKey: string,
+  now: number,
+): Promise<boolean> {
+  const ts = Number(body.ts);
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > INTERNAL_TS_WINDOW) return false;
+  const f = { nonce: body.nonce ?? "", telegramId: body.telegram_id ?? "", ts: body.ts ?? "" };
+  const expected = await hmacSha256Hex(hmacKey, action === "describe" ? internalDescribeString(f) : internalCancelString(f));
+  return constantTimeEqual(signature, expected);
+}
+
+/** Coarse browser/OS family from a User-Agent: deliberately imprecise (shown to the Telegram user, never stored raw). */
+export function coarseUserAgent(ua: string | null): { browser: string; os: string } {
+  const u = ua ?? "";
+  const browser = /Edg\//.test(u) ? "Edge" : /OPR\/|Opera/.test(u) ? "Opera" : /Firefox\//.test(u) ? "Firefox" : /Chrome\/|CriOS/.test(u) ? "Chrome" : /Safari\//.test(u) ? "Safari" : "an unknown browser";
+  const os = /Android/.test(u) ? "Android" : /iPhone|iPad|iPod/.test(u) ? "iOS" : /Windows/.test(u) ? "Windows" : /Mac OS X|Macintosh/.test(u) ? "macOS" : /Linux|X11/.test(u) ? "Linux" : "an unknown OS";
+  return { browser, os };
+}
+
+export const CODE_MAX_ATTEMPTS = 5;
+
+/** 8-digit one-time code from the CSPRNG (rejection sampling: no modulo bias). */
+export function generateTgCode(): string {
+  const limit = 4_294_967_296 - (4_294_967_296 % 100_000_000);
+  const buf = new Uint32Array(1);
+  for (;;) {
+    crypto.getRandomValues(buf);
+    if (buf[0]! < limit) return String(buf[0]! % 100_000_000).padStart(8, "0");
+  }
+}
+
+/** Keyed hash of the code (bound to the ticket): the DB only ever holds this, and an 8-digit code is not brute-forceable offline without the key. */
+export function tgCodeHash(hmacKey: string, ticketId: string, code: string): Promise<string> {
+  return hmacSha256Hex(hmacKey, `tg-code|${ticketId}|${code}`);
+}
+
+/** Normalise user input ("1234 5678", "1234-5678") to the 8 digits, or null. */
+export function normaliseTgCode(raw: string): string | null {
+  const d = raw.replace(/[\s-]/g, "");
+  return /^\d{8}$/.test(d) ? d : null;
+}
+
+export interface TicketContext {
+  ticket_id: string;
+  country: string | null;
+  browser: string | null;
+  os: string | null;
+  created_at: number;
+  code_hash: string | null;
+  attempts: number;
+  tg_id: string | null;
+  tg_username: string | null;
+  tg_display: string | null;
+}
+
+export async function saveTicketContext(
+  db: DbClient,
+  i: { ticketId: string; country: string | null; browser: string; os: string; now: number },
+): Promise<void> {
+  await db.execute({
+    sql: "INSERT INTO login_ticket_ctx (ticket_id, country, browser, os, created_at, attempts) VALUES (?, ?, ?, ?, ?, 0)",
+    args: [i.ticketId, i.country, i.browser, i.os, i.now],
+  });
+}
+
+export async function getTicketContext(db: DbClient, ticketId: string): Promise<TicketContext | null> {
+  const r = await db.execute({ sql: "SELECT * FROM login_ticket_ctx WHERE ticket_id = ?", args: [ticketId] });
+  return r.rows[0] ? (r.rows[0] as unknown as TicketContext) : null;
+}
+
+/**
+ * Store the code HASH + the confirming Telegram identity, once. The statement itself requires the ticket to be
+ * still pending/unexpired and no code issued yet, so a second confirm (or one racing a cancel/burn) changes nothing.
+ */
+export async function issueTicketCode(
+  db: DbClient,
+  ticketId: string,
+  codeHash: string,
+  tg: TgUser,
+  now: number,
+): Promise<boolean> {
+  const r = await db.execute({
+    sql: `UPDATE login_ticket_ctx SET code_hash = ?, tg_id = ?, tg_username = ?, tg_display = ?
+          WHERE ticket_id = ? AND code_hash IS NULL
+          AND EXISTS (SELECT 1 FROM login_tickets WHERE ticket_id = ? AND status = 'pending' AND expires_at >= ?)`,
+    args: [codeHash, tg.telegramId, tg.username, tg.displayName, ticketId, ticketId, now],
+  });
+  return (r.rowsAffected ?? 0) === 1;
+}
+
+/** Atomically spend one code attempt; false once the budget is exhausted (or no code was issued). */
+export async function spendCodeAttempt(db: DbClient, ticketId: string): Promise<boolean> {
+  const r = await db.execute({
+    sql: "UPDATE login_ticket_ctx SET attempts = attempts + 1 WHERE ticket_id = ? AND code_hash IS NOT NULL AND attempts < ?",
+    args: [ticketId, CODE_MAX_ATTEMPTS],
+  });
+  return (r.rowsAffected ?? 0) === 1;
+}
+
+/**
+ * Burn a still-pending ticket (cancel / too many wrong codes) and drop the stored Telegram identity.
+ * With `onlyTgId` the burn is atomically refused once a code was issued to a DIFFERENT Telegram user.
+ * Returns whether THIS call burned it; a refused/lost burn leaves the ticket (and its identity) untouched.
+ */
+export async function burnTicket(db: DbClient, ticketId: string, onlyTgId?: string): Promise<boolean> {
+  const guard = onlyTgId === undefined ? { sql: "", args: [] as string[] } : {
+    sql: " AND NOT EXISTS (SELECT 1 FROM login_ticket_ctx WHERE ticket_id = ? AND code_hash IS NOT NULL AND tg_id IS NOT ?)",
+    args: [ticketId, onlyTgId],
+  };
+  const r = await db.execute({ sql: `UPDATE login_tickets SET status = 'burned' WHERE ticket_id = ? AND status = 'pending'${guard.sql}`, args: [ticketId, ...guard.args] });
+  const burned = (r.rowsAffected ?? 0) === 1;
+  if (burned) await clearTicketIdentity(db, ticketId);
+  return burned;
+}
+
+export async function clearTicketIdentity(db: DbClient, ticketId: string): Promise<void> {
+  await db.execute({ sql: "UPDATE login_ticket_ctx SET tg_id = NULL, tg_username = NULL, tg_display = NULL WHERE ticket_id = ?", args: [ticketId] });
 }
 
 /** Account currently linked to a Telegram id, or null. */
@@ -282,13 +407,10 @@ export async function findPendingTicketByNonce(db: DbClient, nonce: string, now:
   return row as unknown as TicketRow;
 }
 
-/** Atomically mark a ticket consumed, recording the resolved account. Returns true if this call won the race. */
-export async function consumeTicket(db: DbClient, ticketId: string, accountId: string): Promise<boolean> {
-  const upd = await db.execute({
-    sql: "UPDATE login_tickets SET status = 'consumed', account_id = ? WHERE ticket_id = ? AND status = 'pending'",
-    args: [accountId, ticketId],
-  });
-  return (upd.rowsAffected ?? 0) === 1;
+/** Load a ticket by its deep-link nonce regardless of status/expiry (cancel needs to tell "already used" from "unknown"). */
+export async function findTicketByNonce(db: DbClient, nonce: string): Promise<TicketRow | null> {
+  const r = await db.execute({ sql: "SELECT * FROM login_tickets WHERE nonce_hash = ?", args: [await sha256Hex(nonce)] });
+  return r.rows[0] ? (r.rows[0] as unknown as TicketRow) : null;
 }
 
 /**

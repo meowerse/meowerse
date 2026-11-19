@@ -1,9 +1,21 @@
 import { useRef, useState } from "react";
 import { Button } from "@meowerse/ui";
-import { tgStart, tgStatus, getAccount, postAuthLocation, type NextStep } from "../lib/authApi";
+import { tgStart, tgStatus, tgVerify, getAccount, postAuthLocation, type NextStep } from "../lib/authApi";
+
+const FINAL_MESSAGES: Record<string, string> = {
+  too_many_attempts: "too many wrong codes. start again.",
+  no_session: "your session ended. sign in again, then link telegram.",
+  linked_elsewhere: "that telegram account is already linked to another meowerse account.",
+  already_linked: "this account already has a different telegram account linked. unlink it first.",
+  account_gone: "this account no longer exists.",
+  bad_origin: "couldn't confirm from this page. reload and start again.",
+};
 
 export default function TelegramButton({ base, kind, label }: { base: string; kind?: "VERIFY_EXISTING"; label?: string }) {
   const [link, setLink] = useState<string | null>(null);
+  const [ticket, setTicket] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [codeMsg, setCodeMsg] = useState("");
   const [error, setError] = useState("");
   const [needPassword, setNeedPassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -24,6 +36,9 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     if (res.error === "rate_limited") { setError("too many attempts. try again later."); return; }
     if (!("deepLink" in res) || !res.deepLink || !res.ticketId) { setError("telegram sign-in isn't available right now."); return; }
     setLink(res.deepLink);
+    setTicket(res.ticketId);
+    setCode("");
+    setCodeMsg("");
     const ticketId = res.ticketId;
     timer.current = setInterval(async () => {
       const s = await tgStatus(base, ticketId).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep; error?: string });
@@ -32,17 +47,61 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
       if (s.error === "no_session" || s.error === "account_gone") {
         if (timer.current) clearInterval(timer.current);
         setLink(null);
+        setTicket(null);
         setError("your session ended. sign in again, then link telegram.");
       }
     }, 2000);
     setTimeout(() => timer.current && clearInterval(timer.current), 5 * 60 * 1000);
   }
 
+  async function submitCode() {
+    if (!ticket) return;
+    const r: { ok?: boolean; error?: string; attemptsLeft?: number } = await tgVerify(base, ticket, code).catch(() => ({ error: "network" }));
+    if (r.ok) {
+      setCodeMsg("");
+      // The ticket is finalized; the next poll issues the session (poll now instead of waiting for the interval).
+      const s = await tgStatus(base, ticket).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep });
+      if (s.ready) { if (timer.current) clearInterval(timer.current); window.location.href = postAuthLocation(s.next, window.location.search); }
+      return;
+    }
+    if (r.error === "wrong_code") setCodeMsg(`that code isn't right. ${r.attemptsLeft ?? 0} tries left.`);
+    else if (r.error === "not_confirmed") setCodeMsg("tap yes in telegram first.");
+    else if (r.error === "too_many_attempts" || r.error === "expired" || r.error === "invalid" || r.error === "no_session" || r.error === "linked_elsewhere" || r.error === "already_linked" || r.error === "account_gone" || r.error === "already_consumed" || r.error === "invalid_ticket" || r.error === "bad_origin") {
+      // Final for this UI: go back to the start with a specific message. (Most burn the ticket server-side; no_session/bad_origin do not, the ticket just expires within 5 minutes.)
+      if (timer.current) clearInterval(timer.current);
+      setLink(null);
+      setTicket(null);
+      setError(FINAL_MESSAGES[r.error] ?? "this sign-in expired. start again.");
+    } else setCodeMsg("couldn't confirm that. try again.");
+  }
+
   if (link) {
     return (
       <div className="mw-stack">
         <a href={link} target="_blank" rel="noreferrer noopener"><Button variant="primary">open telegram to confirm</Button></a>
-        <p className="mw-muted">waiting for you to tap start in telegram…</p>
+        <form
+          className="mw-stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitCode();
+          }}
+        >
+          <label htmlFor="tg-code" className="mw-muted">enter the code telegram sent you</label>
+          <input
+            id="tg-code"
+            name="tg-code"
+            data-testid="tg-code-input"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={9}
+            placeholder="1234 5678"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <Button type="submit" variant="primary">confirm</Button>
+          {codeMsg && <p role="alert" style={{ color: "var(--text-danger)" }}>{codeMsg}</p>}
+        </form>
+        <p className="mw-muted">tap yes in telegram, then type the code it shows here. only enter a code you asked for yourself.</p>
       </div>
     );
   }

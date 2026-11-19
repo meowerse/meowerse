@@ -5,7 +5,7 @@ import { runHousekeeping, scheduledHousekeeping, HOUSEKEEPING_MARGIN, RETENTION_
 import { createRefreshToken, rotateRefresh, REFRESH_ABS_TTL, REFRESH_IDLE_TTL } from "../src/refresh";
 import { exchangeCode, ACCESS_TTL, CODE_TTL } from "../src/token";
 import { sha256Hex } from "../src/crypto";
-import { TICKET_CLAIM_GRACE } from "../src/telegram";
+import { TICKET_CLAIM_GRACE, TICKET_TTL } from "../src/telegram";
 import type { DbClient } from "../src/types";
 
 const NOW = 1_800_000_000; // 2027-01-15T08:00:00Z
@@ -54,6 +54,21 @@ test("login_tickets: expires_at older than now - grace - 1 day deleted (any stat
   const r = await runHousekeeping(db, NOW);
   expect(r.deleted.login_tickets).toBe(2);
   expect((await db.execute("SELECT ticket_id FROM login_tickets ORDER BY ticket_id")).rows.map((x) => x.ticket_id)).toEqual(["edge", "new"]);
+});
+
+test("login_ticket_ctx: dead with its ticket (created_at + ttl + grace + margin); newer kept; absent table is skipped, not failed", async () => {
+  const db = await freshDb();
+  const cut = NOW - TICKET_TTL - TICKET_CLAIM_GRACE - HOUSEKEEPING_MARGIN;
+  for (const [id, at] of [["old", cut - 1], ["edge", cut], ["new", cut + 1]] as const) {
+    await db.execute({ sql: "INSERT INTO login_ticket_ctx (ticket_id, created_at, tg_id) VALUES (?, ?, '42')", args: [id, at] });
+  }
+  const r = await runHousekeeping(db, NOW);
+  expect(r.deleted.login_ticket_ctx).toBe(1);
+  expect((await db.execute("SELECT ticket_id FROM login_ticket_ctx ORDER BY ticket_id")).rows.map((x) => x.ticket_id)).toEqual(["edge", "new"]);
+  await db.execute("DROP TABLE login_ticket_ctx");
+  const r2 = await runHousekeeping(db, NOW);
+  expect(r2.skipped).toContain("login_ticket_ctx");
+  expect(r2.failed).not.toContain("login_ticket_ctx");
 });
 
 test("sessions: absolute expiry + 1 day margin", async () => {
@@ -286,12 +301,12 @@ test("scheduledHousekeeping logs one counts-only line; swallows errors", async (
   try {
     await scheduledHousekeeping({ getDb: () => db }, NOW);
     expect(log).toHaveBeenCalledTimes(1);
-    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 rate_limits=0 login_tickets=0 sessions=0 account_delete_confirmations=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
+    expect(log.mock.calls[0]![0]).toBe("housekeeping audit_log=1 rate_limits=0 login_tickets=0 login_ticket_ctx=0 sessions=0 account_delete_confirmations=0 access_tokens=0 refresh_tokens=0 oauth_codes_consumed=0 oauth_codes_unredeemed=0");
     await expect(scheduledHousekeeping({ getDb: () => { throw new Error("no db"); } }, NOW)).resolves.toBeUndefined();
     expect(err).toHaveBeenCalledWith("housekeeping_failed");
     const bad: DbClient = { execute: async () => { throw new Error("x"); }, batch: async () => [] };
     await scheduledHousekeeping({ getDb: () => bad }, NOW);
-    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,rate_limits,login_tickets,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
+    expect(log.mock.calls[1]![0]).toContain("failed=audit_log,rate_limits,login_tickets,login_ticket_ctx,sessions,account_delete_confirmations,access_tokens,refresh_tokens,oauth_codes_consumed,oauth_codes_unredeemed");
   } finally {
     log.mockRestore();
     err.mockRestore();

@@ -324,23 +324,37 @@ test("token.revoke -> one row with the authenticated client; unauthenticated rec
 
 // ---- telegram
 
+// nonce -> the starting browser's owner cookie / ticket id / session, so the helper can play both halves of the new flow
+const tgTickets = new Map<string, { ticketId: string; own: string; sess?: string }>();
+
+/** Bot "Yes" (signed confirm -> code) then the owning browser submits the code. Returns the verify response (or the confirm failure). */
 async function tgConfirm(h: Awaited<ReturnType<typeof harness>>, nonce: string, tgId: string) {
   const body = { nonce, telegram_id: tgId, username: "u", display_name: "U", avatar_url: "", ts: "1000" };
   const sig = await hmacSha256Hex("ikey", internalConfirmString({ nonce, telegramId: tgId, username: "u", displayName: "U", avatarUrl: "", ts: "1000" }));
-  return h.call("/internal/tg/confirm", { body, headers: { "X-Signature": sig } });
+  const c = await h.call("/internal/tg/confirm", { body, headers: { "X-Signature": sig } });
+  if (c.status !== 200) return c;
+  const t = tgTickets.get(nonce)!;
+  const { code } = (await c.json()) as { code: string };
+  return h.call("/tg/verify", { cookie: `__Host-mw_tgown=${t.own}`, sess: t.sess, body: { ticket: t.ticketId, code } });
 }
 async function tgStart(h: Awaited<ReturnType<typeof harness>>, body: unknown, sess?: string) {
   const r = await h.call("/tg/start", { sess, body });
-  return new URL(((await r.json()) as { deepLink: string }).deepLink).searchParams.get("start")!;
+  const b = (await r.json()) as { ticketId: string; deepLink: string };
+  const nonce = new URL(b.deepLink).searchParams.get("start")!;
+  tgTickets.set(nonce, { ticketId: b.ticketId, own: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")!, sess });
+  return nonce;
 }
 
 async function tgStartFull(h: Awaited<ReturnType<typeof harness>>, body: unknown, sess?: string) {
   const r = await h.call("/tg/start", { sess, body });
   const b = (await r.json()) as { ticketId: string; deepLink: string };
-  return { ticketId: b.ticketId, nonce: new URL(b.deepLink).searchParams.get("start")!, own: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
+  const nonce = new URL(b.deepLink).searchParams.get("start")!;
+  const own = cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  tgTickets.set(nonce, { ticketId: b.ticketId, own, sess });
+  return { ticketId: b.ticketId, nonce, own };
 }
 
-test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records signup (no network) and telegram.login only at /tg/status (user network)", async () => {
+test("telegram.link and signup are recorded when the owning browser verifies the code (user network); telegram.login at /tg/status", async () => {
   const h = await harness();
   const { sess, csrf, accountId } = await h.signup("aud_tg");
   const nonce = await tgStart(h, { kind: "VERIFY_EXISTING", csrf }, sess);
@@ -348,15 +362,16 @@ test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records
   expect((await tgConfirm(h, nonce, "55")).status).toBe(200);
   expect(h.rows()).toHaveLength(before + 1);
   const link = h.rows()[before]!;
-  expect(link).toMatchObject({ event: "telegram.link", account_id: accountId, client_id: null, ip_trunc: null, ua_hash: null });
+  expect(link).toMatchObject({ event: "telegram.link", account_id: accountId, client_id: null });
+  expect(link.ip_trunc).not.toBeNull(); // the verify request is the user's own browser
 
-  // new Telegram user: confirm creates the account -> signup row, still NO network data, NO telegram.login yet
+  // new Telegram user: confirm creates the account -> signup row, telegram.login only at status
   const t = await tgStartFull(h, {});
   const b2 = h.rows().length;
   expect((await tgConfirm(h, t.nonce, "777")).status).toBe(200);
   const newAcct = h.store.tables.telegram_links.find((x) => String(x.telegram_id) === "777")!.account_id;
   expect(h.rows()).toHaveLength(b2 + 1);
-  expect(h.rows()[b2]).toMatchObject({ event: "signup", account_id: newAcct, client_id: null, ip_trunc: null, ua_hash: null });
+  expect(h.rows()[b2]).toMatchObject({ event: "signup", account_id: newAcct, client_id: null });
 
   // the user's browser polls status: one telegram.login row per session issued, with the user's truncated IP
   const login = await h.one(async () => {
@@ -369,7 +384,7 @@ test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records
   const t2 = await tgStartFull(h, {});
   const b3 = h.rows().length;
   expect((await tgConfirm(h, t2.nonce, "777")).status).toBe(200);
-  expect(h.rows()).toHaveLength(b3); // not created -> nothing at confirm
+  expect(h.rows()).toHaveLength(b3); // not created -> nothing at verify
   const login2 = await h.one(() => h.call(`/tg/status?ticket=${t2.ticketId}`, { cookie: `__Host-mw_tgown=${t2.own}` }));
   expect(login2).toMatchObject({ event: "telegram.login", account_id: newAcct });
 
@@ -380,7 +395,7 @@ test("telegram.link (confirm, bot network NOT recorded); sign-in confirm records
   await tgConfirm(h, t3.nonce, "778");
   await h.call(`/tg/status?ticket=${t3.ticketId}`, { cookie: "__Host-mw_tgown=wrong" });
   expect(h.rows().filter((r) => r.event === "telegram.login")).toHaveLength(2);
-  expect(h.rows()).toHaveLength(b4 + 1); // only the signup from confirm
+  expect(h.rows()).toHaveLength(b4 + 1); // only the signup from verify
 });
 
 test("telegram.link failure (linked elsewhere, 409) records nothing", async () => {
