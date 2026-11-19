@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   handleListChats,
   handleCreateChat,
@@ -720,10 +720,30 @@ describe("DELETE /api/chats/:id/members/:userId (remove)", () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "cannot_remove_admin" });
   });
-  it("removing a non-member target → 404", async () => {
+  it("removing a target who is already gone is an idempotent success that re-runs the socket drop (retry after a 503)", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), memberEnv().env, db, now, "g1", "ghost", cors);
-    expect(res.status).toBe(404);
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), env, db, now, "g1", "ghost", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(drops).toEqual([{ chatId: "g1", userId: "ghost", revoked: true }]);
+  });
+  it("503 on a failed drop, then the retry (target now gone) succeeds once the drop works", async () => {
+    const { db } = groupApiDb(seed());
+    let up = false;
+    const env = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (!up) throw new Error("rpc"); } }) } } as unknown as Env;
+    const first = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), env, db, now, "g1", "mem", cors);
+    expect(first.status).toBe(503);
+    up = true;
+    const retry = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), env, db, now, "g1", "mem", cors);
+    expect(retry.status).toBe(200);
+  });
+  it("a non-privileged actor still gets 403 even for an absent target (retry path is not an oracle)", async () => {
+    const { db } = groupApiDb({ ...seed(), session: validSession("mem") });
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), env, db, now, "g1", "ghost", cors);
+    expect(res.status).toBe(403);
+    expect(drops).toEqual([]);
   });
 });
 
@@ -749,6 +769,20 @@ describe("POST /api/chats/:id/members/:userId/role (promote/demote)", () => {
     const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/adm/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "adm", cors);
     expect(res.status).toBe(200);
     expect(drops).toEqual([{ chatId: "g1", userId: "adm", revoked: false }]);
+  });
+  it("a demote retried after a 503 (target already a plain member) is an idempotent success that re-runs the drop", async () => {
+    const { db } = groupApiDb(seed());
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "mem", cors);
+    expect(res.status).toBe(200);
+    expect(drops).toEqual([{ chatId: "g1", userId: "mem", revoked: false }]);
+  });
+  it("demoting the OWNER is still refused (not_demotable stays 400, no drop)", async () => {
+    const { db } = groupApiDb(seed());
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/own/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "own", cors);
+    expect(res.status).toBe(400);
+    expect(drops).toEqual([]);
   });
   it("an admin (non-owner) promoting → 403 forbidden", async () => {
     const s = seed();
@@ -779,10 +813,21 @@ describe("POST /api/chats/:id/leave", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, transferredTo: "adm" });
   });
-  it("a non-member leaving → 403 not_member", async () => {
+  it("leaving when already not a member is an idempotent success (retry after a 503) that re-runs the drop", async () => {
     const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner") });
-    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), memberEnv().env, db, now, "g1", cors);
-    expect(res.status).toBe(403);
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: false });
+    expect(drops).toEqual([{ chatId: "g1", userId: "u9", revoked: true }]);
+  });
+  it("503 on a failed drop after the leave committed, then the retry succeeds", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), members: [{ chatId: "g1", userId: "own", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 2 }] });
+    let up = false;
+    const env = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (!up) throw new Error("rpc"); } }) } } as unknown as Env;
+    expect((await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors)).status).toBe(503);
+    up = true;
+    expect((await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors)).status).toBe(200);
   });
 });
 
@@ -1317,6 +1362,18 @@ describe("POST /api/account/delete", () => {
     const del = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), dead, c.db, now, cors);
     expect(del.status).toBe(200);
     expect(c.deleted.users).toEqual(["u1"]);
+  });
+  it("delete-account logs which chat's socket drop failed (chat id only, no user id) and still completes", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const dead = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { throw new Error("rpc"); } }) } } as unknown as Env;
+      const c = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+      const del = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), dead, c.db, now, cors);
+      expect(del.status).toBe(200);
+      const lines = log.mock.calls.map((a) => String(a[0]));
+      expect(lines).toContain("delete_account socket_drop_failed chat=g1");
+      expect(lines.join("\n")).not.toContain("u1");
+    } finally { log.mockRestore(); }
   });
   it("confirm:'delete' string is also accepted", async () => {
     const { db, deleted } = accountDb({ session: validSession("u1") });

@@ -1333,3 +1333,255 @@ describe("Conversation DO", () => {
     expect(errs.find((e) => e.code === "cannot_delete")).toMatchObject({ messageId: "nope-2", tempId: "t-del" });
   });
 });
+
+// ---- Opus-review fixes: membership stale-while-error, revoked backstop, serialized
+// preview writes, sidebar invalidate, in-flight dedupe, typing throttle ----------------
+describe("Conversation DO: security-review fixes", () => {
+  type Db = { all: (...a: unknown[]) => Promise<unknown>; first: (...a: unknown[]) => Promise<unknown>; run: (...a: unknown[]) => Promise<unknown>; batch?: unknown };
+  type Inst = { d1: () => Db; memberVerdict: Map<string, { ok: boolean; at: number }>; memberInflight: Map<string, Promise<boolean>>; loadMember: (a: { chatId: string; userId: string }) => Promise<boolean> };
+
+  /** Wrap the DO's D1 client for this chat (instance property shadows the prototype method). */
+  async function patchD1(chatId: string, wrap: (real: Db) => Db): Promise<void> {
+    await runInDurableObject(stub(chatId), async (inst: Conversation) => {
+      const i = inst as unknown as Inst;
+      delete (i as unknown as Record<string, unknown>).d1;
+      const real = i.d1.call(i) as Db;
+      (i as unknown as Record<string, unknown>).d1 = () => wrap(real);
+    });
+  }
+  async function restoreD1(chatId: string): Promise<void> {
+    await runInDurableObject(stub(chatId), async (inst: Conversation) => { delete (inst as unknown as Record<string, unknown>).d1; });
+  }
+  async function ageVerdict(chatId: string, userId: string, ageMs: number): Promise<void> {
+    await runInDurableObject(stub(chatId), async (inst: Conversation) => {
+      const m = (inst as unknown as Inst).memberVerdict;
+      const v = m.get(userId);
+      if (!v) throw new Error("no cached verdict to age");
+      m.set(userId, { ok: v.ok, at: Date.now() - ageMs });
+    });
+  }
+  async function lastMsg(chatId: string): Promise<string | null> {
+    const r = await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(chatId).first<{ last_message: string | null }>();
+    return r?.last_message ?? null;
+  }
+  async function sendAndAck(ws: WebSocket, tempId: string, body: string): Promise<string> {
+    const ack = waitFor(ws, (t) => t.includes('"sent"') && t.includes(tempId));
+    ws.send(JSON.stringify({ type: "send", tempId, body }));
+    return (JSON.parse(await ack) as { message: { id: string } }).message.id;
+  }
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** A gate that holds the FIRST preview write (`UPDATE chats SET last_message`) until released. */
+  function holdFirstPreviewWrite() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held!: () => void;
+    const heldP = new Promise<void>((r) => { held = r; });
+    let first = true;
+    const wrap = (real: Db): Db => ({
+      ...real,
+      all: real.all, first: real.first,
+      run: async (sql: unknown, p?: unknown) => {
+        if (first && String(sql).startsWith("UPDATE chats SET last_message")) { first = false; held(); await gate; }
+        return real.run(sql, p);
+      },
+    });
+    return { wrap, release, held: heldP };
+  }
+
+  it("D1 outage: the last good membership verdict keeps live chat working for the stale window", async () => {
+    await seedChat("cstale1");
+    const a = await connect("cstale1", "u1");
+    await sendAndAck(a, "t-st-0", "prime");
+    await patchD1("cstale1", (real) => ({ ...real, first: async (sql: unknown, p?: unknown) => { if (String(sql).includes("FROM chat_members WHERE chat_id = ? AND user_id")) throw new Error("d1 down"); return real.first(sql, p); } }));
+    await ageVerdict("cstale1", "u1", 10_000); // TTL (5s) expired, still inside the 60s stale window
+    const id = await sendAndAck(a, "t-st-1", "during-outage");
+    expect(id).toBeTruthy();
+    expect((await stub("cstale1").historyFor("cstale1", null)).some((m) => m.body === "during-outage")).toBe(true);
+    a.close();
+    await restoreD1("cstale1");
+  });
+
+  it("D1 outage past the stale window: send errors carry tempId (item resolves); typing/read/away get NOTHING back; socket stays open", async () => {
+    await seedChat("cstale2");
+    const a = await connect("cstale2", "u1");
+    const peer = await connect("cstale2", "u2");
+    await sendAndAck(a, "t-st2-0", "prime");
+    await patchD1("cstale2", (real) => ({ ...real, first: async (sql: unknown, p?: unknown) => { if (String(sql).includes("FROM chat_members WHERE chat_id = ? AND user_id")) throw new Error("d1 down"); return real.first(sql, p); } }));
+    await ageVerdict("cstale2", "u1", 120_000); // beyond the stale window
+    const frames: string[] = [];
+    a.addEventListener("message", (e: MessageEvent) => { frames.push(String(e.data)); });
+    let closed = false;
+    a.addEventListener("close", () => { closed = true; });
+    let peerSaw = false;
+    peer.addEventListener("message", (e: MessageEvent) => { if (/typing|read_receipt|presence|never-sent/.test(String(e.data))) peerSaw = true; });
+    a.send(JSON.stringify({ type: "typing", on: true }));
+    a.send(JSON.stringify({ type: "read", upTo: 5 }));
+    a.send(JSON.stringify({ type: "away", away: true }));
+    a.send(JSON.stringify({ type: "send", tempId: "t-st2-1", body: "never-sent" }));
+    a.send(JSON.stringify({ type: "delete", id: "some-msg" }));
+    await vi.waitFor(() => expect(frames.filter((f) => f.includes('"unavailable"'))).toHaveLength(2), { timeout: 3000 });
+    const errs = frames.map((f) => JSON.parse(f)).filter((f) => f.type === "error");
+    expect(errs).toHaveLength(2); // ONLY the send and the delete answered; typing/read/away silent
+    expect(errs[0]).toMatchObject({ code: "unavailable", tempId: "t-st2-1" });
+    expect(errs[1]).toMatchObject({ code: "unavailable", messageId: "some-msg" });
+    expect(closed).toBe(false);
+    expect(peerSaw).toBe(false);
+    expect((await stub("cstale2").historyFor("cstale2", null)).some((m) => m.body === "never-sent")).toBe(false);
+    // D1 back: the very next send is honoured again.
+    await restoreD1("cstale2");
+    await sendAndAck(a, "t-st2-2", "recovered");
+    a.close(); peer.close();
+  });
+
+  it("a definite 'not a member' answer fails closed even inside the stale window, and sends {revoked} before closing", async () => {
+    await seedChat("crev1");
+    const a = await connect("crev1", "u1");
+    await sendAndAck(a, "t-rv-0", "prime");
+    await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind("crev1", "u1").run();
+    await runInDurableObject(stub("crev1"), async (inst: Conversation) => { (inst as unknown as Inst).memberVerdict.clear(); });
+    const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+    const forbidden = waitFor(a, (t) => t.includes('"forbidden"'));
+    const closed = waitForClose(a);
+    a.send(JSON.stringify({ type: "send", tempId: "t-rv-1", body: "leak" }));
+    expect(JSON.parse(await revoked)).toEqual({ type: "revoked" }); // what stops the client's reconnect loop
+    expect(JSON.parse(await forbidden)).toMatchObject({ code: "forbidden", tempId: "t-rv-1" });
+    await closed;
+  });
+
+  it("serialized preview writes: deleting the newest message while its mirror is in flight ends on the previous live message", async () => {
+    await seedChat("crace1");
+    const a = await connect("crace1", "u1");
+    await sendAndAck(a, "t-r1-a", "alpha-live");
+    await vi.waitFor(async () => expect(await lastMsg("crace1")).toBe("alpha-live"));
+    await sleep(5);
+    const h = holdFirstPreviewWrite();
+    await patchD1("crace1", h.wrap);
+    const idB = await sendAndAck(a, "t-r1-b", "bravo-doomed");
+    await h.held; // the send's mirror is now mid-write holding the OLD body
+    const gone = waitFor(a, (t) => t.includes('"deleted"'));
+    a.send(JSON.stringify({ type: "delete", id: idB }));
+    await gone;
+    await sleep(100); // an unserialized re-point would land (and be overwritten) in this gap
+    h.release();
+    await vi.waitFor(async () => expect(await lastMsg("crace1")).toBe("alpha-live"), { timeout: 5000 });
+    await sleep(150);
+    expect(await lastMsg("crace1")).toBe("alpha-live");
+    a.close();
+    await restoreD1("crace1");
+  });
+
+  it("serialized preview writes: an edit right after a send is not overwritten by the late mirror of the old text", async () => {
+    await seedChat("crace2");
+    const a = await connect("crace2", "u1");
+    const h = holdFirstPreviewWrite();
+    await patchD1("crace2", h.wrap);
+    const id = await sendAndAck(a, "t-r2-a", "original-text");
+    await h.held;
+    const ed = waitFor(a, (t) => t.includes('"edited"'));
+    a.send(JSON.stringify({ type: "edit", id, body: "edited-text" }));
+    await ed;
+    await sleep(100);
+    h.release();
+    await vi.waitFor(async () => expect(await lastMsg("crace2")).toBe("edited-text"), { timeout: 5000 });
+    await sleep(150);
+    expect(await lastMsg("crace2")).toBe("edited-text");
+    a.close();
+    await restoreD1("crace2");
+  });
+
+  it("serialized preview writes: a FAILED first mirror is retried from the CURRENT newest row, not the captured body", async () => {
+    await seedChat("crace3");
+    const a = await connect("crace3", "u1");
+    let failNext = true;
+    let gateFail!: () => void;
+    const failGate = new Promise<void>((r) => { gateFail = r; });
+    await patchD1("crace3", (real) => ({
+      ...real,
+      run: async (sql: unknown, p?: unknown) => {
+        if (failNext && String(sql).startsWith("UPDATE chats SET last_message")) { failNext = false; await failGate; throw new Error("d1 blip"); }
+        return real.run(sql, p);
+      },
+    }));
+    const id = await sendAndAck(a, "t-r3-a", "pre-edit");
+    const ed = waitFor(a, (t) => t.includes('"edited"'));
+    a.send(JSON.stringify({ type: "edit", id, body: "post-edit" }));
+    await ed;
+    gateFail();
+    await vi.waitFor(async () => expect(await lastMsg("crace3")).toBe("post-edit"), { timeout: 5000 });
+    a.close();
+    await restoreD1("crace3");
+  });
+
+  it("deleting/editing the newest message sends members' open sidebars a content-free invalidate AFTER the preview is re-pointed (no preview/at, so no unread bump)", async () => {
+    await seedChat("cinbx1");
+    const a = await connect("cinbx1", "u1");
+    const b = await connect("cinbx1", "u2");
+    const inboxNs = (env as unknown as { USER_INBOX: DurableObjectNamespace }).USER_INBOX;
+    const res = await inboxNs.get(inboxNs.idFromName("inbox:u2")).fetch("https://do/ws?user=u2", { headers: { Upgrade: "websocket" } });
+    const inbox = res.webSocket!;
+    inbox.accept();
+    await sendAndAck(a, "t-ib-a", "keep-me");
+    await sleep(5);
+    const idB = await sendAndAck(a, "t-ib-b", "secret-body");
+    await vi.waitFor(async () => expect(await lastMsg("cinbx1")).toBe("secret-body"));
+    const after: string[] = [];
+    inbox.addEventListener("message", (e: MessageEvent) => after.push(String(e.data)));
+    await sleep(200); // let the send's own fan-out settle
+    after.length = 0;
+    let previewAtInvalidate: string | null = null;
+    inbox.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes('"invalidate"') && previewAtInvalidate === null) void lastMsg("cinbx1").then((v) => { previewAtInvalidate = v; }); });
+    a.send(JSON.stringify({ type: "delete", id: idB }));
+    await vi.waitFor(() => expect(after.some((f) => f.includes('"invalidate":true'))).toBe(true), { timeout: 4000 });
+    const frame = JSON.parse(after.find((f) => f.includes('"invalidate"'))!);
+    expect(frame).toEqual({ type: "chat_update", chatId: "cinbx1", invalidate: true });
+    expect(after.some((f) => f.includes('"preview"') || f.includes('"at"'))).toBe(false);
+    await vi.waitFor(() => expect(previewAtInvalidate).toBe("keep-me")); // already re-pointed when the signal arrived
+    a.close(); b.close(); inbox.close();
+  });
+
+  it("in-flight membership dedupe: a stale read finishing after dropUser must not delete the NEWER read's entry", async () => {
+    await seedChat("cinfl1");
+    await runInDurableObject(stub("cinfl1"), async (inst: Conversation) => {
+      const i = inst as unknown as Inst;
+      const att = { chatId: "cinfl1", userId: "u1" };
+      const gates: Array<() => void> = [];
+      (i as unknown as Record<string, unknown>).d1 = () => ({
+        all: async () => [],
+        run: async () => undefined,
+        first: () => new Promise((res) => { gates.push(() => res({ ok: 1 })); }),
+      });
+      const p1 = i.loadMember(att);
+      expect(i.memberInflight.get("u1")).toBe(p1);
+      await inst.dropUser("u1", false); // clears the map, bumps the generation
+      const p2 = i.loadMember(att);
+      expect(i.memberInflight.get("u1")).toBe(p2);
+      expect(p2).not.toBe(p1);
+      gates[0]!(); // the OLD read finishes first
+      await p1;
+      await Promise.resolve(); await Promise.resolve();
+      expect(i.memberInflight.get("u1")).toBe(p2); // the old read's cleanup left the newer entry alone
+      gates[1]!();
+      await p2;
+      await Promise.resolve(); await Promise.resolve();
+      expect(i.memberInflight.has("u1")).toBe(false);
+      delete (i as unknown as Record<string, unknown>).d1;
+    });
+  });
+
+  it("typing: a quick follow-up 'on' after an 'off' always reaches peers; floods are capped separately", async () => {
+    await seedChat("ctyp2");
+    const wa = await connect("ctyp2", "u1");
+    const wb = await connect("ctyp2", "u2");
+    const frames: string[] = [];
+    wb.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes('"typing"')) frames.push(String(e.data)); });
+    for (const on of [true, false, true, false, true]) wa.send(JSON.stringify({ type: "typing", on }));
+    await vi.waitFor(() => expect(frames).toHaveLength(5), { timeout: 5000 });
+    expect(frames.map((f) => JSON.parse(f).on)).toEqual([true, false, true, false, true]);
+    // Flood: 100 alternating frames in one window; the cap (40 incl. the 5 above) bounds what peers see.
+    for (let i = 0; i < 100; i++) wa.send(JSON.stringify({ type: "typing", on: i % 2 === 0 }));
+    await sleep(600);
+    expect(frames.length).toBeLessThanOrEqual(40);
+    expect(frames.length).toBeGreaterThan(30);
+    wa.close(); wb.close();
+  });
+});

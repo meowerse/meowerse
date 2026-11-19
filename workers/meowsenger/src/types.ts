@@ -25,7 +25,8 @@ export type Row = Record<string, unknown>;
 export interface DbClient {
   all(sql: string, params?: unknown[]): Promise<Row[]>;
   first(sql: string, params?: unknown[]): Promise<Row | undefined>;
-  run(sql: string, params?: unknown[]): Promise<void>;
+  /** Resolves the rows changed when the client can report it (`d1Client` does); fakes may resolve void. */
+  run(sql: string, params?: unknown[]): Promise<number | void>;
   /** Run statements as ONE atomic unit (D1 `batch`: all-or-nothing). Optional only so read-only test fakes needn't implement it; `d1Client` always does. Resolves the rows changed per statement. */
   batch?(stmts: { sql: string; params?: unknown[] }[]): Promise<number[]>;
 }

@@ -486,7 +486,10 @@ export async function handleRemoveMember(
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await removeMember(db, chatId, me, targetUserId);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent retry: the D1 delete may already be committed by an earlier attempt whose
+  // socket drop failed (503). The actor passed the owner/admin check first, so a target
+  // that is no longer a member means "already removed": re-run the drop and succeed.
+  if (!r.ok && r.error !== "target_not_member") return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // Revoke the removed member's live sockets NOW (they'd keep receiving broadcasts +
   // posting until they happened to reconnect otherwise).
   if (!(await dropUserSockets(env, chatId, targetUserId, true))) return dropFailed(cors);
@@ -514,7 +517,11 @@ export async function handleSetRole(
   const role = (body.role ?? "").trim();
   if (role !== "admin" && role !== "member") return json({ error: "bad_role" }, 400, cors, NS);
   const r = role === "admin" ? await promote(db, chatId, me, targetUserId) : await demote(db, chatId, me, targetUserId);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent demote retry: the role change may already be committed by an attempt whose
+  // socket drop failed (503). The owner check passed, so a target that is already a plain
+  // member means "already demoted": fall through and re-run the drop.
+  const alreadyDemoted = !r.ok && role === "member" && r.error === "not_demotable" && (await getRole(db, chatId, targetUserId)) === "member";
+  if (!r.ok && !alreadyDemoted) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // A DEMOTE must revoke the stale admin power immediately: drop their sockets so
   // they reconnect as a plain member (a PROMOTE only ADDS power on reconnect — no
   // security risk in the meantime, so it's left to heal naturally).
@@ -534,7 +541,14 @@ export async function handleLeave(
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await leave(db, chatId, me);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent retry: the D1 leave may already be committed by an attempt whose socket
+  // drop failed (503); the retry then finds the caller is no longer a member. Re-run the
+  // drop and answer success with the same body shape.
+  if (!r.ok) {
+    if (r.error !== "not_member") return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+    if (!(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
+    return json({ ok: true, transferredTo: null, deleted: false }, 200, cors, NS);
+  }
   // Close the leaver's OTHER live sockets to this chat (a second tab would keep
   // receiving otherwise). `deleted` chats have no sockets left; harmless either way.
   if (!(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
@@ -873,7 +887,16 @@ export async function handleDeleteAccount(
   // Revoke the live sockets of every chat just left (retry once inside). Best-effort
   // here: the account teardown below must complete (a retry would find no session),
   // and the DO re-validates membership per frame, so a missed drop is refused anyway.
-  await Promise.all(chatRows.map((row) => dropUserSockets(env, String(row.chat_id), me, true)));
+  // The per-frame membership check in the Conversation DO is the real backstop. A failed
+  // drop is logged (chat id only, no user data) and cannot be retried usefully: the
+  // account is gone after this call.
+  await Promise.all(
+    chatRows.map(async (row) => {
+      if (!(await dropUserSockets(env, String(row.chat_id), me, true))) {
+        console.log(`delete_account socket_drop_failed chat=${String(row.chat_id)}`);
+      }
+    }),
+  );
   // 2–4. Remove the caller's remaining D1 footprint, child-first.
   await db.run("DELETE FROM join_requests WHERE user_id = ?", [me]);
   await db.run("DELETE FROM push_subscriptions WHERE user_id = ?", [me]);

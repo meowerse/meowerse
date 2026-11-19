@@ -125,6 +125,9 @@ export async function demote(
   return { ok: true };
 }
 
+/** Re-pick rounds for an owner handoff whose successor vanished concurrently. */
+const MAX_HANDOFF_ATTEMPTS = 4;
+
 /**
  * The actor leaves the chat. Anyone may leave. If the OWNER leaves, ownership
  * transfers to the oldest remaining admin, else the oldest remaining member; if
@@ -144,26 +147,35 @@ export async function leave(
 
   if (actorRole !== "owner") return { ok: true };
 
-  // Owner left: find a successor among the remaining members. Prefer the oldest
-  // admin, else the oldest member (by joined_at, tie-broken by user_id for a
-  // deterministic pick).
-  const remaining = await db.all(
-    "SELECT user_id, role, joined_at FROM chat_members WHERE chat_id = ? ORDER BY joined_at ASC, user_id ASC",
-    [chatId],
-  );
-  if (remaining.length === 0) {
-    // Last member left → delete the chat entirely (membership rows already gone).
-    await db.run("DELETE FROM chats WHERE id = ?", [chatId]);
-    return { ok: true, deleted: true };
+  // Owner left: hand ownership to the oldest admin, else the oldest member (by joined_at,
+  // tie-broken by user_id for a deterministic pick). The promotion is GUARDED in SQL: it
+  // changes a row only while the successor is still a member AND the chat has no owner, so
+  // a successor who leaves concurrently (or a second concurrent handoff) can never leave
+  // the chat ownerless or with two owners. 0 rows changed -> re-read and pick again.
+  for (let attempt = 0; attempt < MAX_HANDOFF_ATTEMPTS; attempt++) {
+    const remaining = await db.all(
+      "SELECT user_id, role, joined_at FROM chat_members WHERE chat_id = ? ORDER BY joined_at ASC, user_id ASC",
+      [chatId],
+    );
+    if (remaining.length === 0) {
+      // Last member left -> delete the chat entirely (membership rows already gone), unless
+      // someone joined in the meantime.
+      const gone = await db.run(
+        "DELETE FROM chats WHERE id = ? AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ?)",
+        [chatId, chatId],
+      );
+      if (gone === 0) continue; // a member appeared: pick a successor among them
+      return { ok: true, deleted: true };
+    }
+    if (remaining.some((r: Row) => String(r.role) === "owner")) return { ok: true }; // someone already owns it
+    const admins = remaining.filter((r: Row) => String(r.role) === "admin");
+    const successorId = String((admins[0] ?? remaining[0]).user_id);
+    const changed = await db.run(
+      "UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner')",
+      [chatId, successorId, chatId],
+    );
+    // A client that cannot report changes (test fakes) is taken at its word.
+    if (changed === undefined || changed > 0) return { ok: true, transferredTo: successorId };
   }
-  const admins = remaining.filter((r: Row) => String(r.role) === "admin");
-  const successor = admins[0] ?? remaining[0];
-  const successorId = String(successor.user_id);
-  // Guarded: only promotes while the chat has NO owner, so two concurrent handoffs can
-  // never leave two owners.
-  await db.run(
-    "UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner')",
-    [chatId, successorId, chatId],
-  );
-  return { ok: true, transferredTo: successorId };
+  return { ok: true };
 }

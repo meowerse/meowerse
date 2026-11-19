@@ -50,42 +50,50 @@ export function directKey(a: string, b: string): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+const isUnique = (e: unknown): boolean => /UNIQUE constraint/i.test(String((e as Error)?.message ?? e));
+
 export async function createOrGetDirect(
-  db: DbClient, me: string, other: string, now: number,
+  db: DbClient, me: string, other: string, now: number, retried = false,
 ): Promise<{ id: string; created: boolean }> {
   const key = directKey(me, other);
   const existing = await db.first("SELECT id FROM chats WHERE direct_key = ?", [key]);
   if (existing) {
-    // A member who LEFT the DM (leave deletes their row) must be able to use it again.
-    // Read first (cheap) and write only the missing rows; INSERT OR IGNORE keeps any
-    // existing row (and its role) untouched and makes a concurrent call race-safe.
+    // The CALLER explicitly opened this DM, so if they had left it (leave deletes their
+    // row) they are re-added. The OTHER party is never re-added: they may have left on
+    // purpose and must not be pulled back by someone else's action. INSERT OR IGNORE keeps
+    // an existing row (and its role) untouched and makes a concurrent call race-safe.
     const chatId = String(existing.id);
-    const have = new Set((await db.all("SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id IN (?, ?)", [chatId, me, other])).map((r) => String(r.user_id)));
-    for (const uid of new Set([me, other])) {
-      if (have.has(uid)) continue;
+    const mine = await db.first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, me]);
+    if (!mine) {
       await db.run(
         "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
-        [chatId, uid, now],
+        [chatId, me, now],
       );
     }
-    return { id: String(existing.id), created: false };
+    return { id: chatId, created: false };
   }
   const id = crypto.randomUUID();
+  // The chat row and BOTH members land in ONE atomic batch (a plain sequence if the client
+  // has no batch), so a failure cannot leave a memberless chat squatting on the direct_key.
+  const stmts = [
+    {
+      sql: "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
+      params: [id, me, now, now, key],
+    },
+    {
+      sql: "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?), (?, ?, 'member', 0, NULL, ?)",
+      params: [id, me, now, id, other, now],
+    },
+  ];
   try {
-    await db.run(
-      "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
-      [id, me, now, now, key],
-    );
+    if (db.batch) await db.batch(stmts);
+    else for (const st of stmts) await db.run(st.sql, st.params);
   } catch (e) {
-    // A concurrent createOrGetDirect won the UNIQUE(direct_key) race: converge on its chat.
-    if (!/UNIQUE|constraint/i.test(String((e as Error)?.message ?? e))) throw e;
-    return createOrGetDirect(db, me, other, now);
+    // A concurrent createOrGetDirect won the UNIQUE(direct_key) race: converge on its chat
+    // (at most once, and only for a unique-constraint error; anything else propagates).
+    if (retried || !isUnique(e)) throw e;
+    return createOrGetDirect(db, me, other, now, true);
   }
-  // Both members in ONE multi-row INSERT (one D1 PRIMARY write instead of two).
-  await db.run(
-    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?), (?, ?, 'member', 0, NULL, ?)",
-    [id, me, now, id, other, now],
-  );
   return { id, created: true };
 }
 
@@ -119,20 +127,20 @@ export async function mirrorLastMessage(
 }
 
 /**
- * Re-point the sidebar preview after the newest message was deleted or edited, so a
- * deleted/edited body does not linger in `chats.last_message` (listChats + push/inbox
- * previews read it). Unconditional on `last_activity` (this moves the preview BACK to an
- * older message) and leaves `last_activity` untouched so unread math does not shift.
- * `body`/`senderId` null = no live message remains.
+ * Write the chat's CURRENT newest live message into the sidebar mirror (`body`/`senderId`
+ * null = no live message remains). Used by the Conversation DO for every preview write
+ * (send mirror, its retry, the alarm re-mirror, edit/delete re-point), serialized and
+ * computed from the DO's own storage at write time, so the preview is unconditional.
+ * `last_activity` only ever moves FORWARD (MAX with `createdAt`; 0 for "none"), so
+ * deleting the newest message re-points the preview without shifting unread math.
  */
-export async function setLastMessagePreview(
-  db: DbClient, chatId: string, body: string | null, senderId: string | null,
+export async function syncLastMessage(
+  db: DbClient, chatId: string, body: string | null, senderId: string | null, createdAt: number,
 ): Promise<void> {
-  await db.run("UPDATE chats SET last_message = ?, last_sender_id = ? WHERE id = ?", [
-    body == null ? null : body.slice(0, 140),
-    senderId,
-    chatId,
-  ]);
+  await db.run(
+    "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = MAX(COALESCE(last_activity, 0), ?) WHERE id = ?",
+    [body == null ? null : body.slice(0, 140), senderId, createdAt, chatId],
+  );
 }
 
 /** The user ids of every member of a chat — for the realtime-sidebar inbox fan-out
@@ -305,10 +313,6 @@ export async function createGroup(
   }
 
   const id = crypto.randomUUID();
-  await db.run(
-    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-    [id, type, name, input.creatorId, now, now, visibility, slug],
-  );
   // Distinct members other than the creator, added as plain members.
   const others = [...new Set(input.memberIds)].filter((uid) => uid !== input.creatorId);
   // ONE multi-row INSERT: the creator as 'owner' plus every other member as
@@ -317,7 +321,14 @@ export async function createGroup(
   // params) and run all chunks as ONE atomic batch (a plain sequence if the client
   // has no batch).
   const rows: Array<[string, string]> = [["owner", input.creatorId], ...others.map((uid): [string, string] => ["member", uid])];
-  const stmts: { sql: string; params: unknown[] }[] = [];
+  // The chat row goes in the SAME batch (first statement) as its members, so a failed batch
+  // leaves no memberless chat holding the slug.
+  const stmts: { sql: string; params: unknown[] }[] = [
+    {
+      sql: "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key, visibility, slug) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+      params: [id, type, name, input.creatorId, now, now, visibility, slug],
+    },
+  ];
   for (let i = 0; i < rows.length; i += 32) {
     const chunk = rows.slice(i, i + 32);
     const params: unknown[] = [];
@@ -328,8 +339,14 @@ export async function createGroup(
       params,
     });
   }
-  if (db.batch) await db.batch(stmts);
-  else for (const st of stmts) await db.run(st.sql, st.params);
+  try {
+    if (db.batch) await db.batch(stmts);
+    else for (const st of stmts) await db.run(st.sql, st.params);
+  } catch (e) {
+    // Lost a slug race between slugAvailable() and the insert: report it as taken.
+    if (slug && isUnique(e) && /slug/i.test(String((e as Error)?.message ?? e))) return { error: "slug_taken" };
+    throw e;
+  }
   return { id };
 }
 

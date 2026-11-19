@@ -60,6 +60,7 @@ function memDb(users: Record<string, { username: string; displayName: string | n
       return [];
     },
     async first(sql, p = []) {
+      if (sql.startsWith("SELECT 1 AS ok FROM chat_members WHERE chat_id")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]) ? { ok: 1 } : undefined;
       if (sql.includes("direct_key")) return [...chats.values()].find(c => c.direct_key === p[0]);
       if (sql.includes("FROM chats WHERE id")) return chats.get(String(p[0]));
       return undefined;
@@ -107,7 +108,7 @@ describe("createOrGetDirect", () => {
   });
 });
 describe("createOrGetDirect after a member left (I6)", () => {
-  it("re-adds the member who left, leaves the other row untouched, and is idempotent", async () => {
+  it("re-adds ONLY the caller who left, leaves the other row untouched, and is idempotent", async () => {
     const { db, members } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
     // u1 leaves the DM (leave() deletes their membership row).
@@ -116,8 +117,24 @@ describe("createOrGetDirect after a member left (I6)", () => {
     expect(b).toEqual({ id: a.id, created: false });
     expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id).sort()).toEqual(["u1", "u2"]);
     expect(members.find((m) => m.user_id === "u2")!.joined_at).toBe(1000); // untouched
+    expect(members.find((m) => m.user_id === "u1")!.joined_at).toBe(2000); // re-added
     await createOrGetDirect(db, "u2", "u1", 3000);
     expect(members.filter((m) => m.chat_id === a.id)).toHaveLength(2); // no duplicates
+  });
+  it("owner-consent: opening the DM never re-adds the OTHER party who left deliberately", async () => {
+    const { db, members } = memDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1000);
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u2"), 1); // u2 left
+    const b = await createOrGetDirect(db, "u1", "u2", 2000); // u1 opens the DM again
+    expect(b).toEqual({ id: a.id, created: false });
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id)).toEqual(["u1"]); // u2 stays out
+    // Both gone (u1 left too): u1 reopening still brings back ONLY u1.
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u1"), 1);
+    await createOrGetDirect(db, "u1", "u2", 2500);
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id)).toEqual(["u1"]);
+    // ...and u2 coming back is their own explicit action.
+    await createOrGetDirect(db, "u2", "u1", 3000);
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id).sort()).toEqual(["u1", "u2"]);
   });
 });
 describe("createOrGetDirect concurrent create (M12)", () => {
@@ -823,5 +840,59 @@ describe("rejectRequest", () => {
     const { db } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     expect(await rejectRequest(db, r.id, "no-such", "o")).toEqual({ ok: false, error: "request_not_found" });
+  });
+});
+
+describe("create atomicity + bounded retry (M13)", () => {
+  /** Transactional batch: statements apply all-or-nothing against `tables`. */
+  function txDb(failOn: (sql: string) => Error | null) {
+    const chats: string[] = [];
+    const members: string[] = [];
+    let tries = 0;
+    const apply = (sql: string, p: unknown[]) => {
+      const err = failOn(sql);
+      if (err) throw err;
+      if (sql.startsWith("INSERT INTO chats")) chats.push(String(p[0]));
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) for (let i = 0; i < p.length; i += 3) members.push(`${p[i]}:${p[i + 1]}`);
+    };
+    const db: DbClient = {
+      async all() { return []; },
+      async first() { return undefined; },
+      async run(sql, p = []) { apply(sql, p); },
+      async batch(stmts) {
+        tries++;
+        const c = [...chats], m = [...members];
+        try { for (const st of stmts) apply(st.sql, st.params ?? []); } catch (e) { chats.splice(0, chats.length, ...c); members.splice(0, members.length, ...m); throw e; }
+        return stmts.map(() => 1);
+      },
+    };
+    return { db, chats, members, tries: () => tries };
+  }
+  it("createGroup: a failing members insert leaves NO orphan chat row (the slug stays free)", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chat_members") ? new Error("D1 down") : null));
+    await expect(createGroup(t.db, { name: "g", creatorId: "u1", memberIds: ["u2"], slug: "my-slug" }, 1)).rejects.toThrow("D1 down");
+    expect(t.chats).toEqual([]);
+    expect(t.members).toEqual([]);
+  });
+  it("createGroup: the chat row and members commit together on success", async () => {
+    const t = txDb(() => null);
+    const r = await createGroup(t.db, { name: "g", creatorId: "u1", memberIds: ["u2"] }, 1);
+    expect("id" in r && t.chats).toEqual(["id" in r ? r.id : ""]);
+    expect(t.members).toHaveLength(2);
+  });
+  it("createOrGetDirect: chat + both members are one batch (a failure leaves no chat squatting on direct_key)", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT OR IGNORE INTO chat_members") ? new Error("D1 down") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("D1 down");
+    expect(t.chats).toEqual([]);
+  });
+  it("createOrGetDirect: a NON-unique error is not retried", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chats") ? new Error("D1 timeout") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("D1 timeout");
+    expect(t.tries()).toBe(1);
+  });
+  it("createOrGetDirect: a unique error is retried exactly ONCE, then surfaces", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chats") ? new Error("UNIQUE constraint failed: chats.direct_key") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("UNIQUE");
+    expect(t.tries()).toBe(2);
   });
 });
