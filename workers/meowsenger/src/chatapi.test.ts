@@ -1680,6 +1680,57 @@ describe("Web Push endpoints", () => {
   });
 });
 
+describe("input bounds (M8)", () => {
+  it("rejects a group name over 128 chars on create and rename (accepts exactly 128)", async () => {
+    const long = "x".repeat(129);
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleCreateChat(cookieReq("https://x/api/chats", "s1", { method: "POST", body: JSON.stringify({ type: "group", name: long }) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "name_too_long" });
+    const ok = await handleCreateChat(cookieReq("https://x/api/chats", "s1", { method: "POST", body: JSON.stringify({ type: "group", name: "x".repeat(128) }) }), db, now, cors);
+    expect(ok.status).toBe(200);
+    const adm = groupApiDb({ session: validSession("adm"), members: grp("adm", "admin") });
+    const ren = await handleUpdateChat(cookieReq("https://x/api/chats/g1", "s1", { method: "PATCH", body: JSON.stringify({ name: long }) }), adm.db, now, "g1", cors);
+    expect(ren.status).toBe(400);
+    expect(await ren.json()).toEqual({ error: "name_too_long" });
+  });
+  it("rejects oversized push endpoint / p256dh / auth, and non-string keys", async () => {
+    const EP = "https://fcm.googleapis.com/fcm/send/" ;
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [];
+    const call = (b: unknown) => handlePushSubscribe(subReq(b), pushHandlerDb("uA", subs), now, cors);
+    expect((await call({ endpoint: EP + "a".repeat(1100), keys: { p256dh: "A" } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A".repeat(129), auth: "a" } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A", auth: "a".repeat(65) } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: { x: 1 } } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A".repeat(128), auth: "a".repeat(64) } })).status).toBe(200);
+    expect(subs).toHaveLength(1);
+  });
+  it("search: q over 200 chars -> 400 (within-chat and global, DO untouched)", async () => {
+    const q = "q".repeat(201);
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const { env, calls } = searchEnv();
+    const r1 = await handleSearch(cookieReq(`https://x/api/chats/c1/search?q=${q}`, "s1"), env, db, now, "c1", cors);
+    expect(r1.status).toBe(400);
+    const r2 = await handleGlobalSearch(cookieReq(`https://x/api/search?q=${q}`, "s1"), env, db, now, cors);
+    expect(r2.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+  it("global search is rate limited per user (429 + Retry-After), other users unaffected", async () => {
+    const mk = (uid: string) => ({
+      first: async (sql: string) => (sql.includes("FROM sessions") ? validSession(uid) : undefined),
+      all: async () => [] as Row[], run: async () => {},
+    }) as unknown as DbClient;
+    const go = (uid: string) => handleGlobalSearch(cookieReq("https://x/api/search?q=hi", "s1"), fakeEnv(), mk(uid), now, cors);
+    const statuses: number[] = [];
+    for (let i = 0; i < 8; i++) statuses.push((await go("rl-user")).status);
+    expect(statuses.filter((s) => s === 200)).toHaveLength(6);
+    const last = await go("rl-user");
+    expect(last.status).toBe(429);
+    expect(last.headers.get("Retry-After")).toBe("10");
+    expect((await go("rl-other")).status).toBe(200);
+  });
+});
+
 describe("GET /api/search (global cross-chat)", () => {
   it("401 without a session", async () => {
     const { db } = memDb();

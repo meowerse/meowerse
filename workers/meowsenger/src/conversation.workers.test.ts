@@ -944,6 +944,19 @@ describe("Conversation DO", () => {
     wa.close();
   });
 
+  it("typing-on frames are throttled per user (a burst reaches the peer once); typing-off always passes", async () => {
+    await seedChat("ctyp1");
+    const wa = await connect("ctyp1", "u1");
+    const wb = await connect("ctyp1", "u2");
+    const frames: string[] = [];
+    wb.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes('"typing"')) frames.push(String(e.data)); });
+    for (let i = 0; i < 10; i++) wa.send(JSON.stringify({ type: "typing", on: true }));
+    wa.send(JSON.stringify({ type: "typing", on: false }));
+    await vi.waitFor(() => expect(frames.some((f) => f.includes('"on":false'))).toBe(true), { timeout: 5000 });
+    expect(frames.filter((f) => f.includes('"on":true'))).toHaveLength(1);
+    wa.close(); wb.close();
+  });
+
   it("send cap is per USER: two sockets of the same user share it (not 30 each)", async () => {
     await seedChat("cshare1");
     const wa = await connect("cshare1", "u1");

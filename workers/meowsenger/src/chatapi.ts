@@ -4,6 +4,24 @@ import { json, readCookies, retryAfter } from "./security";
 
 /** Mirrors the Conversation DO's per-user flood window (RATE_WINDOW_MS = 10 s). */
 const RETRY_AFTER_SEC = 10;
+/** Input bounds (M8). */
+const MAX_CHAT_NAME = 128;
+const MAX_SEARCH_Q = 200;
+const MAX_PUSH_ENDPOINT = 1024;
+const MAX_PUSH_P256DH = 128;
+const MAX_PUSH_AUTH = 64;
+// Global search fans out to up to 20 DOs: cap it per user (isolate-local, best-effort).
+const SEARCH_WINDOW_MS = 10_000;
+const SEARCH_MAX = 6;
+const searchTimes = new Map<string, number[]>();
+function searchLimited(userId: string, now: number): boolean {
+  if (searchTimes.size > 1000) for (const [k, v] of searchTimes) if (now - (v[v.length - 1] ?? 0) >= SEARCH_WINDOW_MS) searchTimes.delete(k);
+  const times = (searchTimes.get(userId) ?? []).filter((t) => now - t < SEARCH_WINDOW_MS);
+  if (times.length >= SEARCH_MAX) { searchTimes.set(userId, times); return true; }
+  times.push(now);
+  searchTimes.set(userId, times);
+  return false;
+}
 import { getSession, SESSION_COOKIE, clearCookie } from "./session";
 import {
   createOrGetDirect,
@@ -122,6 +140,7 @@ async function handleCreateGroup(
 ): Promise<Response> {
   const name = (body.name ?? "").trim();
   if (!name) return json({ error: "name_required" }, 400, cors, { "Cache-Control": "no-store" });
+  if (name.length > MAX_CHAT_NAME) return json({ error: "name_too_long" }, 400, cors, { "Cache-Control": "no-store" });
   const type = body.type === "channel" ? "channel" : "group";
   const usernames = Array.isArray(body.members) ? body.members.map((u) => String(u).trim()).filter(Boolean) : [];
   // Bound the initial roster: each username costs a D1 lookup below, so cap the
@@ -214,7 +233,11 @@ export async function handlePushSubscribe(req: Request, db: DbClient, now: numbe
   // The stored endpoint is later POSTed to by the DO (server-side fetch). Reject
   // anything that isn't a real push-service URL so it can't be used as a blind SSRF
   // / outbound-request amplifier to an attacker-chosen host.
-  if (!isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
+  if (body.endpoint.length > MAX_PUSH_ENDPOINT || !isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
+  const p256dh = body.keys?.p256dh, authKey = body.keys?.auth;
+  if ((p256dh !== undefined && (typeof p256dh !== "string" || p256dh.length > MAX_PUSH_P256DH)) || (authKey !== undefined && (typeof authKey !== "string" || authKey.length > MAX_PUSH_AUTH))) {
+    return json({ error: "bad_body" }, 400, cors, NS);
+  }
   const mode = body.mode === undefined ? "enable" : body.mode;
   if (mode !== "enable" && mode !== "repair") return json({ error: "bad_body" }, 400, cors, NS);
   // Rotation: only meaningful for a repair; a non-string is ignored.
@@ -258,6 +281,7 @@ export async function handleSearch(
   if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ messages: [] }, 200, cors, { "Cache-Control": "no-store" });
+  if (q.length > MAX_SEARCH_Q) return json({ error: "query_too_long" }, 400, cors, { "Cache-Control": "no-store" });
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
   const messages = await stub.search(q, chatId, me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
@@ -281,6 +305,8 @@ export async function handleGlobalSearch(
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ results: [] }, 200, cors, { "Cache-Control": "no-store" });
+  if (q.length > MAX_SEARCH_Q) return json({ error: "query_too_long" }, 400, cors, { "Cache-Control": "no-store" });
+  if (searchLimited(me, Date.now())) return json({ error: "rate_limited" }, 429, cors, retryAfter(SEARCH_WINDOW_MS / 1000, { "Cache-Control": "no-store" }));
   // The caller's chats (cap the fan-out so a huge membership can't blow up — each
   // chat is one DO round-trip). 20 keeps a global search to ≤20 concurrent DO reads.
   const rows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ? LIMIT 20", [me]);
@@ -536,6 +562,7 @@ export async function handleUpdateChat(
   }
   if (typeof body.name === "string") {
     if (!body.name.trim()) return json({ error: "name_required" }, 400, cors, NS);
+    if (body.name.trim().length > MAX_CHAT_NAME) return json({ error: "name_too_long" }, 400, cors, NS);
     await renameChat(db, chatId, body.name);
   }
   if (typeof body.visibility === "string") {

@@ -89,6 +89,8 @@ const RATE_MAX = 30;
 const MEMBER_TTL_MS = 5_000;
 /** At most one read-cursor D1 write per user per this window (see queueRead). */
 const READ_FLUSH_MS = 5_000;
+/** Minimum gap between broadcast typing-on frames from one user. */
+const TYPING_MIN_MS = 1_000;
 /** Coalesce Web Push per chat: at most one offline fan-out (D1 read + POSTs) per
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
@@ -343,6 +345,7 @@ export class Conversation extends DurableObject<Env> {
   // cleared by dropUser. In-flight reads are shared so a frame burst costs one query.
   private memberVerdict = new Map<string, { ok: boolean; at: number }>();
   private memberInflight = new Map<string, Promise<boolean>>();
+  private typingStamp = new Map<string, number>();
 
   /** Fresh cached verdict, or undefined when a D1 read is needed. Synchronous on a
    *  hit so a steady stream of frames is not reordered by an await. */
@@ -439,6 +442,13 @@ export class Conversation extends DurableObject<Env> {
 
     // Typing: ephemeral, peers-only, never persisted.
     if (msg.type === "typing") {
+      // Throttle typing-on per user (a frame is a full broadcast to every peer): drop
+      // anything within TYPING_MIN_MS of the last one let through; "off" always passes.
+      const nowT = Date.now();
+      if (msg.on) {
+        if (nowT - (this.typingStamp.get(att.userId) ?? 0) < TYPING_MIN_MS) return;
+        this.typingStamp.set(att.userId, nowT);
+      }
       this.broadcast({ type: "typing", userId: att.userId, on: !!msg.on }, ws);
       return;
     }
