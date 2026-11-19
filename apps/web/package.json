@@ -10,6 +10,7 @@
     "e2e": "playwright test",
     "shots": "playwright test --config=playwright.screenshots.config.ts",
     "budget": "bun scripts/budget.ts",
+    "prerender-check": "bun scripts/prerender-check.ts",
     "lighthouse": "bun scripts/lighthouse.ts"
   },
   "dependencies": {

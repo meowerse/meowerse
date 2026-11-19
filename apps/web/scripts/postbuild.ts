@@ -3,12 +3,14 @@
 //     and external stylesheets (the site CSS must be inlined: one hash);
 //  2. hashes every inline <script>/<style> in dist/**/*.{html,svg} into ONE strict CSP with Trusted
 //     Types, with connect-src from the project probes, and writes it into dist/_headers (__CSP__);
-//  3. writes dist/sitemap.xml from the built pages.
+//  3. writes dist/sitemap.xml from the built pages;
+//  4. writes dist/speculation-rules.json (the Speculation-Rules header in _headers points at it).
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { buildCsp, dataUrls, MAX_HEADER, probeOrigins, styleAttrs } from "../src/lib/csp";
 import { pagePaths, sitemapXml } from "@meowerse/ui/seo";
 import { SITE } from "../src/lib/site";
+import { speculationJson, SPECULATION_PATH } from "../src/lib/speculation";
 
 const root = process.cwd();
 const dist = join(root, "dist");
@@ -43,4 +45,5 @@ writeFileSync(headersPath, headers.replace(slot, `Content-Security-Policy: ${csp
 
 const paths = pagePaths(html.map((f) => relative(dist, f)));
 writeFileSync(join(dist, "sitemap.xml"), sitemapXml(SITE.url, paths));
+writeFileSync(join(dist, SPECULATION_PATH.slice(1)), speculationJson());
 console.log(`csp: ${csp.length} chars, ${(csp.match(/sha256-/g) ?? []).length} hashes → dist/_headers; sitemap: ${paths.length} pages`);

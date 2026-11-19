@@ -167,7 +167,10 @@ const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "off
 
   <script>
     import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
-    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
-    else setTimeout(() => attachAllCat3D(), 200);
+    import { afterActivation } from "../../../lib/activation";
+    afterActivation(() => {
+      if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
+      else setTimeout(() => attachAllCat3D(), 200);
+    });
   </script>
 </DocsLayout>

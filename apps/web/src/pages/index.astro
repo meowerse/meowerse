@@ -59,9 +59,13 @@ const jsonLd = { "@context": "https://schema.org", "@type": "WebSite", name: SIT
   <script>
     import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
     import { runProbes } from "../lib/probe-runner";
-    void runProbes(document, { watch: true });
-    // decorative and lazy (spec §4): only after the page is idle, never competing with first paint
-    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
-    else setTimeout(() => attachAllCat3D(), 200);
+    import { afterActivation } from "../lib/activation";
+    // a prerendered page waits for the visit: no probe requests, no WebGL context before then
+    afterActivation(() => {
+      void runProbes(document, { watch: true });
+      // decorative and lazy (spec §4): only after the page is idle, never competing with first paint
+      if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
+      else setTimeout(() => attachAllCat3D(), 200);
+    });
   </script>
 </BaseLayout>
