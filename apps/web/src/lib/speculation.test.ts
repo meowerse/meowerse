@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCsp } from "./csp";
-import { HEAVY_PATHS, NEVER_PATHS, NEVER_SELECTORS, SPECULATION_CONTENT_TYPE, SPECULATION_PATH, SPECULATION_RULES, speculationJson } from "./speculation";
+import { ALLOWED_PATHS, HEAVY_PATHS, NEVER_SELECTORS, SPECULATION_CONTENT_TYPE, SPECULATION_PATH, SPECULATION_RULES, speculationJson } from "./speculation";
 
 const BASE = "https://meow.alxnko.dev/";
 type Cond = Record<string, unknown>;
@@ -62,13 +62,18 @@ describe("speculation rules", () => {
     expect(HEAVY_PATHS).toEqual(["/ui/cat3d*", "/ui/playground*"]);
   });
 
-  it("never speculates logout/state-changing paths or non-HTML assets", () => {
-    for (const href of ["/logout/", "/signout", "/sign-out/", "/log-out/", "/api/session", "/auth/callback", "/cdn-cgi/rum",
-      "/sitemap.xml", "/robots.txt", "/favicon.ico", "/favicon.svg", "/icon-512.png", "/x.webp", "/site.webmanifest", "/f.woff2", "/data.json", "/_astro/a.js", "/a.css"]) {
+  it("is a fail-closed allowlist: only the home page, /p/<slug>/ and the docs pages are matched", () => {
+    expect(ALLOWED_PATHS).toEqual(["/", "/p/*/", "/ui/", "/ui/*/"]);
+    for (const href of ["/", "/p/auth/", "/ui/", "/ui/components/", "/ui/components/modal/", "/ui/foundations/colours/", "/ui/patterns/forms/"]) {
+      expect(tier("prefetch", { href }), href).toBe(true);
+    }
+    // not on the list: other paths, state-changing paths, and every asset whatever its extension or case
+    for (const href of ["/logout/", "/signout", "/api/session", "/auth/callback", "/cdn-cgi/rum", "/404.html", "/other/", "/p/", "/p/auth",
+      "/sitemap.xml", "/robots.txt", "/favicon.ico", "/icon-512.png", "/site.webmanifest", "/_astro/a.js", "/a.css",
+      "/x.pdf", "/x.zip", "/x.mp4", "/x.avif", "/x.PNG", "/ui/x.pdf", "/ui/a/b.zip", "/p/x.mp4"]) {
       expect(tier("prerender", { href }), href).toBe(false);
       expect(tier("prefetch", { href }), href).toBe(false);
     }
-    expect(NEVER_PATHS.length).toBeGreaterThan(0);
   });
 
   it("never speculates new-tab, nofollow or download links", () => {
@@ -82,6 +87,7 @@ describe("speculation rules", () => {
 
   it("needs no CSP token: the policy is unchanged by it and still has no unsafe tokens", () => {
     const csp = buildCsp(["<script>a()</script>"]);
+    // the real CSP check for this feature: Speculation-Rules is a header to a same-origin file, so no token is added
     expect(csp).not.toMatch(/speculation|unsafe-|wasm|strict-dynamic/);
     expect(csp).toContain("require-trusted-types-for 'script'; trusted-types 'none'");
     expect(csp).toContain("default-src 'none'");

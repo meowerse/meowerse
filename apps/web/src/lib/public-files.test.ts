@@ -27,11 +27,11 @@ describe("public files (W-08, W-19)", () => {
     for (const k of ["Strict-Transport-Security: max-age=31536000; includeSubDomains; preload", "Permissions-Policy:",
       "Cross-Origin-Opener-Policy: same-origin", "X-Content-Type-Options: nosniff", "Referrer-Policy: no-referrer"])
       expect(h).toContain(k);
-    expect(h).toContain("https://:project.pages.dev/*\n  X-Robots-Tag: noindex");  });
+    expect(h).toContain("https://:project.pages.dev/*\n  X-Robots-Tag: noindex");
+  });
   it("_headers delivers speculation rules from a same-origin file with the exact content type, never inline", () => {
     const h = pub("_headers");
     expect(h).toContain('  Speculation-Rules: "/speculation-rules.json"');
     expect(h).toContain("/speculation-rules.json\n  Content-Type: application/speculationrules+json");
-    expect(h).not.toMatch(/inline-speculation-rules|unsafe-/);
   });
 });

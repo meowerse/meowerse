@@ -14,9 +14,10 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
-  # Speculation rules (Chromium prerender/prefetch on hover) come from a same-origin file, never an inline
-  # script: no extra CSP token needed. scripts/postbuild.ts writes it from src/lib/speculation.ts.
   Speculation-Rules: "/speculation-rules.json"
+
+# Speculation rules (Chromium prerender/prefetch on hover) come from a same-origin file, never an inline
+# script, so no extra CSP token is needed. scripts/postbuild.ts writes it from src/lib/speculation.ts.
 
 # Preview and branch deployments on *.pages.dev duplicate the real site: keep them out of search (W-08).
 https://:project.pages.dev/*

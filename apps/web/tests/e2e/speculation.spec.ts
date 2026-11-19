@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 // Speculation rules (Speculation-Rules header -> /speculation-rules.json) under the real CSP.
 // Playwright attaches DevTools, and Chromium then refuses to actually prerender ("PrerenderingDisabledByDevTools"),
-// so activation itself is proven by `bun scripts/prerender-check.ts` (plain Chromium, no CDP). Here: the header,
+// so activation itself is proven by `bun scripts/prerender-check.ts` (plain Chromium, no CDP); tried without
+// viewport/colorScheme emulation and without our own CDP session: hover+click still ended with activationStart 0,
+// as Playwright's own DevTools pipe is enough to disable it, so no activation test lives here. Here: the header,
 // the file, that Chromium accepts the rule set under our CSP, WHICH links it would speculate, and that a hover
 // really starts the attempt (it then fails with PrerenderingDisabledByDevTools: expected here, see above).
 
@@ -88,6 +90,25 @@ test.describe("speculation rules", () => {
     const ext = page.locator("a[href^='https://']:visible").first();
     await expect(ext).toBeVisible();
     await ext.hover();
+    await page.waitForTimeout(1200);
+    const origin = new URL(page.url()).origin;
+    expect([...started, ...sources].filter((a) => new URL(a.url).origin !== origin)).toEqual([]);
+  });
+
+  test("a same-tab cross-origin link (no target=_blank) is never speculated: the origin rule itself", async ({ page }) => {
+    const { started, sources } = await preloading(page);
+    await page.goto("/ui/");
+    await page.evaluate(() => {
+      const a = document.createElement("a");
+      a.href = "https://auth.alxnko.dev/login/";
+      a.id = "xo";
+      a.textContent = "cross-origin same-tab";
+      a.style.cssText = "position:fixed;top:80px;left:20px;z-index:9999;padding:8px;background:#fff;color:#000";
+      document.body.append(a);
+    });
+    await expect(page.locator("#xo")).toHaveAttribute("href", "https://auth.alxnko.dev/login/");
+    expect(await page.locator("#xo").getAttribute("target")).toBeNull();
+    await page.locator("#xo").hover();
     await page.waitForTimeout(1200);
     const origin = new URL(page.url()).origin;
     expect([...started, ...sources].filter((a) => new URL(a.url).origin !== origin)).toEqual([]);

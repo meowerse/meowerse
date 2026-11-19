@@ -6,26 +6,23 @@
 export const SPECULATION_PATH = "/speculation-rules.json";
 export const SPECULATION_CONTENT_TYPE = "application/speculationrules+json";
 
-/** href_matches patterns are URLPattern pathnames resolved against the page's own origin: "/*" can
- *  only ever match same-origin URLs, so nothing cross-origin (auth.alxnko.dev…) is speculated. */
-export const SAME_ORIGIN = "/*";
+/** Fail-closed allowlist (trailingSlash is "always", so every page URL ends in "/"): only the home page, the
+ *  project pages (/p/<slug>/) and the docs (/ui/, /ui/<section>/<page>/) are ever speculated. href_matches
+ *  patterns are URLPattern pathnames resolved against the page's own origin, so these can only match
+ *  same-origin URLs (nothing on auth.alxnko.dev…), and a path without a trailing slash (any asset, whatever
+ *  its extension or case) matches nothing, so no extension denylist is needed. */
+export const ALLOWED_PATHS = ["/", "/p/*/", "/ui/", "/ui/*/"];
 
 /** Heavy WebGL/demo pages: prefetch only, a prerender would build a GPU context nobody may visit. */
 export const HEAVY_PATHS = ["/ui/cat3d*", "/ui/playground*"];
-
-/** Never speculated, whatever the tier: state-changing/session paths and non-HTML assets. */
-export const NEVER_PATHS = [
-  "/logout*", "/signout*", "/sign-out*", "/log-out*", "/api/*", "/auth/*", "/cdn-cgi/*",
-  "/*.(xml|txt|ico|svg|png|webp|jpg|jpeg|gif|json|webmanifest|woff2|css|js|bin)",
-];
 
 /** Links that are not plain same-tab navigations. */
 export const NEVER_SELECTORS = ["[rel~=nofollow]", "[target=_blank]", "[download]"];
 
 const where = (extraNot: string[] = []) => ({
   and: [
-    { href_matches: SAME_ORIGIN },
-    { not: { href_matches: [...NEVER_PATHS, ...extraNot] } },
+    { href_matches: ALLOWED_PATHS },
+    ...(extraNot.length ? [{ not: { href_matches: extraNot } }] : []),
     { not: { selector_matches: NEVER_SELECTORS } },
   ],
 });
