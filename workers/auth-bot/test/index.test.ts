@@ -42,11 +42,11 @@ const CANCEL = "https://auth-api/internal/tg/cancel";
 const jsonRes = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status });
 
 /** Route the bot's outbound calls to the auth worker; unknown URLs fail the test. */
-function authMock(opts: { describe?: unknown; describeStatus?: number; confirm?: unknown; confirmStatus?: number } = {}) {
+function authMock(opts: { describe?: unknown; describeStatus?: number; confirm?: unknown; confirmStatus?: number; cancel?: unknown; cancelStatus?: number } = {}) {
   const m = vi.fn(async (url: string) => {
     if (url === DESCRIBE) return jsonRes(opts.describe ?? { kind: "signin", country: "DE", browser: "Firefox", os: "Linux", age: 125 }, opts.describeStatus ?? 200);
     if (url === CONFIRM) return jsonRes(opts.confirm ?? { ok: true, code: "12345678" }, opts.confirmStatus ?? 200);
-    if (url === CANCEL) return jsonRes({ ok: true });
+    if (url === CANCEL) return jsonRes(opts.cancel ?? { ok: true }, opts.cancelStatus ?? 200);
     throw new Error("unexpected fetch " + url);
   });
   vi.stubGlobal("fetch", m);
@@ -179,6 +179,23 @@ test("callback Cancel → one signed cancel (never a confirm), message edited", 
   const other = authMock();
   await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`, { from: { id: 77 } }), hdr), ENV);
   expect(other.m).toHaveBeenCalledTimes(0);
+});
+
+test("callback Cancel refused by the server: never says 'Cancelled'; already_used gets the strong warning", async () => {
+  for (const [o, expectStrong] of [
+    [{ cancel: { error: "invalid_ticket" }, cancelStatus: 400 }, false],
+    [{ cancel: { error: "already_used" }, cancelStatus: 409 }, true],
+  ] as const) {
+    authMock(o);
+    const body = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
+    expect(body.text).not.toContain("Cancelled");
+    expect(body.text).not.toContain("Nothing was signed in");
+    expect(body.text).toContain("unlink Telegram");
+    expect(body.text.includes("could NOT be cancelled")).toBe(expectStrong);
+  }
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("boom")));
+  const net = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
+  expect(net.text).not.toContain("Cancelled");
 });
 
 test("malformed callback data fails closed → 0 fetches", async () => {

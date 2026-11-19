@@ -113,7 +113,7 @@ test("getTelegramLink (linked/not) + unlinkTelegram clears link and verified", a
   expect(log.some((c) => c.sql.includes("UPDATE accounts SET verified = 0"))).toBe(true);
 });
 
-test("tickets: create, find-pending (status/expiry), consume race, get", async () => {
+test("tickets: create, find-pending (status/expiry), get", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const t = await createTicket(routedDb([], log), { kind: "SIGNIN_OR_SIGNUP", ownerHash: "oh", now: 1000 });
   expect(t.ticketId.startsWith("tkt_")).toBe(true);

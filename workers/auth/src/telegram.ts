@@ -398,6 +398,12 @@ export async function findPendingTicketByNonce(db: DbClient, nonce: string, now:
   return row as unknown as TicketRow;
 }
 
+/** Load a ticket by its deep-link nonce regardless of status/expiry (cancel needs to tell "already used" from "unknown"). */
+export async function findTicketByNonce(db: DbClient, nonce: string): Promise<TicketRow | null> {
+  const r = await db.execute({ sql: "SELECT * FROM login_tickets WHERE nonce_hash = ?", args: [await sha256Hex(nonce)] });
+  return r.rows[0] ? (r.rows[0] as unknown as TicketRow) : null;
+}
+
 /**
  * Seconds past `expires_at` a consumed ticket may still be claimed. It only absorbs clock/latency skew: the
  * owner cookie and the UI poll both end at TICKET_TTL, so it does not extend the user's 5-minute window.

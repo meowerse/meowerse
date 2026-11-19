@@ -67,7 +67,7 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     if (r.error === "wrong_code") setCodeMsg(`that code isn't right. ${r.attemptsLeft ?? 0} tries left.`);
     else if (r.error === "not_confirmed") setCodeMsg("tap yes in telegram first.");
     else if (r.error === "too_many_attempts" || r.error === "expired" || r.error === "invalid" || r.error === "no_session" || r.error === "linked_elsewhere" || r.error === "already_linked" || r.error === "account_gone" || r.error === "already_consumed" || r.error === "invalid_ticket" || r.error === "bad_origin") {
-      // Final errors: the server has ended this ticket, so go back to the start with a specific message.
+      // Final for this UI: go back to the start with a specific message. (Most burn the ticket server-side; no_session/bad_origin do not, the ticket just expires within 5 minutes.)
       if (timer.current) clearInterval(timer.current);
       setLink(null);
       setTicket(null);

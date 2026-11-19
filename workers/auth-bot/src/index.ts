@@ -189,11 +189,23 @@ async function handleCallback(cb: NonNullable<TgUpdate["callback_query"]>, env: 
 
   if (isNo) {
     const url = internalUrl(env, "cancel");
-    if (url) {
-      const ts = String(now());
-      await signedPost(url, env.INTERNAL_HMAC_KEY, internalCancelString({ nonce, telegramId: String(fromId), ts }), { nonce, telegram_id: String(fromId), ts });
+    const ts = String(now());
+    const res = url ? await signedPost(url, env.INTERNAL_HMAC_KEY, internalCancelString({ nonce, telegramId: String(fromId), ts }), { nonce, telegram_id: String(fromId), ts }) : null;
+    // Only reassure when the server really burned the ticket; otherwise the request may already have been used.
+    if (res?.ok) return editReply(chatId, messageId, "Cancelled. Nothing was signed in or linked.");
+    let used = false;
+    try {
+      used = ((await res?.json()) as { error?: unknown } | undefined)?.error === "already_used";
+    } catch {
+      used = false;
     }
-    return editReply(chatId, messageId, "Cancelled. Nothing was signed in or linked.");
+    return editReply(
+      chatId,
+      messageId,
+      used
+        ? "⚠️ This request was already completed, so it could NOT be cancelled. If it wasn’t you, open auth.alxnko.dev → security now, sign out other sessions and unlink Telegram."
+        : "This request already finished or expired. If it wasn’t you, open auth.alxnko.dev → security, sign out other sessions and unlink Telegram.",
+    );
   }
 
   const from = cb.from ?? {};

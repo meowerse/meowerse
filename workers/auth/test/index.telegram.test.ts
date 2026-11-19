@@ -321,15 +321,60 @@ test("tg/verify is IP-rate-limited (429)", async () => {
   expect(r.status).toBe(429);
 });
 
-test("tg/verify rejects a present but non-allowlisted Origin (403) and accepts an allowlisted or absent one", async () => {
+async function verifyWithOrigin(origin: string | undefined) {
   const { env, deps } = await fixture();
   const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
   const sb = (await start.json()) as { ticketId: string; deepLink: string };
   const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
   const { code } = await botConfirm(handle, env, deps, { nonce: new URL(sb.deepLink).searchParams.get("start")!, tgId: "92" });
-  const post = (origin?: string) => handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tgown=${owner}`, ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify({ ticket: sb.ticketId, code }) }), env as never, deps as never);
-  const evil = await post("https://evil.example");
-  expect(evil.status).toBe(403);
-  expect(((await evil.json()) as { error: string }).error).toBe("bad_origin");
-  expect((await post("https://web")).status).toBe(200);
+  const post = (o?: string) => handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tgown=${owner}`, ...(o !== undefined ? { Origin: o } : {}) }, body: JSON.stringify({ ticket: sb.ticketId, code }) }), env as never, deps as never);
+  const first = await post(origin);
+  return { first, post };
+}
+
+test("tg/verify Origin policy: foreign and literal 'null' → 403 bad_origin (ticket untouched); allowlisted and absent → 200", async () => {
+  for (const bad of ["https://evil.example", "null"]) {
+    const { first, post } = await verifyWithOrigin(bad);
+    expect(first.status).toBe(403);
+    expect(((await first.json()) as { error: string }).error).toBe("bad_origin");
+    expect((await post("https://web")).status).toBe(200); // the refusal spent nothing; the real origin still completes
+  }
+  expect((await verifyWithOrigin("https://web")).first.status).toBe(200);
+  expect((await verifyWithOrigin(undefined)).first.status).toBe(200);
+});
+
+async function botCancel(env: unknown, deps: unknown, nonce: string, tgId: string) {
+  const { internalCancelString } = await import("@meowerse/auth-shared");
+  const sig = await hmacSha256Hex("ikey", internalCancelString({ nonce, telegramId: tgId, ts: "1000" }));
+  return handle(new Request("https://iss/internal/tg/cancel", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig }, body: JSON.stringify({ nonce, telegram_id: tgId, ts: "1000" }) }), env as never, deps as never);
+}
+
+test("cancel of an already-completed ticket → 409 already_used (not ok); unknown nonce → 400 invalid_ticket", async () => {
+  const { env, deps, tables } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  const nonce = new URL(sb.deepLink).searchParams.get("start")!;
+  const { code } = await botConfirm(handle, env, deps, { nonce, tgId: "93" });
+  expect((await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code: code!, owner })).status).toBe(200);
+  const c = await botCancel(env, deps, nonce, "93");
+  expect(c.status).toBe(409);
+  expect(((await c.json()) as { error: string }).error).toBe("already_used");
+  expect(ticketRow(tables, sb.ticketId).status).toBe("consumed");
+  const u = await botCancel(env, deps, "nope-nonce", "93");
+  expect(u.status).toBe(400);
+  expect(((await u.json()) as { error: string }).error).toBe("invalid_ticket");
+});
+
+test("cancel after Yes is bound to the confirming Telegram user", async () => {
+  const { env, deps, tables } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const nonce = new URL(sb.deepLink).searchParams.get("start")!;
+  await botConfirm(handle, env, deps, { nonce, tgId: "94" });
+  const other = await botCancel(env, deps, nonce, "95");
+  expect(other.status).toBe(400);
+  expect(ticketRow(tables, sb.ticketId).status).toBe("pending");
+  expect((await botCancel(env, deps, nonce, "94")).status).toBe(200);
+  expect(ticketRow(tables, sb.ticketId).status).toBe("burned");
 });
