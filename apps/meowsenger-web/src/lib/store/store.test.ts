@@ -309,3 +309,19 @@ describe("cross-tab auth channel", () => {
     expect(() => installAuthChannel()).not.toThrow();
   });
 });
+
+describe("entry tokens (PR-7a)", () => {
+  it("valid until clearAll / setScope(other) / purge(chat); purge bumps the generation even for an absent entry", () => {
+    const t = cc.enter("c9");
+    expect(cc.valid(t)).toBe(true);
+    cc.purge("c9"); // nothing cached, still invalidates
+    expect(cc.valid(t)).toBe(false);
+    const t2 = cc.enter("c9");
+    expect(cc.valid(t2)).toBe(true);
+    expect(cc.valid(cc.enter("other"))).toBe(true); // a purge is per chat
+    clearAll();
+    expect(cc.valid(t2)).toBe(false);
+    setScope("A");
+    expect(cc.valid(t2)).toBe(false); // a new epoch never revives an old token
+  });
+});

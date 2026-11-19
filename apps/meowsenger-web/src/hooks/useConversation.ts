@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction, type Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
@@ -6,6 +6,8 @@ import { pushConfirmedFor } from "../lib/push";
 import { retryDelay } from "../lib/backoff";
 import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
 import { hasSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+// The ONLY store import allowed here: token-authorised, memory-only cache writes.
+import { enter, touch, peekEntry, putT, patchT, type EntryToken, type ScrollAnchor } from "../lib/store/conversationTokens";
 
 /** Server → client WS frames (Slice 2 + Slice 3 presence/typing/receipts + Slice 4
  *  edit/delete, spec §6). */
@@ -108,6 +110,87 @@ function orderLog(list: Bubble[]): Bubble[] {
   // Array.prototype.sort is stable.
   confirmed.sort((a, b) => a.createdAt - b.createdAt);
   return [...confirmed, ...local];
+}
+
+/** The pure row reducer for edited/deleted/reaction frames: shared by the view (commitLog)
+ *  and by the detached-window cache patch, so both always agree. */
+type RowFrame =
+  | { type: "edited"; id: string; body: string; editedAt: number }
+  | { type: "deleted"; id: string }
+  | { type: "reaction"; id: string; emoji: string; userId: string; on: boolean };
+function applyRowFrame<T extends Message>(list: T[], frame: RowFrame, isMine: boolean): T[] {
+  if (frame.type === "edited") {
+    return list.map((b) => {
+      if (b.id !== frame.id) return b;
+      const { editFailed: _e, ...rest } = b as T & { editFailed?: boolean };
+      return { ...rest, body: frame.body, editedAt: frame.editedAt } as T;
+    });
+  }
+  if (frame.type === "deleted") return list.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b));
+  return list.map((b) => (b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b));
+}
+
+/** The cache holds CONFIRMED rows only, with every UI-only flag stripped. `tempId` stays
+ *  (local recognition of our own acked rows; never a keep rule). */
+function confirmedRows(list: Bubble[]): Message[] {
+  const out: Message[] = [];
+  for (const b of list) {
+    if (isUnconfirmed(b) || b.queued) continue;
+    const { pending: _p, queued: _q, sendFailed: _s, unconfirmed: _u, editFailed: _e, ...row } = b;
+    out.push(row);
+  }
+  return out;
+}
+
+/** What the layout-effect cleanup captured BEFORE the next chat's refs were set. */
+interface LeaveSnapshot { chatId: string | null; log: Bubble[]; hasMore: boolean; hasNewer: boolean; anchor: ScrollAnchor | null; tok: EntryToken | null }
+const CACHE_MAX_ROWS = 200; // mirrors conversationCache.MAX_MESSAGES (the store caps again)
+const bottomAnchor = (rows: Array<{ id: string }>): ScrollAnchor => ({ messageId: rows[rows.length - 1]?.id ?? "", offsetPx: 0, atBottom: true });
+
+/** W3: the leave-save. Authorised only by the entry token; refused after a purge/wipe. */
+function saveOnLeave(s: LeaveSnapshot): void {
+  const { tok, chatId } = s;
+  if (!tok || !chatId || tok.chatId !== chatId) return;
+  if (s.hasNewer) {
+    // Detached window: rows are never written; only the anchor (bottom) is patched.
+    patchT(tok, (e) => ({ ...e, scrollAnchor: bottomAnchor(e.messages) }));
+    return;
+  }
+  const rows = confirmedRows(s.log);
+  if (rows.length === 0) return; // never clobber an entry with a not-yet-loaded (empty) log
+  const floor = Math.max(0, rows.length - CACHE_MAX_ROWS);
+  let from = Math.max(floor, rows.length - HISTORY_PAGE);
+  let anchor: ScrollAnchor | null = null;
+  if (s.anchor && !s.anchor.atBottom) {
+    const idx = rows.findIndex((r) => r.id === s.anchor!.messageId);
+    if (idx >= floor && Number.isFinite(s.anchor.offsetPx)) { from = Math.max(floor, idx - HISTORY_PAGE); anchor = s.anchor; }
+  }
+  const kept = rows.slice(from);
+  putT(tok, {
+    messages: kept,
+    hasMore: s.hasMore || from > 0,
+    fetchedAt: peekEntry(chatId)?.fetchedAt ?? 0,
+    scrollAnchor: anchor ?? bottomAnchor(kept),
+  });
+}
+
+/** DOM-based scroll anchor (never `rowsRef`): the first message row still visible. */
+function computeAnchor(el: HTMLElement, atBottom: boolean): ScrollAnchor | null {
+  if (typeof el.querySelectorAll !== "function") return null; // a non-DOM stand-in (tests)
+  const rows = el.querySelectorAll<HTMLElement>("[data-mid]");
+  if (rows.length === 0) return null;
+  if (atBottom) return { messageId: rows[rows.length - 1].dataset.mid ?? "", offsetPx: 0, atBottom: true };
+  const top = el.getBoundingClientRect().top;
+  let lo = 0;
+  let hi = rows.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].getBoundingClientRect().bottom > top) hi = mid; else lo = mid + 1;
+  }
+  const rect = rows[lo].getBoundingClientRect();
+  const offsetPx = rect.top - top;
+  if (rect.bottom <= top || !Number.isFinite(offsetPx)) return null;
+  return { messageId: rows[lo].dataset.mid ?? "", offsetPx, atBottom: false };
 }
 
 /** A history page replaced the log: keep EVERY local bubble that carries a tempId
@@ -290,9 +373,12 @@ export interface UseConversation {
 export function useConversation(input: UseConversationInput): UseConversation {
   const { base, activeId, me } = input;
 
-  const [messages, setMessages] = useState<Bubble[]>([]);
+  // The log lives in `view`, tagged with the chat it belongs to, so a render can never pair
+  // the new `activeId` with the previous chat's rows. `logStateRef` is its synchronous mirror
+  // (the source of every computation); `commitLog` is the ONLY writer of both.
+  const [view, setView] = useState<{ chatId: string | null; log: Bubble[]; cold: boolean }>({ chatId: null, log: [], cold: true });
+  const messages = view.log;
   const [connected, setConnected] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   // The initial history load failed (network/5xx/403) — NOT the same as "no messages".
   const [historyError, setHistoryError] = useState(false);
@@ -302,6 +388,25 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const [away, setAway] = useState<Set<string>>(new Set());
   const [peerTyping, setPeerTyping] = useState(false);
   const [peerLastReadAt, setPeerLastReadAt] = useState(0);
+  const [hasNewer, setHasNewer] = useState(false);
+  // A send went out while the view was detached and the jump to the live tail failed.
+  const [sentUnseen, setSentUnseen] = useState(false);
+
+  // Render-phase chat switch (React's "storing information from previous renders"): the
+  // per-chat state is reset in the SAME render that sees the new `activeId`, so no committed
+  // render pairs the new chat with the old chat's rows. (7a: always cold; no cache read.)
+  if (view.chatId !== activeId) {
+    setView({ chatId: activeId, log: [], cold: true });
+    setOnline(new Set());
+    setAway(new Set());
+    setPeerTyping(false);
+    setPeerLastReadAt(0);
+    setHistoryError(false);
+    setOlderError(false);
+    setSentUnseen(false);
+    setHasNewer(false);
+    setLoadingHistory(activeId !== null);
+  }
 
   const socketRef = useRef<WebSocket | null>(null);
   const rowsRef = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -314,6 +419,55 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const sentTypingRef = useRef(false);
   const atBottomRef = useRef(true);
   const sentReadUpToRef = useRef(0);
+
+  // ---- the message log: one synchronous mirror, one writer ----------------------------
+  const logStateRef = useRef<Bubble[]>([]);
+  const hasMoreRef = useRef(false);
+  const hasNewerRef = useRef(false); // detached (jumped) window: older than the live tail
+  // Authorises every cache write; taken ONCE per chat entry (layout effect below).
+  const tokRef = useRef<EntryToken | null>(null);
+  const anchorRef = useRef<ScrollAnchor | null>(null);
+
+  /** W1: write the attached log through to the cache. A write is accepted only with a token
+   *  taken at chat entry / fetch start that is still valid (checked again inside `putT`). */
+  const writeThrough = useCallback((chatId: string, next: Bubble[], tok: EntryToken | null, verified?: boolean) => {
+    if (!tok || tok.chatId !== chatId || hasNewerRef.current) return;
+    const rows = confirmedRows(next);
+    if (rows.length === 0 && !verified) return; // an unverified empty log never clobbers an entry
+    putT(tok, {
+      messages: rows,
+      hasMore: hasMoreRef.current,
+      fetchedAt: verified ? Date.now() : (peekEntry(chatId)?.fetchedAt ?? 0),
+      scrollAnchor: undefined,
+    });
+  }, []);
+
+  /** Set the paging flags (refs first, then state) for the ACTIVE chat only. */
+  const setFlags = useCallback((chatId: string, f: { hasMore?: boolean; detached?: boolean }) => {
+    if (chatId !== activeRef.current) return;
+    if (f.hasMore !== undefined) hasMoreRef.current = f.hasMore;
+    if (f.detached !== undefined) { hasNewerRef.current = f.detached; setHasNewer(f.detached); }
+  }, []);
+
+  /** THE single mutator of the message log (view state, its mirror ref and the cache).
+   *  Returns the new log, or null when `chatId` is no longer the active chat (a late result
+   *  from a chat the user left touches nothing). Side effects belong to the CALLER, after
+   *  this returns -- never inside `fn`. */
+  const commitLog = useCallback((
+    chatId: string,
+    fn: (cur: Bubble[]) => Bubble[],
+    o: { src: "live" | "fetch" | "local"; hasMore?: boolean; detached?: boolean; tok?: EntryToken | null; verified?: boolean },
+  ): Bubble[] | null => {
+    if (chatId !== activeRef.current) return null;
+    setFlags(chatId, { hasMore: o.hasMore, detached: o.detached }); // refs first (I1)
+    const cur = logStateRef.current;
+    const next = fn(cur);
+    if (next === cur && o.hasMore === undefined && o.verified !== true) return cur;
+    logStateRef.current = next;
+    setView((v) => (v.chatId === chatId ? { ...v, log: next } : v));
+    writeThrough(chatId, next, o.tok ?? tokRef.current, o.verified);
+    return next;
+  }, [setFlags, writeThrough]);
 
   // Per-chat outbox (memory only). The ref is the source of truth; `outboxTick` makes
   // React re-derive the queued bubbles. Entries live until flushed over an OPEN socket
@@ -352,7 +506,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, []);
   /** Revert the refused edit of message `messageId` (exact). Without a messageId (an older
    *  server) fall back to FIFO: the oldest in-flight edit, as the server answers in order. */
-  const revertRefusedEdit = useCallback((messageId?: string) => {
+  const revertRefusedEdit = useCallback((chatId: string, messageId?: string) => {
     let id: string | undefined;
     if (messageId !== undefined) {
       const i = inflightEditsRef.current.findIndex((e) => e.id === messageId);
@@ -365,11 +519,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const baseline = editBaselineRef.current.get(id);
     if (!inflightEditsRef.current.some((e) => e.id === id)) editBaselineRef.current.delete(id);
     if (!baseline) return;
-    setMessages((prev) => prev.map((b) => (b.id === id && !b.isDeleted ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)));
-  }, []);
+    commitLog(chatId, (prev) => prev.map((b) => (b.id === id && !b.isDeleted ? { ...b, body: baseline.body, editedAt: baseline.editedAt, editFailed: true } : b)), { src: "local" });
+  }, [commitLog]);
 
-  // A send went out while the view was detached and the jump to the live tail failed.
-  const [sentUnseen, setSentUnseen] = useState(false);
   const jumpingAfterSendRef = useRef(false);
   const jumpAfterSendRef = useRef<() => void>(() => {});
 
@@ -386,14 +538,6 @@ export function useConversation(input: UseConversationInput): UseConversation {
     wasDeleted: (id) => liveDeletedRef.current.has(id),
   }), []);
 
-  const messagesRef = useRef<Bubble[]>([]);
-  const hasMoreRef = useRef(false);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
-  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
-
-  const [hasNewer, setHasNewer] = useState(false);
-  const hasNewerRef = useRef(false);
-  useEffect(() => { hasNewerRef.current = hasNewer; }, [hasNewer]);
   const loadingNewerRef = useRef(false);
   const pendingJumpRef = useRef<string | null>(null);
   // Set when a `revoked` frame arrives → the onclose handler must NOT reconnect
@@ -419,6 +563,29 @@ export function useConversation(input: UseConversationInput): UseConversation {
     onMessageDeletedRef.current = input.onMessageDeleted;
     onRevokedRef.current = input.onRevoked;
   });
+
+  // The ONE place the per-chat refs are set. Layout effects run during the commit, so the
+  // refs flip together with the DOM and before any event can observe the new chat. Its
+  // CLEANUP is the leave-save (W3): layout cleanups run before the next layout effect body,
+  // so the snapshot is taken while the refs still describe the chat being left, and nothing
+  // is written from the passive socket cleanup.
+  useLayoutEffect(() => {
+    const chatId = view.chatId;
+    activeRef.current = chatId;
+    logStateRef.current = []; // 7a: always a cold entry (no cache read)
+    hasMoreRef.current = false;
+    hasNewerRef.current = false;
+    atBottomRef.current = true;
+    anchorRef.current = null;
+    tokRef.current = chatId ? enter(chatId) : null;
+    if (chatId) touch(chatId);
+    return () => {
+      saveOnLeave({
+        chatId, log: logStateRef.current, hasMore: hasMoreRef.current, hasNewer: hasNewerRef.current,
+        anchor: anchorRef.current, tok: tokRef.current,
+      });
+    };
+  }, [view.chatId]);
 
   // Send a `read` receipt for the newest message, if we haven't already and the
   // socket is open. Optimistically zeroes the active chat's sidebar unread badge.
@@ -451,11 +618,11 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // The view is (back) on the live tail: clear detached state and flush anything held.
   const flushOutboxRef = useRef<() => void>(() => {});
   const markAttached = useCallback(() => {
-    hasNewerRef.current = false;
-    setHasNewer(false);
+    const chatId = activeRef.current;
+    if (chatId) setFlags(chatId, { detached: false });
     setSentUnseen(false);
     flushOutboxRef.current();
-  }, []);
+  }, [setFlags]);
 
   // Infinite scroll up: load an older page via before=<oldestId> and prepend it,
   // preserving the visual scroll position.
@@ -463,7 +630,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const el = logRef.current;
     const chatId = activeRef.current;
     if (!el || !chatId || prependingRef.current || !hasMoreRef.current) return;
-    const oldest = messagesRef.current[0];
+    const oldest = logStateRef.current[0];
     if (!oldest) return;
     prependingRef.current = true;
     const prevHeight = el.scrollHeight;
@@ -478,22 +645,21 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     setOlderError(false);
     const older = olderRes.data;
-    setHasMore(older.length >= 50);
-    setMessages((prev) => mergeRows(prev, older, "prepend"));
+    commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
       const now = logRef.current;
       if (now) now.scrollTop = now.scrollHeight - prevHeight;
       prependingRef.current = false;
       resolve();
     }));
-  }, [base]);
+  }, [base, commitLog]);
 
   // Forward pagination — only in a detached window (hasNewer). Loads the next page
   // of NEWER messages via after=<newestLoadedId>; a short page ⇒ reattach to live.
   const loadNewer = useCallback(async () => {
     const chatId = activeRef.current;
     if (!chatId || loadingNewerRef.current || !hasNewerRef.current) return;
-    const newest = messagesRef.current[messagesRef.current.length - 1];
+    const newest = logStateRef.current[logStateRef.current.length - 1];
     if (!newest) return;
     loadingNewerRef.current = true;
     try {
@@ -502,7 +668,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (!rowsRes.ok) return; // stay detached; the next scroll retries
       const rows = rowsRes.data;
       if (rows.length > 0) {
-        setMessages((prev) => mergeRows(prev, rows, "append"));
+        commitLog(chatId, (prev) => mergeRows(prev, rows, "append"), { src: "fetch" });
       }
       if (rows.length < 50) {
         markAttached();
@@ -511,13 +677,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
         const tailRes = await loadHistory(base, chatId);
         if (activeRef.current === chatId && tailRes.ok && tailRes.data.length > 0) {
           const tail = tailRes.data;
-          setMessages((prev) => mergeRows(prev, tail, "append"));
+          commitLog(chatId, (prev) => mergeRows(prev, tail, "append"), { src: "fetch" });
         }
       }
     } finally {
       loadingNewerRef.current = false;
     }
-  }, [base, markAttached]);
+  }, [base, markAttached, commitLog]);
 
   const onLogScroll = useCallback(() => {
     const el = logRef.current;
@@ -527,27 +693,54 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (dist < 120 && hasNewerRef.current) void loadNewer();
     const atBottom = dist < NEAR_BOTTOM_PX;
     atBottomRef.current = atBottom;
-    if (atBottom && !hasNewerRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+    anchorRef.current = computeAnchor(el, atBottom);
+    if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
   }, [loadOlder, loadNewer, sendRead]);
 
-  const applyFrame = useCallback((frame: Frame) => {
+  // `chatId` is the chat of the SOCKET that delivered the frame (its effect's closure), never
+  // `activeRef`: an old socket can still deliver a frame after a switch (until its passive
+  // cleanup), and that frame must not act on the new chat.
+  const applyFrame = useCallback((frame: Frame, chatId: string) => {
+    const isActive = chatId === activeRef.current;
+    if (frame.type === "revoked") {
+      // Membership revoked (removed/left). Mark it so the imminent onclose does NOT
+      // reconnect (only for the chat this socket serves), then let the view drop THAT chat.
+      if (isActive) revokedRef.current = true;
+      unackedRef.current.delete(chatId);
+      onRevokedRef.current(chatId);
+      return;
+    }
     if (frame.type === "sent") {
-      stampLive(frame.message.id);
-      unackedRef.current.get(frame.message.chatId)?.delete(frame.tempId);
-      setMessages((prev) => upsertById(prev, frame.message, frame.tempId));
+      unackedRef.current.get(chatId)?.delete(frame.tempId);
+      if (isActive) {
+        stampLive(frame.message.id);
+        commitLog(chatId, (prev) => upsertById(prev, frame.message, frame.tempId), { src: "live" });
+      }
       onActiveMessageRef.current?.(frame.message); // my own send → refresh this chat's sidebar row
-    } else if (frame.type === "message") {
+      return;
+    }
+    if (frame.type === "error") {
+      if (frame.tempId) unackedRef.current.get(chatId)?.delete(frame.tempId); // a refused send: stop resending it
+      if (!isActive) return;
+      onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
+      if (frame.tempId) {
+        // ...and turn its bubble into "not sent -- retry / edit".
+        const tid = frame.tempId;
+        commitLog(chatId, (prev) => prev.map((b) => (b.tempId === tid && b.id === tid ? { ...b, pending: false, sendFailed: true } : b)), { src: "live" });
+      }
+      if (frame.code === "cannot_edit") revertRefusedEdit(chatId, frame.messageId);
+      return;
+    }
+    if (!isActive) return; // every other frame only concerns the chat on screen
+    if (frame.type === "message") {
       stampLive(frame.message.id);
       // A live message belongs at the tail. In a DETACHED window (hasNewer) the tail
-      // isn't loaded, so appending would render it out of context → skip; the unread
-      // badge + "jump to latest" surface it. Otherwise append (dedupe by id).
+      // isn't loaded, so appending would render it out of context → skip (and never cache
+      // it); the unread badge + "jump to latest" surface it. Otherwise append (dedupe by id).
       if (!hasNewerRef.current) {
-        setMessages((prev) => {
-          if (prev.some((b) => b.id === frame.message.id)) return prev;
-          const next = upsertById(prev, frame.message);
-          if (atBottomRef.current) sendRead(next);
-          return next;
-        });
+        const before = logStateRef.current;
+        const next = commitLog(chatId, (prev) => (prev.some((b) => b.id === frame.message.id) ? prev : upsertById(prev, frame.message)), { src: "live" });
+        if (next && next !== before && atBottomRef.current) sendRead(next);
       }
       if (frame.message.senderId !== meIdRef.current) {
         void maybeNotify(resolveSenderNameRef.current(frame.message.senderId), frame.message.body, meIdRef.current ?? "", frame.message.chatId);
@@ -573,39 +766,18 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (frame.on) typingTimerRef.current = window.setTimeout(() => setPeerTyping(false), TYPING_TTL_MS);
     } else if (frame.type === "read_receipt") {
       setPeerLastReadAt((prev) => Math.max(prev, frame.upTo));
-    } else if (frame.type === "edited") {
+    } else if (frame.type === "edited" || frame.type === "deleted" || frame.type === "reaction") {
       stampLive(frame.id);
-      settleEdit(frame.id, frame.body, frame.editedAt);
-      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, body: frame.body, editedAt: frame.editedAt, editFailed: undefined } : b)));
-    } else if (frame.type === "deleted") {
-      stampLive(frame.id);
-      liveDeletedRef.current.add(frame.id);
-      setMessages((prev) => prev.map((b) => (b.id === frame.id ? { ...b, isDeleted: true, body: "" } : b)));
-      onMessageDeletedRef.current(frame.id);
-    } else if (frame.type === "reaction") {
-      stampLive(frame.id);
-      const isMine = frame.userId === meIdRef.current;
-      setMessages((prev) => prev.map((b) =>
-        b.id === frame.id ? { ...b, reactions: applyReaction(b.reactions, frame.emoji, frame.on, isMine) } : b,
-      ));
-    } else if (frame.type === "revoked") {
-      // Membership revoked (removed/left). Mark it so the imminent onclose does NOT
-      // reconnect, then let the view drop the chat + toast.
-      revokedRef.current = true;
-      const gone = activeRef.current;
-      if (gone) { unackedRef.current.delete(gone); onRevokedRef.current(gone); }
-    } else if (frame.type === "error") {
-      onToastRef.current(ERROR_COPY[frame.code] ?? "something went wrong");
-      if (frame.tempId) {
-        // A refused send: stop resending it and turn its bubble into "not sent -- retry / edit".
-        const tid = frame.tempId;
-        const chatId = activeRef.current;
-        if (chatId) unackedRef.current.get(chatId)?.delete(tid);
-        setMessages((prev) => prev.map((b) => (b.tempId === tid && b.id === tid ? { ...b, pending: false, sendFailed: true } : b)));
-      }
-      if (frame.code === "cannot_edit") revertRefusedEdit(frame.messageId);
+      const isMine = frame.type === "reaction" && frame.userId === meIdRef.current;
+      if (frame.type === "edited") settleEdit(frame.id, frame.body, frame.editedAt);
+      if (frame.type === "deleted") liveDeletedRef.current.add(frame.id);
+      commitLog(chatId, (prev) => applyRowFrame(prev, frame, isMine), { src: "live" });
+      // W2: a detached view never writes rows through commitLog, so patch the cached row.
+      const tok = tokRef.current;
+      if (hasNewerRef.current && tok && tok.chatId === chatId) patchT(tok, (e) => ({ ...e, messages: applyRowFrame(e.messages, frame, isMine) }));
+      if (frame.type === "deleted") onMessageDeletedRef.current(frame.id);
     }
-  }, [sendRead, stampLive]);
+  }, [sendRead, stampLive, commitLog, revertRefusedEdit, settleEdit]);
 
   const sendTyping = useCallback((active: boolean) => {
     const ws = socketRef.current;
@@ -633,7 +805,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   useEffect(() => {
     function catchUpRead() {
       if (document.visibilityState !== "visible") return;
-      if (activeRef.current && atBottomRef.current) sendRead(messagesRef.current);
+      if (activeRef.current && atBottomRef.current) sendRead(logStateRef.current);
     }
     function onFocus() { catchUpRead(); }
     function onVisible() { if (document.visibilityState === "visible") catchUpRead(); }
@@ -650,10 +822,12 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // CLOSING, or a throw) leaves it queued for the next open instead of dropping it.
   // The flushed send reuses the tempId minted at enqueue time; the server dedupes on
   // (senderId, tempId), and a send left unacked by a drop is resent with that same id.
-  const flushOutbox = useCallback(() => {
+  const flushOutbox = useCallback((forChat?: string) => {
     const chatId = activeRef.current;
     const ws = socketRef.current;
     const myId = meIdRef.current;
+    // The one socket belongs to the active chat: a caller bound to another chat sends nothing.
+    if (forChat !== undefined && forChat !== chatId) return;
     // Edits/deletes/sends do NOT depend on the live tail: only the socket gates a flush.
     if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const q = outboxRef.current.get(chatId);
@@ -678,32 +852,33 @@ export function useConversation(input: UseConversationInput): UseConversation {
         un.set(item.tempId, item);
         unackedRef.current.set(chatId, un);
         const optimistic = optimisticBubble(item, chatId, myId);
-        setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
+        commitLog(chatId, (prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]), { src: "local" });
         atBottomRef.current = true;
         sentNew = true;
         onActiveMessageRef.current?.(optimistic);
       } else if (item.kind === "edit") {
-        const cur = messagesRef.current.find((b) => b.id === item.id);
+        const cur = logStateRef.current.find((b) => b.id === item.id);
         if (cur && !editBaselineRef.current.has(item.id)) editBaselineRef.current.set(item.id, { body: cur.body, editedAt: cur.editedAt });
         inflightEditsRef.current.push({ id: item.id, body: item.body });
-        setMessages((prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt, editFailed: undefined } : b)));
+        commitLog(chatId, (prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt, editFailed: undefined } : b)), { src: "local" });
       }
     }
     if (q.length === 0) outboxRef.current.delete(chatId);
     if (changed) bumpOutbox();
     // A new message went out from a detached view: bring the live tail in so it is seen.
     if (sentNew && hasNewerRef.current) jumpAfterSendRef.current();
-  }, [bumpOutbox]);
+  }, [bumpOutbox, commitLog]);
   flushOutboxRef.current = flushOutbox;
 
   // After a (re)connect, BEFORE the outbox flush (so order is kept): resend every send that
   // left the outbox but was never acked, with its original tempId. A send that did land is
   // re-acked by the server (no second insert/broadcast); the ack merges by tempId/id, so a
   // bubble never shows twice. Re-creates the optimistic bubble if a chat switch dropped it.
-  const resendUnacked = useCallback(() => {
+  const resendUnacked = useCallback((forChat?: string) => {
     const chatId = activeRef.current;
     const ws = socketRef.current;
     const myId = meIdRef.current;
+    if (forChat !== undefined && forChat !== chatId) return; // the one socket belongs to the active chat
     if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const pending = unackedRef.current.get(chatId);
     if (!pending || pending.size === 0) return;
@@ -713,34 +888,29 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // "couldn't confirm" so the user checks before retrying.
       if (Date.now() - item.createdAt > UNACKED_MAX_AGE_MS) {
         pending.delete(item.tempId);
-        setMessages((prev) => prev.map((b) => (b.tempId === item.tempId && b.id === item.tempId ? { ...b, pending: false, sendFailed: true, unconfirmed: true } : b)));
+        commitLog(chatId, (prev) => prev.map((b) => (b.tempId === item.tempId && b.id === item.tempId ? { ...b, pending: false, sendFailed: true, unconfirmed: true } : b)), { src: "local" });
         continue;
       }
       try { ws.send(sendFrame(item)); } catch { break; }
       const optimistic = optimisticBubble(item, chatId, myId);
-      setMessages((prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]));
+      commitLog(chatId, (prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]), { src: "local" });
     }
-  }, []);
+  }, [commitLog]);
 
   // Open exactly ONE socket to the active chat; reload history on select. The view's
   // per-chat UI resets (menus/selection/etc.) live in a SEPARATE view-side effect.
   useEffect(() => {
-    activeRef.current = activeId;
-    setOnline(new Set());
-    setAway(new Set());
-    setPeerTyping(false);
-    setPeerLastReadAt(0);
+    // The refs that gate writes (activeRef, the log mirror, the flags, the token) and the
+    // render-visible per-chat state were already reset by the render-phase switch and the
+    // layout effect above; only the socket-side bookkeeping is reset here.
     sentTypingRef.current = false;
     sentReadUpToRef.current = 0;
-    atBottomRef.current = true;
     revokedRef.current = false;
     inflightEditsRef.current = [];
     editBaselineRef.current.clear();
     staleEditsRef.current.clear();
     liveStampRef.current.clear();
     liveDeletedRef.current.clear();
-    setSentUnseen(false);
-    rowsRef.current.clear();
     if (typingTimerRef.current != null) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
     if (!activeId) return;
     const chatId = activeId;
@@ -750,15 +920,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
     pendingJumpRef.current = null;
 
     let cancelled = false;
-    setMessages([]);
+    const ftok = tokRef.current; // the fetch-start token (set by the layout effect for THIS entry)
     setConnected(false);
-    setHasMore(false);
-    setHasNewer(false);
     loadingNewerRef.current = false;
-    setLoadingHistory(true);
     prependingRef.current = false;
-    setHistoryError(false);
-    setOlderError(false);
     const loadStartSeq = liveSeqRef.current; // live frames stamped after this beat the fetched rows
     loadHistory(base, chatId).then((res) => {
       if (cancelled) return;
@@ -772,8 +937,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       const hist = res.data;
       // Keep in-flight (flushed, un-acked) bubbles: a fast socket can flush the outbox
       // before this history read lands, and it must not wipe them.
-      setMessages((prev) => keepLocalOwn(hist, prev, liveSince(loadStartSeq)));
-      setHasMore(hist.length >= HISTORY_PAGE);
+      commitLog(chatId, (prev) => keepLocalOwn(hist, prev, liveSince(loadStartSeq)), { src: "fetch", hasMore: hist.length >= HISTORY_PAGE, tok: ftok, verified: true });
       if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
       if (pendingJump) requestAnimationFrame(() => { if (!cancelled && activeRef.current === chatId) void jumpToMessage(pendingJump); });
     });
@@ -792,7 +956,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     let catchGen = 0;
     let catchTimer: number | null = null;
     const newestConfirmedId = (): string | null => {
-      const list = messagesRef.current;
+      const list = logStateRef.current;
       for (let i = list.length - 1; i >= 0; i--) if (!isUnconfirmed(list[i]) && !list[i].queued) return list[i].id;
       return null;
     };
@@ -829,15 +993,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
         if (!alive()) return;
         if (!res.ok) { if (isForbidden(res)) onRevokedRef.current(chatId); else again(); return; }
         fetched = res.data;
-        setMessages((prev) => keepLocalOwn(fetched, prev, live));
-        setHasMore(fetched.length >= HISTORY_PAGE);
+        commitLog(chatId, (prev) => keepLocalOwn(fetched, prev, live), { src: "fetch", hasMore: fetched.length >= HISTORY_PAGE });
         if (overflow) onToastRef.current("lots of new messages while you were away — showing the latest");
       } else if (rows.length > 0) {
-        setMessages((prev) => mergeCatchUp(prev, rows, live));
+        commitLog(chatId, (prev) => mergeCatchUp(prev, rows, live), { src: "fetch" });
       }
       if (!(await reconcileStaleEdits(fetched, alive, live.isLive))) { if (alive()) again(); return; }
       if (!alive()) return;
-      if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+      if (atBottomRef.current) sendRead(logStateRef.current);
     }
     // Edits that were in flight when the old socket closed: the server's state replaces the
     // optimistic text (the answer to those frames is lost; it either landed or it did not).
@@ -863,9 +1026,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
         stale.delete(id);
         if (isLive(id)) continue; // a live frame landed during the lookup
         const next = server ?? baseline; // gone from the server: fall back to the last confirmed text
-        setMessages((prev) => prev.map((b) => (b.id === id && !b.isDeleted
+        commitLog(chatId, (prev) => prev.map((b) => (b.id === id && !b.isDeleted
           ? { ...b, body: next.body, editedAt: next.editedAt, ...(server ? { isDeleted: server.isDeleted } : {}), editFailed: undefined }
-          : b)));
+          : b)), { src: "fetch" });
       }
       return true;
     }
@@ -927,17 +1090,17 @@ export function useConversation(input: UseConversationInput): UseConversation {
           handleClosed();
         });
         // Order matters: unacked resend, then outbox flush, then the catch-up merge by id.
-        resendUnacked();
-        flushOutbox();
+        resendUnacked(chatId);
+        flushOutbox(chatId);
         sentReadUpToRef.current = 0;
-        if (atBottomRef.current) setMessages((prev) => { sendRead(prev); return prev; });
+        if (atBottomRef.current) sendRead(logStateRef.current);
         if (typeof document !== "undefined") sendAway(document.visibilityState !== "visible");
         if (reopened) void catchUp();
       };
       ws.onmessage = (ev) => {
         if (cancelled) return;
         if (hb?.onFrame(ev.data)) return;
-        try { applyFrame(JSON.parse(ev.data as string) as Frame); } catch { /* ignore junk */ }
+        try { applyFrame(JSON.parse(ev.data as string) as Frame, chatId); } catch { /* ignore junk */ }
       };
       ws.onclose = () => { if (socketRef.current === ws) handleClosed(); };
     }
@@ -976,7 +1139,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       socketRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
-  }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked, liveSince]);
+  }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked, liveSince, commitLog]);
 
   function enqueue(chatId: string, item: OutboxItem): boolean {
     const q = outboxRef.current.get(chatId) ?? [];
@@ -1028,15 +1191,17 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const tid = m.tempId;
     const item: SendItem = { kind: "send", tempId: tid, body: m.body, replyToId: m.replyToId ?? null, replyTo: m.replyTo ?? null, createdAt: m.createdAt };
     if (!enqueue(chatId, item)) return "rejected";
-    setMessages((prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)));
+    commitLog(chatId, (prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)), { src: "local" });
     return settle(chatId, item);
   }
   /** "not sent -- edit": drop the failed bubble and hand its text back for the composer. */
   function discardFailedSend(m: Bubble): string {
     const tid = m.tempId;
     if (tid) {
-      if (activeId) unackedRef.current.get(activeId)?.delete(tid);
-      setMessages((prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)));
+      if (activeId) {
+        unackedRef.current.get(activeId)?.delete(tid);
+        commitLog(activeId, (prev) => prev.filter((b) => !(b.tempId === tid && b.id === tid)), { src: "local" });
+      }
     }
     return m.body;
   }
@@ -1077,12 +1242,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
   function sendReact(m: Bubble, emoji: string) {
     if (m.pending || m.isDeleted) return;
     const ws = socketRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    setMessages((prev) => prev.map((b) => {
+    const chatId = activeRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !chatId) return;
+    commitLog(chatId, (prev) => prev.map((b) => {
       if (b.id !== m.id) return b;
       const mineNow = (b.reactions ?? []).find((r) => r.emoji === emoji)?.mine ?? false;
       return { ...b, reactions: applyReaction(b.reactions, emoji, !mineNow, true) };
-    }));
+    }), { src: "local" });
     ws.send(JSON.stringify({ type: "react", id: m.id, emoji }));
   }
 
@@ -1127,10 +1293,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (activeRef.current !== chatId) return;
     if (!around.found) { onToastRef.current("message not found"); return; }
     prependingRef.current = true;
-    setMessages((prev) => keepLocalOwn(around.messages, prev));
-    setHasMore(around.hasOlder);
-    setHasNewer(around.hasNewer);
-    if (!around.hasNewer) { hasNewerRef.current = false; setSentUnseen(false); flushOutbox(); }
+    // Flags and rows in ONE commit, flags first: a detached window is never cached as the tail.
+    commitLog(chatId, (prev) => keepLocalOwn(around.messages, prev), { src: "fetch", hasMore: around.hasOlder, detached: around.hasNewer });
+    if (!around.hasNewer) { setSentUnseen(false); flushOutbox(); }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     prependingRef.current = false;
@@ -1149,8 +1314,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const hist = histRes.data;
     // Local bubbles (a just-sent message still pending, or acked but not yet in this
     // page) survive the reload.
-    setMessages((prev) => keepLocalOwn(hist, prev, live));
-    setHasMore(hist.length >= 50);
+    commitLog(chatId, (prev) => keepLocalOwn(hist, prev, live), { src: "fetch", hasMore: hist.length >= 50 });
     atBottomRef.current = true;
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
     markAttached(); // flushes anything queued while detached
@@ -1160,13 +1324,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (activeRef.current !== chatId) return false;
     if (tailRes.ok && tailRes.data.length > 0) {
       const tail = tailRes.data;
-      setMessages((prev) => mergeCatchUp(prev, tail, live));
+      commitLog(chatId, (prev) => mergeCatchUp(prev, tail, live), { src: "fetch" });
     }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     return true;
-  }, [base, sendRead, markAttached, liveSince]);
+  }, [base, sendRead, markAttached, liveSince, commitLog]);
   const jumpToLatest = useCallback(async () => { await attachLatest(false); }, [attachLatest]);
 
   // After a send from a detached window: attach the live tail. If that fails the message
@@ -1186,6 +1350,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!chatId) return;
     setHistoryError(false);
     setLoadingHistory(true);
+    const ftok = tokRef.current;
     const res = await loadHistory(base, chatId);
     if (activeRef.current !== chatId) return;
     setLoadingHistory(false);
@@ -1196,10 +1361,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     const hist = res.data;
     // A live frame may have landed while the load failed; keep it, add history.
-    setMessages((prev) => mergeRows(prev, hist, "prepend"));
-    setHasMore(hist.length >= 50);
+    commitLog(chatId, (prev) => mergeRows(prev, hist, "prepend"), { src: "fetch", hasMore: hist.length >= 50, tok: ftok, verified: true });
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
-  }, [base, sendRead]);
+  }, [base, sendRead, commitLog]);
 
   const queuedCount = useCallback(() => {
     let n = 0;

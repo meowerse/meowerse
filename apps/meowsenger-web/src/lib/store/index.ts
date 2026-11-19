@@ -16,4 +16,5 @@ export { installAuthChannel, broadcastLogout } from "./authChannel";
 export * as conversationCache from "./conversationCache";
 export * as memberCache from "./memberCache";
 export * as chatListStore from "./chatListStore";
-export type { ConversationEntry, ScrollAnchor } from "./conversationCache";
+export type { ConversationEntry, ScrollAnchor, EntryToken } from "./conversationCache";
+export * as conversationTokens from "./conversationTokens";
