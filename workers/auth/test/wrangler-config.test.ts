@@ -25,3 +25,9 @@ test("the shipped wrangler config enables account self-deletion (privacy/terms v
   // index.ts accountDeleteEnabled() accepts exactly "1" or "true"; a drift here would silently turn deletion off in production.
   expect(["1", "true"]).toContain(cfg.vars.ACCOUNT_DELETE_ENABLED);
 });
+
+test("production vars never trust localhost or enable dev mode", () => {
+  const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  expect(cfg.vars.CORS_ORIGINS).not.toMatch(/localhost|127\.0\.0\.1/);
+  expect(cfg.vars.AUTH_DEV).toBeUndefined();
+});

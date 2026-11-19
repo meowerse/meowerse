@@ -69,6 +69,8 @@ test("M9: production-like config without STATE_SECRET fails closed (no fallback)
   await expect(mk({ AUTH_SIGNING_KEYS: keys, ISSUER: "https://auth.alxnko.dev" })).rejects.toThrow("STATE_SECRET");
   await expect(mk({ AUTH_SIGNING_KEYS: keys })).rejects.toThrow("STATE_SECRET");
   await expect(mk({ AUTH_SIGNING_KEYS: keys, ISSUER: "https://iss", SKIP_MIGRATIONS: "1" })).rejects.toThrow("STATE_SECRET");
+  // No "looks like production" heuristic: a staging-style issuer without STATE_SECRET also fails closed.
+  await expect(mk({ AUTH_SIGNING_KEYS: keys, ISSUER: "https://staging.example.test" })).rejects.toThrow("STATE_SECRET");
   const withSecret = await mk({ AUTH_SIGNING_KEYS: keys, ISSUER: "https://auth.alxnko.dev", STATE_SECRET: "x" });
   expect(withSecret.status).toBe(302);
   const dev = await mk({ AUTH_SIGNING_KEYS: keys, ISSUER: "http://localhost:8787", AUTH_DEV: "1" });

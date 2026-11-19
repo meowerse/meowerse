@@ -130,25 +130,16 @@ function issuer(env: Env): string {
 function webOrigin(env: Env): string {
   return env.WEB_ORIGIN ?? "https://auth.alxnko.dev";
 }
-/** True for the real deployment (never for tests/dev): prod host issuer, the default issuer, or SKIP_MIGRATIONS=1. */
-function isProductionLike(env: Env): boolean {
-  if (isDevEnv(env)) return false;
-  if (env.SKIP_MIGRATIONS === "1" || !env.ISSUER) return true;
-  try {
-    const h = new URL(env.ISSUER).hostname;
-    return h === "alxnko.dev" || h.endsWith(".alxnko.dev") || h === "alxnko.eu.org" || h.endsWith(".alxnko.eu.org");
-  } catch {
-    return true;
-  }
-}
 /**
  * HMAC secret for the authorize-request envelope and rate-limit keys. In production it MUST be its own
  * secret: no fallback to the signing keys (key separation) or to a public constant (forgeable envelopes).
- * The dev/test fallback exists only outside production.
+ * The dev/test fallback exists only when AUTH_DEV=1.
  */
 function stateSecret(env: Env): string {
   if (env.STATE_SECRET) return env.STATE_SECRET;
-  if (isProductionLike(env)) throw new Error("STATE_SECRET is not configured");
+  // Fail closed unless this is explicitly local dev/test (AUTH_DEV=1): no "looks like production" heuristic, so a
+  // staging deploy or a mis-set ISSUER cannot fall back to a derived/public secret.
+  if (!isDevEnv(env)) throw new Error("STATE_SECRET is not configured");
   return env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
 }
 

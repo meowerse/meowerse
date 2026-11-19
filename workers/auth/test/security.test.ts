@@ -108,3 +108,10 @@ test("randomId is url-safe and unique", () => {
   expect(a).not.toMatch(/[+/=]/);
   expect(randomId(8).length).toBeGreaterThan(0);
 });
+
+test("M3: http://localhost:4321 is NOT trusted by default (prod defaults), only via AUTH_DEV", async () => {
+  const { isOriginAllowed, DEFAULT_ORIGINS } = await import("../src/security");
+  expect(DEFAULT_ORIGINS).not.toContain("localhost");
+  expect(isOriginAllowed("http://localhost:4321", {} as never)).toBe(false);
+  expect(isOriginAllowed("http://localhost:4321", { AUTH_DEV: "1" } as never)).toBe(true);
+});

@@ -450,7 +450,7 @@ function devHarness(extra: Route[] = []) {
 }
 async function devPost(deps: unknown, path: string, body: unknown, method = "POST", headers: Record<string, string> = { Cookie: "__Host-mw_sess=x" }) {
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   return handle(new Request(`https://iss${path}`, { method, headers: { "Content-Type": "application/json", "CF-Connecting-IP": IP, "User-Agent": UA, ...headers }, body: JSON.stringify(body) }), env as never, deps as never);
 }
 

@@ -184,7 +184,7 @@ test("token: unsupported grant_type → 400 no-store (public client passes auth)
 test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "token:" + (await rlKey(env as never, new Request("https://iss/"), "token")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_demo" }) }), env as never, deps as never);
@@ -194,7 +194,7 @@ test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", asy
 test("token: confidential client with no secret → 401 invalid_client", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.oauth_clients.push({ client_id: "mw_conf", status: "active", client_type: "confidential", display_name: "C", logo_url: null, allowed_scopes: '["openid"]', allow_offline_access: 0, verified_only: 0, first_party: 0 });
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_conf", code: "x", code_verifier: "y" }) }), env as never, deps as never);
@@ -297,7 +297,7 @@ test("logout ignores post_logout_redirect_uri with no id_token_hint → UI", asy
 test("revoke/introspect require a confidential client; unauthenticated → 401", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
 
   // unauthenticated → 401 (closes the token-oracle / revoke-DoS hole)
@@ -353,7 +353,7 @@ test("default fetch wrapper turns a thrown handler into a 500", async () => {
 test("/authorize is IP-rate-limited (429) once the bucket is exhausted", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "authorize:" + (await rlKey(env as never, new Request("https://iss/"), "authorize")), count: 120, window_start: 1000 });
   const q = new URLSearchParams({ client_id: "mw_demo", redirect_uri: REDIRECT, response_type: "code", scope: "openid", code_challenge: CHALLENGE, code_challenge_method: "S256" });
@@ -364,7 +364,7 @@ test("/authorize is IP-rate-limited (429) once the bucket is exhausted", async (
 test("/tg/status is IP-rate-limited (429) once the bucket is exhausted", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "tgstatus:" + (await rlKey(env as never, new Request("https://iss/"), "tgstatus")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/tg/status?ticket=x"), env as never, deps as never);
@@ -374,7 +374,7 @@ test("/tg/status is IP-rate-limited (429) once the bucket is exhausted", async (
 test("/avatar is IP-rate-limited (429) in front of the Bot-API amplification", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", TELEGRAM_BOT_TOKEN: "T", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", TELEGRAM_BOT_TOKEN: "T", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "avatar:" + (await rlKey(env as never, new Request("https://iss/"), "avatar")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/avatar/acct_x"), env as never, deps as never);
@@ -384,7 +384,7 @@ test("/avatar is IP-rate-limited (429) in front of the Bot-API amplification", a
 test("/login is IP-rate-limited (429), keyed on the client IP hash (not the username)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "login:" + (await rlKey(env as never, new Request("https://iss/"), "login")), count: 10, window_start: 1000 });
   const r = await handle(

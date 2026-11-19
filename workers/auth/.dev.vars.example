@@ -6,7 +6,11 @@ DATABASE_AUTH_TOKEN="your-turso-auth-token"
 # ES256 signing keys: JSON array of { kid, status, privateJwk, publicJwk }.
 # Generate with: node scripts/gen-signing-key.mjs  (status "active" for one).
 AUTH_SIGNING_KEYS='[{"kid":"dev1","status":"active","privateJwk":{...},"publicJwk":{...}}]'
+# Local dev ONLY: AUTH_DEV=1 allows loopback/.local CORS origins and the STATE_SECRET fallback. NEVER set in production.
+# `wrangler dev` inherits ISSUER/SKIP_MIGRATIONS from wrangler.jsonc, so set a STATE_SECRET too (required unless AUTH_DEV=1).
+AUTH_DEV="1"
+STATE_SECRET="dev-only-long-random-string"
 # Optional overrides (defaults baked into wrangler.jsonc):
-# CORS_ORIGINS="https://auth.alxnko.eu.org,http://localhost:4321"
+# CORS_ORIGINS="https://auth.alxnko.eu.org"   # localhost is trusted only with AUTH_DEV=1
 # ISSUER="https://auth.alxnko.eu.org"
 # RESOURCE_AUD="https://api.meow.alxnko.eu.org"

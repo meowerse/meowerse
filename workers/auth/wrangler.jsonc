@@ -40,7 +40,7 @@
   // reach Ireland once, then short intra-region hops — not N long RTTs.
   "placement": { "mode": "smart" },
   "vars": {
-    "CORS_ORIGINS": "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321",
+    "CORS_ORIGINS": "https://auth.alxnko.dev,https://auth.alxnko.eu.org",
     // Issuer = this same host: discovery, /jwks, /authorize, /token, /userinfo AND
     // the UI (login/consent/account …) are all same-origin on ONE worker. WEB_ORIGIN
     // is the user-facing UI the authorize flow redirects into — now the same host.

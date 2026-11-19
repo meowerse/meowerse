@@ -16,7 +16,7 @@ async function freshDb(): Promise<DbClient> {
 test("password change keeps the current session but revokes other sessions and all refresh/access tokens", async () => {
   const store = { db: await freshDb() };
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "neko_revoke", password: "accttest1234" }) }), env as never, deps as never);
   const csrf = ((await su.json()) as { csrf: string }).csrf;

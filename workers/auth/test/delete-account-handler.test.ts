@@ -28,7 +28,7 @@ const UA = "TestAgent/1.0 (secret-ua)";
 async function setup(wrap?: (db: DbClient) => DbClient) {
   const db = await freshDb();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ACCOUNT_DELETE_ENABLED: "1" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ACCOUNT_DELETE_ENABLED: "1" };
   const deps = { getDb: () => (wrap ? wrap(db) : db), clock: () => 1000 };
   const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "victim", password: "accttest1234" }) }), env as never, deps as never);
   const { csrf } = (await su.json()) as { csrf: string };

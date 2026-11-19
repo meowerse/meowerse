@@ -111,7 +111,7 @@ test("internal confirm with an unknown nonce → 400", async () => {
 test("tg/start is IP-rate-limited (429)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.rate_limits.push({ bucket: "tgstart:" + (await rlKey(env as never, new Request("https://iss/"), "tgstart")), count: 30, window_start: 1000 });
   const r = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
@@ -144,7 +144,7 @@ async function confirmedTicket(clock: { t: number }) {
   const store = memStore();
   const keys = await genSigningKeys();
   const env = {
-    AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
+    AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
     STATE_SECRET: "s", CORS_ORIGINS: "https://web", BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", TELEGRAM_BOT_TOKEN: BOT_TOKEN,
   };
   const deps = { getDb: () => store.db, clock: () => clock.t };

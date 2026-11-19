@@ -2,7 +2,7 @@ import { b64urlEncode, constantTimeEqual } from "@meowerse/auth-shared";
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset. Mirrors workers/api default shape. */
-export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org";
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;

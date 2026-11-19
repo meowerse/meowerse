@@ -4,7 +4,7 @@ import { genSigningKeys, routedDb, type Route } from "./helpers";
 
 async function env() {
   const keys = await genSigningKeys();
-  return { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  return { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
 }
 
 const SESSION: Route = [
