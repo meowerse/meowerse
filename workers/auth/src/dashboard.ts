@@ -122,6 +122,12 @@ export function isReservedBrand(value: string | undefined): boolean {
   // NFKD first (circled/full-width/compat letters -> Latin), then drop invisible default-ignorable code points
   // (ZWSP, soft hyphen, ZWJ, ...) so they cannot split tokens.
   value = value.normalize("NFKD").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+  // Negative-circled / negative-squared letters and regional indicators are symbols with no NFKD decomposition:
+  // map them to Latin before tokenising, or they would be dropped as separators and silently remove brand letters.
+  value = value.replace(/[\u{1F150}-\u{1F169}\u{1F170}-\u{1F189}\u{1F1E6}-\u{1F1FF}]/gu, (c) => {
+    const cp = c.codePointAt(0)!;
+    return String.fromCharCode(97 + (cp - (cp >= 0x1f1e6 ? 0x1f1e6 : cp >= 0x1f170 ? 0x1f170 : 0x1f150)));
+  });
   const tokens = value.toLowerCase().split(BRAND_TOKEN_SPLIT).filter(Boolean).map(foldToken).filter(Boolean);
   if (tokens.length === 0) return false;
   return hasBrand(tokens) || hasBrand(tokens.map((t) => t.replace(/rn/g, "m").replace(/vv/g, "w")));
