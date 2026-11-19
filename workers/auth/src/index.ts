@@ -56,6 +56,7 @@ import {
   createManagementToken,
   verifyManagementToken,
   upsertClientByName,
+  brandOwnerIds,
 } from "./dashboard";
 import { userinfoClaims } from "./userinfo";
 import { handleAvatar } from "./avatar";
@@ -1065,7 +1066,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       allowedScopes: splitList(p.scopes),
       verifiedOnly: asBool(p.verified_only),
       allowOfflineAccess: asBool(p.offline),
-    });
+    }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
     if (!res.ok && res.error === "account_gone") return accountGone(cors);
     if (res.ok) await recordAudit(deps, req, { event: "client.create", accountId: session.accountId, clientId: res.clientId });
     return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
@@ -1088,7 +1089,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
       allowOfflineAccess: p.offline !== undefined ? asBool(p.offline) : undefined,
       displayName: p.display_name,
-    });
+    }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
     if (r.ok) await recordAudit(deps, req, { event: "client.update", accountId: session.accountId, clientId: p.client_id });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
@@ -1298,7 +1299,7 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
     allowedScopes: splitList(p.scopes),
     verifiedOnly: asBool(p.verified_only),
     allowOfflineAccess: asBool(p.offline),
-  });
+  }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
   if (!("error" in res) && (res.created || !res.unchanged)) {
     await recordAudit(deps, req, { event: res.created ? "client.create" : "client.update", accountId: ownerId, clientId: res.clientId });
   }
