@@ -1239,12 +1239,12 @@ function accountDb(opts: {
 describe("POST /api/account/delete", () => {
   it("401 unauthorized with no session", async () => {
     const { db } = accountDb();
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", undefined, { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", undefined, { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(401);
   });
   it("400 confirm_required without a confirm field", async () => {
     const { db, deleted } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({}) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({}) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "confirm_required" });
     // Nothing erased when confirmation is missing.
@@ -1253,13 +1253,13 @@ describe("POST /api/account/delete", () => {
   });
   it("400 confirm_required when confirm is falsy/wrong", async () => {
     const { db } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: false }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: false }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "confirm_required" });
   });
   it("400 bad_json on an unparseable body", async () => {
     const { db } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: "{oops" }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: "{oops" }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_json" });
   });
@@ -1272,7 +1272,7 @@ describe("POST /api/account/delete", () => {
         { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 },
       ],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     // u1's membership is gone; the owner remains.
@@ -1285,9 +1285,42 @@ describe("POST /api/account/delete", () => {
     expect(res.headers.get("Set-Cookie")).toContain(`${SESSION_COOKIE}=`);
     expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
   });
+  it("revokes the live sockets of EVERY chat the caller leaves (revoked:true)", async () => {
+    const { db } = accountDb({
+      session: validSession("u1"),
+      members: [
+        { chatId: "g1", userId: "owner", role: "owner", joinedAt: 1 },
+        { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 },
+        { chatId: "solo", userId: "u1", role: "owner", joinedAt: 1 },
+      ],
+    });
+    const { env, drops } = memberEnv();
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), env, db, now, cors);
+    expect(res.status).toBe(200);
+    expect(drops.sort((a, b) => a.chatId.localeCompare(b.chatId))).toEqual([
+      { chatId: "g1", userId: "u1", revoked: true },
+      { chatId: "solo", userId: "u1", revoked: true },
+    ]);
+  });
+  it("a dropUser that fails once is retried; failing twice on remove/leave -> 503 (account delete still completes)", async () => {
+    let calls = 0;
+    const flaky = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (++calls === 1) throw new Error("rpc"); } }) } } as unknown as Env;
+    const a = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+    const ok = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), flaky, a.db, now, cors);
+    expect(ok.status).toBe(200);
+    expect(calls).toBe(2);
+    const dead = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { throw new Error("rpc"); } }) } } as unknown as Env;
+    const b = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "o", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 }] });
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), dead, b.db, now, "g1", cors);
+    expect(res.status).toBe(503);
+    const c = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+    const del = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), dead, c.db, now, cors);
+    expect(del.status).toBe(200);
+    expect(c.deleted.users).toEqual(["u1"]);
+  });
   it("confirm:'delete' string is also accepted", async () => {
     const { db, deleted } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: "delete" }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: "delete" }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     expect(deleted.users).toEqual(["u1"]);
   });
@@ -1296,7 +1329,7 @@ describe("POST /api/account/delete", () => {
       session: validSession("u1"),
       members: [{ chatId: "solo", userId: "u1", role: "owner", joinedAt: 1 }],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     // The sole-owned chat is removed entirely.
     expect(chats.has("solo")).toBe(false);
@@ -1310,7 +1343,7 @@ describe("POST /api/account/delete", () => {
         { chatId: "shared", userId: "u2", role: "member", joinedAt: 2 },
       ],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     // The chat survives; u2 is promoted to owner.
     expect(chats.has("shared")).toBe(true);

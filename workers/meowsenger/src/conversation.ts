@@ -85,6 +85,8 @@ const PURGE_AFTER_MS = 24 * 3600_000;
  *  The same window+cap meters the forward RPC (`appendMessage`), keyed by user. */
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX = 30;
+/** How long a per-user D1 membership verdict is trusted before a socket frame re-checks. */
+const MEMBER_TTL_MS = 5_000;
 /** Coalesce Web Push per chat: at most one offline fan-out (D1 read + POSTs) per
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
@@ -267,6 +269,8 @@ export class Conversation extends DurableObject<Env> {
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
+    // The gated router just read this user's membership from D1: that verdict is fresh.
+    this.memberVerdict.set(userId, { ok: true, at: Date.now() });
     this.lastPush.delete(userId); // a fresh socket is visible: they're seeing the chat → reset their push window
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
@@ -341,6 +345,39 @@ export class Conversation extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) this.safeSend(ws, text);
   }
 
+  // userId -> last D1 membership verdict for THIS chat + when it was read. Short TTL;
+  // cleared by dropUser. In-flight reads are shared so a frame burst costs one query.
+  private memberVerdict = new Map<string, { ok: boolean; at: number }>();
+  private memberInflight = new Map<string, Promise<boolean>>();
+
+  /** Fresh cached verdict, or undefined when a D1 read is needed. Synchronous on a
+   *  hit so a steady stream of frames is not reordered by an await. */
+  private memberCached(userId: string): boolean | undefined {
+    const v = this.memberVerdict.get(userId);
+    return v && Date.now() - v.at < MEMBER_TTL_MS ? v.ok : undefined;
+  }
+
+  /** Read chat_members for the socket's user. A read overlapping dropUser (membershipGen
+   *  bump) is not cached. Throws if D1 fails. */
+  private loadMember(att: Attach): Promise<boolean> {
+    let p = this.memberInflight.get(att.userId);
+    if (!p) {
+      const gen = this.membershipGen;
+      p = (async () => {
+        try {
+          const row = await this.d1().first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [att.chatId, att.userId]);
+          const ok = row !== undefined;
+          if (gen === this.membershipGen) this.memberVerdict.set(att.userId, { ok, at: Date.now() });
+          return ok;
+        } finally {
+          this.memberInflight.delete(att.userId);
+        }
+      })();
+      this.memberInflight.set(att.userId, p);
+    }
+    return p;
+  }
+
   /** Hibernation handler: a frame arrived on a live socket. */
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attach | null;
@@ -359,6 +396,20 @@ export class Conversation extends DurableObject<Env> {
     try {
       msg = JSON.parse(typeof raw === "string" ? raw : "");
     } catch {
+      return;
+    }
+
+    // The socket attachment was minted at connect; membership may have changed since
+    // (removed, left, account deleted) while a dropUser RPC was lost. Re-validate against
+    // D1 (short cache, cleared by dropUser) before honouring ANY frame.
+    const ok = this.memberCached(att.userId) ?? (await this.loadMember(att).catch(() => "unavailable" as const));
+    if (ok !== true) {
+      // Not a member -> forbidden (and stop the client reconnecting); D1 down -> fail
+      // closed too, but keep the socket so the client can retry.
+      ws.send(JSON.stringify({ type: "error", code: ok === false ? "forbidden" : "unavailable" }));
+      if (ok === false) {
+        try { ws.close(4001, "revoked"); } catch { /* already closing */ }
+      }
       return;
     }
 
@@ -1249,6 +1300,8 @@ export class Conversation extends DurableObject<Env> {
     // gets no further previews. Also forget their push window.
     this.inboxMembers.clear();
     this.membershipGen++;
+    this.memberVerdict.clear();
+    this.memberInflight.clear();
     this.lastPush.delete(userId);
     // Drop the user from any queued follow-up fan-out too.
     const queued = await this.readOverflow();

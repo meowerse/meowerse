@@ -422,9 +422,26 @@ export async function handleAddMember(
  * router re-derives the now-lower role. Swallows errors — a failed socket drop must
  * not fail the (already-committed) D1 mutation; the change self-heals on reconnect.
  */
-function dropUserSockets(env: Env, chatId: string, userId: string, revoked: boolean): Promise<void> {
+async function dropUserSockets(env: Env, chatId: string, userId: string, revoked: boolean): Promise<boolean> {
   const ns = conversation(env);
-  return ns.get(ns.idFromName(chatId)).dropUser(userId, revoked).catch(() => {});
+  // Retry once: a transient DO RPC failure must not leave a removed user's socket
+  // open. Returns false when both attempts failed (callers surface a 5xx).
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await ns.get(ns.idFromName(chatId)).dropUser(userId, revoked);
+      return true;
+    } catch {
+      /* retry */
+    }
+  }
+  return false;
+}
+
+/** The D1 change is committed but the live-socket revoke failed twice: tell the client
+ *  (5xx) so it retries. The DO also re-validates membership on every frame (short
+ *  cache), so a stale socket is refused within seconds regardless. */
+function dropFailed(cors: Record<string, string>): Response {
+  return json({ error: "socket_drop_failed" }, 503, cors, NS);
 }
 
 /** DELETE /api/chats/:id/members/:userId — owner/admin removes a member. */
@@ -443,7 +460,7 @@ export async function handleRemoveMember(
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // Revoke the removed member's live sockets NOW (they'd keep receiving broadcasts +
   // posting until they happened to reconnect otherwise).
-  await dropUserSockets(env, chatId, targetUserId, true);
+  if (!(await dropUserSockets(env, chatId, targetUserId, true))) return dropFailed(cors);
   return json({ ok: true }, 200, cors, NS);
 }
 
@@ -472,7 +489,7 @@ export async function handleSetRole(
   // A DEMOTE must revoke the stale admin power immediately: drop their sockets so
   // they reconnect as a plain member (a PROMOTE only ADDS power on reconnect — no
   // security risk in the meantime, so it's left to heal naturally).
-  if (role === "member") await dropUserSockets(env, chatId, targetUserId, false);
+  if (role === "member" && !(await dropUserSockets(env, chatId, targetUserId, false))) return dropFailed(cors);
   return json({ ok: true }, 200, cors, NS);
 }
 
@@ -491,7 +508,7 @@ export async function handleLeave(
   if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // Close the leaver's OTHER live sockets to this chat (a second tab would keep
   // receiving otherwise). `deleted` chats have no sockets left; harmless either way.
-  await dropUserSockets(env, chatId, me, true);
+  if (!(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
   return json({ ok: true, transferredTo: r.transferredTo ?? null, deleted: r.deleted ?? false }, 200, cors, NS);
 }
 
@@ -798,6 +815,7 @@ export async function handleSetPrivacy(
  */
 export async function handleDeleteAccount(
   req: Request,
+  env: Env,
   db: DbClient,
   now: number,
   cors: Record<string, string>,
@@ -822,6 +840,10 @@ export async function handleDeleteAccount(
   for (const row of chatRows) {
     await leave(db, String(row.chat_id), me);
   }
+  // Revoke the live sockets of every chat just left (retry once inside). Best-effort
+  // here: the account teardown below must complete (a retry would find no session),
+  // and the DO re-validates membership per frame, so a missed drop is refused anyway.
+  await Promise.all(chatRows.map((row) => dropUserSockets(env, String(row.chat_id), me, true)));
   // 2–4. Remove the caller's remaining D1 footprint, child-first.
   await db.run("DELETE FROM join_requests WHERE user_id = ?", [me]);
   await db.run("DELETE FROM push_subscriptions WHERE user_id = ?", [me]);

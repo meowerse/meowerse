@@ -52,6 +52,8 @@ function stub(chatId: string): DurableObjectStub<Conversation> {
  *  role + type mirror what the gated router forwards (?role=&type=); they default
  *  to 'member'/'group' when omitted. */
 async function connect(chatId: string, userId: string, role?: string, type?: string): Promise<WebSocket> {
+  // The DO re-validates D1 membership per frame, so a connected test user must be a member.
+  await seedChatMember(chatId, userId, 0);
   const res = await stub(chatId).fetch(
     `https://do/ws?user=${userId}&chat=${chatId}${role ? `&role=${role}` : ""}${type ? `&type=${type}` : ""}`,
     { headers: { Upgrade: "websocket" } },
@@ -811,6 +813,30 @@ describe("Conversation DO", () => {
     await stub("cdrop2").dropUser("u3", false);
     await closed;
     expect(sawRevoked).toBe(false); // plain close so the client reconnects with its new role
+  });
+
+  it("a socket whose D1 membership row is gone gets error:forbidden on its next frame (lost dropUser backstop)", async () => {
+    await seedChat("cmem1");
+    const a = await connect("cmem1", "u1");
+    const peer = await connect("cmem1", "u2");
+    // Prime: a member can send (and the verdict is cached).
+    const ack = waitFor(a, (t) => t.includes('"sent"'));
+    a.send(JSON.stringify({ type: "send", tempId: "t-mem-1", body: "hi" }));
+    await ack;
+    // Membership removed in D1 WITHOUT a dropUser (the RPC was lost), cache expired.
+    await DB.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").bind("cmem1", "u1").run();
+    await runInDurableObject(stub("cmem1"), async (instance: Conversation) => {
+      (instance as unknown as { memberVerdict: Map<string, unknown> }).memberVerdict.clear();
+    });
+    let peerSaw = false;
+    peer.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes("leak")) peerSaw = true; });
+    const err = waitFor(a, (t) => t.includes('"error"'));
+    a.send(JSON.stringify({ type: "send", tempId: "t-mem-2", body: "leak" }));
+    expect(JSON.parse(await err)).toMatchObject({ type: "error", code: "forbidden" });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(peerSaw).toBe(false);
+    expect(Number((await stub("cmem1").historyFor("cmem1", null)).filter((m) => m.body === "leak").length)).toBe(0);
+    peer.close();
   });
 
   it("dropUser: leaves OTHER users' sockets untouched", async () => {

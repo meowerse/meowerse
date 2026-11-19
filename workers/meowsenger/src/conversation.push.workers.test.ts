@@ -83,6 +83,8 @@ async function configureVapid(chatId: string): Promise<void> {
   });
 }
 async function connect(chatId: string, userId: string): Promise<WebSocket> {
+  // The DO re-validates D1 membership per frame, so a connected test user must be a member.
+  await DB.prepare("INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, 0)").bind(chatId, userId).run();
   const res = await stub(chatId).fetch(`https://do/ws?user=${userId}&chat=${chatId}`, { headers: { Upgrade: "websocket" } });
   const ws = res.webSocket;
   if (!ws) throw new Error("no webSocket");
