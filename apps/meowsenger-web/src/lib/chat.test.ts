@@ -116,10 +116,12 @@ describe("loadHistory", () => {
     expect(await loadHistory(BASE, "c1", "m1")).toEqual({ ok: true, status: 200, data: [] });
   });
   it("forwards an abort signal: an aborted read is a failure, never an empty page", async () => {
-    const mock = stubFetch({ messages: [{ id: "m1" }] });
     const ac = new AbortController();
     ac.abort();
-    mock.mockImplementationOnce(async (_u: unknown, init?: RequestInit) => { if (init?.signal?.aborted) throw new Error("aborted"); return new Response("{}"); });
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new Error("aborted");
+      return new Response(JSON.stringify({ messages: [{ id: "m1" }] }), { status: 200 });
+    }));
     expect((await loadHistory(BASE, "c1", undefined, { signal: ac.signal })).ok).toBe(false);
   });
   it("carries the Slice-4 reply/edit/delete fields through unchanged", async () => {
