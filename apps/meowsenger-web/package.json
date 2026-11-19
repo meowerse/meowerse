@@ -11,22 +11,22 @@
   },
   "dependencies": {
     "@meowerse/ui": "workspace:*",
-    "@astrojs/react": "^6.0.0",
-    "astro": "^7.0.2",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "@astrojs/react": "^6.0.6",
+    "astro": "^7.4.13",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.9",
+    "@astrojs/check": "^0.9.12",
     "@playwright/test": "1.63.0",
-    "@testing-library/dom": "^10",
-    "@testing-library/react": "^16",
-    "@types/node": "^26.6.2",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@vitest/coverage-v8": "^4.1.9",
-    "happy-dom": "^16",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitest/coverage-v8": "^4.1.12",
+    "happy-dom": "^16.8.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.12"
   }
 }
