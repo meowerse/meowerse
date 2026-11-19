@@ -234,10 +234,12 @@ test("brand check matching rule: other-script lookalikes and joined tokens are r
     "me\u0585wsenger", "me\u043ewsenger", "me0wsenger", "My Meowerse app", "Meow-senger", "m e o w s e n g e r", "MeowerseApp", "me\u0585wsenger Chat", "Meowsengers",
     "Meow\u200bsengers", "Xsun\u200bmeow", "Meow\u00adsengerz", "\u24dc\u24d4\u24de\u24e6\u24e2\u24d4\u24dd\u24d6\u24d4\u24e1",
     "me\u00f8wsenger", "\u0251lxnko", "a\u026bxnko", "moonme\u00f8w", "meowsenge\u027c", "me\u03bfwsenger",
+    "\ua4dfeowsenger", "meowsen\ua4d6er", "sunmeo\ua4ea", "alxnk\ua4f3", "\ua4f2lxnko", "\u15f0eowsenger", "\u146deowsenger",
+    "\u1d0d\u1d07\u1d0f\u1d21s\u1d07\u0274\u0262\u1d07\u0280", "\u0251\u026bxnk\u0254", "Meow\u200fsengers", "me\u0585wsen\u0563e\u0580",
   ]) {
     expect(await make(dn), dn).toEqual({ ok: false, error: "reserved_name" });
   }
-  for (const dn of ["Мой Blog", "Meowers Events", "Meow Sengerfan", "Meow\u30c1\u30e3\u30c3\u30c8", "Meow\u30ab\u30d5\u30a7\u5e97", "Alx\u65e5\u672c\u8a9e", "Moon\u55b5\u55b5\u55b5\u55b5", "Cats \u{1F468}\u200d\u{1F469} club", "Moonme\u65e5\u672c", "Moon\u0436\u0436\u0436\u0436"]) expect((await make(dn)).ok, dn).toBe(true);
+  for (const dn of ["Мой Blog", "Meowers Events", "Meow Sengerfan", "Meow\u30c1\u30e3\u30c3\u30c8", "Meow\u30ab\u30d5\u30a7\u5e97", "Alx\u65e5\u672c\u8a9e", "Moon\u55b5\u55b5\u55b5\u55b5", "Cats \u{1F468}\u200d\u{1F469} club", "M\u00f6nster App", "Caf\u00e9 Moon", "Sun Meowing", "Meow \u0645\u0631\u062d\u0628\u0627", "Meow\u0633\u0644\u0627\u0645", "Alx\u05e9\u05dc\u05d5\u05dd", "Moon\u0645\u0627\u0647", "Meow\u200c\u0645\u06cc", "Moon\u200f\u05e9\u05dc\u05d5\u05dd", "Moonme\u65e5\u672c", "Moon\u0436\u0436\u0436\u0436"]) expect((await make(dn)).ok, dn).toBe(true);
   // exempt owners may still use brand names
   expect((await make("Meowerse", "acct_system")).ok).toBe(true);
   expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_ops", name: "my-app", displayName: "Meowerse" }, { brandOwners: brandOwnerIds("acct_ops") })).ok).toBe(true);
