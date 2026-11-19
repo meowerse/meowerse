@@ -17,7 +17,8 @@ export function d1Client(db: D1Database): DbClient {
       return (await stmt(sql, params).first<Row>()) ?? undefined;
     },
     async run(sql, params = []) {
-      await stmt(sql, params).run();
+      const res = await stmt(sql, params).run();
+      return res.meta?.changes ?? 0;
     },
     async batch(stmts) {
       const res = await db.batch(stmts.map((s) => stmt(s.sql, s.params)));

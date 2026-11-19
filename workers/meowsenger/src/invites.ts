@@ -121,7 +121,7 @@ export async function joinByInvite(
   const chatId = String(row.id);
   if ((await getRole(db, chatId, userId)) != null) return { ok: true, chatId, joined: false };
   await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
     [chatId, userId, now],
   );
   return { ok: true, chatId, joined: true };

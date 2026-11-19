@@ -47,6 +47,8 @@ function memDb(seed: {
       if (sql.includes("SELECT role FROM chat_members")) {
         return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
       }
+      if (sql.includes("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'")) return members.find((m) => m.chat_id === p[0] && m.role === "owner");
+      if (sql.includes("SELECT 1 AS ok FROM chats WHERE id")) return chats.has(String(p[0])) ? { ok: 1 } : undefined;
       // Slice 7: privacy preference + invite lookups used by addMember's opt-out path.
       if (sql.includes("SELECT allow_auto_group_add FROM users WHERE id")) {
         const v = privacy[String(p[0])];
@@ -58,7 +60,20 @@ function memDb(seed: {
       return undefined;
     },
     async run(sql, p = []) {
-      if (sql.startsWith("INSERT INTO chat_members")) {
+      if (sql.startsWith("UPDATE chat_members SET role = 'owner'") && sql.includes("(SELECT user_id")) {
+        // leave()'s guarded handoff: oldest admin, else oldest member, only while ownerless.
+        const rest = members.filter((m) => m.chat_id === p[0] && m.user_id !== p[2]).sort((a, b) => (b.role === "admin" ? 1 : 0) - (a.role === "admin" ? 1 : 0) || Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+        if (!rest[0] || members.some((m) => m.chat_id === p[0] && m.role === "owner")) return 0;
+        rest[0].role = "owner";
+        return 1;
+      }
+      if (sql.startsWith("DELETE FROM chats") && sql.includes("NOT EXISTS")) {
+        if (members.some((m) => m.chat_id === p[0])) return 0;
+        const had = chats.delete(String(p[0]));
+        
+        return had ? 1 : 0;
+      }
+      if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         members.push({ chat_id: p[0], user_id: p[1], role: p[2], joined_at: p[5] });
       } else if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);

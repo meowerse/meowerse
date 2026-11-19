@@ -1,4 +1,4 @@
-import type { DbClient, Row } from "./types";
+import type { DbClient } from "./types";
 import { getRole, getRoles } from "./chats";
 import { getAllowAutoGroupAdd } from "./users";
 import { getOrCreateInvite } from "./invites";
@@ -56,7 +56,7 @@ export async function addMember(
     return { ok: true, invited: true, inviteCode: inv.code };
   }
   await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
     [chatId, targetUserId, now],
   );
   return { ok: true };
@@ -125,11 +125,73 @@ export async function demote(
   return { ok: true };
 }
 
+type Stmt = { sql: string; params: unknown[] };
+
 /**
- * The actor leaves the chat. Anyone may leave. If the OWNER leaves, ownership
- * transfers to the oldest remaining admin, else the oldest remaining member; if
- * no one remains (last member), the chat + its membership rows are deleted.
- * Returns `{ok, transferredTo?, deleted?}` describing what happened.
+ * The two ownership-reconciling statements, run AFTER the leaver's row is gone, in the same
+ * batch. Both are guarded in SQL so a concurrent leave / second handoff can never leave the
+ * chat with two owners:
+ *  1. promote the oldest admin (else oldest member; ties by user_id) to owner, but only while
+ *     the chat is a non-direct chat that HAS members and has NO owner (direct chats have no
+ *     owner by design). The successor is chosen inside the statement, so it is always a member
+ *     that still exists at commit time.
+ *  2. delete the chat if no member is left.
+ * `exceptUserId` is excluded as a successor ('' = nobody).
+ */
+function reconcileStatements(chatId: string, exceptUserId: string): Stmt[] {
+  return [
+    {
+      sql:
+        "UPDATE chat_members SET role = 'owner' WHERE chat_id = ? " +
+        "AND user_id = (SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id <> ? ORDER BY role = 'admin' DESC, joined_at ASC, user_id ASC LIMIT 1) " +
+        "AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner') " +
+        "AND EXISTS (SELECT 1 FROM chats WHERE id = ? AND type <> 'direct')",
+      params: [chatId, chatId, exceptUserId, chatId, chatId],
+    },
+    {
+      sql: "DELETE FROM chats WHERE id = ? AND type <> 'direct' AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ?)",
+      params: [chatId, chatId],
+    },
+  ];
+}
+
+/** ONE atomic batch (a plain sequence if the client has no batch). Returns rows changed per statement. */
+async function runAtomic(db: DbClient, stmts: Stmt[]): Promise<Array<number | undefined>> {
+  if (db.batch) return db.batch(stmts);
+  const out: Array<number | undefined> = [];
+  for (const st of stmts) out.push(await db.run(st.sql, st.params));
+  return out;
+}
+
+/**
+ * Idempotent ownership repair for a chat: a non-direct chat with members but no owner gets its
+ * oldest admin/member promoted; a chat with no members is deleted. Safe to run any number of
+ * times (it is what a retried leave runs, so a leave that was interrupted can never strand an
+ * ownerless or empty chat). Reports only what THIS call changed.
+ */
+export async function reconcileOwnership(
+  db: DbClient,
+  chatId: string,
+): Promise<{ transferredTo?: string; deleted?: boolean }> {
+  const [promoted, removed] = await runAtomic(db, reconcileStatements(chatId, ""));
+  const out: { transferredTo?: string; deleted?: boolean } = {};
+  if (promoted !== undefined && promoted > 0) {
+    const o = await db.first("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner' LIMIT 1", [chatId]);
+    if (o) out.transferredTo = String(o.user_id);
+  }
+  if (removed !== undefined && removed > 0) out.deleted = true;
+  return out;
+}
+
+/**
+ * The actor leaves the chat. Anyone may leave. The leaver's row is deleted and ownership is
+ * reconciled in ONE atomic batch: if the OWNER leaves, ownership transfers to the oldest
+ * remaining admin, else the oldest remaining member; if no one remains, the chat is deleted.
+ * Because it is one transaction, a failure part-way leaves the leaver still a member (the
+ * retry redoes everything) rather than a deleted leaver and an ownerless/empty chat. The
+ * reconcile statements also run for a non-owner leaver (a successor whose role read was stale
+ * and who left right after being promoted must not strand the chat). Returns
+ * `{ok, transferredTo?, deleted?}` describing what happened (read back after the batch).
  */
 export async function leave(
   db: DbClient,
@@ -139,26 +201,17 @@ export async function leave(
   const actorRole = await getRole(db, chatId, actorId);
   if (actorRole == null) return { ok: false, error: "not_member" };
 
-  // Remove the leaver first, then reconcile ownership over who remains.
-  await db.run("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", [chatId, actorId]);
+  const [, promoted, removed] = await runAtomic(db, [
+    { sql: "DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", params: [chatId, actorId] },
+    ...reconcileStatements(chatId, actorId),
+  ]);
 
   if (actorRole !== "owner") return { ok: true };
-
-  // Owner left: find a successor among the remaining members. Prefer the oldest
-  // admin, else the oldest member (by joined_at, tie-broken by user_id for a
-  // deterministic pick).
-  const remaining = await db.all(
-    "SELECT user_id, role, joined_at FROM chat_members WHERE chat_id = ? ORDER BY joined_at ASC, user_id ASC",
-    [chatId],
-  );
-  if (remaining.length === 0) {
-    // Last member left → delete the chat entirely (membership rows already gone).
-    await db.run("DELETE FROM chats WHERE id = ?", [chatId]);
-    return { ok: true, deleted: true };
-  }
-  const admins = remaining.filter((r: Row) => String(r.role) === "admin");
-  const successor = admins[0] ?? remaining[0];
-  const successorId = String(successor.user_id);
-  await db.run("UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ?", [chatId, successorId]);
-  return { ok: true, transferredTo: successorId };
+  // Report what THIS batch did (a client that cannot report changes is read back instead).
+  if (removed !== undefined && removed > 0) return { ok: true, deleted: true };
+  if (promoted === 0 && removed === 0) return { ok: true }; // someone else already owns it
+  const owner = await db.first("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner' LIMIT 1", [chatId]);
+  if (owner) return { ok: true, transferredTo: String(owner.user_id) };
+  const chat = await db.first("SELECT 1 AS ok FROM chats WHERE id = ?", [chatId]);
+  return chat ? { ok: true } : { ok: true, deleted: true };
 }

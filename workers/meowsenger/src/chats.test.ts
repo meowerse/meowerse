@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   createOrGetDirect,
   listChats,
-  mirrorLastMessage,
   markRead,
+  syncLastMessage,
   directKey,
   createGroup,
   getRole,
@@ -54,21 +54,30 @@ function memDb(users: Record<string, { username: string; displayName: string | n
             };
           });
       }
+      if (sql.startsWith("SELECT user_id FROM chat_members WHERE chat_id")) {
+        return members.filter((m) => m.chat_id === p[0] && (m.user_id === p[1] || m.user_id === p[2])).map((m) => ({ user_id: m.user_id }));
+      }
       return [];
     },
     async first(sql, p = []) {
+      if (sql.startsWith("SELECT 1 AS ok FROM chat_members WHERE chat_id")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]) ? { ok: 1 } : undefined;
       if (sql.includes("direct_key")) return [...chats.values()].find(c => c.direct_key === p[0]);
       if (sql.includes("FROM chats WHERE id")) return chats.get(String(p[0]));
       return undefined;
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: "direct", name: null, created_by: p[1], created_at: p[2], last_activity: p[3], last_message: null, last_sender_id: null, direct_key: p[4] });
-      else if (sql.startsWith("INSERT INTO chat_members")) {
+      else if (sql.startsWith("INSERT OR IGNORE INTO chat_members")) {
+        for (let i = 0; i < p.length; i += 3) {
+          if (!members.some((m) => m.chat_id === p[i] && m.user_id === p[i + 1])) members.push({ chat_id: p[i], user_id: p[i + 1], role: "member", unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
+        }
+      }
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createOrGetDirect now inserts BOTH members in one multi-row INSERT; params
         // are grouped as (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) members.push({ chat_id: p[i], user_id: p[i + 1], unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
       }
-      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c && (c.last_activity == null || Number(c.last_activity) <= Number(p[4]))) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
+      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = Math.max(Number(c.last_activity ?? 0), Number(p[2])); } } // syncLastMessage: (body, sender, createdAt, chatId)
       // markRead: advance last_read_at monotonically for one (chat, user) — the guard
       // (last_read_at IS NULL OR < upTo) means a stale/duplicate read is a no-op.
       else if (sql.startsWith("UPDATE chat_members SET last_read_at")) {
@@ -98,20 +107,58 @@ describe("createOrGetDirect", () => {
     expect(b.id).toBe(a.id);
   });
 });
-describe("mirrorLastMessage", () => {
-  it("updates last_message/last_sender/last_activity", async () => {
-    const { db, chats } = memDb();
+describe("createOrGetDirect after a member left (I6)", () => {
+  it("re-adds ONLY the caller who left, leaves the other row untouched, and is idempotent", async () => {
+    const { db, members } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
-    expect(chats.get(a.id)?.last_message).toBe("hi");
+    // u1 leaves the DM (leave() deletes their membership row).
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u1"), 1);
+    const b = await createOrGetDirect(db, "u1", "u2", 2000);
+    expect(b).toEqual({ id: a.id, created: false });
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id).sort()).toEqual(["u1", "u2"]);
+    expect(members.find((m) => m.user_id === "u2")!.joined_at).toBe(1000); // untouched
+    expect(members.find((m) => m.user_id === "u1")!.joined_at).toBe(2000); // re-added
+    await createOrGetDirect(db, "u2", "u1", 3000);
+    expect(members.filter((m) => m.chat_id === a.id)).toHaveLength(2); // no duplicates
   });
-  it("is monotonic: mirroring an OLDER message after a newer one leaves the newer preview and resolves (skip = success)", async () => {
-    const { db, chats } = memDb();
+  it("owner-consent: opening the DM never re-adds the OTHER party who left deliberately", async () => {
+    const { db, members } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "M2", "u2", 4000);
-    await expect(mirrorLastMessage(db, a.id, "M1", "u1", 3000)).resolves.toBeUndefined();
-    expect(chats.get(a.id)?.last_message).toBe("M2");
-    expect(chats.get(a.id)?.last_activity).toBe(4000);
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u2"), 1); // u2 left
+    const b = await createOrGetDirect(db, "u1", "u2", 2000); // u1 opens the DM again
+    expect(b).toEqual({ id: a.id, created: false });
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id)).toEqual(["u1"]); // u2 stays out
+    // Both gone (u1 left too): u1 reopening still brings back ONLY u1.
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u1"), 1);
+    await createOrGetDirect(db, "u1", "u2", 2500);
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id)).toEqual(["u1"]);
+    // ...and u2 coming back is their own explicit action.
+    await createOrGetDirect(db, "u2", "u1", 3000);
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id).sort()).toEqual(["u1", "u2"]);
+  });
+});
+describe("createOrGetDirect concurrent create (M12)", () => {
+  it("a UNIQUE(direct_key) collision converges on the winner's chat instead of throwing", async () => {
+    const { db, chats } = memDb();
+    let raced = false;
+    const racy: DbClient = {
+      ...db,
+      async first(sql, p) {
+        if (sql.includes("direct_key") && !raced) return undefined; // our read predates the other insert
+        return db.first(sql, p);
+      },
+      async run(sql, p) {
+        if (sql.startsWith("INSERT INTO chats") && !raced) {
+          raced = true;
+          await db.run(sql, ["winner", ...(p ?? []).slice(1)]); // the other request commits first
+          throw new Error("UNIQUE constraint failed: chats.direct_key");
+        }
+        return db.run(sql, p);
+      },
+    };
+    const r = await createOrGetDirect(racy, "u1", "u2", 1000);
+    expect(r).toEqual({ id: "winner", created: false });
+    expect(chats.size).toBe(1);
   });
 });
 describe("markRead", () => {
@@ -141,18 +188,18 @@ describe("unread (derived, no per-member counter)", () => {
     // Fresh DM: last_activity == joined_at → nobody unread.
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
     // A message bumps last_activity → the non-reader (u2) is now unread.
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    await syncLastMessage(db, a.id, "hi", "u1", 3000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
     // u2 reads up to the message → back to read; a later message re-flags it.
     await markRead(db, a.id, "u2", 3000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
-    await mirrorLastMessage(db, a.id, "again", "u1", 4000);
+    await syncLastMessage(db, a.id, "again", "u1", 4000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
   });
   it("sender's own message does not mark unread for the sender", async () => {
     const { db } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    await syncLastMessage(db, a.id, "hi", "u1", 3000);
     // u1 was the sender: unreadCount MUST be 0 for u1!
     expect((await listChats(db, "u1"))[0].unreadCount).toBe(0);
     // u2 was the recipient: unreadCount is 1 for u2
@@ -300,7 +347,7 @@ function groupDb(users: Record<string, { username: string; displayName: string |
           id: p[0], type: p[1], name: p[2], created_by: p[3], created_at: p[4],
           last_activity: p[5], direct_key: null, visibility: p[6], slug: p[7] ?? null,
         });
-      } else if (sql.startsWith("INSERT INTO chat_members")) {
+      } else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createGroup now inserts the creator ('owner') + every other member
         // ('member') in ONE multi-row INSERT: the FIRST VALUES row is the owner,
         // all following rows are members. joinPublic/approveRequest still insert a
@@ -375,6 +422,30 @@ describe("createGroup", () => {
   });
 });
 
+describe("createGroup with a large roster (D1 100-param limit, I7)", () => {
+  /** A DbClient wrapper that REJECTS any statement binding more than 100 parameters, like D1. */
+  function strict(inner: DbClient): { db: DbClient; maxParams: () => number } {
+    let max = 0;
+    const check = (p?: unknown[]) => { const n = p?.length ?? 0; max = Math.max(max, n); if (n > 100) throw new Error("too many SQL variables"); };
+    const db: DbClient = {
+      all: async (sql, p) => { check(p); return inner.all(sql, p); },
+      first: async (sql, p) => { check(p); return inner.first(sql, p); },
+      run: async (sql, p) => { check(p); return inner.run(sql, p); },
+      batch: async (stmts) => { for (const st of stmts) { check(st.params); await inner.run(st.sql, st.params); } return stmts.map(() => 1); },
+    };
+    return { db, maxParams: () => max };
+  }
+  it("a 60-member group is created in <=99-param statements with every member present", async () => {
+    const g = groupDb();
+    const { db, maxParams } = strict(g.db);
+    const memberIds = Array.from({ length: 59 }, (_, i) => `m${i}`);
+    const r = await createGroup(db, { name: "Big", creatorId: "owner", memberIds }, 1000) as { id: string };
+    expect(g.members.filter((m) => m.chat_id === r.id)).toHaveLength(60);
+    expect(g.members.find((m) => m.user_id === "owner")!.role).toBe("owner");
+    expect(g.members.filter((m) => m.role === "owner")).toHaveLength(1);
+    expect(maxParams()).toBeLessThanOrEqual(99);
+  });
+});
 describe("listMembers", () => {
   it("returns members oldest-first with user identity + role", async () => {
     const { db } = groupDb({
@@ -753,5 +824,59 @@ describe("rejectRequest", () => {
     const { db } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     expect(await rejectRequest(db, r.id, "no-such", "o")).toEqual({ ok: false, error: "request_not_found" });
+  });
+});
+
+describe("create atomicity + bounded retry (M13)", () => {
+  /** Transactional batch: statements apply all-or-nothing against `tables`. */
+  function txDb(failOn: (sql: string) => Error | null) {
+    const chats: string[] = [];
+    const members: string[] = [];
+    let tries = 0;
+    const apply = (sql: string, p: unknown[]) => {
+      const err = failOn(sql);
+      if (err) throw err;
+      if (sql.startsWith("INSERT INTO chats")) chats.push(String(p[0]));
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) for (let i = 0; i < p.length; i += 3) members.push(`${p[i]}:${p[i + 1]}`);
+    };
+    const db: DbClient = {
+      async all() { return []; },
+      async first() { return undefined; },
+      async run(sql, p = []) { apply(sql, p); },
+      async batch(stmts) {
+        tries++;
+        const c = [...chats], m = [...members];
+        try { for (const st of stmts) apply(st.sql, st.params ?? []); } catch (e) { chats.splice(0, chats.length, ...c); members.splice(0, members.length, ...m); throw e; }
+        return stmts.map(() => 1);
+      },
+    };
+    return { db, chats, members, tries: () => tries };
+  }
+  it("createGroup: a failing members insert leaves NO orphan chat row (the slug stays free)", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chat_members") ? new Error("D1 down") : null));
+    await expect(createGroup(t.db, { name: "g", creatorId: "u1", memberIds: ["u2"], slug: "my-slug" }, 1)).rejects.toThrow("D1 down");
+    expect(t.chats).toEqual([]);
+    expect(t.members).toEqual([]);
+  });
+  it("createGroup: the chat row and members commit together on success", async () => {
+    const t = txDb(() => null);
+    const r = await createGroup(t.db, { name: "g", creatorId: "u1", memberIds: ["u2"] }, 1);
+    expect("id" in r && t.chats).toEqual(["id" in r ? r.id : ""]);
+    expect(t.members).toHaveLength(2);
+  });
+  it("createOrGetDirect: chat + both members are one batch (a failure leaves no chat squatting on direct_key)", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT OR IGNORE INTO chat_members") ? new Error("D1 down") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("D1 down");
+    expect(t.chats).toEqual([]);
+  });
+  it("createOrGetDirect: a NON-unique error is not retried", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chats") ? new Error("D1 timeout") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("D1 timeout");
+    expect(t.tries()).toBe(1);
+  });
+  it("createOrGetDirect: a unique error is retried exactly ONCE, then surfaces", async () => {
+    const t = txDb((sql) => (sql.startsWith("INSERT INTO chats") ? new Error("UNIQUE constraint failed: chats.direct_key") : null));
+    await expect(createOrGetDirect(t.db, "u1", "u2", 1)).rejects.toThrow("UNIQUE");
+    expect(t.tries()).toBe(2);
   });
 });

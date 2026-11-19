@@ -1,7 +1,28 @@
 import type { DbClient, Env } from "./types";
 import type { Conversation } from "./conversation";
-import { json, readCookies } from "./security";
-import { getSession, SESSION_COOKIE, clearCookie } from "./session";
+import { json, readCookies, retryAfter } from "./security";
+
+/** Mirrors the Conversation DO's per-user flood window (RATE_WINDOW_MS = 10 s). */
+const RETRY_AFTER_SEC = 10;
+/** Input bounds (M8). */
+const MAX_CHAT_NAME = 128;
+const MAX_SEARCH_Q = 200;
+const MAX_PUSH_ENDPOINT = 1024;
+const MAX_PUSH_P256DH = 128;
+const MAX_PUSH_AUTH = 64;
+// Global search fans out to up to 20 DOs: cap it per user (isolate-local, best-effort).
+const SEARCH_WINDOW_MS = 10_000;
+const SEARCH_MAX = 6;
+const searchTimes = new Map<string, number[]>();
+function searchLimited(userId: string, now: number): boolean {
+  if (searchTimes.size > 1000) for (const [k, v] of searchTimes) if (now - (v[v.length - 1] ?? 0) >= SEARCH_WINDOW_MS) searchTimes.delete(k);
+  const times = (searchTimes.get(userId) ?? []).filter((t) => now - t < SEARCH_WINDOW_MS);
+  if (times.length >= SEARCH_MAX) { searchTimes.set(userId, times); return true; }
+  times.push(now);
+  searchTimes.set(userId, times);
+  return false;
+}
+import { getSession, SESSION_COOKIE, clearCookie, type Session } from "./session";
 import {
   createOrGetDirect,
   createGroup,
@@ -24,7 +45,7 @@ import {
   approveRequest,
   rejectRequest,
 } from "./chats";
-import { addMember, removeMember, promote, demote, leave } from "./members";
+import { addMember, removeMember, promote, demote, leave, reconcileOwnership } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
 import { getAllowAutoGroupAdd, setAllowAutoGroupAdd, userIdsByNames, isReleasedUsername } from "./users";
 import { savePushSubscription, deletePushSubscription, isAllowedPushEndpoint } from "./push";
@@ -52,10 +73,14 @@ function conversation(env: Env): ConversationNamespace {
 
 /** Resolve the caller's userId from the BFF session cookie, or null. */
 export async function callerId(req: Request, db: DbClient, now: number): Promise<string | null> {
+  return (await callerSession(req, db, now))?.userId ?? null;
+}
+
+/** The caller's live session (its stored id is the cookie's hash), or null. */
+export async function callerSession(req: Request, db: DbClient, now: number): Promise<Session | null> {
   const sid = readCookies(req.headers.get("Cookie"))[SESSION_COOKIE];
   if (!sid) return null;
-  const s = await getSession(db, sid, now);
-  return s?.userId ?? null;
+  return getSession(db, sid, now);
 }
 
 /** GET /api/chats — the caller's sidebar list, plus `viewerId` (the authenticated user, same as /api/session user.id) so a client can bind this response to an account. */
@@ -119,6 +144,7 @@ async function handleCreateGroup(
 ): Promise<Response> {
   const name = (body.name ?? "").trim();
   if (!name) return json({ error: "name_required" }, 400, cors, { "Cache-Control": "no-store" });
+  if (name.length > MAX_CHAT_NAME) return json({ error: "name_too_long" }, 400, cors, { "Cache-Control": "no-store" });
   const type = body.type === "channel" ? "channel" : "group";
   const usernames = Array.isArray(body.members) ? body.members.map((u) => String(u).trim()).filter(Boolean) : [];
   // Bound the initial roster: each username costs a D1 lookup below, so cap the
@@ -218,7 +244,11 @@ export async function handlePushSubscribe(req: Request, db: DbClient, now: numbe
   // The stored endpoint is later POSTed to by the DO (server-side fetch). Reject
   // anything that isn't a real push-service URL so it can't be used as a blind SSRF
   // / outbound-request amplifier to an attacker-chosen host.
-  if (!isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
+  if (body.endpoint.length > MAX_PUSH_ENDPOINT || !isAllowedPushEndpoint(body.endpoint)) return json({ error: "bad_endpoint" }, 400, cors, NS);
+  const p256dh = body.keys?.p256dh, authKey = body.keys?.auth;
+  if ((p256dh !== undefined && (typeof p256dh !== "string" || p256dh.length > MAX_PUSH_P256DH)) || (authKey !== undefined && (typeof authKey !== "string" || authKey.length > MAX_PUSH_AUTH))) {
+    return json({ error: "bad_body" }, 400, cors, NS);
+  }
   const mode = body.mode === undefined ? "enable" : body.mode;
   if (mode !== "enable" && mode !== "repair") return json({ error: "bad_body" }, 400, cors, NS);
   // Rotation: only meaningful for a repair; a non-string is ignored.
@@ -262,6 +292,7 @@ export async function handleSearch(
   if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ messages: [] }, 200, cors, { "Cache-Control": "no-store" });
+  if (q.length > MAX_SEARCH_Q) return json({ error: "query_too_long" }, 400, cors, { "Cache-Control": "no-store" });
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
   const messages = await stub.search(q, chatId, me);
   return json({ messages }, 200, cors, { "Cache-Control": "no-store" });
@@ -285,6 +316,8 @@ export async function handleGlobalSearch(
   if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
   const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
   if (!q) return json({ results: [] }, 200, cors, { "Cache-Control": "no-store" });
+  if (q.length > MAX_SEARCH_Q) return json({ error: "query_too_long" }, 400, cors, { "Cache-Control": "no-store" });
+  if (searchLimited(me, Date.now())) return json({ error: "rate_limited" }, 429, cors, retryAfter(SEARCH_WINDOW_MS / 1000, { "Cache-Control": "no-store" }));
   // The caller's chats (cap the fan-out so a huge membership can't blow up — each
   // chat is one DO round-trip). 20 keeps a global search to ≤20 concurrent DO reads.
   const rows = await db.all("SELECT chat_id FROM chat_members WHERE user_id = ? LIMIT 20", [me]);
@@ -348,7 +381,7 @@ export async function handleForward(
   try {
     for (const b of bodies) {
       // Pass the real chatId: a target DO with no live socket can't recover it, so
-      // without it mirrorLastMessage + pushOffline would silently no-op.
+      // without it the preview mirror + pushOffline would silently no-op.
       await stub.appendMessage(chatId, me, b, true);
       forwarded++;
     }
@@ -356,7 +389,7 @@ export async function handleForward(
     // The DO throws "rate_limited" once the caller trips the per-user forward flood
     // meter — stop and report partial progress (429). Anything else propagates.
     if (e instanceof Error && e.message.includes("rate_limited")) {
-      return json({ error: "rate_limited", forwarded }, 429, cors, { "Cache-Control": "no-store" });
+      return json({ error: "rate_limited", forwarded }, 429, cors, retryAfter(RETRY_AFTER_SEC, { "Cache-Control": "no-store" }));
     }
     throw e;
   }
@@ -429,9 +462,26 @@ export async function handleAddMember(
  * router re-derives the now-lower role. Swallows errors — a failed socket drop must
  * not fail the (already-committed) D1 mutation; the change self-heals on reconnect.
  */
-function dropUserSockets(env: Env, chatId: string, userId: string, revoked: boolean): Promise<void> {
+async function dropUserSockets(env: Env, chatId: string, userId: string, revoked: boolean): Promise<boolean> {
   const ns = conversation(env);
-  return ns.get(ns.idFromName(chatId)).dropUser(userId, revoked).catch(() => {});
+  // Retry once: a transient DO RPC failure must not leave a removed user's socket
+  // open. Returns false when both attempts failed (callers surface a 5xx).
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await ns.get(ns.idFromName(chatId)).dropUser(userId, revoked);
+      return true;
+    } catch {
+      /* retry */
+    }
+  }
+  return false;
+}
+
+/** The D1 change is committed but the live-socket revoke failed twice: tell the client
+ *  (5xx) so it retries. The DO also re-validates membership on every frame (short
+ *  cache), so a stale socket is refused within seconds regardless. */
+function dropFailed(cors: Record<string, string>): Response {
+  return json({ error: "socket_drop_failed" }, 503, cors, NS);
 }
 
 /** DELETE /api/chats/:id/members/:userId — owner/admin removes a member. */
@@ -447,10 +497,13 @@ export async function handleRemoveMember(
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await removeMember(db, chatId, me, targetUserId);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent retry: the D1 delete may already be committed by an earlier attempt whose
+  // socket drop failed (503). The actor passed the owner/admin check first, so a target
+  // that is no longer a member means "already removed": re-run the drop and succeed.
+  if (!r.ok && r.error !== "target_not_member") return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // Revoke the removed member's live sockets NOW (they'd keep receiving broadcasts +
   // posting until they happened to reconnect otherwise).
-  await dropUserSockets(env, chatId, targetUserId, true);
+  if (!(await dropUserSockets(env, chatId, targetUserId, true))) return dropFailed(cors);
   return json({ ok: true }, 200, cors, NS);
 }
 
@@ -475,13 +528,20 @@ export async function handleSetRole(
   const role = (body.role ?? "").trim();
   if (role !== "admin" && role !== "member") return json({ error: "bad_role" }, 400, cors, NS);
   const r = role === "admin" ? await promote(db, chatId, me, targetUserId) : await demote(db, chatId, me, targetUserId);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent demote retry: the role change may already be committed by an attempt whose
+  // socket drop failed (503). The owner check passed, so a target that is already a plain
+  // member means "already demoted": fall through and re-run the drop.
+  const alreadyDemoted = !r.ok && role === "member" && r.error === "not_demotable" && (await getRole(db, chatId, targetUserId)) === "member";
+  if (!r.ok && !alreadyDemoted) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
   // A DEMOTE must revoke the stale admin power immediately: drop their sockets so
   // they reconnect as a plain member (a PROMOTE only ADDS power on reconnect — no
   // security risk in the meantime, so it's left to heal naturally).
-  if (role === "member") await dropUserSockets(env, chatId, targetUserId, false);
+  if (role === "member" && !(await dropUserSockets(env, chatId, targetUserId, false))) return dropFailed(cors);
   return json({ ok: true }, 200, cors, NS);
 }
+
+/** A plausible chat id (uuid or slug-like): bounded, no path/control characters. */
+const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** POST /api/chats/:id/leave — the caller leaves (owner-transfer / last-member-delete). */
 export async function handleLeave(
@@ -495,10 +555,23 @@ export async function handleLeave(
   const me = await callerId(req, db, now);
   if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
   const r = await leave(db, chatId, me);
-  if (!r.ok) return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+  // Idempotent retry: the D1 leave may already be committed by an attempt whose socket
+  // drop failed (503); the retry then finds the caller is no longer a member. Re-run the
+  // drop and answer success with the same body shape. First repair the chat's ownership
+  // (idempotent: promotes an oldest admin/member into an ownerless chat, deletes an empty
+  // one) so an interrupted leave can never strand it. An id that is not a plausible chat id,
+  // or whose row does not exist, creates no throwaway Durable Object: nothing to drop.
+  if (!r.ok) {
+    if (r.error !== "not_member") return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
+    if (!CHAT_ID_RE.test(chatId)) return json({ ok: true, transferredTo: null, deleted: false }, 200, cors, NS);
+    const fixed = await reconcileOwnership(db, chatId);
+    const exists = await db.first("SELECT 1 AS ok FROM chats WHERE id = ?", [chatId]);
+    if (exists && !(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
+    return json({ ok: true, transferredTo: fixed.transferredTo ?? null, deleted: fixed.deleted ?? false }, 200, cors, NS);
+  }
   // Close the leaver's OTHER live sockets to this chat (a second tab would keep
   // receiving otherwise). `deleted` chats have no sockets left; harmless either way.
-  await dropUserSockets(env, chatId, me, true);
+  if (!(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
   return json({ ok: true, transferredTo: r.transferredTo ?? null, deleted: r.deleted ?? false }, 200, cors, NS);
 }
 
@@ -523,6 +596,7 @@ export async function handleUpdateChat(
   }
   if (typeof body.name === "string") {
     if (!body.name.trim()) return json({ error: "name_required" }, 400, cors, NS);
+    if (body.name.trim().length > MAX_CHAT_NAME) return json({ error: "name_too_long" }, 400, cors, NS);
     await renameChat(db, chatId, body.name);
   }
   if (typeof body.visibility === "string") {
@@ -805,6 +879,7 @@ export async function handleSetPrivacy(
  */
 export async function handleDeleteAccount(
   req: Request,
+  env: Env,
   db: DbClient,
   now: number,
   cors: Record<string, string>,
@@ -829,6 +904,19 @@ export async function handleDeleteAccount(
   for (const row of chatRows) {
     await leave(db, String(row.chat_id), me);
   }
+  // Revoke the live sockets of every chat just left (retry once inside). Best-effort
+  // here: the account teardown below must complete (a retry would find no session),
+  // and the DO re-validates membership per frame, so a missed drop is refused anyway.
+  // The per-frame membership check in the Conversation DO is the real backstop. A failed
+  // drop is logged (chat id only, no user data) and cannot be retried usefully: the
+  // account is gone after this call.
+  await Promise.all(
+    chatRows.map(async (row) => {
+      if (!(await dropUserSockets(env, String(row.chat_id), me, true))) {
+        console.log(`delete_account socket_drop_failed chat=${String(row.chat_id)}`);
+      }
+    }),
+  );
   // 2–4. Remove the caller's remaining D1 footprint, child-first.
   await db.run("DELETE FROM join_requests WHERE user_id = ?", [me]);
   await db.run("DELETE FROM push_subscriptions WHERE user_id = ?", [me]);

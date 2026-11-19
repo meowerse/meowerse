@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   handleListChats,
   handleCreateChat,
@@ -71,7 +71,7 @@ function memDb(opts: { session?: Row; usersByName?: Record<string, string>; memb
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) {
         chats.set(String(p[0]), { id: p[0], type: p[1], direct_key: p[4], last_activity: p[3] });
-      } else if (sql.startsWith("INSERT INTO chat_members")) {
+      } else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createOrGetDirect inserts both DM members in one multi-row INSERT; params
         // are grouped (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) {
@@ -519,6 +519,7 @@ function groupApiDb(opts: {
         return id ? { id } : undefined;
       }
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
+      if (sql.includes("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'")) return members.find((m) => m.chat_id === p[0] && m.role === "owner");
       if (sql.includes("SELECT 1 AS ok FROM chats WHERE slug")) return [...chats.values()].some((c) => c.slug === p[0]) ? { ok: 1 } : undefined;
       if (sql.includes("SELECT id FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
       // resolveChat looks the chat up by id FIRST (before falling back to slug).
@@ -566,8 +567,21 @@ function groupApiDb(opts: {
       return undefined;
     },
     async run(sql, p = []) {
+      if (sql.startsWith("UPDATE chat_members SET role = 'owner'") && sql.includes("(SELECT user_id")) {
+        // leave()'s guarded handoff: oldest admin, else oldest member, only while ownerless.
+        const rest = members.filter((m) => m.chat_id === p[0] && m.user_id !== p[2]).sort((a, b) => (b.role === "admin" ? 1 : 0) - (a.role === "admin" ? 1 : 0) || Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+        if (!rest[0] || members.some((m) => m.chat_id === p[0] && m.role === "owner")) return 0;
+        rest[0].role = "owner";
+        return 1;
+      }
+      if (sql.startsWith("DELETE FROM chats") && sql.includes("NOT EXISTS")) {
+        if (members.some((m) => m.chat_id === p[0])) return 0;
+        const had = chats.delete(String(p[0]));
+        
+        return had ? 1 : 0;
+      }
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null, invite_code: null, invite_enabled: 1 });
-      else if (sql.startsWith("INSERT INTO chat_members")) {
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createGroup now inserts creator ('owner') + others ('member') in ONE
         // multi-row INSERT (first VALUES row = owner, rest = member). addMember/
         // approve/joinPublic insert a single 'member' row. Params grouped
@@ -742,10 +756,30 @@ describe("DELETE /api/chats/:id/members/:userId (remove)", () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "cannot_remove_admin" });
   });
-  it("removing a non-member target → 404", async () => {
+  it("removing a target who is already gone is an idempotent success that re-runs the socket drop (retry after a 503)", async () => {
     const { db } = groupApiDb(seed());
-    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), memberEnv().env, db, now, "g1", "ghost", cors);
-    expect(res.status).toBe(404);
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), env, db, now, "g1", "ghost", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(drops).toEqual([{ chatId: "g1", userId: "ghost", revoked: true }]);
+  });
+  it("503 on a failed drop, then the retry (target now gone) succeeds once the drop works", async () => {
+    const { db } = groupApiDb(seed());
+    let up = false;
+    const env = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (!up) throw new Error("rpc"); } }) } } as unknown as Env;
+    const first = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), env, db, now, "g1", "mem", cors);
+    expect(first.status).toBe(503);
+    up = true;
+    const retry = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/mem", "s1", { method: "DELETE" }), env, db, now, "g1", "mem", cors);
+    expect(retry.status).toBe(200);
+  });
+  it("a non-privileged actor still gets 403 even for an absent target (retry path is not an oracle)", async () => {
+    const { db } = groupApiDb({ ...seed(), session: validSession("mem") });
+    const { env, drops } = memberEnv();
+    const res = await handleRemoveMember(cookieReq("https://x/api/chats/g1/members/ghost", "s1", { method: "DELETE" }), env, db, now, "g1", "ghost", cors);
+    expect(res.status).toBe(403);
+    expect(drops).toEqual([]);
   });
 });
 
@@ -771,6 +805,20 @@ describe("POST /api/chats/:id/members/:userId/role (promote/demote)", () => {
     const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/adm/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "adm", cors);
     expect(res.status).toBe(200);
     expect(drops).toEqual([{ chatId: "g1", userId: "adm", revoked: false }]);
+  });
+  it("a demote retried after a 503 (target already a plain member) is an idempotent success that re-runs the drop", async () => {
+    const { db } = groupApiDb(seed());
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/mem/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "mem", cors);
+    expect(res.status).toBe(200);
+    expect(drops).toEqual([{ chatId: "g1", userId: "mem", revoked: false }]);
+  });
+  it("demoting the OWNER is still refused (not_demotable stays 400, no drop)", async () => {
+    const { db } = groupApiDb(seed());
+    const { env, drops } = memberEnv();
+    const res = await handleSetRole(cookieReq("https://x/api/chats/g1/members/own/role", "s1", { method: "POST", body: JSON.stringify({ role: "member" }) }), env, db, now, "g1", "own", cors);
+    expect(res.status).toBe(400);
+    expect(drops).toEqual([]);
   });
   it("an admin (non-owner) promoting → 403 forbidden", async () => {
     const s = seed();
@@ -801,10 +849,49 @@ describe("POST /api/chats/:id/leave", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, transferredTo: "adm" });
   });
-  it("a non-member leaving → 403 not_member", async () => {
-    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner") });
-    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), memberEnv().env, db, now, "g1", cors);
-    expect(res.status).toBe(403);
+  it("leaving when already not a member is an idempotent success (retry after a 503) that re-runs the drop", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner"), chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: false });
+    expect(drops).toEqual([{ chatId: "g1", userId: "u9", revoked: true }]);
+  });
+  it("retry on a chat that does not exist (or a malformed id) creates no throwaway Durable Object", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner"), chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    for (const id of ["ghost", "../x", "a".repeat(65)]) {
+      const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, id, cors);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: false });
+    }
+    expect(drops).toEqual([]);
+  });
+  it("retry heals an ownerless chat left by an interrupted leave and reports the handoff", async () => {
+    // The leaver's row is already gone and nobody owns the chat: the retry (not_member) repairs it.
+    const { db, members } = groupApiDb({ session: validSession("gone"), members: [{ chatId: "g1", userId: "adm", role: "admin", joinedAt: 2 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 1 }], chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: "adm", deleted: false });
+    expect(members.find((m) => m.user_id === "adm")?.role).toBe("owner");
+    expect(drops).toEqual([{ chatId: "g1", userId: "gone", revoked: true }]);
+  });
+  it("retry on a memberless chat deletes it (no stranded empty chat) and skips the drop", async () => {
+    const { db, chats } = groupApiDb({ session: validSession("gone"), members: [], chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: true });
+    expect(chats.has("g1")).toBe(false);
+    expect(drops).toEqual([]);
+  });
+  it("503 on a failed drop after the leave committed, then the retry succeeds", async () => {
+    const { db } = groupApiDb({ session: validSession("mem"), members: [{ chatId: "g1", userId: "own", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 2 }] });
+    let up = false;
+    const env = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (!up) throw new Error("rpc"); } }) } } as unknown as Env;
+    expect((await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors)).status).toBe(503);
+    up = true;
+    expect((await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors)).status).toBe(200);
   });
 });
 
@@ -1234,9 +1321,24 @@ function accountDb(opts: {
     async first(sql, p = []) {
       if (sql.includes("FROM sessions")) return opts.session;
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
+      if (sql.includes("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'")) return members.find((m) => m.chat_id === p[0] && m.role === "owner");
+      if (sql.includes("SELECT 1 AS ok FROM chats WHERE id")) return chats.has(String(p[0])) ? { ok: 1 } : undefined;
       return undefined;
     },
     async run(sql, p = []) {
+      if (sql.startsWith("UPDATE chat_members SET role = 'owner'") && sql.includes("(SELECT user_id")) {
+        // leave()'s guarded handoff: oldest admin, else oldest member, only while ownerless.
+        const rest = members.filter((m) => m.chat_id === p[0] && m.user_id !== p[2]).sort((a, b) => (b.role === "admin" ? 1 : 0) - (a.role === "admin" ? 1 : 0) || Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+        if (!rest[0] || members.some((m) => m.chat_id === p[0] && m.role === "owner")) return 0;
+        rest[0].role = "owner";
+        return 1;
+      }
+      if (sql.startsWith("DELETE FROM chats") && sql.includes("NOT EXISTS")) {
+        if (members.some((m) => m.chat_id === p[0])) return 0;
+        const had = chats.delete(String(p[0]));
+        deleted.chats.push(String(p[0]));
+        return had ? 1 : 0;
+      }
       if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);
         if (i >= 0) members.splice(i, 1);
@@ -1261,12 +1363,12 @@ function accountDb(opts: {
 describe("POST /api/account/delete", () => {
   it("401 unauthorized with no session", async () => {
     const { db } = accountDb();
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", undefined, { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", undefined, { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(401);
   });
   it("400 confirm_required without a confirm field", async () => {
     const { db, deleted } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({}) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({}) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "confirm_required" });
     // Nothing erased when confirmation is missing.
@@ -1275,13 +1377,13 @@ describe("POST /api/account/delete", () => {
   });
   it("400 confirm_required when confirm is falsy/wrong", async () => {
     const { db } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: false }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: false }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "confirm_required" });
   });
   it("400 bad_json on an unparseable body", async () => {
     const { db } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: "{oops" }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: "{oops" }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_json" });
   });
@@ -1294,7 +1396,7 @@ describe("POST /api/account/delete", () => {
         { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 },
       ],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     // u1's membership is gone; the owner remains.
@@ -1307,9 +1409,54 @@ describe("POST /api/account/delete", () => {
     expect(res.headers.get("Set-Cookie")).toContain(`${SESSION_COOKIE}=`);
     expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
   });
+  it("revokes the live sockets of EVERY chat the caller leaves (revoked:true)", async () => {
+    const { db } = accountDb({
+      session: validSession("u1"),
+      members: [
+        { chatId: "g1", userId: "owner", role: "owner", joinedAt: 1 },
+        { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 },
+        { chatId: "solo", userId: "u1", role: "owner", joinedAt: 1 },
+      ],
+    });
+    const { env, drops } = memberEnv();
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), env, db, now, cors);
+    expect(res.status).toBe(200);
+    expect(drops.sort((a, b) => a.chatId.localeCompare(b.chatId))).toEqual([
+      { chatId: "g1", userId: "u1", revoked: true },
+      { chatId: "solo", userId: "u1", revoked: true },
+    ]);
+  });
+  it("a dropUser that fails once is retried; failing twice on remove/leave -> 503 (account delete still completes)", async () => {
+    let calls = 0;
+    const flaky = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { if (++calls === 1) throw new Error("rpc"); } }) } } as unknown as Env;
+    const a = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+    const ok = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), flaky, a.db, now, cors);
+    expect(ok.status).toBe(200);
+    expect(calls).toBe(2);
+    const dead = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { throw new Error("rpc"); } }) } } as unknown as Env;
+    const b = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "o", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "u1", role: "member", joinedAt: 2 }] });
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), dead, b.db, now, "g1", cors);
+    expect(res.status).toBe(503);
+    const c = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+    const del = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), dead, c.db, now, cors);
+    expect(del.status).toBe(200);
+    expect(c.deleted.users).toEqual(["u1"]);
+  });
+  it("delete-account logs which chat's socket drop failed (chat id only, no user id) and still completes", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const dead = { CONVERSATION: { idFromName: (n: string) => n, get: () => ({ dropUser: async () => { throw new Error("rpc"); } }) } } as unknown as Env;
+      const c = accountDb({ session: validSession("u1"), members: [{ chatId: "g1", userId: "u1", role: "owner", joinedAt: 1 }] });
+      const del = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), dead, c.db, now, cors);
+      expect(del.status).toBe(200);
+      const lines = log.mock.calls.map((a) => String(a[0]));
+      expect(lines).toContain("delete_account socket_drop_failed chat=g1");
+      expect(lines.join("\n")).not.toContain("u1");
+    } finally { log.mockRestore(); }
+  });
   it("confirm:'delete' string is also accepted", async () => {
     const { db, deleted } = accountDb({ session: validSession("u1") });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: "delete" }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: "delete" }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     expect(deleted.users).toEqual(["u1"]);
   });
@@ -1318,7 +1465,7 @@ describe("POST /api/account/delete", () => {
       session: validSession("u1"),
       members: [{ chatId: "solo", userId: "u1", role: "owner", joinedAt: 1 }],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     // The sole-owned chat is removed entirely.
     expect(chats.has("solo")).toBe(false);
@@ -1332,7 +1479,7 @@ describe("POST /api/account/delete", () => {
         { chatId: "shared", userId: "u2", role: "member", joinedAt: 2 },
       ],
     });
-    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), db, now, cors);
+    const res = await handleDeleteAccount(cookieReq("https://x/api/account/delete", "s1", { method: "POST", body: JSON.stringify({ confirm: true }) }), memberEnv().env, db, now, cors);
     expect(res.status).toBe(200);
     // The chat survives; u2 is promoted to owner.
     expect(chats.has("shared")).toBe(true);
@@ -1528,6 +1675,7 @@ describe("handleForward", () => {
     );
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "rate_limited", forwarded: 1 });
+    expect(res.headers.get("Retry-After")).toBe("10");
   });
 });
 
@@ -1665,6 +1813,57 @@ describe("Web Push endpoints", () => {
     const { db } = memDb({ session: validSession("u1") });
     const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), db, now, cors);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("input bounds (M8)", () => {
+  it("rejects a group name over 128 chars on create and rename (accepts exactly 128)", async () => {
+    const long = "x".repeat(129);
+    const { db } = groupApiDb({ session: validSession("u1") });
+    const res = await handleCreateChat(cookieReq("https://x/api/chats", "s1", { method: "POST", body: JSON.stringify({ type: "group", name: long }) }), db, now, cors);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "name_too_long" });
+    const ok = await handleCreateChat(cookieReq("https://x/api/chats", "s1", { method: "POST", body: JSON.stringify({ type: "group", name: "x".repeat(128) }) }), db, now, cors);
+    expect(ok.status).toBe(200);
+    const adm = groupApiDb({ session: validSession("adm"), members: grp("adm", "admin") });
+    const ren = await handleUpdateChat(cookieReq("https://x/api/chats/g1", "s1", { method: "PATCH", body: JSON.stringify({ name: long }) }), adm.db, now, "g1", cors);
+    expect(ren.status).toBe(400);
+    expect(await ren.json()).toEqual({ error: "name_too_long" });
+  });
+  it("rejects oversized push endpoint / p256dh / auth, and non-string keys", async () => {
+    const EP = "https://fcm.googleapis.com/fcm/send/" ;
+    const subs: Array<{ endpoint: string; user_id: string; p256dh: unknown }> = [];
+    const call = (b: unknown) => handlePushSubscribe(subReq(b), pushHandlerDb("uA", subs), now, cors);
+    expect((await call({ endpoint: EP + "a".repeat(1100), keys: { p256dh: "A" } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A".repeat(129), auth: "a" } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A", auth: "a".repeat(65) } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: { x: 1 } } })).status).toBe(400);
+    expect((await call({ endpoint: EP + "ok", keys: { p256dh: "A".repeat(128), auth: "a".repeat(64) } })).status).toBe(200);
+    expect(subs).toHaveLength(1);
+  });
+  it("search: q over 200 chars -> 400 (within-chat and global, DO untouched)", async () => {
+    const q = "q".repeat(201);
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const { env, calls } = searchEnv();
+    const r1 = await handleSearch(cookieReq(`https://x/api/chats/c1/search?q=${q}`, "s1"), env, db, now, "c1", cors);
+    expect(r1.status).toBe(400);
+    const r2 = await handleGlobalSearch(cookieReq(`https://x/api/search?q=${q}`, "s1"), env, db, now, cors);
+    expect(r2.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+  it("global search is rate limited per user (429 + Retry-After), other users unaffected", async () => {
+    const mk = (uid: string) => ({
+      first: async (sql: string) => (sql.includes("FROM sessions") ? validSession(uid) : undefined),
+      all: async () => [] as Row[], run: async () => {},
+    }) as unknown as DbClient;
+    const go = (uid: string) => handleGlobalSearch(cookieReq("https://x/api/search?q=hi", "s1"), fakeEnv(), mk(uid), now, cors);
+    const statuses: number[] = [];
+    for (let i = 0; i < 8; i++) statuses.push((await go("rl-user")).status);
+    expect(statuses.filter((s) => s === 200)).toHaveLength(6);
+    const last = await go("rl-user");
+    expect(last.status).toBe(429);
+    expect(last.headers.get("Retry-After")).toBe("10");
+    expect((await go("rl-other")).status).toBe(200);
   });
 });
 

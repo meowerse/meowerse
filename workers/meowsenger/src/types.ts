@@ -8,6 +8,7 @@ export interface Env {
   OIDC_CLIENT_SECRET?: string;    // from provision (secret)
   OIDC_REDIRECT_URI?: string;     // https://meowsenger.alxnko.eu.org/auth/callback
   WEB_ORIGIN?: string;            // https://meowsenger.alxnko.eu.org
+  ALLOW_LOCALHOST_CORS?: string;  // "1"/"true" = also allow any localhost/.local origin (DEV only; default off)
   CORS_ORIGINS?: string;          // allowlist incl. the UI origin + localhost
   // Web Push (VAPID). PUBLIC key is a var (also served to the browser as the
   // applicationServerKey); PRIVATE key (JWK) is a secret; SUBJECT is a mailto/https.
@@ -24,7 +25,8 @@ export type Row = Record<string, unknown>;
 export interface DbClient {
   all(sql: string, params?: unknown[]): Promise<Row[]>;
   first(sql: string, params?: unknown[]): Promise<Row | undefined>;
-  run(sql: string, params?: unknown[]): Promise<void>;
+  /** Resolves the rows changed when the client can report it (`d1Client` does); fakes may resolve void. */
+  run(sql: string, params?: unknown[]): Promise<number | void>;
   /** Run statements as ONE atomic unit (D1 `batch`: all-or-nothing). Optional only so read-only test fakes needn't implement it; `d1Client` always does. Resolves the rows changed per statement. */
   batch?(stmts: { sql: string; params?: unknown[] }[]): Promise<number[]>;
 }

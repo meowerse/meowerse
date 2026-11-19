@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import worker, { handle } from "./index";
 import type { Env } from "./types";
 
-const env = { CORS_ORIGINS: "http://localhost:4321" } as Env;
+const env = { CORS_ORIGINS: "http://localhost:4321", ALLOW_LOCALHOST_CORS: "1" } as Env;
 const ORIGIN = "http://localhost:4321";
 const deps = { getDb: () => ({}) } as never;
 const req = (m: string, p: string) => new Request(`https://meowsenger-api.alxnko.dev${p}`, { method: m, headers: { Origin: ORIGIN } });
@@ -244,6 +244,15 @@ describe("GET /ws upgrade", () => {
     // env (test fixture) has no USER_INBOX binding → the gated handler reports unavailable.
     expect((await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), env, depsWith({ session }))).status).toBe(503);
   });
+  it("inbox/ws: forwards the caller's own inbox DO the user AND the session id it must keep validating", async () => {
+    let url = "";
+    const stubbed = new Response("upgraded", { status: 200 });
+    const e = { ...env, USER_INBOX: { idFromName: (n: string) => n, get: () => ({ fetch: (r: Request) => { url = r.url; return stubbed; } }) } } as unknown as Env;
+    const res = await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), e, depsWith({ session }));
+    expect(res).toBe(stubbed);
+    expect(url).toContain("user=u1");
+    expect(url).toContain("sid=s1");
+  });
   it("forwards to the DO stub for a member, passing the gated identity", async () => {
     // The node pool's `Response` rejects a real 101 (workerd-only); the actual
     // upgrade is covered by conversation.workers.test.ts. Here we just assert the
@@ -260,6 +269,7 @@ describe("GET /ws upgrade", () => {
     const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin", type: "channel" }));
     expect(res).toBe(stubbed);
     expect(forwardedUrl).toContain("user=u1");
+    expect(forwardedUrl).toContain("sid=s1"); // the session the DO re-validates per frame
     expect(forwardedUrl).toContain("chat=c1");
     // Slice 5: the caller's D1-derived role is forwarded so the DO can authorize
     // admin/owner message-delete without a second membership read.
@@ -281,7 +291,13 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
   it("returns 429 rate_limited when the limiter denies an expensive write POST", async () => {
     const res = await handle(req("POST", "/api/chats"), throttleEnv(false), noSession);
     expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("60");
     expect(await res.json()).toEqual({ error: "rate_limited" });
+  });
+  it("throttles POST /api/chats/:id/forward like the other expensive writes", async () => {
+    const res = await handle(req("POST", "/api/chats/c1/forward"), throttleEnv(false), noSession);
+    expect(res.status).toBe(429);
+    expect((await handle(req("POST", "/api/chats/c1/forward"), throttleEnv(true), noSession)).status).toBe(401);
   });
   it("passes through to the handler when the limiter allows the write", async () => {
     const res = await handle(req("POST", "/api/chats"), throttleEnv(true), noSession);
@@ -291,6 +307,33 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
     // A GET read is never gated; it must reach its handler regardless of the limiter.
     const res = await handle(req("GET", "/api/chats"), throttleEnv(false), noSession);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("Origin guard (CSRF / cross-site WebSocket hijack)", () => {
+  const e = { CORS_ORIGINS: "https://meowsenger.alxnko.dev" } as Env;
+  const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+  const call = (m: string, p: string, origin?: string) =>
+    handle(new Request(`https://meowsenger.alxnko.dev${p}`, { method: m, headers: { ...(origin ? { Origin: origin } : {}), ...(p.endsWith("/ws") ? { Upgrade: "websocket" } : {}) } }), e, d);
+  it("rejects a state-changing POST from a foreign or 'null' Origin with 403", async () => {
+    expect((await call("POST", "/api/chats", "https://evil.example")).status).toBe(403);
+    expect((await call("POST", "/api/account/delete", "null")).status).toBe(403);
+    expect((await call("DELETE", "/api/chats/c1/members/u2", "https://evil.example")).status).toBe(403);
+  });
+  it("rejects a WebSocket upgrade (GET) from a foreign Origin", async () => {
+    expect((await call("GET", "/ws?chat=c1", "https://evil.example")).status).toBe(403);
+    expect((await call("GET", "/inbox/ws", "null")).status).toBe(403);
+  });
+  it("allows allowlisted / same-origin / absent Origin (non-browser)", async () => {
+    expect((await call("POST", "/api/chats", "https://meowsenger.alxnko.dev")).status).toBe(401);
+    expect((await call("POST", "/api/chats")).status).toBe(401);
+    expect((await call("GET", "/ws?chat=c1")).status).toBe(426); // reached handleWs (no Upgrade header in this helper)
+  });
+  it("does not gate plain GETs (reads carry no side effect)", async () => {
+    expect((await call("GET", "/api/chats", "https://evil.example")).status).toBe(401);
+  });
+  it("localhost origins are NOT allowed in prod (no ALLOW_LOCALHOST_CORS)", async () => {
+    expect((await call("POST", "/api/chats", "http://localhost:5173")).status).toBe(403);
   });
 });
 

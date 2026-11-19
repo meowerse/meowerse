@@ -3,7 +3,6 @@ import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test"
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import type { Conversation } from "./conversation";
 import { MAX_PUSH_SUBS_PER_USER } from "./push";
-import { mirrorLastMessage } from "./chats";
 import { d1Client } from "./db";
 
 // Offline-push decision inside the Conversation DO: who is skipped (only users with a
@@ -83,6 +82,8 @@ async function configureVapid(chatId: string): Promise<void> {
   });
 }
 async function connect(chatId: string, userId: string): Promise<WebSocket> {
+  // The DO re-validates D1 membership per frame, so a connected test user must be a member.
+  await DB.prepare("INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, 0)").bind(chatId, userId).run();
   const res = await stub(chatId).fetch(`https://do/ws?user=${userId}&chat=${chatId}`, { headers: { Upgrade: "websocket" } });
   const ws = res.webSocket;
   if (!ws) throw new Error("no webSocket");
@@ -1327,17 +1328,6 @@ describe("Conversation offline push decision", () => {
         expect(row?.last_message).toBe("blip-body");
       } finally { await setEnv(c, { DB }); }
     });
-  });
-
-  it("(be) the mirror is monotonic on real D1: an older message mirrored after a newer one does not roll the row back, and resolves", async () => {
-    const c = newChat(); await seed(c, ["sender", "rcpt"], []);
-    const db = d1Client(DB);
-    await mirrorLastMessage(db, c, "M2", "rcpt", 5000);
-    await expect(mirrorLastMessage(db, c, "M1", "sender", 4000)).resolves.toBeUndefined();
-    const row = await DB.prepare("SELECT last_message, last_sender_id, last_activity FROM chats WHERE id = ?").bind(c).first();
-    expect(row).toEqual({ last_message: "M2", last_sender_id: "rcpt", last_activity: 5000 });
-    await mirrorLastMessage(db, c, "M3", "sender", 5000); // equal timestamp still applies (same-ms sends)
-    expect((await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(c).first<{ last_message: string }>())?.last_message).toBe("M3");
   });
 
   it("(bf) a newer message re-queues OTHER users while the run delivered A and failed B: the user's owed is this run's result ({B}), A is not pushed again", async () => {

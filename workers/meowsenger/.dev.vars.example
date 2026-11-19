@@ -1,3 +1,6 @@
 # Copy to .dev.vars (gitignored) for `wrangler dev`.
 OIDC_CLIENT_ID=
 OIDC_CLIENT_SECRET=
+# DEV ONLY. "1"/"true" also allows any localhost/.local origin through CORS (default off;
+# never set this in production, where only WEB_ORIGIN / CORS_ORIGINS are allowed).
+ALLOW_LOCALHOST_CORS=1

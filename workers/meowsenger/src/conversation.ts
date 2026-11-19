@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
-import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
+import { markRead, syncLastMessage, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { d1Client } from "./db";
 import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
@@ -10,6 +10,10 @@ import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscriptio
 interface Attach {
   userId: string;
   chatId: string;
+  /** sha256 of the session cookie (the `sessions.id`) the socket was upgraded with, forwarded by
+   *  the router. The per-frame check also requires this session row to still exist and be
+   *  unexpired, so a logout / expiry ends the socket. Absent on legacy sockets (no session check). */
+  sid?: string;
   /** The user's role in THIS chat, forwarded (already gated) by the router. Used
    *  for admin/owner message-delete. DM sockets carry 'member' → no behavior
    *  change for DMs. Absent on legacy sockets → treated as 'member'. */
@@ -85,6 +89,30 @@ const PURGE_AFTER_MS = 24 * 3600_000;
  *  The same window+cap meters the forward RPC (`appendMessage`), keyed by user. */
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX = 30;
+/** How long a per-user D1 membership verdict is trusted before a socket frame re-checks. */
+const MEMBER_TTL_MS = 5_000;
+/** While D1 is erroring, the last GOOD membership verdict keeps being honoured this long
+ *  (stale-while-error), so a D1 blip does not stop live chat. Only a definite "not a
+ *  member" answer, or this window elapsing, fails closed. */
+const MEMBER_STALE_MS = 60_000;
+/** Edit/delete/react frames share ONE per-user window (separate from, and more generous than,
+ *  the send cap): each edit/delete of the newest message queues a D1 preview write plus an
+ *  inbox fan-out, so an unmetered loop would amplify to every member. */
+const MUTATE_MAX = 60;
+/** At most one sidebar-invalidate fan-out per DO per this window (one trailing call follows). */
+const INVALIDATE_MIN_MS = 2_000;
+/** Membership/session verdicts are keyed per SESSION (a user with two logins is two keys); a
+ *  socket without a session id (legacy) is keyed by user alone. */
+const verdictKey = (a: { userId: string; sid?: string }): string => (a.sid ? `${a.userId}\u0000${a.sid}` : a.userId);
+/** At most one read-cursor D1 write per user per this window (see queueRead). */
+const READ_FLUSH_MS = 5_000;
+/** An "on" typing frame is dropped only when the user's last broadcast state is already
+ *  "on" AND it arrived within this gap (a keepalive still passes; a fresh "on" after an
+ *  "off" always passes, so quick follow-up messages still show the indicator). */
+const TYPING_MIN_MS = 1_000;
+/** Separate flood cap: at most TYPING_CAP typing frames (any state) per user per window. */
+const TYPING_WINDOW_MS = 10_000;
+const TYPING_CAP = 40;
 /** Coalesce Web Push per chat: at most one offline fan-out (D1 read + POSTs) per
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
@@ -205,20 +233,14 @@ function escapeLike(term: string): string {
  * upgrade reaches here, so the DO trusts the `?user=&chat=` params it receives.
  */
 export class Conversation extends DurableObject<Env> {
-  /**
-   * Per-connection flood protection: recent `send` timestamps keyed by socket.
-   * In-memory (dies on hibernation) is fine — a flood keeps the DO awake, and an
-   * idle room hibernates with an empty bucket. Only `send` is metered; typing/
-   * read/edit/delete are cheap and unmetered. Not reconstructed from
-   * getWebSockets() on wake because a hibernated room has, by definition, no
-   * in-flight flood to remember.
-   */
-  private sendTimes = new Map<WebSocket, number[]>();
-  // Same flood meter for the forward RPC (`appendMessage`), keyed by userId — the
-  // forwarder has no socket, so it can't use `sendTimes`. In-memory/best-effort
-  // (dies on hibernation, like `sendTimes`); all forwards to THIS chat funnel through
-  // this one DO, so it bounds per-user forward volume + the push fan-out it triggers.
+  // Per-USER flood meter shared by WS `send` and the forward RPC (`appendMessage`): recent
+  // timestamps keyed by userId, so opening N sockets does not multiply the cap. In-memory/
+  // best-effort (dies on hibernation: a flood keeps the DO awake, an idle room has nothing
+  // to remember); all sends to THIS chat funnel through this one DO. Only `send`/forward
+  // are metered; typing/edit/delete are cheap and read frames are coalesced (queueRead).
   private appendTimes = new Map<string, number[]>();
+  /** Per-user edit/delete/react timestamps (in-memory, like appendTimes). */
+  private mutateTimes = new Map<string, number[]>();
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
   // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
   private lastSeenStamp = new Map<string, number>();
@@ -259,6 +281,7 @@ export class Conversation extends DurableObject<Env> {
     // for members); a missing/other value leaves posting unchanged (DMs/groups).
     const type = url.searchParams.get("type") || "group";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
+    const sid = url.searchParams.get("sid") || undefined;
 
     const pair = new WebSocketPair();
     // WebSocketPair is a tuple-shaped { 0: client, 1: server }.
@@ -266,7 +289,9 @@ export class Conversation extends DurableObject<Env> {
     const server = pair[1];
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
+    server.serializeAttachment({ userId, chatId, role, type, ...(sid ? { sid } : {}) } satisfies Attach);
+    // The gated router just read this user's membership + session from D1: that verdict is fresh.
+    this.memberVerdict.set(verdictKey({ userId, sid }), { ok: true, at: Date.now() });
     this.lastPush.delete(userId); // a fresh socket is visible: they're seeing the chat → reset their push window
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
@@ -341,6 +366,103 @@ export class Conversation extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) this.safeSend(ws, text);
   }
 
+  // userId -> last D1 membership verdict for THIS chat + when it was read. Short TTL;
+  // cleared by dropUser. In-flight reads are shared so a frame burst costs one query.
+  private memberVerdict = new Map<string, { ok: boolean; at: number }>();
+  private memberInflight = new Map<string, Promise<boolean>>();
+  /** Per user: the last typing state actually broadcast + when, and a frame-count window. */
+  private typingState = new Map<string, { on: boolean; at: number }>();
+  private typingWindow = new Map<string, { start: number; n: number }>();
+
+  /** Fresh cached verdict, or undefined when a D1 read is needed. Synchronous on a
+   *  hit so a steady stream of frames is not reordered by an await. */
+  private memberCached(att: Attach): boolean | undefined {
+    const v = this.memberVerdict.get(verdictKey(att));
+    return v && Date.now() - v.at < MEMBER_TTL_MS ? v.ok : undefined;
+  }
+
+  /** Read chat_members for the socket's user. A read overlapping dropUser (membershipGen
+   *  bump) is not cached. Throws if D1 fails. */
+  private loadMember(att: Attach): Promise<boolean> {
+    const key = verdictKey(att);
+    let p = this.memberInflight.get(key);
+    if (!p) {
+      const gen = this.membershipGen;
+      p = (async () => {
+        let ok: boolean;
+        if (att.sid) {
+          // ONE query answers both: still a member of this chat AND the session the socket was
+          // opened with still exists and is unexpired (logout/expiry deletes/ages that row).
+          const row = await this.d1().first(
+            "SELECT EXISTS(SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?) AS m, EXISTS(SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at >= ?) AS s",
+            [att.chatId, att.userId, att.sid, att.userId, Date.now()],
+          );
+          ok = !!row && Number(row.m) === 1 && Number(row.s) === 1;
+        } else {
+          const row = await this.d1().first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [att.chatId, att.userId]);
+          ok = row !== undefined;
+        }
+        if (gen === this.membershipGen) this.memberVerdict.set(key, { ok, at: Date.now() });
+        return ok;
+      })();
+      this.memberInflight.set(key, p);
+      // Remove the entry only while it is still THIS promise (dropUser may have cleared
+      // the map and a newer read replaced it); done after the set so a synchronous
+      // rejection cannot leave a settled promise stuck in the map.
+      const clear = (): void => { if (this.memberInflight.get(key) === p) this.memberInflight.delete(key); };
+      p.then(clear, clear);
+    }
+    return p;
+  }
+
+  /** The socket's last GOOD (member + live session) verdict if it is within the stale-while-error window. */
+  private memberStale(att: Attach): boolean {
+    const v = this.memberVerdict.get(verdictKey(att));
+    return !!v && v.ok && Date.now() - v.at < MEMBER_STALE_MS;
+  }
+
+  /** Resolve the membership verdict for a frame: true (member), false (definitely not), or
+   *  "unavailable" (D1 failed and no recent good verdict to fall back on). */
+  private async memberOk(att: Attach): Promise<boolean | "unavailable"> {
+    const cached = this.memberCached(att);
+    if (cached !== undefined) return cached;
+    try {
+      return await this.loadMember(att);
+    } catch {
+      return this.memberStale(att) ? true : "unavailable";
+    }
+  }
+
+  // Per-user read-cursor coalescing: a client can spam {"type":"read"} frames, each of
+  // which was a D1 UPDATE. Keep only the latest upTo per user and write at most once per
+  // READ_FLUSH_MS (leading edge immediate, then a trailing flush), plus on socket close.
+  private readState = new Map<string, { chatId: string; upTo: number; pending: boolean; flushedAt: number; timer?: ReturnType<typeof setTimeout> }>();
+
+  private queueRead(chatId: string, userId: string, upTo: number): void {
+    const st = this.readState.get(userId) ?? { chatId, upTo: 0, pending: false, flushedAt: 0 };
+    this.readState.set(userId, st);
+    st.chatId = chatId;
+    st.upTo = Math.max(st.upTo, upTo);
+    st.pending = true;
+    const wait = READ_FLUSH_MS - (Date.now() - st.flushedAt);
+    if (wait <= 0) {
+      this.flushRead(userId);
+    } else if (!st.timer) {
+      st.timer = setTimeout(() => this.flushRead(userId), wait);
+    }
+  }
+
+  /** Write the user's pending read cursor (if any) to D1 now. Failure is non-fatal. */
+  private flushRead(userId: string): void {
+    const st = this.readState.get(userId);
+    if (!st) return;
+    if (st.timer) { clearTimeout(st.timer); st.timer = undefined; }
+    if (!st.pending) return;
+    st.pending = false;
+    st.flushedAt = Date.now();
+    this.ctx.waitUntil(markRead(this.d1(), st.chatId, userId, st.upTo).catch(() => {}));
+  }
+
   /** Hibernation handler: a frame arrived on a live socket. */
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attach | null;
@@ -362,8 +484,53 @@ export class Conversation extends DurableObject<Env> {
       return;
     }
 
+    // Correlation fields echoed on every error frame so the client can resolve the exact
+    // optimistic item (send -> tempId, edit/delete/react -> messageId). A tempId is only
+    // echoed when it passes validation (never reflect arbitrary client input). Built
+    // BEFORE the membership check so its error frames carry it too.
+    const validTemp = typeof msg.tempId === "string" && TEMP_ID_RE.test(msg.tempId) ? msg.tempId : undefined;
+    const corr: Corr = {
+      ...(typeof msg.id === "string" && msg.id.length <= 64 ? { messageId: msg.id } : {}),
+      ...(validTemp ? { tempId: validTemp } : {}),
+    };
+
+    // The socket attachment was minted at connect; membership may have changed since
+    // (removed, left, account deleted) while a dropUser RPC was lost. Re-validate against
+    // D1 (short cache, cleared by dropUser) before honouring ANY frame. A D1 outage keeps
+    // the last good verdict for MEMBER_STALE_MS; only a definite "no" (or the window
+    // elapsing) fails closed.
+    // Synchronous on a fresh cache hit so a steady frame stream is never reordered by an await.
+    const ok = this.memberCached(att) ?? (await this.memberOk(att));
+    if (ok !== true) {
+      // Fire-and-forget frames (typing/read/away) get NOTHING back on an unavailable
+      // check: an error frame would surface as a toast on every keystroke.
+      const interactive = msg.type === "send" || msg.type === "edit" || msg.type === "delete" || msg.type === "react";
+      if (ok === false) {
+        // Exactly what dropUser does for a removed member: {revoked} stops the client's
+        // reconnect loop, then close; the forbidden error stays for older clients.
+        this.safeSend(ws, JSON.stringify({ type: "revoked" }));
+        this.safeSend(ws, JSON.stringify({ type: "error", code: "forbidden", ...corr }));
+        try { ws.close(4001, "revoked"); } catch { /* already closing */ }
+      } else if (interactive) {
+        // D1 down, no recent good verdict: fail closed but keep the socket so the client
+        // can retry; the correlation fields let it resolve the optimistic item.
+        this.safeSend(ws, JSON.stringify({ type: "error", code: "unavailable", ...corr }));
+      }
+      return;
+    }
+
     // Typing: ephemeral, peers-only, never persisted.
     if (msg.type === "typing") {
+      // Throttle per user (a frame is a full broadcast to every peer): an "on" is dropped
+      // only while the last broadcast state is already "on" (within TYPING_MIN_MS); "off"
+      // and a fresh "on" after "off" always pass. A separate per-window frame cap bounds floods.
+      const nowT = Date.now();
+      const win = this.typingWindow.get(att.userId);
+      if (!win || nowT - win.start >= TYPING_WINDOW_MS) this.typingWindow.set(att.userId, { start: nowT, n: 1 });
+      else if (++win.n > TYPING_CAP) return; // flood cap, any state
+      const prev = this.typingState.get(att.userId);
+      if (msg.on && prev?.on && nowT - prev.at < TYPING_MIN_MS) return; // already "on": nothing new to tell peers
+      this.typingState.set(att.userId, { on: !!msg.on, at: nowT });
       this.broadcast({ type: "typing", userId: att.userId, on: !!msg.on }, ws);
       return;
     }
@@ -371,7 +538,7 @@ export class Conversation extends DurableObject<Env> {
     // the critical path — a failed write is non-fatal), then tell peers "seen".
     if (msg.type === "read") {
       const upTo = Number(msg.upTo) || 0;
-      this.ctx.waitUntil(markRead(this.d1(), att.chatId, att.userId, upTo).catch(() => {}));
+      this.queueRead(att.chatId, att.userId, upTo);
       this.broadcast({ type: "read_receipt", userId: att.userId, upTo }, ws);
       return;
     }
@@ -384,17 +551,12 @@ export class Conversation extends DurableObject<Env> {
       return;
     }
 
-    // Correlation fields echoed on every error frame so the client can resolve the exact
-    // optimistic item (send -> tempId, edit/delete/react -> messageId). A tempId is only
-    // echoed when it passes validation (never reflect arbitrary client input).
-    const validTemp = typeof msg.tempId === "string" && TEMP_ID_RE.test(msg.tempId) ? msg.tempId : undefined;
-    const corr: Corr = {
-      ...(typeof msg.id === "string" && msg.id.length <= 64 ? { messageId: msg.id } : {}),
-      ...(validTemp ? { tempId: validTemp } : {}),
-    };
-
     // Edit: own message, within the 1h window, not soft-deleted. All checks are
     // server-side — never trust the client's view of ownership or the clock.
+    if ((msg.type === "edit" || msg.type === "delete" || msg.type === "react") && this.isMutateRateLimited(att.userId)) {
+      this.safeSend(ws, JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
+      return;
+    }
     if (msg.type === "edit") {
       this.handleEdit(ws, att, msg.id, msg.body, corr);
       return;
@@ -436,7 +598,7 @@ export class Conversation extends DurableObject<Env> {
     // no insert, no broadcast, just a {rate_limited} error frame (the socket
     // stays open; a flood is throttled, not disconnected). Metered here so
     // typing/read/edit/delete stay unaffected.
-    if (this.isRateLimited(ws)) {
+    if (this.isAppendRateLimited(att.userId)) {
       ws.send(JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
       return;
     }
@@ -487,24 +649,6 @@ export class Conversation extends DurableObject<Env> {
     }
     this.safeSend(ws, JSON.stringify({ type: "sent", tempId, message: this.rowToWire(row as Row, chatId) }));
     return true;
-  }
-
-  /**
-   * Meter a `send` on this socket: prune timestamps older than RATE_WINDOW_MS,
-   * then decide. At/over RATE_MAX in the window → true (caller refuses the send,
-   * nothing is recorded). Otherwise record `now` and return false. In-memory only
-   * (see `sendTimes`).
-   */
-  private isRateLimited(ws: WebSocket): boolean {
-    const now = Date.now();
-    const times = (this.sendTimes.get(ws) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-    if (times.length >= RATE_MAX) {
-      this.sendTimes.set(ws, times);
-      return true;
-    }
-    times.push(now);
-    this.sendTimes.set(ws, times);
-    return false;
   }
 
   /**
@@ -610,7 +754,7 @@ export class Conversation extends DurableObject<Env> {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (attempt > 0) budget.ext++;
         try {
-          await mirrorLastMessage(this.d1(), chatId, body, senderId, now);
+          await this.writePreview(chatId);
           return true;
         } catch {}
       }
@@ -1137,9 +1281,8 @@ export class Conversation extends DurableObject<Env> {
         if (mirrorPending) {
           // The D1 preview is stale (the first invocation's mirror write failed twice): write
           // the chat's CURRENT latest message before any push. A failure here is a failed round.
-          const last = this.ctx.storage.sql.exec("SELECT sender_id, body, created_at FROM messages WHERE is_deleted = 0 ORDER BY created_at DESC LIMIT 1").toArray()[0];
           budget.ext++;
-          if (last) await mirrorLastMessage(this.d1(), work.chatId, String(last.body), String(last.sender_id), Number(last.created_at));
+          await this.writePreview(work.chatId);
           mirrorPending = false;
         }
         const pending = new Set(due);
@@ -1214,6 +1357,16 @@ export class Conversation extends DurableObject<Env> {
     return this.insertAndBroadcast(senderId, chatId, body, { forwarded });
   }
 
+  /** Meter an edit/delete/react from `userId` (MUTATE_MAX per RATE_WINDOW_MS, all users share nothing). */
+  private isMutateRateLimited(userId: string): boolean {
+    const now = Date.now();
+    const times = (this.mutateTimes.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    const limited = times.length >= MUTATE_MAX;
+    if (!limited) times.push(now);
+    this.mutateTimes.set(userId, times);
+    return limited;
+  }
+
   /**
    * Meter a forward on `userId`: prune timestamps older than RATE_WINDOW_MS, then
    * decide. At/over RATE_MAX in the window → true (caller stops, nothing recorded).
@@ -1249,6 +1402,11 @@ export class Conversation extends DurableObject<Env> {
     // gets no further previews. Also forget their push window.
     this.inboxMembers.clear();
     this.membershipGen++;
+    this.memberVerdict.clear();
+    this.memberInflight.clear();
+    const rs = this.readState.get(userId);
+    if (rs?.timer) clearTimeout(rs.timer);
+    this.readState.delete(userId); // a removed member's pending cursor must not be written
     this.lastPush.delete(userId);
     // Drop the user from any queued follow-up fan-out too.
     const queued = await this.readOverflow();
@@ -1300,7 +1458,7 @@ export class Conversation extends DurableObject<Env> {
    */
   private handleDisconnect(ws: WebSocket): void {
     const att = ws.deserializeAttachment() as Attach | null;
-    this.sendTimes.delete(ws);
+    if (att?.userId) this.flushRead(att.userId); // don't lose the final cursor of a closing tab
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
       const nowMs = Date.now();
@@ -1352,6 +1510,101 @@ export class Conversation extends DurableObject<Env> {
     const editedAt = Date.now();
     this.ctx.storage.sql.exec("UPDATE messages SET body = ?, edited_at = ? WHERE id = ?", body, editedAt, id);
     this.broadcast({ type: "edited", id, body, editedAt });
+    this.remirrorIfNewest(att.chatId, id, Number(row.created_at));
+  }
+
+  /** Tail of the per-DO chain that serializes EVERY D1 preview write (send mirror, its
+   *  retry, the alarm's re-mirror, edit/delete re-point). Never rejects. */
+  private previewChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Write the chat's CURRENT newest live message into D1 (`chats.last_message`), strictly
+   * after every earlier preview write from this DO. The row is read when the write RUNS,
+   * not captured when it was queued, so a late/retried mirror can never put an older body
+   * (a deleted or pre-edit text) back over a newer state. Rejects only on a real D1 failure.
+   */
+  private writePreview(chatId: string): Promise<void> {
+    // COALESCE: a write that is queued but has not started yet will read the newest live row
+    // when it runs, which already includes this caller's change, so later callers share it
+    // instead of queueing another D1 write (a burst of edits costs one write, not N).
+    if (this.previewQueued) return this.previewQueued;
+    const run = this.previewChain.then(async () => {
+      this.previewQueued = null; // started: a later change needs its own (fresh) write
+      const last = this.ctx.storage.sql
+        .exec("SELECT sender_id, body, created_at FROM messages WHERE is_deleted = 0 ORDER BY created_at DESC LIMIT 1")
+        .toArray()[0];
+      await syncLastMessage(
+        this.d1(), chatId,
+        last ? String(last.body) : null, last ? String(last.sender_id) : null, last ? Number(last.created_at) : 0,
+      );
+    });
+    this.previewQueued = run;
+    this.previewChain = run.catch(() => {});
+    return run;
+  }
+  /** The preview write that is queued behind the chain and has not started (see writePreview). */
+  private previewQueued: Promise<void> | null = null;
+
+  /**
+   * After an edit/delete of message `id` (created at `createdAt`): if no LIVE message is
+   * newer, the D1 sidebar mirror (`chats.last_message`) may still hold the old text, so
+   * re-point it at the newest remaining live row (or clear it), then tell members' open
+   * sidebars to refetch (a content-free invalidate: it carries no preview, never bumps
+   * unread or `at`). Off the critical path; a failure is non-fatal (the next message
+   * re-mirrors).
+   */
+  private remirrorIfNewest(chatId: string, id: string, createdAt: number): void {
+    const newer = this.ctx.storage.sql
+      .exec("SELECT 1 AS n FROM messages WHERE is_deleted = 0 AND id <> ? AND created_at > ? LIMIT 1", id, createdAt)
+      .toArray()[0];
+    if (newer) return;
+    this.ctx.waitUntil(
+      this.writePreview(chatId).then(() => this.queueInvalidate(chatId)).catch(() => {}),
+    );
+  }
+
+  private invalidateState: { last: number; pending: boolean; timer?: ReturnType<typeof setTimeout> } = { last: 0, pending: false };
+
+  /** Throttled sidebar invalidate: the first call runs at once, later calls inside
+   *  INVALIDATE_MIN_MS collapse into ONE trailing fan-out when the window ends. Every fan-out
+   *  re-reads the member list and hits up to internalBudget inbox DOs, so an edit/delete loop
+   *  must not trigger one per frame. */
+  private queueInvalidate(chatId: string): void {
+    const st = this.invalidateState;
+    const wait = INVALIDATE_MIN_MS - (Date.now() - st.last);
+    if (wait <= 0 && !st.timer) {
+      st.last = Date.now();
+      st.pending = false;
+      this.ctx.waitUntil(this.inboxInvalidate(chatId).catch(() => {}));
+      return;
+    }
+    st.pending = true;
+    if (!st.timer) {
+      st.timer = setTimeout(() => {
+        st.timer = undefined;
+        if (!st.pending) return;
+        st.pending = false;
+        st.last = Date.now();
+        this.ctx.waitUntil(this.inboxInvalidate(chatId).catch(() => {}));
+      }, Math.max(0, wait));
+    }
+  }
+
+  /** Send a content-free `{chatId, invalidate}` delta to every member's UserInbox so open
+   *  sidebars refetch the (already re-pointed) preview. Best-effort; members beyond the
+   *  internal subrequest budget are queued on the overflow record the alarm already
+   *  serves (it sends them the same invalidate), so none keeps a deleted/old preview. */
+  private async inboxInvalidate(chatId: string): Promise<void> {
+    const ns = this.env.USER_INBOX;
+    if (!ns) return;
+    const all = await chatMemberIds(this.d1(), chatId);
+    const ids = all.slice(0, this.internalBudget);
+    const body = JSON.stringify({ chatId, invalidate: true });
+    await Promise.all(
+      ids.map((uid) => ns.get(ns.idFromName("inbox:" + uid)).fetch("https://do/notify", { method: "POST", body }).catch(() => {})),
+    );
+    const rest = all.slice(this.internalBudget);
+    if (rest.length > 0) await this.queueOverflow(chatId, "", [], rest, {}).catch(() => console.log("invalidate_overflow_queue_failed"));
   }
 
   /**
@@ -1386,6 +1639,7 @@ export class Conversation extends DurableObject<Env> {
       id,
     );
     this.broadcast({ type: "deleted", id });
+    this.remirrorIfNewest(att.chatId, id, Number(row.created_at));
     // Schedule the hard purge for just after this row ages out of the window.
     // never postpones a sooner alarm (e.g. a queued fan-out); failure is logged, not floating
     this.ctx.waitUntil(this.armAlarm(Date.now() + PURGE_AFTER_MS + 60_000).catch(() => console.log("purge_arm_failed")));

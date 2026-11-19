@@ -3,12 +3,12 @@ import type { Env } from "./types";
 // can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
 export { Conversation } from "./conversation";
 export { UserInbox } from "./inbox";
-import { corsHeaders, json, NO_STORE } from "./security";
+import { corsHeaders, json, NO_STORE, originPermitted, retryAfter } from "./security";
 import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
 import { handleSession, handleLogout } from "./api";
 import {
-  callerId,
+  callerSession,
   handleListChats,
   handleCreateChat,
   handleHistory,
@@ -43,14 +43,14 @@ import {
 import { getRole, chatType } from "./chats";
 
 // The expensive D1-write POSTs (create-group / add-member / join|subscribe /
-// invite / join-request / push-subscribe). Free-tier D1 caps writes at 100k/day
+// invite / join-request / forward / push-subscribe). Free-tier D1 caps writes at 100k/day
 // ACCOUNT-WIDE, so an authenticated abuser looping these could drain the whole
 // fleet's daily budget. These get the per-IP write throttle before dispatch;
 // everything else is intentionally left alone: GETs/reads, logout, the message hot
 // path (that's WS→DO, not an HTTP route here), and single-row edits (role/remove/
 // leave). The trailing `$` keeps `/request` from matching the `/requests` inbox and
 // keeps `/members` from matching `/members/:id/role`.
-const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|invite|request))?|push\/subscribe)$/;
+const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|invite|request|forward))?|push\/subscribe)$/;
 
 /**
  * Per-IP edge rate limit for the expensive D1-write POSTs. Returns true (allow)
@@ -67,6 +67,8 @@ async function writeThrottle(env: Env, req: Request): Promise<boolean> {
 }
 
 const NS = { "Cache-Control": NO_STORE };
+/** The WRITE_LIMIT binding's window (wrangler.jsonc `ratelimits[].simple.period`), echoed as Retry-After. */
+const WRITE_LIMIT_PERIOD_SEC = 60;
 
 const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
@@ -108,9 +110,15 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     });
   }
 
+  // CSRF / cross-site WebSocket hijack guard: every state-changing method and both WS
+  // upgrades must come from an allowed Origin (absent Origin = non-browser client, allowed).
+  if ((m !== "GET" && m !== "HEAD") || path === "/ws" || path === "/inbox/ws") {
+    if (!originPermitted(req.headers.get("Origin"), url.origin, env)) return json({ error: "forbidden_origin" }, 403, cors);
+  }
+
   // Guard the expensive write POSTs with the per-IP throttle before any dispatch.
   if (m === "POST" && EXPENSIVE_WRITE.test(path) && !(await writeThrottle(env, req))) {
-    return json({ error: "rate_limited" }, 429, cors);
+    return json({ error: "rate_limited" }, 429, cors, retryAfter(WRITE_LIMIT_PERIOD_SEC));
   }
 
   // meow.alxnko.dev probes this cross-origin for its live status list: a plain public CORS answer
@@ -127,7 +135,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   if (path === "/api/account/privacy" && m === "GET") return handleGetPrivacy(req, deps.getDb(), deps.now(), cors);
   if (path === "/api/account/privacy" && m === "POST") return handleSetPrivacy(req, deps.getDb(), deps.now(), cors);
   // Slice 9: erase the caller's meowsenger data (session-gated + confirm-required).
-  if (path === "/api/account/delete" && m === "POST") return handleDeleteAccount(req, deps.getDb(), deps.now(), cors);
+  if (path === "/api/account/delete" && m === "POST") return handleDeleteAccount(req, env, deps.getDb(), deps.now(), cors);
   // Web Push: the VAPID public key (public), + subscribe/unsubscribe (session-gated).
   if (path === "/api/push/key" && m === "GET") return handlePushKey(env, cors);
   if (path === "/api/push/subscribe" && m === "POST") return handlePushSubscribe(req, deps.getDb(), deps.now(), cors);
@@ -225,8 +233,9 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
   const chatId = new URL(req.url).searchParams.get("chat");
   if (!chatId) return new Response("chat required", { status: 400, headers: NS });
-  const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
+  const sess = await callerSession(req, deps.getDb(), deps.now());
+  if (!sess) return new Response("unauthorized", { status: 401, headers: NS });
+  const me = sess.userId;
   // A single membership lookup: getRole returns null for non-members (the gate)
   // and the caller's role otherwise. The role is forwarded to the DO so it can
   // authorize admin/owner message-delete (Slice 5) without a second D1 read.
@@ -240,7 +249,7 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   // Preserve the original request (carries the Upgrade header) while overriding
   // the URL so the DO receives the gated identity + role + type via query params.
   const fwd = new Request(
-    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}`,
+    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}&sid=${encodeURIComponent(sess.id)}`,
     req,
   );
   return stub.fetch(fwd);
@@ -254,12 +263,13 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
  */
 async function handleInboxWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
-  const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
+  const sess = await callerSession(req, deps.getDb(), deps.now());
+  if (!sess) return new Response("unauthorized", { status: 401, headers: NS });
+  const me = sess.userId;
   const ns = env.USER_INBOX;
   if (!ns) return new Response("inbox unavailable", { status: 503, headers: NS });
   const stub = ns.get(ns.idFromName("inbox:" + me));
-  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}`, req));
+  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}&sid=${encodeURIComponent(sess.id)}`, req));
 }
 
 export default {
