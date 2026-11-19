@@ -174,6 +174,27 @@ describe("Conversation DO", () => {
     expect(await s.historyAfterEx("cafter", "nope")).toEqual({ messages: [], found: false });
   });
 
+  it("historyForEx: two older pages join the newest with no gap or overlap; unknown before → [] found:false", async () => {
+    const s = stub("cbefore");
+    await runInDurableObject(s, async (_i: Conversation, ctx: DurableObjectState) => {
+      for (let i = 1; i <= 120; i++) {
+        ctx.storage.sql.exec("INSERT INTO messages (id, sender_id, body, created_at) VALUES (?, 'u1', ?, ?)", `p${i}`, `b${i}`, i * 1000);
+      }
+    });
+    const newest = (await s.historyForEx("cbefore", null)).messages;
+    const mid = (await s.historyForEx("cbefore", newest[0]!.id)).messages;
+    const oldest = (await s.historyForEx("cbefore", mid[0]!.id)).messages;
+    const all = [...oldest, ...mid, ...newest].map((m) => m.id);
+    expect(newest).toHaveLength(50);
+    expect(mid).toHaveLength(50);
+    expect(oldest).toHaveLength(20);
+    expect(all).toEqual(Array.from({ length: 120 }, (_, i) => `p${i + 1}`)); // each id once, ascending
+    // An unknown / hard-purged cursor is NOT the newest page.
+    expect(await s.historyForEx("cbefore", "purged-id")).toEqual({ messages: [], found: false });
+    expect(await s.historyFor("cbefore", "purged-id")).toEqual([]);
+    expect(await s.historyForEx("cbefore", "p1")).toEqual({ messages: [], found: true }); // oldest row: nothing older
+  });
+
   it("auto-responds to the client heartbeat ping with pong (keeps the DO hibernated)", async () => {
     await seedChat("cping");
     const w = await connect("cping", "u1");

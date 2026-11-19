@@ -15,10 +15,13 @@ export const REFRESH_ABS_TTL = 30 * 24 * 3600;
 /** Build the refresh-token INSERT + return the raw token, WITHOUT executing. Lets
  *  callers batch it with the access_token INSERT (offline-token pair). */
 export async function refreshTokenInsert(
-  i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
+  i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number; authTime?: number },
   guard?: Guard,
 ): Promise<{ stmt: { sql: string; args: unknown[] }; token: string }> {
-  const token = "rt_" + randomId(32);
+  // The original login time rides in the opaque token (`rt_<random>.<auth_time>`): the stored key is the
+  // SHA-256 of the WHOLE string, so it cannot be altered without invalidating the token. Refresh then
+  // reports the true auth_time in the id_token instead of "now", and needs no schema change.
+  const token = "rt_" + randomId(32) + (i.authTime != null ? "." + Math.trunc(i.authTime) : "");
   const tokenHash = await sha256Hex(token);
   return {
     token,
@@ -43,7 +46,7 @@ export async function refreshTokenInsert(
 
 export async function createRefreshToken(
   db: DbClient,
-  i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number },
+  i: { accountId: string; clientId: string; scope: string[]; family: string; now: number; prevId?: string; absExpires?: number; authTime?: number },
 ): Promise<string> {
   const { stmt, token } = await refreshTokenInsert(i);
   await db.execute(stmt);
@@ -58,6 +61,8 @@ export interface RotateOk {
   /** SHA-256 of the presented token: the rotation batch spends it (see `refreshUnused`). */
   tokenHash: string;
   absExpires: number;
+  /** Original login time carried in the token (undefined for tokens issued before it was embedded). */
+  authTime?: number;
 }
 /** On reuse, `accountId`/`familyClientId` identify the compromised family (for the audit trail only). */
 export type RotateResult =
@@ -107,6 +112,7 @@ export async function rotateRefresh(
     family: String(row.family_id),
     tokenHash,
     absExpires: Number(row.absolute_expires_at),
+    authTime: parseTokenAuthTime(i.token),
   };
 }
 
@@ -150,4 +156,10 @@ export async function revokeFamilyWithRetry(
     }
   }
   throw last;
+}
+
+/** The auth_time embedded by `refreshTokenInsert`, or undefined (legacy token / malformed suffix). */
+export function parseTokenAuthTime(token: string): number | undefined {
+  const m = /^rt_[A-Za-z0-9_-]+\.(\d{1,12})$/.exec(token);
+  return m ? Number(m[1]) : undefined;
 }

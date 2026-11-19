@@ -48,6 +48,10 @@ export function begin(): Token {
   return { epoch: e, signal: c.signal, done: () => { controllers.delete(c); } };
 }
 
+/** In-flight tracked work (a leak check for tests: must return to 0 once work settles).
+ *  @internal test-only; not part of the store API. */
+export function pendingWork(): number { return controllers.size; }
+
 /** Bind the store to a user. A different non-null scope wipes first, so data left over
  *  from user A can never be read under user B, whichever trigger was missed. */
 export function setScope(userId: string): void {

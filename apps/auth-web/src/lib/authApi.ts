@@ -60,6 +60,7 @@ export interface ClientSummary {
   clientType: string;
   allowedScopes: string[];
   verifiedOnly: boolean;
+  allowOfflineAccess?: boolean;
   status: string;
 }
 
@@ -132,11 +133,12 @@ export function deleteAccount(base: string, csrf: string, confirm: string, confi
 export function revokeGrant(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/account/grants/revoke`, { csrf, client_id: clientId });
 }
-export function unlinkTelegram(base: string, csrf: string): Promise<{ ok?: boolean; error?: string }> {
-  return postJson(`${base}/api/account/telegram/unlink`, { csrf });
+/** Both need fresh authentication: a stale login answers `step_up_required`; resend with the current password. */
+export function unlinkTelegram(base: string, csrf: string, currentPassword?: string): Promise<{ ok?: boolean; error?: string; reauth?: string }> {
+  return postJson(`${base}/api/account/telegram/unlink`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
 }
-export function regenerateRecoveryCodes(base: string, csrf: string): Promise<{ recoveryCodes?: string[]; error?: string }> {
-  return postJson(`${base}/api/account/recovery-codes`, { csrf });
+export function regenerateRecoveryCodes(base: string, csrf: string, currentPassword?: string): Promise<{ recoveryCodes?: string[]; error?: string; reauth?: string }> {
+  return postJson(`${base}/api/account/recovery-codes`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
 }
 
 // --- developer dashboard (mutations) ---
@@ -161,10 +163,18 @@ export function listClients(base: string): Promise<{ clients?: ClientSummary[]; 
 
 export async function createClient(
   base: string,
-  body: { csrf: string; name: string; display_name?: string; client_type: string; redirect_uris: string; scopes: string; verified_only?: string },
+  body: { csrf: string; name: string; display_name?: string; client_type: string; redirect_uris: string; scopes: string; verified_only?: string; offline?: string },
 ): Promise<{ ok?: boolean; clientId?: string; clientSecret?: string; error?: string }> {
   const res = await fetch(`${base}/api/dev/clients`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return (await res.json()) as { ok?: boolean; clientId?: string; clientSecret?: string; error?: string };
+}
+
+export async function updateClient(
+  base: string,
+  body: { csrf: string; client_id: string; offline?: string },
+): Promise<{ ok?: boolean; error?: string }> {
+  const res = await fetch(`${base}/api/dev/clients/update`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return (await res.json()) as { ok?: boolean; error?: string };
 }
 
 /** Where the browser should go for a given post-auth `next` step (pure, testable). */

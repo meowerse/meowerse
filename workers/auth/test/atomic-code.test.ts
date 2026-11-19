@@ -19,6 +19,7 @@ const NOW = 1000;
 async function freshDb(): Promise<DbClient> {
   const c = createClient({ url: ":memory:" }) as unknown as DbClient;
   for (const stmt of [...SCHEMA, ...SEED]) await c.execute(stmt);
+  await c.execute("UPDATE oauth_clients SET allow_offline_access = 1 WHERE client_id = 'mw_demo'"); // refresh tokens need the client flag
   return c;
 }
 const n = async (db: DbClient, sql: string, args: unknown[] = []) => Number((await db.execute({ sql: `SELECT count(*) AS n FROM ${sql}`, args })).rows[0]!.n);

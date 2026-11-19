@@ -80,20 +80,31 @@ export default function AccountSettings({ base }: { base: string }) {
     if (!acct || !confirm) return;
     if (confirm.kind === "delete") return runDelete(password);
     setBusy(true);
+    let close = true;
+    /** Shared handling of a stale login on the fresh-auth actions; true = handled (dialog stays open when a password can fix it). */
+    const stepUp = (error?: string, reauth?: string): boolean => {
+      if (error === "step_up_required" && reauth === "password") { setNeedPassword(true); close = false; toast({ message: "enter your password to continue", variant: "error" }); return true; }
+      if (error === "step_up_required") { toast({ message: "sign in again to continue", variant: "error" }); return true; }
+      if (error === "wrong_password") { close = false; toast({ message: "password is wrong", variant: "error" }); return true; }
+      if (error === "rate_limited") { toast({ message: "too many attempts — try again later", variant: "error" }); return true; }
+      return false;
+    };
     try {
       if (confirm.kind === "revoke" && confirm.clientId) {
         await revokeGrant(base, acct.csrf, confirm.clientId);
         setGrants((g) => g.filter((x) => x.clientId !== confirm.clientId));
         toast({ message: "access revoked", variant: "success" });
       } else if (confirm.kind === "unlink") {
-        const r = await unlinkTelegram(base, acct.csrf);
+        const r = await unlinkTelegram(base, acct.csrf, password);
         if (r.ok) { clearSessionCache(); toast({ message: "telegram unlinked", variant: "success" }); reload(); }
+        else if (stepUp(r.error, r.reauth)) { /* handled */ }
         else toast({ message: "set a password first — unlinking would lock you out", variant: "error" });
       } else if (confirm.kind === "regen") {
-        const r = await regenerateRecoveryCodes(base, acct.csrf);
+        const r = await regenerateRecoveryCodes(base, acct.csrf, password);
         if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
+        else stepUp(r.error, r.reauth);
       }
-    } finally { setBusy(false); setConfirm(null); }
+    } finally { setBusy(false); if (close) { setConfirm(null); setNeedPassword(false); } }
   }
 
   if (error === "no_session") return <Alert variant="error">please <a href="/login">sign in</a> to manage your account.</Alert>;
@@ -176,9 +187,9 @@ export default function AccountSettings({ base }: { base: string }) {
       <ConfirmDialog open={confirm?.kind === "revoke"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
         title="revoke access?" description={`${grants.find((x) => x.clientId === confirm?.clientId)?.displayName ?? "the app"} will immediately lose access to your account. you can re-authorize any time.`}
         confirmLabel="revoke access" variant="danger" loading={busy} />
-      <ConfirmDialog open={confirm?.kind === "unlink"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+      <ConfirmDialog open={confirm?.kind === "unlink"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
         title="unlink telegram?" description="you'll lose your verified status and telegram sign-in." confirmLabel="unlink" variant="danger" loading={busy} />
-      <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => setConfirm(null)} onConfirm={() => runConfirm()}
+      <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
         <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}

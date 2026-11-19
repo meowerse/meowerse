@@ -130,6 +130,8 @@ test("happy path → 200, image content-type, 6h public cache, largest size, no 
   expect(res.headers.get("Content-Type")).toBe("image/png");
   expect(res.headers.get("Cache-Control")).toBe("public, max-age=21600");
   expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'; sandbox");
   // used the largest size's file_id for getFile, then streamed that file_path
   expect(urls.some((u) => u.includes("/getFile?file_id=big"))).toBe(true);
   expect(urls.some((u) => u.includes("/file/bot") && u.includes("photos/file_9.jpg"))).toBe(true);
@@ -357,4 +359,34 @@ test("on cache miss the response is put into the edge cache via ctx.waitUntil", 
   } finally {
     g.caches = prev;
   }
+});
+
+test("a non-image upstream Content-Type is never echoed (text/html → image/jpeg)", async () => {
+  const urls: string[] = [];
+  const deps = {
+    getDb: () => routedDb([linkRoute(42)]),
+    fetch: fakeFetch({
+      photos: { ok: true, result: { total_count: 1, photos: [[{ file_id: "big", width: 640, height: 640 }]] } },
+      file: { ok: true, result: { file_path: "photos/x.jpg" } },
+      imgContentType: "text/html",
+      urls,
+    }),
+  } as unknown as Deps;
+  const res = await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, deps, ACCT, CORS);
+  expect(res.headers.get("Content-Type")).toBe("image/jpeg");
+});
+
+test("an SVG upstream Content-Type is never echoed (image/svg+xml → image/jpeg); real image types still pass through", async () => {
+  const mk = (ct: string) =>
+    ({
+      getDb: () => routedDb([linkRoute(42)]),
+      fetch: fakeFetch({
+        photos: { ok: true, result: { total_count: 1, photos: [[{ file_id: "big", width: 640, height: 640 }]] } },
+        file: { ok: true, result: { file_path: "photos/x.jpg" } },
+        imgContentType: ct,
+        urls: [],
+      }),
+    }) as unknown as Deps;
+  expect((await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, mk("image/svg+xml"), ACCT, CORS)).headers.get("Content-Type")).toBe("image/jpeg");
+  expect((await handleAvatar(req(), { TELEGRAM_BOT_TOKEN: "T" } as Env, mk("image/png"), ACCT, CORS)).headers.get("Content-Type")).toBe("image/png");
 });

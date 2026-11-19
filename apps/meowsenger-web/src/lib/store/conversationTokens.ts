@@ -3,10 +3,13 @@
 // valid, i.e. no clearAll / setScope(other) / purge(chat) happened since. MEMORY ONLY.
 import * as cc from "./conversationCache";
 import type { ConversationEntry } from "./conversationCache";
+import { begin } from "./scope";
 
 export type { EntryToken, ConversationEntry, ScrollAnchor } from "./conversationCache";
 export const enter = cc.enter;
 export const valid = cc.valid;
+/** Scope-tracked async work: `clearAll()` aborts `signal`; call `done()` in a `finally`. */
+export const beginWork = begin;
 /** Snapshot read: no recency change (safe in render). */
 export function peekEntry(chatId: string): ConversationEntry | undefined { return cc.peek(chatId); }
 /** LRU recency touch (an effect, never render). */

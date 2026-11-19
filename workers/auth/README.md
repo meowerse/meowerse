@@ -33,7 +33,14 @@ bunx wrangler secret put DATABASE_URL        # same Turso DB as workers/api
 bunx wrangler secret put DATABASE_AUTH_TOKEN
 ```
 
-Local dev: copy `.dev.vars.example` → `.dev.vars` (gitignored) and fill in.
+`STATE_SECRET` is REQUIRED: the Worker fails closed without it unless `AUTH_DEV=1` (local dev only, never in
+production). `infra/cloudflare/deploy-auth.sh` checks (`wrangler secret list`, names only) that it exists before deploying.
+
+Local dev: copy `.dev.vars.example` → `.dev.vars` (gitignored) and fill in; keep `AUTH_DEV="1"` there (it is what
+trusts `http://localhost:4321` and loopback origins; production `CORS_ORIGINS` no longer lists localhost).
+
+`BRAND_OWNER_ACCOUNT_IDS` (var, comma-separated account ids; empty by default): accounts allowed to register
+client display names that match protected meowerse brand names (in addition to `acct_system`).
 
 ## Develop
 

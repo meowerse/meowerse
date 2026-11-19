@@ -38,7 +38,7 @@ const CHATS = {
 } as const;
 type Key = keyof typeof CHATS;
 
-type Sw = { ms: number; flashes: number; offs: number; waitMs: number; reqs: Record<string, number>; wsChat: number };
+type Sw = { ms: number; skel: number; flashes: number; offs: number; waitMs: number; reqs: Record<string, number>; wsChat: number };
 type Run = {
   boot: { rowsMs: number; reqs: Record<string, number>; wsInbox: number; wsChat: number; cls: number; longTasks: number };
   cold: Sw[]; warm: Sw[]; warmLongTasks: { n: number; totalMs: number; maxMs: number; loafBlockingMs: number };
@@ -102,13 +102,14 @@ async function switchTo(page: Page, tap: TapT, mock: string, key: Key): Promise<
   const t0 = await perfNow(page);
   const ms = await perf<number>(page, "switchTo", c.title, c.marker);
   if (ms < 0) throw new Error(`switch to ${key} failed (${ms})`);
+  const skel = await evalP<number>(page, "skelFrames");
   await perf(page, "waitState", "on", 6000);
   await page.waitForTimeout(120); // let trailing requests/frames land before counting
   const conn = await page.evaluate((from) => (window as any).__perf.conn.filter((e: any) => e.t >= from), t0) as { t: number; state: string | null }[];
   let waitMs = 0;
   conn.forEach((e, i) => { if (e.state === "wait") waitMs += (conn[i + 1]?.t ?? e.t) - e.t; });
   const w1 = (await ctl(mock, "stats")).wsOpen.chat as number;
-  return { ms, flashes: conn.filter((e) => e.state === "wait").length, offs: conn.filter((e) => e.state === "off").length, waitMs, reqs: tap.since(r0), wsChat: w1 - w0 };
+  return { ms, skel, flashes: conn.filter((e) => e.state === "wait").length, offs: conn.filter((e) => e.state === "off").length, waitMs, reqs: tap.since(r0), wsChat: w1 - w0 };
 }
 type TapT = Awaited<ReturnType<typeof newPage>>["tap"];
 
@@ -313,6 +314,7 @@ function aggregate(runs: Run[]) {
   const warm = (r: Run) => r.warm;
   return {
     reentryWarmMs: lat(warm), coldOpenMs: lat((r) => r.cold),
+    skeletonFramesPerWarmSwitch: r1(mean(runs.flatMap((r) => r.warm.map((s) => s.skel)))),
     waitFlashesPerWarmSwitch: r1(mean(runs.flatMap((r) => r.warm.map((s) => s.flashes)))),
     waitFlashesPerColdOpen: r1(mean(runs.flatMap((r) => r.cold.map((s) => s.flashes)))),
     waitDwellMsPerWarmSwitch: r1(median(runs.flatMap((r) => r.warm.map((s) => s.waitMs)))),
@@ -349,6 +351,7 @@ function summaryMd(meta: any, bundle: any, agg: Record<string, ReturnType<typeof
     L.push(`## ${p} (${prof.viewport.width}x${prof.viewport.height}, CPU ${prof.cpu}x${prof.hasTouch ? ", touch" : ""})`, "", "| metric | value |", "|---|---|");
     L.push(`| warm re-entry to visible messages p50 / p95 (ms) | ${a.reentryWarmMs.p50} / ${a.reentryWarmMs.p95} (n=${a.reentryWarmMs.n}; per-run p50: ${a.reentryWarmMs.perRunP50.join(", ")}) |`);
     L.push(`| cold chat open p50 / p95 (ms) | ${a.coldOpenMs.p50} / ${a.coldOpenMs.p95} (n=${a.coldOpenMs.n}) |`);
+    L.push(`| skeleton (.mw-skel-log) frames per warm switch | ${a.skeletonFramesPerWarmSwitch} |`);
     L.push(`| wait (yellow) flashes per warm switch / per cold open | ${a.waitFlashesPerWarmSwitch} / ${a.waitFlashesPerColdOpen} (median dwell ${a.waitDwellMsPerWarmSwitch} ms) |`);
     L.push(`| HTTP /api per warm switch | ${JSON.stringify(a.httpPerWarmSwitch)} |`, `| HTTP /api per cold open | ${JSON.stringify(a.httpPerColdOpen)} |`, `| HTTP /api at boot (median) | ${JSON.stringify(a.httpBoot)} |`);
     L.push(`| chat sockets opened per warm switch; at boot (inbox/chat) | ${a.chatSocketsOpenedPerSwitch}; ${a.wsAtBoot.inbox}/${a.wsAtBoot.chat} |`, `| boot: 8 sidebar rows visible (ms, median) | ${a.bootRowsVisibleMs} |`);
@@ -368,8 +371,8 @@ function summaryMd(meta: any, bundle: any, agg: Record<string, ReturnType<typeof
     for (const [p, byRtt] of Object.entries(lat)) for (const [rtt, v] of Object.entries(byRtt)) L.push(`| ${p} | ${rtt} | ${v.warmP50} / ${v.warmP95} | ${v.coldP50} / ${v.coldP95} | ${v.flashes} | ${v.n} |`);
     L.push("");
   }
-  L.push("## Owner targets (warm cached re-entry p50 < 50 ms, p95 < 100 ms at the default 150 ms RTT; zero false-outage flashes on a normal switch)", "", "| profile | p50 | p95 | flashes/switch | verdict |", "|---|---|---|---|---|");
-  for (const [p, a] of Object.entries(agg)) { const ok = a.reentryWarmMs.p50! < 50 && a.reentryWarmMs.p95! < 100 && a.waitFlashesPerWarmSwitch === 0; L.push(`| ${p} | ${a.reentryWarmMs.p50} | ${a.reentryWarmMs.p95} | ${a.waitFlashesPerWarmSwitch} | ${ok ? "MEETS" : "MISSES"} |`); }
+  L.push("## Owner targets (warm cached re-entry p50 < 50 ms, p95 < 100 ms at the default 150 ms RTT; zero false-outage flashes on a normal switch)", "", "| profile | p50 | p95 | flashes/switch | skeleton frames/switch | latency only | verdict |", "|---|---|---|---|---|---|---|");
+  for (const [p, a] of Object.entries(agg)) { const ok = a.reentryWarmMs.p50! < 50 && a.reentryWarmMs.p95! < 100 && a.waitFlashesPerWarmSwitch === 0; const latOk = a.reentryWarmMs.p50! < 50 && a.reentryWarmMs.p95! < 100; L.push(`| ${p} | ${a.reentryWarmMs.p50} | ${a.reentryWarmMs.p95} | ${a.waitFlashesPerWarmSwitch} | ${a.skeletonFramesPerWarmSwitch} | ${latOk ? "MEETS" : "MISSES"} | ${ok ? "MEETS" : "MISSES"} |`); }
   L.push("");
   L.push("## Bundle (/app, gzip -9)", "", `eager JS: ${bundle.eagerJsGzip} B gz / ${bundle.eagerJsRaw} B raw across ${bundle.eagerJs.length} chunks; CSS ${bundle.cssGzip} B gz; all built JS ${bundle.allJsGzip} B gz; HTML ${bundle.htmlGzip} B gz`, "", "| chunk | raw B | gzip B |", "|---|---|---|");
   for (const c of bundle.allJs) L.push(`| ${c.file}${bundle.eagerJs.some((e: any) => e.file === c.file) ? " (eager)" : ""} | ${c.raw} | ${c.gzip} |`);

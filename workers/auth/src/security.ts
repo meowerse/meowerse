@@ -2,16 +2,24 @@ import { b64urlEncode, constantTimeEqual } from "@meowerse/auth-shared";
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset. Mirrors workers/api default shape. */
-export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.org";
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;
   return raw.split(",").map((o) => o.trim()).filter(Boolean);
 }
 
+/** Local development flag (wrangler dev / tests): never set in production vars. */
+export function isDevEnv(env: Env): boolean {
+  return env.AUTH_DEV === "1";
+}
+
 export function isOriginAllowed(origin: string | null, env: Env): boolean {
   if (!origin) return false;
   if (allowlist(env).includes(origin)) return true;
+  // Loopback / *.local hosts are accepted ONLY in dev: in production any process on a user's machine
+  // (or a lookalike .local name) could otherwise be a credentialed CORS origin.
+  if (!isDevEnv(env)) return false;
   try {
     const u = new URL(origin);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { handle } from "../src/index";
+import { handle, rlKey } from "../src/index";
 import { sha256Hex } from "../src/crypto";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
@@ -128,7 +128,7 @@ test("login rotates an existing session and resolves next=done with no pending r
 
 test("signup is rate-limited once the bucket is exhausted", async () => {
   const { env, deps, store } = await fixture();
-  const bucket = "signup:" + (await sha256Hex("|signup"));
+  const bucket = "signup:" + (await rlKey(env as never, new Request("https://iss/"), "signup"));
   store.tables.rate_limits.push({ bucket, count: 20, window_start: 1000 });
   const r = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "blocked_user", password: "abcdefghijkl" }) }), env as never, deps as never);
   expect(r.status).toBe(429);
@@ -214,10 +214,10 @@ test("refresh token: issued with offline_access, rotates, reuse revokes family",
   expect(r6.status).toBe(400);
 });
 
-test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/STATE_SECRET are omitted", async () => {
+test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD are omitted (STATE_SECRET is required in production)", async () => {
   const store = memStore();
   const keys = await genSigningKeys("k1", "active");
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), CORS_ORIGINS: "https://x" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), CORS_ORIGINS: "https://x", STATE_SECRET: "prod-state-secret" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
 
   const r1 = await handle(new Request(authzUrl("mw_demo", REDIRECT, "openid profile")), env as never, deps as never);
@@ -242,7 +242,7 @@ test("full loop works on built-in defaults when ISSUER/WEB_ORIGIN/RESOURCE_AUD/S
 async function login(username: string) {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: "accttest1234" }) }), env as never, deps as never);
   const sess = cookieValue(su.headers.get("Set-Cookie"), "__Host-mw_sess")!;

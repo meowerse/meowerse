@@ -4,7 +4,7 @@ import { genSigningKeys, routedDb, type Route } from "./helpers";
 
 async function env() {
   const keys = await genSigningKeys();
-  return { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  return { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
 }
 
 const SESSION: Route = [
@@ -157,4 +157,25 @@ test("mgmt rejects an invalid manifest (bad name) → 400", async () => {
   const routes: Route[] = [[/FROM management_tokens WHERE token_hash/, () => ({ rows: [{ owner_account_id: "owner1", revoked_at: null }] })]];
   const r = await handle(new Request("https://iss/mgmt/v1/clients", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer mgmt_tok" }, body: JSON.stringify({ name: "BAD", client_type: "public", redirect_uris: "https://app/cb" }) }), e as never, deps(routes) as never);
   expect(r.status).toBe(400);
+});
+
+test("M7: the dashboard create and update handlers pass `offline` through to allow_offline_access", async () => {
+  const e = await env();
+  const log: { sql: string; args: unknown[] }[] = [];
+  const d = (routes: Route[]) => ({ getDb: () => routedDb(routes, log), clock: () => 1000 });
+  const post = (path: string, body: unknown) =>
+    new Request(`https://iss/api/dev/clients${path}`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: "__Host-mw_sess=x" }, body: JSON.stringify(body) });
+  const c = await handle(post("", { csrf: "csrf1", name: "off-app", client_type: "public", redirect_uris: "https://app.example/cb", scopes: "openid offline_access", offline: "true" }), e as never, d([SESSION, NAME_FREE]) as never);
+  expect(c.status).toBe(200);
+  expect(log.find((l) => /INSERT INTO oauth_clients/i.test(l.sql))?.args[6]).toBe(1);
+
+  log.length = 0;
+  const owned: Route = [/SELECT 1 FROM oauth_clients WHERE client_id .* AND owner_account_id/, () => ({ rows: [{ "1": 1 }] })];
+  const u = await handle(post("/update", { csrf: "csrf1", client_id: "mw_1", offline: "true" }), e as never, d([SESSION, owned]) as never);
+  expect(u.status).toBe(200);
+  const upd = log.find((l) => /UPDATE oauth_clients SET/i.test(l.sql));
+  expect(upd?.args).toContain(1); // allow_offline_access = 1
+  log.length = 0;
+  await handle(post("/update", { csrf: "csrf1", client_id: "mw_1", scopes: "openid" }), e as never, d([SESSION, owned]) as never);
+  expect(log.find((l) => /UPDATE oauth_clients SET/i.test(l.sql))?.args).toContain(null); // omitted → unchanged (COALESCE)
 });

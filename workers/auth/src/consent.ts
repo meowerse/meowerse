@@ -120,10 +120,8 @@ export async function revokeGrant(db: DbClient, accountId: string, clientId: str
   const res = await db.batch([
     { sql: "DELETE FROM consents WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
     { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
-    {
-      sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE account_id = ? AND client_id = ? AND used_at IS NULL",
-      args: [accountId, clientId],
-    },
+    // DELETE (not "mark used") so the revoked grant's refresh attempt is a plain invalid_grant, not a false reuse alarm.
+    { sql: "DELETE FROM refresh_tokens WHERE account_id = ? AND client_id = ?", args: [accountId, clientId] },
   ]);
   return (res[0]?.rowsAffected ?? 0) > 0; // true only if a consent row existed
 }

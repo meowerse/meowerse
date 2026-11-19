@@ -213,3 +213,16 @@ eager JS: 86889 B gz / 288690 B raw across 4 chunks; CSS 11296 B gz; all built J
 | ChannelPreview.DcrjhLXG.js | 5568 | 1691 |
 | Layout.DRzqk8lZ.css (css) | 63866 | 11296 |
 <!-- baseline:end -->
+
+## PR-7b: warm re-entry before / after (stale-while-revalidate read path)
+
+Reduced run on a loaded host (`--runs 2 --warm 10 --leak-switches 6 --rtts 150 --lat-runs 1 --profiles desktop,phone`, API 150 ms, WS 120 ms; n = 20 warm switches per profile), working tree of `feat/meowsenger-swr-7b` on top of `33562789`. "Before" is the committed baseline above (master `9f03306`, n = 100, 5 runs). Not published to `meowsenger-baseline.json`; a full N=5 run belongs on a quiet machine.
+
+| profile | warm p50 / p95 before (ms) | warm p50 / p95 after (ms) | skeleton frames per warm switch | wait-dot flashes per warm switch | latency-only target (< 50 / < 100) |
+|---|---|---|---|---|---|
+| desktop 1x | 171.2 / 199.9 | 32.3 / 45.4 | 0 | 1 | MEETS |
+| phone 4x CPU | 208.5 / 275.5 | 95.6 / 127.2 | 0 | 1 | MISSES (p95; loaded host, reduced n) |
+
+- The harness gained a per-switch skeleton counter: a rAF loop inside `__perf.switchTo` counts the frames in which `.mw-skel-log` is in the DOM before the chat shows. It is 0 on every warm switch: a warm entry paints the cached rows in the first committed render.
+- The remaining "flash" is NOT message content. It is the connection indicator: every chat switch opens a fresh socket, so `.mw-chat__conn[data-state=wait]` shows until the socket opens (~110-120 ms dwell, i.e. the mock's WS-open delay). That is PR-10's concern (the dot), not the read path. The harness verdict column keeps the original owner target (p50, p95 AND zero dot flashes), so it still prints MISSES; the new "latency only" column separates the part PR-7 owns. The target itself is unchanged.
+

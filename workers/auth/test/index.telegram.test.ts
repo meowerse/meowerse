@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { handle } from "../src/index";
+import { handle, rlKey } from "../src/index";
 import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
 import { genSigningKeys, memStore, cookieValue, botConfirm, tgVerify } from "./helpers";
@@ -111,9 +111,9 @@ test("internal confirm with an unknown nonce → 400", async () => {
 test("tg/start is IP-rate-limited (429)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "tgstart:" + (await sha256Hex("|tgstart")), count: 30, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "tgstart:" + (await rlKey(env as never, new Request("https://iss/"), "tgstart")), count: 30, window_start: 1000 });
   const r = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
   expect(r.status).toBe(429);
 });
@@ -144,7 +144,7 @@ async function confirmedTicket(clock: { t: number }) {
   const store = memStore();
   const keys = await genSigningKeys();
   const env = {
-    AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
+    AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
     STATE_SECRET: "s", CORS_ORIGINS: "https://web", BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", TELEGRAM_BOT_TOKEN: BOT_TOKEN,
   };
   const deps = { getDb: () => store.db, clock: () => clock.t };
@@ -316,7 +316,7 @@ test("10 parallel wrong codes spend exactly 5 attempts and burn the ticket", asy
 
 test("tg/verify is IP-rate-limited (429)", async () => {
   const { env, deps, tables } = await fixture();
-  (tables.rate_limits as Row[]).push({ bucket: "tgverify:" + (await sha256Hex("|tgverify")), count: 30, window_start: 1000 });
+  (tables.rate_limits as Row[]).push({ bucket: "tgverify:" + (await rlKey(env as never, new Request("https://iss/"), "tgverify")), count: 30, window_start: 1000 });
   const r = await tgVerify(handle, env, deps, { ticketId: "tkt_x", code: "12345678", owner: "o" });
   expect(r.status).toBe(429);
 });
@@ -430,4 +430,40 @@ test("cancel by another Telegram user racing the confirm is refused atomically (
   expect(c.status).toBe(400);
   expect(ticketRow(tables, sb.ticketId).status).toBe("pending");
   expect(ctxRow(tables, sb.ticketId).tg_id).toBe("97");
+});
+
+test("/tg/widget: cross-site form post and foreign Origin → 403 bad_origin (no session); same-site ok; IP-throttled (429)", async () => {
+  const { env, deps, tables } = await fixture();
+  const data: Record<string, string> = { id: "78", first_name: "Tg", username: "tguser2", auth_date: "1000" };
+  data.hash = await signWidget(data);
+  const post = (h: Record<string, string>) => handle(new Request("https://iss/tg/widget", { method: "POST", headers: { "Content-Type": "application/json", ...h }, body: JSON.stringify(data) }), env as never, deps as never);
+  const evil = await post({ Origin: "https://evil.example" });
+  expect(evil.status).toBe(403);
+  expect(((await evil.json()) as { error: string }).error).toBe("bad_origin");
+  expect((await post({ "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+  expect((tables.sessions as Row[]).length).toBe(0);
+  const ok = await post({ Origin: "https://web" });
+  expect(ok.status).toBe(200);
+  expect(cookieValue(ok.headers.get("Set-Cookie"), "__Host-mw_sess")).toBeTruthy();
+
+  const bucket = "tgwidget:" + (await rlKey(env as never, new Request("https://iss/"), "tgwidget"));
+  const row = (tables.rate_limits as Row[]).find((r) => r.bucket === bucket);
+  expect(row).toBeTruthy(); // the widget endpoint is counted per IP
+  row!.count = 30;
+  expect((await post({})).status).toBe(429);
+});
+
+test("tg/verify: the burned-ticket 'too_many_attempts' 429 carries no Retry-After (a generic IP throttle still does)", async () => {
+  const { env, deps } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  const { code } = await botConfirm(handle, env, deps, { nonce: new URL(sb.deepLink).searchParams.get("start")!, tgId: "93" });
+  const wrong = code === "00000000" ? "11111111" : "00000000";
+  const rs: Response[] = [];
+  for (let i = 0; i < 6; i++) rs.push(await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code: wrong, owner }));
+  const burned = rs.find((r) => r.status === 429)!;
+  expect(burned).toBeTruthy();
+  expect(((await burned.json()) as { error: string }).error).toBe("too_many_attempts");
+  expect(burned.headers.get("Retry-After")).toBeNull();
 });

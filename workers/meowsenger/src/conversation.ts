@@ -1654,12 +1654,20 @@ export class Conversation extends DurableObject<Env> {
    * page backwards from an earlier message.
    */
   async historyFor(chatId: string, beforeId: string | null, viewerId?: string): Promise<Wire[]> {
+    return (await this.historyForEx(chatId, beforeId, viewerId)).messages;
+  }
+
+  /** `historyFor` plus `found`: false when a NON-null `beforeId` is not a row of this room
+   *  (e.g. a hard-purged tombstone the client still caches). That answers `[]`, never the
+   *  newest page: falling through would make a client prepend the newest page out of order. */
+  async historyForEx(chatId: string, beforeId: string | null, viewerId?: string): Promise<{ messages: Wire[]; found: boolean }> {
     let cursor: number | undefined;
     if (beforeId) {
       const at = this.ctx.storage.sql
         .exec("SELECT created_at FROM messages WHERE id = ?", beforeId)
         .toArray()[0]?.created_at;
-      cursor = at == null ? undefined : Number(at);
+      if (at == null) return { messages: [], found: false };
+      cursor = Number(at);
     }
     // LEFT JOIN the reply target so each row carries its quote-preview (reply_*).
     // A soft-deleted target yields no snippet (the join keeps the row but we drop
@@ -1685,7 +1693,7 @@ export class Conversation extends DurableObject<Env> {
     // Rows come newest-first (for the LIMIT); flip to chronological for the UI.
     const wires = rows.map((r: Row) => this.rowToWire(r, chatId)).reverse();
     this.attachReactions(wires, viewerId);
-    return wires;
+    return { messages: wires, found: true };
   }
 
   /**

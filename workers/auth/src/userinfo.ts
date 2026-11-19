@@ -25,12 +25,16 @@ export async function userinfoClaims(
     sql: `SELECT username, display_name, avatar_url,
                  (SELECT telegram_id FROM telegram_links t WHERE t.account_id = a.id) AS telegram_id,
                  (SELECT telegram_username FROM telegram_links t WHERE t.account_id = a.id) AS telegram_username,
-                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified
+                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified,
+                 EXISTS(SELECT 1 FROM access_tokens k WHERE k.jti = ? AND k.revoked_at IS NOT NULL) AS tok_revoked
           FROM accounts a WHERE a.id = ?`,
-    args: [accountId],
+    args: [String(i.payload.jti ?? ""), accountId],
   });
   const arow = acc.rows[0];
   if (!arow) return { ok: false };
+  // Honour revocation (grant revoked, password changed, family revoked): a revoked access token stops working
+  // here at once instead of lingering for its 15-minute lifetime. A jti with no row is not rejected (stateless).
+  if (Number(arow.tok_revoked) === 1) return { ok: false };
 
   const claims: Record<string, unknown> = { sub: accountId };
   if (scope.includes("profile")) {
