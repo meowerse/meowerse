@@ -25,11 +25,28 @@ export function isRegisterableRedirect(uri: string): boolean {
 /**
  * Names reserved for the first-party apps. The consent screen shows a client's display name, so a third-party
  * client must not be able to present itself as "Meowsenger"/"Meowerse" (phishing the consent grant).
- * Matched as a substring on a skeleton of the value: lowercase, NFKD (full-width/compat forms), combining marks
- * dropped, common Cyrillic/Greek lookalikes folded to Latin, leetspeak digits/symbols (0 1 3 4 5 7 @ $) folded,
- * "rn"->"m" and "vv"->"w", everything else non-alphanumeric stripped. A string that mixes Latin letters with
- * Cyrillic/Greek ones is rejected outright (mixed-script spoofing). Exempt: the system account, accounts listed in
- * BRAND_OWNER_ACCOUNT_IDS, and edits that leave an existing row's name / display name exactly as it already is.
+ *
+ * Matching rule (isReservedBrand):
+ *  0. Cf policy: format characters (\p{Cf}) are rejected outright (they only serve to split a brand into harmless
+ *     tokens), EXCEPT ZWJ/ZWNJ (emoji sequences, Persian) and the bidi marks U+200E/U+200F/U+061C (RTL text); those
+ *     exempt ones are stripped for matching. The value is NFKD-normalised and its default-ignorable code points
+ *     removed BEFORE anything else.
+ *  1. Lowercase, then split into tokens at anything that is not a letter, digit, combining mark or one of the
+ *     leetspeak symbols (@ $ ! |): spaces, hyphens, dots, underscores separate tokens.
+ *  2. Fold each token to a Latin skeleton: NFKD (full-width/compat forms), combining marks dropped, common
+ *     Cyrillic/Greek lookalikes and leetspeak digits/symbols (0 1 3 4 5 7 @ $ ! |) mapped to Latin. A token that
+ *     is ALSO written with Latin letters has every remaining non-ASCII letter turned into a wildcard "?", EXCEPT
+ *     letters of real-language scripts (Han, kana, Hangul, Thai, Lao, Khmer, Myanmar, Tibetan, Indic, Arabic,
+ *     Hebrew), which are dropped. A hit may contain at most 3 wildcard positions for brands of >= 8 letters, else 2.
+ *     Small capitals and common Latin lookalikes (o-slash, alpha, l-tilde, open-o, ...) are mapped directly.
+ *     Letters of other scripts in a token with no Latin at all are dropped. Two variants are tried per token: as folded, and with "rn"->"m", "vv"->"w".
+ *  3. Concatenate the tokens' skeletons and look for a reserved brand. A hit counts ONLY if it lies inside a
+ *     single token ("meowerseapp", "my-meowerse"), or spans several tokens that it covers completely, from the
+ *     first token's start to the last token's end ("Meow senger", "sun-meow", "m e o w s e n g e r"). A hit that
+ *     starts or ends in the MIDDLE of a token it merely straddles is ignored, so "Meowers Events"
+ *     (meowers|events -> "meowerse" straddles "events") and bilingual names like "\u041c\u043e\u0439 Blog" are allowed.
+ * Exempt: the system account, accounts listed in BRAND_OWNER_ACCOUNT_IDS, and edits that leave an existing row's
+ * name / display name exactly as it already is.
  */
 const RESERVED_BRANDS = ["meowsenger", "meowerse", "moonmeow", "sunmeow", "alxnko"];
 const CONFUSABLES: Record<string, string> = {
@@ -38,21 +55,82 @@ const CONFUSABLES: Record<string, string> = {
   "і": "i", "ј": "j", "ѕ": "s", "ӏ": "l", "ѡ": "w", "ԁ": "d", "ԛ": "q", "ɡ": "g",
   // Greek
   "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "u", "ν": "v", "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "ω": "w", "ϲ": "c",
+  // Latin-script lookalikes NFKD leaves alone, and small capitals
+  "\u0251": "a", "\u026b": "l", "\u0254": "o", "\u00f8": "o", "\u027c": "r", "\u0269": "i",
+  "\u1d00": "a", "\u0299": "b", "\u1d04": "c", "\u1d05": "d", "\u1d07": "e", "\ua730": "f", "\u0262": "g", "\u029c": "h", "\u026a": "i", "\u1d0a": "j", "\u1d0b": "k", "\u029f": "l", "\u1d0d": "m", "\u0274": "n", "\u1d0f": "o", "\u1d18": "p", "\u0280": "r", "\ua731": "s", "\u1d1b": "t", "\u1d1c": "u", "\u1d20": "v", "\u1d21": "w", "\u028f": "y", "\u1d22": "z",
   // leetspeak / symbols
   "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i", "|": "l",
 };
-const LATIN = /[a-z]/i;
-const NON_LATIN_LETTER = /[\u0370-\u03ff\u0400-\u052f]/;
+// Letters of real-language scripts are DROPPED (never wildcarded) so ordinary "Meow<katakana>" / Arabic / Hebrew
+// names are not mistaken for spoofs. Every OTHER non-ASCII letter in a token that has Latin letters (Armenian,
+// Cyrillic, Greek, Lisu, Canadian Aboriginal, Cherokee, Coptic, Georgian, odd Latin-script letters, ...) is a
+// potential lookalike and becomes a wildcard.
+const REAL_LANGUAGE_LETTER = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Arabic}\p{Script=Hebrew}]$/u;
+// wildcard positions allowed inside one brand hit: 3 for brands of >= 8 letters, else 2
+const maxWildcards = (brand: string) => (brand.length >= 8 ? 3 : 2);
+const BRAND_TOKEN_SPLIT = /[^\p{L}\p{N}\p{M}@$!|]+/u;
+
+/** Latin skeleton of one token; lookalike-script letters (outside a-z) become "?" when Latin letters are present. */
+function foldToken(token: string): string {
+  let out = "";
+  for (const ch of token.normalize("NFKD").replace(/\p{M}/gu, "")) out += CONFUSABLES[ch] ?? ch;
+  if (/[a-z]/.test(out)) {
+    let w = "";
+    for (const ch of out) w += /\p{L}/u.test(ch) && !/[a-z]/.test(ch) && !REAL_LANGUAGE_LETTER.test(ch) ? "?" : ch;
+    return w.replace(/[^a-z0-9?]/g, "");
+  }
+  return out.replace(/[^a-z0-9]/g, "");
+}
+
+function brandAt(hay: string, at: number, brand: string): boolean {
+  let wild = 0;
+  for (let k = 0; k < brand.length; k++) {
+    const c = hay[at + k];
+    if (c === "?") {
+      if (++wild > maxWildcards(brand)) return false;
+    } else if (c !== brand[k]) return false;
+  }
+  return true;
+}
+
+function hasBrand(tokens: string[]): boolean {
+  const starts = new Set<number>();
+  const ends = new Set<number>();
+  const owner: number[] = []; // char index -> token index
+  let hay = "";
+  tokens.forEach((t, ti) => {
+    starts.add(hay.length);
+    for (let k = 0; k < t.length; k++) owner.push(ti);
+    hay += t;
+    ends.add(hay.length);
+  });
+  for (const b of RESERVED_BRANDS) {
+    for (let i = 0; i + b.length <= hay.length; i++) {
+      if (!brandAt(hay, i, b)) continue;
+      const j = i + b.length;
+      if (owner[i] === owner[j - 1] || (starts.has(i) && ends.has(j))) return true;
+    }
+  }
+  return false;
+}
+
 export function isReservedBrand(value: string | undefined): boolean {
   if (!value) return false;
-  const lower = value.toLowerCase();
-  if (LATIN.test(lower) && NON_LATIN_LETTER.test(lower)) return true;
-  const folded = lower.normalize("NFKD").replace(/\p{M}/gu, "");
-  let out = "";
-  for (const ch of folded) out += CONFUSABLES[ch] ?? ch;
-  const skeleton = out.replace(/[^a-z0-9]/g, "");
-  const variants = [skeleton, skeleton.replace(/rn/g, "m").replace(/vv/g, "w")];
-  return variants.some((v) => RESERVED_BRANDS.some((b) => v.includes(b)));
+  // Format characters other than ZWJ/ZWNJ (zero-width space, soft hyphen, bidi marks, ...) have no place in a
+  // client name and are used to split a brand into harmless-looking tokens: reject them outright.
+  if (/(?![\u200c\u200d\u200e\u200f\u061c])\p{Cf}/u.test(value)) return true;
+  // NFKD first (circled/full-width/compat letters -> Latin), then drop invisible default-ignorable code points
+  // (ZWSP, soft hyphen, ZWJ, ...) so they cannot split tokens.
+  value = value.normalize("NFKD").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+  // Negative-circled / negative-squared letters and regional indicators are symbols with no NFKD decomposition:
+  // map them to Latin before tokenising, or they would be dropped as separators and silently remove brand letters.
+  value = value.replace(/[\u{1F150}-\u{1F169}\u{1F170}-\u{1F189}\u{1F1E6}-\u{1F1FF}]/gu, (c) => {
+    const cp = c.codePointAt(0)!;
+    return String.fromCharCode(97 + (cp - (cp >= 0x1f1e6 ? 0x1f1e6 : cp >= 0x1f170 ? 0x1f170 : 0x1f150)));
+  });
+  const tokens = value.toLowerCase().split(BRAND_TOKEN_SPLIT).filter(Boolean).map(foldToken).filter(Boolean);
+  if (tokens.length === 0) return false;
+  return hasBrand(tokens) || hasBrand(tokens.map((t) => t.replace(/rn/g, "m").replace(/vv/g, "w")));
 }
 const SYSTEM_OWNER = "acct_system";
 

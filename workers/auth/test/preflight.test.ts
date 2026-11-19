@@ -23,3 +23,13 @@ test("deploy preflight: passes only when STATE_SECRET is listed; fails closed ot
   expect(broken.status).toBe(1);
   expect(ok.stdout + ok.stderr).not.toMatch(/secret_text|AUTH_SIGNING/);
 });
+
+test("preflight is wired before every auth deploy (package.json deploy script and deploy.yml)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
+  expect(pkg.scripts.deploy).toMatch(/^bash \.\.\/\.\.\/infra\/cloudflare\/preflight-auth\.sh && wrangler deploy$/);
+  const wf = readFileSync(new URL("../../../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const step = wf.slice(wf.indexOf("Deploy auth (one Worker"), wf.indexOf("Deploy meowsenger"));
+  expect(step.indexOf("infra/cloudflare/preflight-auth.sh")).toBeGreaterThan(-1);
+  expect(step.indexOf("infra/cloudflare/preflight-auth.sh")).toBeLessThan(step.indexOf("wrangler deploy"));
+});

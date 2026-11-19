@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "bash ../../infra/cloudflare/preflight-auth.sh && wrangler deploy",
     "lint": "bun run --filter @meowerse/auth-web build && wrangler deploy --dry-run --outdir tmp/wr-auth",
     "test": "vitest run --coverage",
     "secret:db-url": "wrangler secret put DATABASE_URL",

@@ -89,6 +89,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          bash infra/cloudflare/preflight-auth.sh
           bun run --filter @meowerse/auth-web build
           (cd workers/auth && bunx wrangler deploy)
           bash infra/record-deploy.sh auth "run-${{ github.run_id }}"
