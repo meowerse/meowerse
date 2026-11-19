@@ -249,8 +249,16 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
 
   const request = v.request;
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
-  const promptNone = (request.prompt ?? "").split(/\s+/).includes("none");
+  const liveSession = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
+  const promptList = (request.prompt ?? "").split(/\s+/);
+  const promptNone = promptList.includes("none");
+  // OIDC Core 3.1.2.1: prompt=login or an exceeded max_age means the existing session must NOT be used
+  // silently: the user re-authenticates (login rotates the session and sets a fresh auth_time).
+  // With prompt=none that cannot be done, so it falls through to the login_required answer below.
+  const reauthRequired =
+    liveSession != null &&
+    (promptList.includes("login") || (request.maxAge !== undefined && (request.maxAge === 0 || now(deps) - liveSession.authTime > request.maxAge)));
+  const session = reauthRequired ? null : liveSession;
 
   if (session) {
     const verified =
@@ -478,7 +486,7 @@ async function mintResponse(
   let refresh: string | undefined;
   if (i.issueRefresh) {
     const ins = await refreshTokenInsert(
-      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires },
+      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires, authTime: i.authTime },
       guard,
     );
     refresh = ins.token;
@@ -634,7 +642,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       clientId,
       scope: rot.scope,
       nonce: null,
-      authTime: now(deps),
+      authTime: rot.authTime ?? now(deps),
       family: rot.family,
       issueRefresh: true,
       prevId: rot.tokenHash,
