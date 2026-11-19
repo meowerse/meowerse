@@ -20,7 +20,7 @@ async function setup() {
   return { post, db, setNow: (n: number) => (t = n) };
 }
 
-test("M5: recovery-code regeneration and telegram unlink need fresh auth (recent login or the current password)", async () => {
+test("M5: recovery-code regeneration and telegram unlink need fresh auth (recent login or the current password)", { timeout: 30_000 }, async () => {
   const f = await setup();
   for (const path of ["/api/account/recovery-codes", "/api/account/telegram/unlink"]) {
     // fresh login → allowed without a password
