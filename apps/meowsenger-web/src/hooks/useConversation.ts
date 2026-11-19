@@ -6,7 +6,6 @@ import { pushConfirmedFor } from "../lib/push";
 import { retryDelay } from "../lib/backoff";
 import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
 import { hasSessionEnded, notifySessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
-import { clearAll } from "../lib/store/scope";
 // The ONLY store import allowed here: token-authorised, memory-only cache writes.
 import { enter, valid, beginWork, touch, peekEntry, putT, patchT, type EntryToken, type ScrollAnchor } from "../lib/store/conversationTokens";
 
@@ -869,10 +868,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
       unackedRef.current.delete(chatId);
       if (frame.reason === "session") {
         // The LOGIN ended, not this chat's membership: raise the app's existing session-ended
-        // path (banner, draft hand-back) and drop the account cache; no "removed" purge/toast.
-        // The snapshot is taken by notifySessionEnded BEFORE the wipe.
+        // path (banner + draft hand-back; the installed auth channel wipes the account cache via
+        // clearAll, after the snapshot). No "removed from chat" purge/toast.
         notifySessionEnded();
-        clearAll();
       } else onRevokedRef.current(chatId);
       return;
     }

@@ -69,7 +69,12 @@ export class UserInbox extends DurableObject<Env> {
     const verdict = await this.read(a.sid, a.userId);
     if (verdict === "unavailable") return Date.now() - last < SESSION_STALE_MS;
     if (!verdict) { try { ws.close(4001, "revoked"); } catch { /* already closing */ } return false; }
-    try { ws.serializeAttachment({ ...a, checkedAt: Date.now() }); } catch { /* socket gone */ }
+    // The verdict is per SESSION: stamp every tab that shares it so they don't each re-read.
+    const now = Date.now();
+    for (const peer of this.ctx.getWebSockets()) {
+      const pa = peer.deserializeAttachment() as Attach | null;
+      if (pa?.sid === a.sid && pa.userId === a.userId) { try { peer.serializeAttachment({ ...pa, checkedAt: now }); } catch { /* socket gone */ } }
+    }
     return true;
   }
 

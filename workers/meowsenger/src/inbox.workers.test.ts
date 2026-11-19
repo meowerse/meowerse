@@ -172,6 +172,17 @@ describe("UserInbox DO", () => {
       expect(JSON.parse(await got).preview).toBe("after-wake");
       expect(reads("iu8")).toBe(0);
     });
+    it("two tabs of one session: ONE read refreshes both (verdict is per session)", async () => {
+      await seedSession("isid-t", "iu10", FAR);
+      const w1 = await open("iu10", "isid-t");
+      const w2 = await open("iu10", "isid-t");
+      await instrument("iu10");
+      await expire("iu10");
+      const g1 = nextFrame(w1, (t) => t.includes("tabs")); const g2 = nextFrame(w2, (t) => t.includes("tabs"));
+      await notify(stub("iu10"), "tabs");
+      await Promise.all([g1, g2]);
+      expect(reads("iu10")).toBe(1);
+    });
     it("ordering: two overlapping /notify with a slow session read arrive in order, over ONE shared read", async () => {
       await seedSession("isid-o", "iu9", FAR);
       const ws = await open("iu9", "isid-o");
