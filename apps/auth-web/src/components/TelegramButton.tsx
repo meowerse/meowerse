@@ -2,6 +2,15 @@ import { useRef, useState } from "react";
 import { Button } from "@meowerse/ui";
 import { tgStart, tgStatus, tgVerify, getAccount, postAuthLocation, type NextStep } from "../lib/authApi";
 
+const FINAL_MESSAGES: Record<string, string> = {
+  too_many_attempts: "too many wrong codes. start again.",
+  no_session: "your session ended. sign in again, then link telegram.",
+  linked_elsewhere: "that telegram account is already linked to another meowerse account.",
+  already_linked: "this account already has a different telegram account linked. unlink it first.",
+  account_gone: "this account no longer exists.",
+  bad_origin: "couldn't confirm from this page. reload and start again.",
+};
+
 export default function TelegramButton({ base, kind, label }: { base: string; kind?: "VERIFY_EXISTING"; label?: string }) {
   const [link, setLink] = useState<string | null>(null);
   const [ticket, setTicket] = useState<string | null>(null);
@@ -57,11 +66,12 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     }
     if (r.error === "wrong_code") setCodeMsg(`that code isn't right. ${r.attemptsLeft ?? 0} tries left.`);
     else if (r.error === "not_confirmed") setCodeMsg("tap yes in telegram first.");
-    else if (r.error === "too_many_attempts" || r.error === "expired" || r.error === "invalid") {
+    else if (r.error === "too_many_attempts" || r.error === "expired" || r.error === "invalid" || r.error === "no_session" || r.error === "linked_elsewhere" || r.error === "already_linked" || r.error === "account_gone" || r.error === "already_consumed" || r.error === "invalid_ticket" || r.error === "bad_origin") {
+      // Final errors: the server has ended this ticket, so go back to the start with a specific message.
       if (timer.current) clearInterval(timer.current);
       setLink(null);
       setTicket(null);
-      setError(r.error === "too_many_attempts" ? "too many wrong codes. start again." : "this sign-in expired. start again.");
+      setError(FINAL_MESSAGES[r.error] ?? "this sign-in expired. start again.");
     } else setCodeMsg("couldn't confirm that. try again.");
   }
 

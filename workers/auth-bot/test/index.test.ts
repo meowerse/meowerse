@@ -133,6 +133,8 @@ test("callback Yes: ONE signed confirm with identity from callback_query.from; t
   expect(body.text).toContain("auth.alxnko.dev in the browser YOU opened");
   expect(body.text).toContain("Never send it to anyone");
   expect(body.text).not.toContain("signed in");
+  // the code message keeps a cancel button wired to the same n:<nonce> callback
+  expect(body.reply_markup).toEqual({ inline_keyboard: [[{ text: "That wasn’t me — cancel", callback_data: `n:${NONCE}` }]] });
   expect(calls(CONFIRM)).toHaveLength(1);
   expect(calls(DESCRIBE)).toHaveLength(0);
   const [url, opts] = calls(CONFIRM)[0] as unknown as [string, { body: string; headers: Record<string, string> }];
@@ -194,7 +196,7 @@ test("callback Yes uses the default clock and tolerates sparse 'from' fields", a
   await handle(req("/tg/pathsec", cbUpdate(`y:${NONCE}`, { from: { id: 42 } }), hdr), ENV);
   const sent = JSON.parse((calls(CONFIRM)[0] as unknown as [string, { body: string }])[1].body);
   expect(sent).toMatchObject({ nonce: NONCE, telegram_id: "42", username: "", display_name: "" });
-  expect(Number(sent.ts)).toBeGreaterThan(0);
+  expect(Math.abs(Number(sent.ts) - Math.floor(Date.now() / 1000))).toBeLessThanOrEqual(5);
 });
 
 test("a path with no secret segment → 404; empty path → 404", async () => {

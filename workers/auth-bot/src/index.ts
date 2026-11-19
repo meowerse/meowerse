@@ -154,10 +154,10 @@ async function describe(env: Env, nonce: string, telegramId: string, now: () => 
 }
 
 /** Webhook reply that rewrites the prompt message after a button tap. */
-function editReply(chatId: number | undefined, messageId: number | undefined, text: string): Response {
+function editReply(chatId: number | undefined, messageId: number | undefined, text: string, replyMarkup?: unknown): Response {
   if (typeof chatId !== "number" || typeof messageId !== "number") return new Response("ok");
   // A webhook response can carry only ONE method, so we edit the prompt (no extra outbound call; the button spinner times out by itself).
-  return new Response(JSON.stringify({ method: "editMessageText", chat_id: chatId, message_id: messageId, text }), {
+  return new Response(JSON.stringify({ method: "editMessageText", chat_id: chatId, message_id: messageId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }), {
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -229,6 +229,8 @@ async function handleCallback(cb: NonNullable<TgUpdate["callback_query"]>, env: 
     chatId,
     messageId,
     `Your one-time code: ${code.slice(0, 4)} ${code.slice(4)}\n\nEnter it on auth.alxnko.dev in the browser YOU opened. Never send it to anyone — nobody legitimate will ask for it. It expires in a few minutes.`,
+    // Keep a way out after "Yes": the owner can still burn the ticket from the code message (same n:<nonce> callback).
+    { inline_keyboard: [[{ text: "That wasn’t me — cancel", callback_data: `${NO}${nonce}` }]] },
   );
 }
 

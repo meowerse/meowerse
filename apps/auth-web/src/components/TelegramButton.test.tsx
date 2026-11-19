@@ -54,4 +54,43 @@ describe("TelegramButton code entry", () => {
     await screen.findByText("too many wrong codes. start again.");
     expect(screen.queryByTestId("tg-code-input")).toBeNull();
   });
+
+  it.each([
+    ["linked_elsewhere", "already linked to another meowerse account"],
+    ["already_linked", "already has a different telegram account"],
+    ["account_gone", "no longer exists"],
+    ["no_session", "your session ended"],
+  ])("final error %s returns to the start with a specific message", async (error, msg) => {
+    mock({ error });
+    await startFlow();
+    fireEvent.change(screen.getByTestId("tg-code-input"), { target: { value: "12345678" } });
+    fireEvent.click(screen.getByText("confirm"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(msg));
+    expect(screen.queryByTestId("tg-code-input")).toBeNull();
+  });
+
+  it("not_confirmed keeps the form and asks to tap yes in telegram", async () => {
+    mock({ error: "not_confirmed" });
+    await startFlow();
+    fireEvent.change(screen.getByTestId("tg-code-input"), { target: { value: "12345678" } });
+    fireEvent.click(screen.getByText("confirm"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("tap yes in telegram first"));
+    expect(screen.getByTestId("tg-code-input")).not.toBeNull();
+  });
+
+  it("a correct code polls the status and redirects to the next step", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (u) => {
+      const url = String(u);
+      if (url.endsWith("/tg/start")) return json({ ticketId: "tkt_1", deepLink: "https://t.me/bot?start=n" });
+      if (url.endsWith("/tg/verify")) return json({ ok: true });
+      return json({ ready: true, csrf: "c", next: { action: "consent" } });
+    });
+    const loc = { href: "http://localhost/login", search: "" };
+    vi.stubGlobal("location", loc);
+    await startFlow();
+    fireEvent.change(screen.getByTestId("tg-code-input"), { target: { value: "12345678" } });
+    fireEvent.click(screen.getByText("confirm"));
+    await waitFor(() => expect(loc.href).toBe("/consent"));
+    vi.unstubAllGlobals();
+  });
 });
