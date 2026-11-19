@@ -944,6 +944,62 @@ describe("Conversation DO", () => {
     wa.close();
   });
 
+  it("send cap is per USER: two sockets of the same user share it (not 30 each)", async () => {
+    await seedChat("cshare1");
+    const wa = await connect("cshare1", "u1");
+    const wb = await connect("cshare1", "u1");
+    for (let i = 0; i < 20; i++) {
+      wa.send(JSON.stringify({ type: "send", tempId: `ta${i}`, body: `share-a-${i}` }));
+      wb.send(JSON.stringify({ type: "send", tempId: `tb${i}`, body: `share-b-${i}` }));
+    }
+    await vi.waitFor(async () => {
+      const h = await stub("cshare1").historyFor("cshare1", null);
+      expect(h.filter((m) => m.body.startsWith("share-")).length).toBeGreaterThanOrEqual(30);
+    }, { timeout: 10000 });
+    await new Promise((r) => setTimeout(r, 300));
+    const h = await stub("cshare1").historyFor("cshare1", null);
+    expect(h.filter((m) => m.body.startsWith("share-")).length).toBe(30); // 40 sent across 2 sockets
+    wa.close(); wb.close();
+  });
+
+  it("read frames are coalesced: 100 frames in ~1s cause at most 2 markRead D1 writes (latest cursor wins, flushed on close)", async () => {
+    await seedChat("cread1");
+    await seedChatMember("cread1", "u1", 0);
+    const wa = await connect("cread1", "u1");
+    const writes: unknown[][] = [];
+    await runInDurableObject(stub("cread1"), async (inst: Conversation) => {
+      const e = (inst as unknown as { env: { DB: D1Database } }).env;
+      e.DB = new Proxy(DB, {
+        get(t, prop) {
+          if (prop === "prepare") {
+            return (sql: string) => {
+              const st = t.prepare(sql);
+              if (!sql.startsWith("UPDATE chat_members SET last_read_at")) return st;
+              return new Proxy(st, { get(x, k) { if (k === "bind") return (...a: unknown[]) => { writes.push(a); return x.bind(...a); }; const v = Reflect.get(x, k); return typeof v === "function" ? v.bind(x) : v; } });
+            };
+          }
+          const v = Reflect.get(t, prop);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+    });
+    for (let i = 1; i <= 100; i++) wa.send(JSON.stringify({ type: "read", upTo: i * 10 }));
+    await vi.waitFor(async () => {
+      const r = await DB.prepare("SELECT last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?").bind("cread1", "u1").first<{ last_read_at: number | null }>();
+      expect(r?.last_read_at).not.toBeNull();
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(writes.length).toBeLessThanOrEqual(2);
+    const before = writes.length;
+    wa.close(); // flushes the pending (latest) cursor
+    await vi.waitFor(async () => {
+      const r = await DB.prepare("SELECT last_read_at FROM chat_members WHERE chat_id = ? AND user_id = ?").bind("cread1", "u1").first<{ last_read_at: number }>();
+      expect(r?.last_read_at).toBe(1000);
+    }, { timeout: 5000 });
+    expect(writes.length).toBeLessThanOrEqual(before + 1);
+    expect(writes.length).toBeLessThanOrEqual(2);
+  });
+
   // ---- Slice 9: reactions (toggle · broadcast · historyFor aggregation) ----
 
   it("react: toggle add → {reaction, on:true} broadcast to ALL (incl. the actor)", async () => {

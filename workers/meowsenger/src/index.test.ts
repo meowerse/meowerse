@@ -283,6 +283,11 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "rate_limited" });
   });
+  it("throttles POST /api/chats/:id/forward like the other expensive writes", async () => {
+    const res = await handle(req("POST", "/api/chats/c1/forward"), throttleEnv(false), noSession);
+    expect(res.status).toBe(429);
+    expect((await handle(req("POST", "/api/chats/c1/forward"), throttleEnv(true), noSession)).status).toBe(401);
+  });
   it("passes through to the handler when the limiter allows the write", async () => {
     const res = await handle(req("POST", "/api/chats"), throttleEnv(true), noSession);
     expect(res.status).toBe(401); // reached handleCreateChat (no session)

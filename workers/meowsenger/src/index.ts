@@ -43,14 +43,14 @@ import {
 import { getRole, chatType } from "./chats";
 
 // The expensive D1-write POSTs (create-group / add-member / join|subscribe /
-// invite / join-request / push-subscribe). Free-tier D1 caps writes at 100k/day
+// invite / join-request / forward / push-subscribe). Free-tier D1 caps writes at 100k/day
 // ACCOUNT-WIDE, so an authenticated abuser looping these could drain the whole
 // fleet's daily budget. These get the per-IP write throttle before dispatch;
 // everything else is intentionally left alone: GETs/reads, logout, the message hot
 // path (that's WS→DO, not an HTTP route here), and single-row edits (role/remove/
 // leave). The trailing `$` keeps `/request` from matching the `/requests` inbox and
 // keeps `/members` from matching `/members/:id/role`.
-const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|invite|request))?|push\/subscribe)$/;
+const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|invite|request|forward))?|push\/subscribe)$/;
 
 /**
  * Per-IP edge rate limit for the expensive D1-write POSTs. Returns true (allow)

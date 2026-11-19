@@ -87,6 +87,8 @@ const RATE_WINDOW_MS = 10_000;
 const RATE_MAX = 30;
 /** How long a per-user D1 membership verdict is trusted before a socket frame re-checks. */
 const MEMBER_TTL_MS = 5_000;
+/** At most one read-cursor D1 write per user per this window (see queueRead). */
+const READ_FLUSH_MS = 5_000;
 /** Coalesce Web Push per chat: at most one offline fan-out (D1 read + POSTs) per
  *  this window. A tickle only needs to say "something happened"; the recipient's SW
  *  fetches the details. Skips the per-message D1 read on a busy channel. */
@@ -207,19 +209,11 @@ function escapeLike(term: string): string {
  * upgrade reaches here, so the DO trusts the `?user=&chat=` params it receives.
  */
 export class Conversation extends DurableObject<Env> {
-  /**
-   * Per-connection flood protection: recent `send` timestamps keyed by socket.
-   * In-memory (dies on hibernation) is fine — a flood keeps the DO awake, and an
-   * idle room hibernates with an empty bucket. Only `send` is metered; typing/
-   * read/edit/delete are cheap and unmetered. Not reconstructed from
-   * getWebSockets() on wake because a hibernated room has, by definition, no
-   * in-flight flood to remember.
-   */
-  private sendTimes = new Map<WebSocket, number[]>();
-  // Same flood meter for the forward RPC (`appendMessage`), keyed by userId — the
-  // forwarder has no socket, so it can't use `sendTimes`. In-memory/best-effort
-  // (dies on hibernation, like `sendTimes`); all forwards to THIS chat funnel through
-  // this one DO, so it bounds per-user forward volume + the push fan-out it triggers.
+  // Per-USER flood meter shared by WS `send` and the forward RPC (`appendMessage`): recent
+  // timestamps keyed by userId, so opening N sockets does not multiply the cap. In-memory/
+  // best-effort (dies on hibernation: a flood keeps the DO awake, an idle room has nothing
+  // to remember); all sends to THIS chat funnel through this one DO. Only `send`/forward
+  // are metered; typing/edit/delete are cheap and read frames are coalesced (queueRead).
   private appendTimes = new Map<string, number[]>();
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
   // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
@@ -378,6 +372,36 @@ export class Conversation extends DurableObject<Env> {
     return p;
   }
 
+  // Per-user read-cursor coalescing: a client can spam {"type":"read"} frames, each of
+  // which was a D1 UPDATE. Keep only the latest upTo per user and write at most once per
+  // READ_FLUSH_MS (leading edge immediate, then a trailing flush), plus on socket close.
+  private readState = new Map<string, { chatId: string; upTo: number; pending: boolean; flushedAt: number; timer?: ReturnType<typeof setTimeout> }>();
+
+  private queueRead(chatId: string, userId: string, upTo: number): void {
+    const st = this.readState.get(userId) ?? { chatId, upTo: 0, pending: false, flushedAt: 0 };
+    this.readState.set(userId, st);
+    st.chatId = chatId;
+    st.upTo = Math.max(st.upTo, upTo);
+    st.pending = true;
+    const wait = READ_FLUSH_MS - (Date.now() - st.flushedAt);
+    if (wait <= 0) {
+      this.flushRead(userId);
+    } else if (!st.timer) {
+      st.timer = setTimeout(() => this.flushRead(userId), wait);
+    }
+  }
+
+  /** Write the user's pending read cursor (if any) to D1 now. Failure is non-fatal. */
+  private flushRead(userId: string): void {
+    const st = this.readState.get(userId);
+    if (!st) return;
+    if (st.timer) { clearTimeout(st.timer); st.timer = undefined; }
+    if (!st.pending) return;
+    st.pending = false;
+    st.flushedAt = Date.now();
+    this.ctx.waitUntil(markRead(this.d1(), st.chatId, userId, st.upTo).catch(() => {}));
+  }
+
   /** Hibernation handler: a frame arrived on a live socket. */
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attach | null;
@@ -422,7 +446,7 @@ export class Conversation extends DurableObject<Env> {
     // the critical path — a failed write is non-fatal), then tell peers "seen".
     if (msg.type === "read") {
       const upTo = Number(msg.upTo) || 0;
-      this.ctx.waitUntil(markRead(this.d1(), att.chatId, att.userId, upTo).catch(() => {}));
+      this.queueRead(att.chatId, att.userId, upTo);
       this.broadcast({ type: "read_receipt", userId: att.userId, upTo }, ws);
       return;
     }
@@ -487,7 +511,7 @@ export class Conversation extends DurableObject<Env> {
     // no insert, no broadcast, just a {rate_limited} error frame (the socket
     // stays open; a flood is throttled, not disconnected). Metered here so
     // typing/read/edit/delete stay unaffected.
-    if (this.isRateLimited(ws)) {
+    if (this.isAppendRateLimited(att.userId)) {
       ws.send(JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
       return;
     }
@@ -538,24 +562,6 @@ export class Conversation extends DurableObject<Env> {
     }
     this.safeSend(ws, JSON.stringify({ type: "sent", tempId, message: this.rowToWire(row as Row, chatId) }));
     return true;
-  }
-
-  /**
-   * Meter a `send` on this socket: prune timestamps older than RATE_WINDOW_MS,
-   * then decide. At/over RATE_MAX in the window → true (caller refuses the send,
-   * nothing is recorded). Otherwise record `now` and return false. In-memory only
-   * (see `sendTimes`).
-   */
-  private isRateLimited(ws: WebSocket): boolean {
-    const now = Date.now();
-    const times = (this.sendTimes.get(ws) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-    if (times.length >= RATE_MAX) {
-      this.sendTimes.set(ws, times);
-      return true;
-    }
-    times.push(now);
-    this.sendTimes.set(ws, times);
-    return false;
   }
 
   /**
@@ -1302,6 +1308,9 @@ export class Conversation extends DurableObject<Env> {
     this.membershipGen++;
     this.memberVerdict.clear();
     this.memberInflight.clear();
+    const rs = this.readState.get(userId);
+    if (rs?.timer) clearTimeout(rs.timer);
+    this.readState.delete(userId); // a removed member's pending cursor must not be written
     this.lastPush.delete(userId);
     // Drop the user from any queued follow-up fan-out too.
     const queued = await this.readOverflow();
@@ -1353,7 +1362,7 @@ export class Conversation extends DurableObject<Env> {
    */
   private handleDisconnect(ws: WebSocket): void {
     const att = ws.deserializeAttachment() as Attach | null;
-    this.sendTimes.delete(ws);
+    if (att?.userId) this.flushRead(att.userId); // don't lose the final cursor of a closing tab
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
       const nowMs = Date.now();
