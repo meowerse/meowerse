@@ -15,7 +15,16 @@ export interface ConversationEntry {
 
 // Map insertion order = recency (oldest first).
 const lru = new Map<string, ConversationEntry>();
-registerCache(() => { lru.clear(); });
+// Purge generation per chat: bumped by every purge (even of an absent entry) so a token
+// taken at chat entry stops authorising writes the moment that chat is purged.
+const gens = new Map<string, number>();
+registerCache(() => { lru.clear(); gens.clear(); });
+
+/** Authorises cache writes for one chat visit: valid only while the account epoch AND the
+ *  chat's purge generation are unchanged since `enter()`. */
+export interface EntryToken { chatId: string; epoch: number; gen: number }
+export function enter(chatId: string): EntryToken { return { chatId, epoch: getEpoch(), gen: gens.get(chatId) ?? 0 }; }
+export function valid(t: EntryToken): boolean { return isCurrent(t.epoch) && (gens.get(t.chatId) ?? 0) === t.gen; }
 
 function capped(e: ConversationEntry): ConversationEntry {
   if (e.messages.length <= MAX_MESSAGES) return e;
@@ -56,6 +65,7 @@ export function setAnchor(chatId: string, scrollAnchor: ScrollAnchor | undefined
   return patch(chatId, { scrollAnchor }, epoch);
 }
 export function purge(chatId: string): void {
+  gens.set(chatId, (gens.get(chatId) ?? 0) + 1); // BEFORE the delete, even when absent
   if (lru.delete(chatId)) notify();
 }
 
