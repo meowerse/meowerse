@@ -23,7 +23,23 @@ beforeAll(async () => {
   await DB.exec(
     "CREATE TABLE IF NOT EXISTS chat_members (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', unread_count INTEGER NOT NULL DEFAULT 0, last_read_at INTEGER, joined_at INTEGER NOT NULL, PRIMARY KEY (chat_id, user_id))",
   );
+  await DB.exec(
+    "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, access_exp INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+  );
 });
+
+/** Open a socket the way the router does for a session-bound upgrade (`&sid=<sessions.id>`). */
+async function connectSession(chatId: string, userId: string, sid: string): Promise<WebSocket> {
+  await seedChatMember(chatId, userId, 0);
+  const res = await stub(chatId).fetch(`https://do/ws?user=${userId}&chat=${chatId}&sid=${sid}`, { headers: { Upgrade: "websocket" } });
+  expect(res.status).toBe(101);
+  const ws = res.webSocket!;
+  ws.accept();
+  return ws;
+}
+async function seedSession(id: string, userId: string, expiresAt: number): Promise<void> {
+  await DB.prepare("INSERT OR REPLACE INTO sessions (id, user_id, access_token, refresh_token, access_exp, created_at, expires_at) VALUES (?, ?, '', NULL, 0, 0, ?)").bind(id, userId, expiresAt).run();
+}
 
 /** Insert a chats row so the DO's D1 mirror write has a target to update. */
 async function seedChat(chatId: string): Promise<void> {
@@ -1467,6 +1483,81 @@ describe("Conversation DO: security-review fixes", () => {
     expect(JSON.parse(await revoked)).toEqual({ type: "revoked" }); // what stops the client's reconnect loop
     expect(JSON.parse(await forbidden)).toMatchObject({ code: "forbidden", tempId: "t-rv-1" });
     await closed;
+  });
+
+  describe("session-bound sockets (I3)", () => {
+    const FAR = Date.now() + 86_400_000;
+    const clearVerdicts = (chat: string) => runInDurableObject(stub(chat), async (inst: Conversation) => { (inst as unknown as Inst).memberVerdict.clear(); });
+    it("normal flow: a socket with a live session sends fine", async () => {
+      await seedChat("csess0");
+      await seedSession("sid-ok", "u1", FAR);
+      const a = await connectSession("csess0", "u1", "sid-ok");
+      await sendAndAck(a, "t-s0", "hello");
+      await clearVerdicts("csess0"); // forces a real D1 read with the session check
+      await sendAndAck(a, "t-s0b", "still fine");
+    });
+    it("logout (session row deleted): the next frame is revoked + forbidden and the socket closes", async () => {
+      await seedChat("csess1");
+      await seedSession("sid-gone", "u1", FAR);
+      const a = await connectSession("csess1", "u1", "sid-gone");
+      await sendAndAck(a, "t-s1", "prime");
+      await DB.prepare("DELETE FROM sessions WHERE id = ?").bind("sid-gone").run();
+      await clearVerdicts("csess1");
+      const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+      const forbidden = waitFor(a, (t) => t.includes('"forbidden"'));
+      const closed = waitForClose(a);
+      a.send(JSON.stringify({ type: "send", tempId: "t-s1b", body: "after-logout" }));
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
+      expect(JSON.parse(await forbidden)).toMatchObject({ code: "forbidden", tempId: "t-s1b" });
+      await closed;
+      expect((await stub("csess1").historyFor("csess1", null)).some((m) => m.body === "after-logout")).toBe(false);
+    });
+    it("an expired session row ends the socket too", async () => {
+      await seedChat("csess2");
+      await seedSession("sid-exp", "u1", FAR);
+      const a = await connectSession("csess2", "u1", "sid-exp");
+      await DB.prepare("UPDATE sessions SET expires_at = ? WHERE id = ?").bind(Date.now() - 1000, "sid-exp").run();
+      await clearVerdicts("csess2");
+      const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+      a.send(JSON.stringify({ type: "send", tempId: "t-s2", body: "late" }));
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
+    });
+    it("a session belonging to ANOTHER user does not satisfy the check", async () => {
+      await seedChat("csess3");
+      await seedSession("sid-other", "someone-else", FAR);
+      const a = await connectSession("csess3", "u1", "sid-other");
+      await clearVerdicts("csess3");
+      const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+      a.send(JSON.stringify({ type: "send", tempId: "t-s3", body: "x" }));
+      expect(JSON.parse(await revoked)).toEqual({ type: "revoked" });
+    });
+    it("verdicts are per SESSION: logging out one login does not kill the user's other socket", async () => {
+      await seedChat("csess4");
+      await seedSession("sid-a", "u1", FAR);
+      await seedSession("sid-b", "u1", FAR);
+      const a = await connectSession("csess4", "u1", "sid-a");
+      const b = await connectSession("csess4", "u1", "sid-b");
+      await DB.prepare("DELETE FROM sessions WHERE id = ?").bind("sid-a").run();
+      await clearVerdicts("csess4");
+      const revoked = waitFor(a, (t) => t.includes('"revoked"'));
+      a.send(JSON.stringify({ type: "send", tempId: "t-s4a", body: "x" }));
+      await revoked;
+      await sendAndAck(b, "t-s4b", "other login still works");
+    });
+    it("D1 outage: the last good session+membership verdict is honoured inside the stale window", async () => {
+      await seedChat("csess5");
+      await seedSession("sid-st", "u1", FAR);
+      const a = await connectSession("csess5", "u1", "sid-st");
+      await sendAndAck(a, "t-s5", "prime");
+      await patchD1("csess5", (real) => ({ ...real, first: async (sql: unknown, p?: unknown) => { if (String(sql).includes("FROM chat_members WHERE chat_id = ? AND user_id")) throw new Error("d1 down"); return real.first(sql, p); } }));
+      await runInDurableObject(stub("csess5"), async (inst: Conversation) => {
+        const m = (inst as unknown as Inst).memberVerdict;
+        const k = [...m.keys()].find((x) => x.endsWith("sid-st"))!;
+        m.set(k, { ok: true, at: Date.now() - 10_000 }); // TTL expired, inside the 60 s stale window
+      });
+      await sendAndAck(a, "t-s5b", "during-outage");
+      await restoreD1("csess5");
+    });
   });
 
   it("serialized preview writes: deleting the newest message while its mirror is in flight ends on the previous live message", async () => {

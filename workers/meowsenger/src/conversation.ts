@@ -10,6 +10,10 @@ import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscriptio
 interface Attach {
   userId: string;
   chatId: string;
+  /** sha256 of the session cookie (the `sessions.id`) the socket was upgraded with, forwarded by
+   *  the router. The per-frame check also requires this session row to still exist and be
+   *  unexpired, so a logout / expiry ends the socket. Absent on legacy sockets (no session check). */
+  sid?: string;
   /** The user's role in THIS chat, forwarded (already gated) by the router. Used
    *  for admin/owner message-delete. DM sockets carry 'member' → no behavior
    *  change for DMs. Absent on legacy sockets → treated as 'member'. */
@@ -91,6 +95,9 @@ const MEMBER_TTL_MS = 5_000;
  *  (stale-while-error), so a D1 blip does not stop live chat. Only a definite "not a
  *  member" answer, or this window elapsing, fails closed. */
 const MEMBER_STALE_MS = 60_000;
+/** Membership/session verdicts are keyed per SESSION (a user with two logins is two keys); a
+ *  socket without a session id (legacy) is keyed by user alone. */
+const verdictKey = (a: { userId: string; sid?: string }): string => (a.sid ? `${a.userId}\u0000${a.sid}` : a.userId);
 /** At most one read-cursor D1 write per user per this window (see queueRead). */
 const READ_FLUSH_MS = 5_000;
 /** An "on" typing frame is dropped only when the user's last broadcast state is already
@@ -266,6 +273,7 @@ export class Conversation extends DurableObject<Env> {
     // for members); a missing/other value leaves posting unchanged (DMs/groups).
     const type = url.searchParams.get("type") || "group";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
+    const sid = url.searchParams.get("sid") || undefined;
 
     const pair = new WebSocketPair();
     // WebSocketPair is a tuple-shaped { 0: client, 1: server }.
@@ -273,9 +281,9 @@ export class Conversation extends DurableObject<Env> {
     const server = pair[1];
     // Accept into the Hibernation API (not server.accept()) so the DO can sleep.
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, chatId, role, type } satisfies Attach);
-    // The gated router just read this user's membership from D1: that verdict is fresh.
-    this.memberVerdict.set(userId, { ok: true, at: Date.now() });
+    server.serializeAttachment({ userId, chatId, role, type, ...(sid ? { sid } : {}) } satisfies Attach);
+    // The gated router just read this user's membership + session from D1: that verdict is fresh.
+    this.memberVerdict.set(verdictKey({ userId, sid }), { ok: true, at: Date.now() });
     this.lastPush.delete(userId); // a fresh socket is visible: they're seeing the chat → reset their push window
     server.send(JSON.stringify({ type: "ready", chatId, you: userId }));
 
@@ -360,49 +368,60 @@ export class Conversation extends DurableObject<Env> {
 
   /** Fresh cached verdict, or undefined when a D1 read is needed. Synchronous on a
    *  hit so a steady stream of frames is not reordered by an await. */
-  private memberCached(userId: string): boolean | undefined {
-    const v = this.memberVerdict.get(userId);
+  private memberCached(att: Attach): boolean | undefined {
+    const v = this.memberVerdict.get(verdictKey(att));
     return v && Date.now() - v.at < MEMBER_TTL_MS ? v.ok : undefined;
   }
 
   /** Read chat_members for the socket's user. A read overlapping dropUser (membershipGen
    *  bump) is not cached. Throws if D1 fails. */
   private loadMember(att: Attach): Promise<boolean> {
-    let p = this.memberInflight.get(att.userId);
+    const key = verdictKey(att);
+    let p = this.memberInflight.get(key);
     if (!p) {
       const gen = this.membershipGen;
       p = (async () => {
-        const row = await this.d1().first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [att.chatId, att.userId]);
-        const ok = row !== undefined;
-        if (gen === this.membershipGen) this.memberVerdict.set(att.userId, { ok, at: Date.now() });
+        let ok: boolean;
+        if (att.sid) {
+          // ONE query answers both: still a member of this chat AND the session the socket was
+          // opened with still exists and is unexpired (logout/expiry deletes/ages that row).
+          const row = await this.d1().first(
+            "SELECT EXISTS(SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?) AS m, EXISTS(SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at >= ?) AS s",
+            [att.chatId, att.userId, att.sid, att.userId, Date.now()],
+          );
+          ok = !!row && Number(row.m) === 1 && Number(row.s) === 1;
+        } else {
+          const row = await this.d1().first("SELECT 1 AS ok FROM chat_members WHERE chat_id = ? AND user_id = ?", [att.chatId, att.userId]);
+          ok = row !== undefined;
+        }
+        if (gen === this.membershipGen) this.memberVerdict.set(key, { ok, at: Date.now() });
         return ok;
       })();
-      this.memberInflight.set(att.userId, p);
+      this.memberInflight.set(key, p);
       // Remove the entry only while it is still THIS promise (dropUser may have cleared
       // the map and a newer read replaced it); done after the set so a synchronous
       // rejection cannot leave a settled promise stuck in the map.
-      const uid = att.userId;
-      const clear = (): void => { if (this.memberInflight.get(uid) === p) this.memberInflight.delete(uid); };
+      const clear = (): void => { if (this.memberInflight.get(key) === p) this.memberInflight.delete(key); };
       p.then(clear, clear);
     }
     return p;
   }
 
-  /** The user's last GOOD (member) verdict if it is within the stale-while-error window. */
-  private memberStale(userId: string): boolean {
-    const v = this.memberVerdict.get(userId);
+  /** The socket's last GOOD (member + live session) verdict if it is within the stale-while-error window. */
+  private memberStale(att: Attach): boolean {
+    const v = this.memberVerdict.get(verdictKey(att));
     return !!v && v.ok && Date.now() - v.at < MEMBER_STALE_MS;
   }
 
   /** Resolve the membership verdict for a frame: true (member), false (definitely not), or
    *  "unavailable" (D1 failed and no recent good verdict to fall back on). */
   private async memberOk(att: Attach): Promise<boolean | "unavailable"> {
-    const cached = this.memberCached(att.userId);
+    const cached = this.memberCached(att);
     if (cached !== undefined) return cached;
     try {
       return await this.loadMember(att);
     } catch {
-      return this.memberStale(att.userId) ? true : "unavailable";
+      return this.memberStale(att) ? true : "unavailable";
     }
   }
 
@@ -473,7 +492,7 @@ export class Conversation extends DurableObject<Env> {
     // the last good verdict for MEMBER_STALE_MS; only a definite "no" (or the window
     // elapsing) fails closed.
     // Synchronous on a fresh cache hit so a steady frame stream is never reordered by an await.
-    const ok = this.memberCached(att.userId) ?? (await this.memberOk(att));
+    const ok = this.memberCached(att) ?? (await this.memberOk(att));
     if (ok !== true) {
       // Fire-and-forget frames (typing/read/away) get NOTHING back on an unavailable
       // check: an error frame would surface as a toast on every keystroke.

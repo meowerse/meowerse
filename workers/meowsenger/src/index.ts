@@ -8,7 +8,7 @@ import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
 import { handleSession, handleLogout } from "./api";
 import {
-  callerId,
+  callerSession,
   handleListChats,
   handleCreateChat,
   handleHistory,
@@ -233,8 +233,9 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
   const chatId = new URL(req.url).searchParams.get("chat");
   if (!chatId) return new Response("chat required", { status: 400, headers: NS });
-  const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
+  const sess = await callerSession(req, deps.getDb(), deps.now());
+  if (!sess) return new Response("unauthorized", { status: 401, headers: NS });
+  const me = sess.userId;
   // A single membership lookup: getRole returns null for non-members (the gate)
   // and the caller's role otherwise. The role is forwarded to the DO so it can
   // authorize admin/owner message-delete (Slice 5) without a second D1 read.
@@ -248,7 +249,7 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   // Preserve the original request (carries the Upgrade header) while overriding
   // the URL so the DO receives the gated identity + role + type via query params.
   const fwd = new Request(
-    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}`,
+    `https://do/ws?user=${encodeURIComponent(me)}&chat=${encodeURIComponent(chatId)}&role=${encodeURIComponent(role)}&type=${encodeURIComponent(type)}&sid=${encodeURIComponent(sess.id)}`,
     req,
   );
   return stub.fetch(fwd);
@@ -262,12 +263,13 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
  */
 async function handleInboxWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
-  const me = await callerId(req, deps.getDb(), deps.now());
-  if (!me) return new Response("unauthorized", { status: 401, headers: NS });
+  const sess = await callerSession(req, deps.getDb(), deps.now());
+  if (!sess) return new Response("unauthorized", { status: 401, headers: NS });
+  const me = sess.userId;
   const ns = env.USER_INBOX;
   if (!ns) return new Response("inbox unavailable", { status: 503, headers: NS });
   const stub = ns.get(ns.idFromName("inbox:" + me));
-  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}`, req));
+  return stub.fetch(new Request(`https://do/ws?user=${encodeURIComponent(me)}&sid=${encodeURIComponent(sess.id)}`, req));
 }
 
 export default {

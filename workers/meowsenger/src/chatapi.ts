@@ -22,7 +22,7 @@ function searchLimited(userId: string, now: number): boolean {
   searchTimes.set(userId, times);
   return false;
 }
-import { getSession, SESSION_COOKIE, clearCookie } from "./session";
+import { getSession, SESSION_COOKIE, clearCookie, type Session } from "./session";
 import {
   createOrGetDirect,
   createGroup,
@@ -73,10 +73,14 @@ function conversation(env: Env): ConversationNamespace {
 
 /** Resolve the caller's userId from the BFF session cookie, or null. */
 export async function callerId(req: Request, db: DbClient, now: number): Promise<string | null> {
+  return (await callerSession(req, db, now))?.userId ?? null;
+}
+
+/** The caller's live session (its stored id is the cookie's hash), or null. */
+export async function callerSession(req: Request, db: DbClient, now: number): Promise<Session | null> {
   const sid = readCookies(req.headers.get("Cookie"))[SESSION_COOKIE];
   if (!sid) return null;
-  const s = await getSession(db, sid, now);
-  return s?.userId ?? null;
+  return getSession(db, sid, now);
 }
 
 /** GET /api/chats — the caller's sidebar list, plus `viewerId` (the authenticated user, same as /api/session user.id) so a client can bind this response to an account. */

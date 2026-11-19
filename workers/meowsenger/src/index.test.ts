@@ -244,6 +244,15 @@ describe("GET /ws upgrade", () => {
     // env (test fixture) has no USER_INBOX binding → the gated handler reports unavailable.
     expect((await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), env, depsWith({ session }))).status).toBe(503);
   });
+  it("inbox/ws: forwards the caller's own inbox DO the user AND the session id it must keep validating", async () => {
+    let url = "";
+    const stubbed = new Response("upgraded", { status: 200 });
+    const e = { ...env, USER_INBOX: { idFromName: (n: string) => n, get: () => ({ fetch: (r: Request) => { url = r.url; return stubbed; } }) } } as unknown as Env;
+    const res = await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), e, depsWith({ session }));
+    expect(res).toBe(stubbed);
+    expect(url).toContain("user=u1");
+    expect(url).toContain("sid=s1");
+  });
   it("forwards to the DO stub for a member, passing the gated identity", async () => {
     // The node pool's `Response` rejects a real 101 (workerd-only); the actual
     // upgrade is covered by conversation.workers.test.ts. Here we just assert the
@@ -260,6 +269,7 @@ describe("GET /ws upgrade", () => {
     const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin", type: "channel" }));
     expect(res).toBe(stubbed);
     expect(forwardedUrl).toContain("user=u1");
+    expect(forwardedUrl).toContain("sid=s1"); // the session the DO re-validates per frame
     expect(forwardedUrl).toContain("chat=c1");
     // Slice 5: the caller's D1-derived role is forwarded so the DO can authorize
     // admin/owner message-delete without a second membership read.

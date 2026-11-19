@@ -1,10 +1,25 @@
-import { env } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { env, runInDurableObject } from "cloudflare:test";
+import { describe, it, expect, beforeAll } from "vitest";
 import type { UserInbox } from "./inbox";
 
 // The workers-pool env exposes the real bindings from wrangler.jsonc.
-const bindings = env as unknown as { USER_INBOX: DurableObjectNamespace<UserInbox> };
+const bindings = env as unknown as { USER_INBOX: DurableObjectNamespace<UserInbox>; DB: D1Database };
 const INBOX = bindings.USER_INBOX;
+beforeAll(async () => {
+  await bindings.DB.exec("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, access_exp INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)");
+});
+const seedSession = (id: string, user: string, exp: number) =>
+  bindings.DB.prepare("INSERT OR REPLACE INTO sessions (id, user_id, access_token, refresh_token, access_exp, created_at, expires_at) VALUES (?, ?, '', NULL, 0, 0, ?)").bind(id, user, exp).run();
+const notify = (s: ReturnType<typeof stub>, preview: string) =>
+  s.fetch("https://do/notify", { method: "POST", body: JSON.stringify({ chatId: "c1", preview, at: 1, senderId: "x" }) });
+async function open(user: string, sid: string): Promise<WebSocket> {
+  const res = await stub(user).fetch(`https://do/ws?user=${user}&sid=${sid}`, { headers: { Upgrade: "websocket" } });
+  const ws = res.webSocket!;
+  ws.accept();
+  return ws;
+}
+const closedP = (ws: WebSocket) => new Promise<number>((resolve, reject) => { const t = setTimeout(() => reject(new Error("not closed")), 2000); ws.addEventListener("close", (e) => { clearTimeout(t); resolve(e.code); }); });
+const expire = (user: string) => runInDurableObject(stub(user), async (inst: UserInbox) => { const m = (inst as unknown as { sessionVerdict: Map<string, { ok: boolean; at: number }> }).sessionVerdict; for (const [k, v] of m) m.set(k, { ...v, at: v.at - 40_000 }); });
 
 function stub(userId: string) {
   return INBOX.get(INBOX.idFromName("inbox:" + userId));
@@ -57,5 +72,62 @@ describe("UserInbox DO", () => {
   it("rejects a non-websocket, non-notify request", async () => {
     const res = await stub("u4").fetch("https://do/ws?user=u4");
     expect(res.status).toBe(426);
+  });
+
+  describe("session-bound sockets (I3)", () => {
+    const FAR = Date.now() + 86_400_000;
+    it("a live session keeps receiving deltas (also after the verdict TTL lapses)", async () => {
+      await seedSession("isid-ok", "iu1", FAR);
+      const ws = await open("iu1", "isid-ok");
+      await expire("iu1");
+      const got = nextFrame(ws, (t) => t.includes("still-live"));
+      await notify(stub("iu1"), "still-live");
+      expect(JSON.parse(await got).preview).toBe("still-live");
+    });
+    it("logout/expiry: once the session is gone the delta is withheld and the socket is closed 4001", async () => {
+      await seedSession("isid-gone", "iu2", FAR);
+      const ws = await open("iu2", "isid-gone");
+      const frames: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
+      const closed = closedP(ws);
+      await bindings.DB.prepare("DELETE FROM sessions WHERE id = ?").bind("isid-gone").run();
+      await expire("iu2");
+      await notify(stub("iu2"), "secret-preview");
+      expect(await closed).toBe(4001);
+      expect(frames.some((f) => f.includes("secret-preview"))).toBe(false);
+    });
+    it("an expired session row is treated as gone", async () => {
+      await seedSession("isid-exp", "iu3", Date.now() - 1000);
+      const ws = await open("iu3", "isid-exp");
+      const frames: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
+      const closed = closedP(ws);
+      await expire("iu3");
+      await notify(stub("iu3"), "late-preview");
+      expect(await closed).toBe(4001);
+      expect(frames.some((f) => f.includes("late-preview"))).toBe(false);
+    });
+    it("D1 outage: the last good verdict is honoured inside the stale window; past it the delta is withheld but the socket stays", async () => {
+      await seedSession("isid-st", "iu4", FAR);
+      const ws = await open("iu4", "isid-st");
+      await runInDurableObject(stub("iu4"), async (inst: UserInbox) => { (inst as unknown as { env: unknown }).env = { DB: { prepare: () => { throw new Error("d1 down"); } } }; });
+      await expire("iu4"); // verdict older than TTL (30 s) but inside the 120 s stale window
+      const got = nextFrame(ws, (t) => t.includes("during-outage"));
+      await notify(stub("iu4"), "during-outage");
+      expect(JSON.parse(await got).preview).toBe("during-outage");
+      await runInDurableObject(stub("iu4"), async (inst: UserInbox) => { const m = (inst as unknown as { sessionVerdict: Map<string, { ok: boolean; at: number }> }).sessionVerdict; for (const [k, v] of m) m.set(k, { ...v, at: Date.now() - 200_000 }); });
+      const frames: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
+      await notify(stub("iu4"), "past-window");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(frames.some((f) => f.includes("past-window"))).toBe(false);
+    });
+    it("a legacy socket without a sid is not checked (unchanged behaviour)", async () => {
+      const ws = (await stub("iu5").fetch("https://do/ws?user=iu5", { headers: { Upgrade: "websocket" } })).webSocket!;
+      ws.accept();
+      const got = nextFrame(ws, (t) => t.includes("legacy"));
+      await notify(stub("iu5"), "legacy");
+      expect(JSON.parse(await got).preview).toBe("legacy");
+    });
   });
 });
