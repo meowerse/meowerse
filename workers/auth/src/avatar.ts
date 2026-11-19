@@ -90,7 +90,11 @@ export async function handleAvatar(
   const response = new Response(imgRes.body, {
     status: 200,
     headers: {
-      "Content-Type": imgRes.headers.get("Content-Type") ?? "image/jpeg",
+      // Only ever serve an image type: a non-image upstream type (or none) becomes image/jpeg, and nosniff +
+      // a sandboxing CSP stop the browser treating the proxied bytes as a document if opened directly.
+      "Content-Type": /^image\/[a-z0-9.+-]+$/i.test(imgRes.headers.get("Content-Type") ?? "") ? imgRes.headers.get("Content-Type")! : "image/jpeg",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "public, max-age=21600",
       "Access-Control-Allow-Origin": "*",
     },
