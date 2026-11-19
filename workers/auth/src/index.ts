@@ -1,6 +1,6 @@
 import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
-import { CF_BEACON_CSP, corsHeaders, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
+import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
 import { sha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
@@ -750,6 +750,9 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
 /** POST /tg/verify — the ticket-owning browser submits the code the bot showed in Telegram; only now is the link/sign-in written. */
 async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   if (!(await ipThrottle(req, deps, "tgverify", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  // Browser CSRF-style defence in depth: a cross-site page must not be able to submit codes for the owner.
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !isOriginAllowed(origin, env)) return json({ error: "bad_origin" }, 403, cors);
   const db = deps.getDb();
   const p = await readParams(req);
   const cookies = parseCookies(req.headers.get("Cookie"));
@@ -760,6 +763,12 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
     return json({ error: "invalid" }, 403, cors);
   }
   if (ticket.status !== "pending" || Number(ticket.expires_at) < now(deps)) return json({ error: "expired" }, 400, cors);
+  // Linking is not authentication: the browser must still hold the live session of the account the ticket was minted for
+  // (checked BEFORE spending an attempt, so a revoked session can neither complete the link nor burn the budget).
+  if (ticket.kind === "VERIFY_EXISTING") {
+    const cur = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps));
+    if (!cur || cur.accountId !== ticket.account_id) return json({ error: "no_session" }, 401, cors);
+  }
   const ctx = await getTicketContext(db, ticket.ticket_id);
   if (!ctx || !ctx.code_hash || !ctx.tg_id) return json({ error: "not_confirmed" }, 409, cors);
   const code = normaliseTgCode(p.code ?? "");
@@ -781,7 +790,12 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
   const tg = { telegramId: ctx.tg_id, username: ctx.tg_username, displayName: ctx.tg_display, avatarUrl: null };
   // Claim + link/account write are ONE transaction: a losing/duplicate completion writes nothing.
   const r = await confirmTicketWithTelegram(db, ticket, tg, now(deps));
-  if (!r.ok) return json({ error: r.error }, r.error === "invalid_ticket" ? 400 : 409, cors);
+  if (!r.ok) {
+    // The code was correct but the write can never succeed: end the ticket now (final error) instead of letting
+    // retries spend attempts and end in a misleading "too many attempts".
+    if (r.error !== "already_consumed" && r.error !== "invalid_ticket") await burnTicket(db, ticket.ticket_id);
+    return json({ error: r.error }, r.error === "invalid_ticket" ? 400 : 409, cors);
+  }
   await clearTicketIdentity(db, ticket.ticket_id);
   const { accountId, created } = r;
   if (ticket.kind === "VERIFY_EXISTING") await recordAudit(deps, req, { event: "telegram.link", accountId });

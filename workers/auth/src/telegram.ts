@@ -398,15 +398,6 @@ export async function findPendingTicketByNonce(db: DbClient, nonce: string, now:
   return row as unknown as TicketRow;
 }
 
-/** Atomically mark a ticket consumed, recording the resolved account. Returns true if this call won the race. */
-export async function consumeTicket(db: DbClient, ticketId: string, accountId: string): Promise<boolean> {
-  const upd = await db.execute({
-    sql: "UPDATE login_tickets SET status = 'consumed', account_id = ? WHERE ticket_id = ? AND status = 'pending'",
-    args: [accountId, ticketId],
-  });
-  return (upd.rowsAffected ?? 0) === 1;
-}
-
 /**
  * Seconds past `expires_at` a consumed ticket may still be claimed. It only absorbs clock/latency skew: the
  * owner cookie and the UI poll both end at TICKET_TTL, so it does not extend the user's 5-minute window.
