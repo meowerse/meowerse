@@ -132,18 +132,20 @@ function applyRowFrame<T extends Message>(list: T[], frame: RowFrame, isMine: bo
 
 /** The cache holds CONFIRMED rows only, with every UI-only flag stripped. `tempId` stays
  *  (local recognition of our own acked rows; never a keep rule). */
-function confirmedRows(list: Bubble[]): Message[] {
+function confirmedRows(list: Bubble[], max = Infinity): Message[] {
+  // Newest-first scan: only the newest `max` confirmed rows are ever copied/stripped.
   const out: Message[] = [];
-  for (const b of list) {
+  for (let i = list.length - 1; i >= 0 && out.length < max; i--) {
+    const b = list[i];
     if (isUnconfirmed(b) || b.queued) continue;
     const { pending: _p, queued: _q, sendFailed: _s, unconfirmed: _u, editFailed: _e, ...row } = b;
     out.push(row);
   }
-  return out;
+  return out.reverse();
 }
 
 /** What the layout-effect cleanup captured BEFORE the next chat's refs were set. */
-interface LeaveSnapshot { chatId: string | null; log: Bubble[]; hasMore: boolean; hasNewer: boolean; anchor: ScrollAnchor | null; tok: EntryToken | null }
+interface LeaveSnapshot { chatId: string | null; log: Bubble[]; hasMore: boolean; hasNewer: boolean; anchor: ScrollAnchor | null; tok: EntryToken | null; verified: boolean }
 const CACHE_MAX_ROWS = 200; // mirrors conversationCache.MAX_MESSAGES (the store caps again)
 const bottomAnchor = (rows: Array<{ id: string }>): ScrollAnchor => ({ messageId: rows[rows.length - 1]?.id ?? "", offsetPx: 0, atBottom: true });
 
@@ -151,6 +153,7 @@ const bottomAnchor = (rows: Array<{ id: string }>): ScrollAnchor => ({ messageId
 function saveOnLeave(s: LeaveSnapshot): void {
   const { tok, chatId } = s;
   if (!tok || !chatId || tok.chatId !== chatId) return;
+  if (!s.verified) return; // the cold load has not landed: whatever the log holds is a partial window
   if (s.hasNewer) {
     // Detached window: rows are never written; only the anchor (bottom) is patched.
     patchT(tok, (e) => ({ ...e, scrollAnchor: bottomAnchor(e.messages) }));
@@ -409,6 +412,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }
 
   const socketRef = useRef<WebSocket | null>(null);
+  // The chat `socketRef`'s socket serves. Between B's layout effect and A's passive cleanup
+  // `socketRef` still holds A's socket while `activeRef` is B: nothing may send on it then.
+  const socketChatRef = useRef<string | null>(null);
   const rowsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const activeRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -427,16 +433,23 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // Authorises every cache write; taken ONCE per chat entry (layout effect below).
   const tokRef = useRef<EntryToken | null>(null);
   const anchorRef = useRef<ScrollAnchor | null>(null);
+  // Set by the first `verified:true` commit of the entry (cold load / its retry), reset on a
+  // real chat change. Until then neither the write-through nor the leave-save may cache.
+  const verifiedRef = useRef(false);
+  const enteredRef = useRef<string | null | undefined>(undefined); // the chat the per-chat refs were last reset for
 
   /** W1: write the attached log through to the cache. A write is accepted only with a token
    *  taken at chat entry / fetch start that is still valid (checked again inside `putT`). */
   const writeThrough = useCallback((chatId: string, next: Bubble[], tok: EntryToken | null, verified?: boolean) => {
-    if (!tok || tok.chatId !== chatId || hasNewerRef.current) return;
-    const rows = confirmedRows(next);
+    if (!tok || tok.chatId !== chatId || hasNewerRef.current || !verifiedRef.current) return;
+    // Only the newest CACHE_MAX_ROWS are copied; trimming older rows means older rows exist.
+    const rows = confirmedRows(next, CACHE_MAX_ROWS + 1);
+    const trimmed = rows.length > CACHE_MAX_ROWS;
+    if (trimmed) rows.shift();
     if (rows.length === 0 && !verified) return; // an unverified empty log never clobbers an entry
     putT(tok, {
       messages: rows,
-      hasMore: hasMoreRef.current,
+      hasMore: hasMoreRef.current || trimmed,
       fetchedAt: verified ? Date.now() : (peekEntry(chatId)?.fetchedAt ?? 0),
       scrollAnchor: undefined,
     });
@@ -464,6 +477,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const next = fn(cur);
     if (next === cur && o.hasMore === undefined && o.verified !== true) return cur;
     logStateRef.current = next;
+    if (o.verified === true) verifiedRef.current = true; // before the write-through below
     setView((v) => (v.chatId === chatId ? { ...v, log: next } : v));
     writeThrough(chatId, next, o.tok ?? tokRef.current, o.verified);
     return next;
@@ -572,17 +586,23 @@ export function useConversation(input: UseConversationInput): UseConversation {
   useLayoutEffect(() => {
     const chatId = view.chatId;
     activeRef.current = chatId;
-    logStateRef.current = []; // 7a: always a cold entry (no cache read)
-    hasMoreRef.current = false;
-    hasNewerRef.current = false;
-    atBottomRef.current = true;
-    anchorRef.current = null;
+    // Reset per-chat state only on a REAL chat change: this effect also re-runs for the same
+    // chat (Fast Refresh, Suspense/Activity), and must not wipe the mirror of a live view.
+    if (enteredRef.current !== chatId) {
+      enteredRef.current = chatId;
+      logStateRef.current = view.log; // 7a: a cold entry ([] from the render-phase switch)
+      hasMoreRef.current = false;
+      hasNewerRef.current = false;
+      atBottomRef.current = true;
+      anchorRef.current = null;
+      verifiedRef.current = false;
+    }
     tokRef.current = chatId ? enter(chatId) : null;
     if (chatId) touch(chatId);
     return () => {
       saveOnLeave({
         chatId, log: logStateRef.current, hasMore: hasMoreRef.current, hasNewer: hasNewerRef.current,
-        anchor: anchorRef.current, tok: tokRef.current,
+        anchor: anchorRef.current, tok: tokRef.current, verified: verifiedRef.current,
       });
     };
   }, [view.chatId]);
@@ -592,6 +612,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const sendRead = useCallback((msgs: Bubble[]) => {
     const ws = socketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || msgs.length === 0) return;
+    if (socketChatRef.current !== activeRef.current) return; // the socket still serves the chat just left
     // Only mark seen when the tab is actually VISIBLE. A background tab must not
     // auto-ack — that would advance the peer's "seen" tick + wipe our unread for
     // messages no human saw. The visibility/focus catch-up re-acks once shown.
@@ -668,7 +689,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (!rowsRes.ok) return; // stay detached; the next scroll retries
       const rows = rowsRes.data;
       if (rows.length > 0) {
-        commitLog(chatId, (prev) => mergeRows(prev, rows, "append"), { src: "fetch" });
+        commitLog(chatId, (prev) => mergeRows(prev, rows, "append"), { src: "fetch", detached: rows.length < 50 ? false : undefined });
       }
       if (rows.length < 50) {
         markAttached();
@@ -693,6 +714,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (dist < 120 && hasNewerRef.current) void loadNewer();
     const atBottom = dist < NEAR_BOTTOM_PX;
     atBottomRef.current = atBottom;
+    // TODO(perf, review 5): this measures the DOM on every scroll event. Kept synchronous on purpose:
+    // the leave-save reads it in a layout cleanup, where a throttled/rAF value could be stale or
+    // belong to the previous chat. Revisit only with a way to flush the pending value on leave.
     anchorRef.current = computeAnchor(el, atBottom);
     if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
   }, [loadOlder, loadNewer, sendRead]);
@@ -782,6 +806,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const sendTyping = useCallback((active: boolean) => {
     const ws = socketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (socketChatRef.current !== activeRef.current) return;
     if (active === sentTypingRef.current) return;
     sentTypingRef.current = active;
     ws.send(JSON.stringify({ type: "typing", on: active }));
@@ -828,6 +853,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const myId = meIdRef.current;
     // The one socket belongs to the active chat: a caller bound to another chat sends nothing.
     if (forChat !== undefined && forChat !== chatId) return;
+    if (socketChatRef.current !== chatId) return; // the socket still serves the chat just left
     // Edits/deletes/sends do NOT depend on the live tail: only the socket gates a flush.
     if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const q = outboxRef.current.get(chatId);
@@ -879,6 +905,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const ws = socketRef.current;
     const myId = meIdRef.current;
     if (forChat !== undefined && forChat !== chatId) return; // the one socket belongs to the active chat
+    if (socketChatRef.current !== chatId) return;
     if (!chatId || !ws || ws.readyState !== WebSocket.OPEN || !myId) return;
     const pending = unackedRef.current.get(chatId);
     if (!pending || pending.size === 0) return;
@@ -1075,6 +1102,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       closingRef.current = false;
       const ws = new WebSocket(wsUrl(base, chatId));
       socketRef.current = ws;
+      socketChatRef.current = chatId;
       ws.onopen = () => {
         if (cancelled || socketRef.current !== ws) return;
         reconnectRef.current.attempts = 0;
@@ -1137,6 +1165,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       }
       const ws = socketRef.current;
       socketRef.current = null;
+      socketChatRef.current = null;
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
   }, [base, activeId, applyFrame, sendRead, flushOutbox, resendUnacked, liveSince, commitLog]);
@@ -1314,7 +1343,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const hist = histRes.data;
     // Local bubbles (a just-sent message still pending, or acked but not yet in this
     // page) survive the reload.
-    commitLog(chatId, (prev) => keepLocalOwn(hist, prev, live), { src: "fetch", hasMore: hist.length >= 50 });
+    commitLog(chatId, (prev) => keepLocalOwn(hist, prev, live), { src: "fetch", hasMore: hist.length >= 50, detached: false });
     atBottomRef.current = true;
     if (hist.length > 0) sendRead(hist.map((m) => ({ ...m })));
     markAttached(); // flushes anything queued while detached
