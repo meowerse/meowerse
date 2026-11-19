@@ -180,11 +180,20 @@ export async function spendCodeAttempt(db: DbClient, ticketId: string): Promise<
   return (r.rowsAffected ?? 0) === 1;
 }
 
-/** Burn a still-pending ticket (cancel / too many wrong codes) and drop the stored Telegram identity. */
-export async function burnTicket(db: DbClient, ticketId: string): Promise<boolean> {
-  const r = await db.execute({ sql: "UPDATE login_tickets SET status = 'burned' WHERE ticket_id = ? AND status = 'pending'", args: [ticketId] });
-  await clearTicketIdentity(db, ticketId);
-  return (r.rowsAffected ?? 0) === 1;
+/**
+ * Burn a still-pending ticket (cancel / too many wrong codes) and drop the stored Telegram identity.
+ * With `onlyTgId` the burn is atomically refused once a code was issued to a DIFFERENT Telegram user.
+ * Returns whether THIS call burned it; a refused/lost burn leaves the ticket (and its identity) untouched.
+ */
+export async function burnTicket(db: DbClient, ticketId: string, onlyTgId?: string): Promise<boolean> {
+  const guard = onlyTgId === undefined ? { sql: "", args: [] as string[] } : {
+    sql: " AND NOT EXISTS (SELECT 1 FROM login_ticket_ctx WHERE ticket_id = ? AND code_hash IS NOT NULL AND tg_id IS NOT ?)",
+    args: [ticketId, onlyTgId],
+  };
+  const r = await db.execute({ sql: `UPDATE login_tickets SET status = 'burned' WHERE ticket_id = ? AND status = 'pending'${guard.sql}`, args: [ticketId, ...guard.args] });
+  const burned = (r.rowsAffected ?? 0) === 1;
+  if (burned) await clearTicketIdentity(db, ticketId);
+  return burned;
 }
 
 export async function clearTicketIdentity(db: DbClient, ticketId: string): Promise<void> {

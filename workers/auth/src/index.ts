@@ -714,15 +714,23 @@ async function handleTgCancel(req: Request, env: Env, deps: Deps, cors: Record<s
   const body = await botAction(req, env, deps, "cancel");
   if (!body) return json({ error: "unauthorized" }, 401, cors);
   const db = deps.getDb();
+  const tgId = body.telegram_id ?? "";
   const ticket = await findTicketByNonce(db, body.nonce ?? "");
   if (!ticket) return json({ error: "invalid_ticket" }, 400, cors);
-  // Already completed: it can no longer be cancelled; tell the bot so it can warn the user properly.
-  if (ticket.status === "consumed" || ticket.status === "claimed") return json({ error: "already_used" }, 409, cors);
+  // A completed ticket can no longer be cancelled. Only the Telegram user it was completed for is told so
+  // (identity is cleared on completion, so compare through the link table); anyone else learns nothing.
+  const usedFor = async (t: { account_id: string | null }) =>
+    t.account_id !== null && (await findAccountByTelegram(db, tgId)) === t.account_id ? json({ error: "already_used" }, 409, cors) : json({ error: "invalid_ticket" }, 400, cors);
+  if (ticket.status === "consumed" || ticket.status === "claimed") return usedFor(ticket);
   if (ticket.status !== "pending" || Number(ticket.expires_at) < now(deps)) return json({ error: "invalid_ticket" }, 400, cors);
-  // Once a code was issued, only the Telegram user who confirmed may cancel.
-  const ctx = await getTicketContext(db, ticket.ticket_id);
-  if (ctx?.code_hash && ctx.tg_id !== (body.telegram_id ?? "")) return json({ error: "invalid_ticket" }, 400, cors);
-  if (await burnTicket(db, ticket.ticket_id)) await recordAudit(deps, req, { event: "telegram.ticket_cancelled", accountId: ticket.account_id }, { network: false });
+  // Once a code was issued, only the Telegram user who confirmed may cancel (enforced atomically in the burn itself).
+  if (!(await burnTicket(db, ticket.ticket_id, tgId))) {
+    // Lost a race (completed/burned between the lookup and the burn) or not the confirming user: never answer ok.
+    const again = await findTicketByNonce(db, body.nonce ?? "");
+    if (again && (again.status === "consumed" || again.status === "claimed")) return usedFor(again);
+    return json({ error: "invalid_ticket" }, 400, cors);
+  }
+  await recordAudit(deps, req, { event: "telegram.ticket_cancelled", accountId: ticket.account_id }, { network: false });
   return json({ ok: true }, 200, cors);
 }
 

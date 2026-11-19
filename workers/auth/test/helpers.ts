@@ -374,7 +374,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
       if (/UPDATE login_tickets SET status = 'burned'/.test(sql)) {
-        const row = t.login_tickets.find((r) => r.ticket_id === a[0] && r.status === "pending");
+        let row = t.login_tickets.find((r) => r.ticket_id === a[0] && r.status === "pending");
+        // optional guard: AND NOT EXISTS (ctx for this ticket with a code issued and tg_id IS NOT ?)
+        if (row && a.length >= 3) {
+          const c = t.login_ticket_ctx.find((r) => r.ticket_id === a[1]);
+          if (c && c.code_hash != null && (c.tg_id ?? null) !== (a[2] ?? null)) row = undefined;
+        }
         if (row) row.status = "burned";
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }

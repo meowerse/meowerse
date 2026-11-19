@@ -204,7 +204,7 @@ async function handleCallback(cb: NonNullable<TgUpdate["callback_query"]>, env: 
       messageId,
       used
         ? "⚠️ This request was already completed, so it could NOT be cancelled. If it wasn’t you, open auth.alxnko.dev → security now, sign out other sessions and unlink Telegram."
-        : "This request already finished or expired. If it wasn’t you, open auth.alxnko.dev → security, sign out other sessions and unlink Telegram.",
+        : "This request can’t be cancelled from here (it finished, expired, or isn’t yours).",
     );
   }
 

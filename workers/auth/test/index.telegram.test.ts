@@ -361,6 +361,10 @@ test("cancel of an already-completed ticket → 409 already_used (not ok); unkno
   expect(c.status).toBe(409);
   expect(((await c.json()) as { error: string }).error).toBe("already_used");
   expect(ticketRow(tables, sb.ticketId).status).toBe("consumed");
+  // a different Telegram user learns nothing about the completed ticket
+  const stranger = await botCancel(env, deps, nonce, "9999");
+  expect(stranger.status).toBe(400);
+  expect(((await stranger.json()) as { error: string }).error).toBe("invalid_ticket");
   const u = await botCancel(env, deps, "nope-nonce", "93");
   expect(u.status).toBe(400);
   expect(((await u.json()) as { error: string }).error).toBe("invalid_ticket");
@@ -374,7 +378,56 @@ test("cancel after Yes is bound to the confirming Telegram user", async () => {
   await botConfirm(handle, env, deps, { nonce, tgId: "94" });
   const other = await botCancel(env, deps, nonce, "95");
   expect(other.status).toBe(400);
+  expect(((await other.json()) as { error: string }).error).toBe("invalid_ticket");
   expect(ticketRow(tables, sb.ticketId).status).toBe("pending");
+  expect(ctxRow(tables, sb.ticketId).tg_id).toBe("94"); // the refused cancel left the confirmer's identity intact
   expect((await botCancel(env, deps, nonce, "94")).status).toBe(200);
   expect(ticketRow(tables, sb.ticketId).status).toBe("burned");
+});
+
+test("cancel racing a completion: ticket consumed between lookup and burn → 409 already_used, never ok, no audit", async () => {
+  const { env, deps, tables } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const owner = cookieValue(start.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
+  const nonce = new URL(sb.deepLink).searchParams.get("start")!;
+  const { code } = await botConfirm(handle, env, deps, { nonce, tgId: "96" });
+  const db = deps.getDb();
+  const real = db.execute.bind(db);
+  let injected = false;
+  db.execute = (async (q: { sql: string }) => {
+    if (!injected && /UPDATE login_tickets SET status = 'burned'/.test(q.sql)) {
+      injected = true;
+      db.execute = real; // the completion happens right before the burn statement runs
+      expect((await tgVerify(handle, env, deps, { ticketId: sb.ticketId, code: code!, owner })).status).toBe(200);
+    }
+    return real(q as never);
+  }) as typeof db.execute;
+  const c = await botCancel(env, deps, nonce, "96");
+  expect(injected).toBe(true);
+  expect(c.status).toBe(409);
+  expect(((await c.json()) as { error: string }).error).toBe("already_used");
+  expect(ticketRow(tables, sb.ticketId).status).toBe("consumed");
+  expect(tables.audit_log.some((x) => x.event === "telegram.ticket_cancelled")).toBe(false);
+});
+
+test("cancel by another Telegram user racing the confirm is refused atomically (guard inside the burn)", async () => {
+  const { env, deps, tables } = await fixture();
+  const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await start.json()) as { ticketId: string; deepLink: string };
+  const nonce = new URL(sb.deepLink).searchParams.get("start")!;
+  const db = deps.getDb();
+  const real = db.execute.bind(db);
+  // the ticket has no code at lookup time; the confirm lands just before the burn, so only the SQL guard can stop the stranger
+  db.execute = (async (q: { sql: string }) => {
+    if (/UPDATE login_tickets SET status = 'burned'/.test(q.sql)) {
+      db.execute = real;
+      await botConfirm(handle, env, deps, { nonce, tgId: "97" });
+    }
+    return real(q as never);
+  }) as typeof db.execute;
+  const c = await botCancel(env, deps, nonce, "98");
+  expect(c.status).toBe(400);
+  expect(ticketRow(tables, sb.ticketId).status).toBe("pending");
+  expect(ctxRow(tables, sb.ticketId).tg_id).toBe("97");
 });

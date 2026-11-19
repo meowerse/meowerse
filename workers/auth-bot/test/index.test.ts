@@ -190,8 +190,9 @@ test("callback Cancel refused by the server: never says 'Cancelled'; already_use
     const body = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
     expect(body.text).not.toContain("Cancelled");
     expect(body.text).not.toContain("Nothing was signed in");
-    expect(body.text).toContain("unlink Telegram");
     expect(body.text.includes("could NOT be cancelled")).toBe(expectStrong);
+    expect(body.text.includes("unlink Telegram")).toBe(expectStrong); // sign-out/unlink advice only when it really was used
+    if (!expectStrong) expect(body.text).toContain("can’t be cancelled from here");
   }
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("boom")));
   const net = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
