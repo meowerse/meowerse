@@ -171,3 +171,18 @@ test("upsertClientByName: create when new, unchanged on identical, update on dif
   const foreign = await upsertClientByName(routedDb([[/SELECT client_id, owner_account_id, allowed_scopes/, () => ({ rows: [{ client_id: "mw_1", owner_account_id: "other", allowed_scopes: "[]" }] })]]), "o", { name: "iac-app", clientType: "public", redirectUris: ["https://x/cb"], allowedScopes: [] });
   expect(foreign).toEqual({ error: "not_owner" });
 });
+
+test("first-party brand names are reserved for non-system owners (name and display name, normalised)", async () => {
+  const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] };
+  for (const [name, displayName] of [["my-app", "Meowsenger"], ["my-app", "Meow-senger Official"], ["my-app", "ＭＥＯＷＥＲＳＥ"], ["meowerse-clone", "Clone"], ["my-app", "sun meow"]]) {
+    const r = await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: name!, displayName });
+    expect(r, `${name}/${displayName}`).toEqual({ ok: false, error: "reserved_name" });
+  }
+  // the update and the IaC upsert paths are guarded too
+  const own: Route = [/SELECT 1 FROM oauth_clients WHERE client_id = \? AND owner_account_id/, () => ({ rows: [{ x: 1 }] })];
+  expect(await updateClient(routedDb([own]), "acct_dev", { clientId: "mw_x", displayName: "Meowerse" })).toEqual({ ok: false, error: "reserved_name" });
+  expect(await upsertClientByName(routedDb([nameFree]), "acct_dev", { ...base, name: "ok-name", displayName: "Meowsenger" })).toEqual({ error: "reserved_name" });
+  // an ordinary name still registers
+  const ok = await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: "my-app", displayName: "My Cat App" });
+  expect(ok.ok).toBe(true);
+});

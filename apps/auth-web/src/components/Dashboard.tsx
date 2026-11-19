@@ -129,6 +129,7 @@ export default defineAuthClient({
 
 function errorText(error: string | undefined): string {
   if (error === "name_taken") return "that app name is taken.";
+  if (error === "reserved_name") return "that name is reserved for meowerse apps. pick a different name.";
   if (error === "invalid_name") return "name must be 3–40 lowercase letters/numbers/hyphens.";
   if (error === "invalid_redirect_uri") return "redirect uri must be https (or http loopback) with no fragment.";
   if (error === "redirect_uri_required") return "a redirect uri is required.";

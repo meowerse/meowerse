@@ -961,32 +961,27 @@ async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<s
   }
 }
 
-/** Best-effort decode of a JWT payload — NO signature check (see resolvePostLogout). */
-function decodeJwtPayload(jwt: string | null): Record<string, unknown> | null {
-  if (!jwt) return null;
-  const parts = jwt.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    return JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!))) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * OIDC RP-Initiated Logout return target. We use the client's registered
  * redirect_uris as the post-logout allowlist. `id_token_hint` is only a HINT to
- * pick WHICH client's allowlist to consult — it is not trusted as a credential,
- * so its signature isn't verified: the real guard is allowlist membership, and
- * redirect_uris are owner-controlled URLs already trusted for that client. An
- * attacker can only land the user on a URL some legitimate client registered.
+ * pick WHICH client's allowlist to consult. It must be a genuine id_token we
+ * signed (signature + issuer verified; an expired one is accepted), so a forged
+ * hint cannot select another client's allowlist.
  * ponytail: reuses redirect_uris as the allowlist; add a dedicated
  * post_logout_redirect_uris table only if apps need distinct logout URLs.
  */
-async function resolvePostLogout(deps: Deps, hint: string | null, uri: string | null, state: string | null): Promise<string | null> {
-  if (!uri) return null;
-  const payload = decodeJwtPayload(hint);
-  const clientId = typeof payload?.aud === "string" ? payload.aud : typeof payload?.azp === "string" ? payload.azp : null;
+async function resolvePostLogout(deps: Deps, env: Env, hint: string | null, uri: string | null, state: string | null): Promise<string | null> {
+  if (!uri || !hint) return null;
+  // The hint must be an id_token WE issued: signature + issuer verified (expiry deliberately NOT enforced, per
+  // RP-initiated logout the OP accepts expired hints), so the client that picks the allowlist is authentic.
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await verifyJwt(hint, (await getSigning(env)).jwks, { iss: issuer(env), skew: Number.POSITIVE_INFINITY })).payload;
+  } catch {
+    return null;
+  }
+  const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+  const clientId = typeof aud === "string" ? aud : null;
   if (!clientId) return null;
   const client = await getClient(deps.getDb(), clientId);
   if (!client || client.status !== "active" || !client.redirectUris.includes(uri)) return null;
@@ -1007,6 +1002,7 @@ async function handleLogout(req: Request, env: Env, deps: Deps, _cors: Record<st
   const dest =
     (await resolvePostLogout(
       deps,
+      env,
       url.searchParams.get("id_token_hint"),
       url.searchParams.get("post_logout_redirect_uri"),
       url.searchParams.get("state"),

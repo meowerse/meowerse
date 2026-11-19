@@ -22,6 +22,20 @@ export function isRegisterableRedirect(uri: string): boolean {
   return false;
 }
 
+/**
+ * Names reserved for the first-party apps. The consent screen shows a client's display name, so a third-party
+ * client must not be able to present itself as "Meowsenger"/"Meowerse" (phishing the consent grant).
+ * Matched on a normalised form (lowercase, letters/digits only) as a substring, so "Meow-senger" and
+ * "my meowerse app" are caught. The system account (first-party owner) is exempt.
+ */
+const RESERVED_BRANDS = ["meowsenger", "meowerse", "moonmeow", "sunmeow", "alxnko"];
+export function isReservedBrand(value: string | undefined): boolean {
+  if (!value) return false;
+  const norm = value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+  return RESERVED_BRANDS.some((b) => norm.includes(b));
+}
+const SYSTEM_OWNER = "acct_system";
+
 function normalizeScopes(scopes: string[]): string[] {
   const out = scopes.filter((s) => CATALOG.has(s));
   if (!out.includes("openid")) out.unshift("openid");
@@ -43,6 +57,7 @@ export type CreateClientResult = { ok: true; clientId: string; clientSecret?: st
 /** Register a new OAuth client owned by a developer (spec §8). Confidential clients get a one-time secret. */
 export async function createClient(db: DbClient, i: CreateClientInput): Promise<CreateClientResult> {
   if (!NAME_RE.test(i.name)) return { ok: false, error: "invalid_name" };
+  if (i.ownerId !== SYSTEM_OWNER && (isReservedBrand(i.name) || isReservedBrand(i.displayName))) return { ok: false, error: "reserved_name" };
   if (!CLIENT_TYPES.has(i.clientType)) return { ok: false, error: "invalid_client_type" };
   if (!Array.isArray(i.redirectUris) || i.redirectUris.length === 0) return { ok: false, error: "redirect_uri_required" };
   for (const uri of i.redirectUris) if (!isRegisterableRedirect(uri)) return { ok: false, error: "invalid_redirect_uri" };
@@ -139,6 +154,7 @@ export async function updateClient(
     args: [i.clientId, ownerId],
   });
   if (!own.rows.length) return { ok: false, error: "not_found" };
+  if (ownerId !== SYSTEM_OWNER && isReservedBrand(i.displayName)) return { ok: false, error: "reserved_name" };
   if (i.redirectUris) {
     if (i.redirectUris.length === 0) return { ok: false, error: "redirect_uri_required" };
     for (const u of i.redirectUris) if (!isRegisterableRedirect(u)) return { ok: false, error: "invalid_redirect_uri" };
@@ -222,6 +238,7 @@ export async function upsertClientByName(
   i: Omit<CreateClientInput, "ownerId">,
 ): Promise<{ created: boolean; unchanged: boolean; clientId: string; clientSecret?: string } | { error: string }> {
   if (!NAME_RE.test(i.name)) return { error: "invalid_name" };
+  if (ownerId !== SYSTEM_OWNER && (isReservedBrand(i.name) || isReservedBrand(i.displayName))) return { error: "reserved_name" };
   for (const uri of i.redirectUris ?? []) if (!isRegisterableRedirect(uri)) return { error: "invalid_redirect_uri" };
   const scopes = normalizeScopes(i.allowedScopes ?? []);
 

@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
 import { handle, rlKey } from "../src/index";
 import { hashPassword, sha256Hex } from "../src/crypto";
+import { signJwt } from "../src/jwt";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
 async function fixture() {
@@ -250,13 +251,17 @@ test("logout revokes + clears the session cookie and redirects to the UI", async
 });
 
 // RP-initiated logout: a `post_logout_redirect_uri` registered as a redirect_uri
-// on the client named by the (unverified) id_token_hint is honored; anything
-// else falls back to the meowerse UI. The hint is a hint, not a credential.
-const idHint = (payload: Record<string, unknown>) => `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.s`;
+// on the client named by the id_token_hint is honored — but only when the hint is a genuine
+// id_token WE signed (signature + issuer checked, expiry tolerated); anything else falls back to the UI.
+async function idHint(env: { AUTH_SIGNING_KEYS: string }, payload: Record<string, unknown>, key?: CryptoKey): Promise<string> {
+  const rec = JSON.parse(env.AUTH_SIGNING_KEYS)[0];
+  const k = key ?? (await crypto.subtle.importKey("jwk", rec.privateJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]));
+  return signJwt({ kid: rec.kid, typ: "JWT" }, { iss: "https://iss", ...payload }, k);
+}
 
 test("logout returns to a registered post_logout_redirect_uri (+state)", async () => {
   const { env, deps } = await fixture();
-  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: REDIRECT, state: "xyz" });
+  const q = new URLSearchParams({ id_token_hint: await idHint(env, { aud: "mw_demo" }), post_logout_redirect_uri: REDIRECT, state: "xyz" });
   const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
   expect(r.status).toBe(302);
   const loc = new URL(r.headers.get("Location")!);
@@ -266,9 +271,20 @@ test("logout returns to a registered post_logout_redirect_uri (+state)", async (
 
 test("logout ignores an unregistered post_logout_redirect_uri → UI", async () => {
   const { env, deps } = await fixture();
-  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: "https://evil.example/steal" });
+  const q = new URLSearchParams({ id_token_hint: await idHint(env, { aud: "mw_demo" }), post_logout_redirect_uri: "https://evil.example/steal" });
   const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
   expect(r.headers.get("Location")).toBe("https://web");
+});
+
+test("logout ignores a forged, foreign-issuer or wrong-key id_token_hint → UI; an EXPIRED genuine one is honored", async () => {
+  const { env, deps } = await fixture();
+  const go = async (hint: string) => (await handle(new Request(`https://iss/logout?${new URLSearchParams({ id_token_hint: hint, post_logout_redirect_uri: REDIRECT })}`), env, deps)).headers.get("Location");
+  const unsigned = `h.${Buffer.from(JSON.stringify({ iss: "https://iss", aud: "mw_demo" })).toString("base64url")}.s`;
+  expect(await go(unsigned)).toBe("https://web");
+  expect(await go(await idHint(env, { aud: "mw_demo", iss: "https://other" }))).toBe("https://web");
+  const otherKey = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  expect(await go(await idHint(env, { aud: "mw_demo" }, otherKey.privateKey))).toBe("https://web");
+  expect(await go(await idHint(env, { aud: "mw_demo", exp: 5 }))).toContain(REDIRECT);
 });
 
 test("logout ignores post_logout_redirect_uri with no id_token_hint → UI", async () => {
