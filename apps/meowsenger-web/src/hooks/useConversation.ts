@@ -350,7 +350,7 @@ export interface UseConversationInput {
   /** A live message arrived in the OPEN chat → the view updates that chat's sidebar
    *  row (preview + move-to-top) in realtime, without waiting for the poll/inbox.
    *  Optional so hook-only tests can omit it. */
-  onActiveMessage?: (message: Message) => void;
+  onActiveMessage?: (message: Message, optimistic?: boolean) => void;
   /** A NEW message from someone else arrived LIVE in the attached open chat (never from the
    *  cache, a revalidate, a catch-up, paging or a jump): the view announces it. */
   onIncoming?: (message: Message) => void;
@@ -1026,7 +1026,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         commitLog(chatId, (prev) => (prev.some((b) => b.tempId === item.tempId) ? prev : [...prev, optimistic]), { src: "local" });
         atBottomRef.current = true;
         sentNew = true;
-        onActiveMessageRef.current?.(optimistic);
+        onActiveMessageRef.current?.(optimistic, true); // device-clock timestamp: preview only, never ordering
       } else if (item.kind === "edit") {
         const cur = logStateRef.current.find((b) => b.id === item.id);
         if (cur && !editBaselineRef.current.has(item.id)) editBaselineRef.current.set(item.id, { body: cur.body, editedAt: cur.editedAt });

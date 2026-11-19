@@ -38,9 +38,8 @@ vi.mock("../lib/chat", async (importActual) => {
 
 import { useConversation } from "./useConversation";
 import { loadHistory, loadHistoryAround } from "../lib/chat";
-import { hasSessionEnded, resetSessionEnded } from "../lib/sessionEnded";
-import { setScope, getScope } from "../lib/store/scope";
-import { installAuthChannel } from "../lib/store/authChannel";
+import { hasSessionEnded, resetSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+import { setScope, getScope, clearAll } from "../lib/store/scope";
 
 /** A promise a test resolves by hand, to drive the switched-away race guards. */
 function deferred<T>() {
@@ -762,9 +761,12 @@ describe("useConversation — lifecycle", () => {
 
   it("a {revoked, reason:'session'} frame is a signed-out session: session-ended path, NOT the 'removed from chat' purge", async () => {
     resetSessionEnded();
-    installAuthChannel(); // as AppShell does: session-ended wipes the account cache
+    // What installAuthChannel wires in the app (session-ended wipes the account cache), but with an
+    // unsubscribe so no global subscriber outlives this test.
+    const off = subscribeSessionEnded(() => clearAll());
     const { ws, onRevoked } = await open([msg({ id: "m1", createdAt: 1000 })]);
     setScope("u1");
+    try {
     act(() => ws.mockEmit({ type: "revoked", reason: "session" }));
     expect(hasSessionEnded()).toBe(true);
     expect(getScope()).toBeNull(); // the account cache was wiped (clearAll)
@@ -772,7 +774,7 @@ describe("useConversation — lifecycle", () => {
     act(() => ws.mockDrop());
     await new Promise((r) => setTimeout(r, 700));
     expect(MockWebSocket.instances.length).toBe(1); // still no reconnect loop
-    resetSessionEnded();
+    } finally { off(); resetSessionEnded(); clearAll(); }
   });
 
   it("reconnects immediately on online/visibility wake when socket is closed", async () => {

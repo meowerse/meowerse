@@ -895,6 +895,23 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     expect(input.disabled).toBe(false);
   });
 
+  it("a fast DEVICE clock cannot make real server deltas look stale: optimistic send, then a peer delta with the server `at` still applies", async () => {
+    const serverNow = Date.now();
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => { const i = MockWebSocket.inbox; if (!i) throw new Error("inbox socket not opened"); return i; });
+    act(() => inbox.mockOpen());
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => serverNow + 60_000); // phone clock 60 s fast
+    try {
+      fireEvent.change(screen.getByLabelText("message"), { target: { value: "from my fast phone" } });
+      fireEvent.click(screen.getByRole("button", { name: "send" }));
+      await waitFor(() => expect(within(logEl()).getByText("from my fast phone")).toBeTruthy());
+    } finally { spy.mockRestore(); }
+    emit(inbox, { type: "chat_update", chatId: "c1", preview: "peer reply", at: serverNow + 1000, senderId: "u2" });
+    await waitFor(() => expect(screen.getByText("peer reply")).toBeTruthy());
+  });
+
   it("IME: Enter while composing (isComposing, or keyCode 229) does not send; a plain Enter does", async () => {
     const ws = await mountOpen();
     open(ws);

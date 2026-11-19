@@ -26,10 +26,17 @@ const SESSION_STALE_MS = 120_000;
 /** The socket attachment. `checkedAt` = when the session was last KNOWN live (open time, then
  *  every successful D1 check). It lives on the socket so TTL and the stale window survive
  *  hibernation (an in-memory cache would be empty after every wake: one D1 read per delta). */
-interface Attach { userId?: string; sid?: string; checkedAt?: number }
+interface Attach { userId?: string; sid?: string; checkedAt?: number; missed?: true }
+
+/** A session read slower than this counts as "unavailable" (stale window applies): a hung D1
+ *  must not freeze the delivery line (and the Conversation fan-out awaiting /notify). */
+const READ_TIMEOUT_MS = 2_500;
 
 export class UserInbox extends DurableObject<Env> {
-  /** sid -> the ONE in-flight D1 read for that session (concurrent deltas share it). */
+  /** sid -> the ONE in-flight D1 read for that session. Inside the serialised `tail` there is
+   *  never a concurrent reader, so this only guards future reads made outside the chain; the
+   *  ordering test proves the combination (it fails only when BOTH are removed). */
+  private warnedNoSid = false;
   private pending = new Map<string, Promise<boolean | "unavailable">>();
   /** Delivery tail: /notify calls are processed strictly in arrival order, so a slow session
    *  read can never let a later delta overtake an earlier one (the client keeps the last one). */
@@ -38,15 +45,18 @@ export class UserInbox extends DurableObject<Env> {
   private read(sid: string, userId: string): Promise<boolean | "unavailable"> {
     let p = this.pending.get(sid);
     if (!p) {
-      p = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"unavailable">((resolve) => { timer = setTimeout(() => resolve("unavailable"), READ_TIMEOUT_MS); });
+      const query = (async (): Promise<boolean | "unavailable"> => {
         try {
           const row = await d1Client(this.env.DB).first(
             "SELECT 1 AS ok FROM sessions WHERE id = ? AND user_id = ? AND expires_at >= ?",
             [sid, userId, Date.now()],
           );
           return row !== undefined;
-        } catch { return "unavailable" as const; }
+        } catch { return "unavailable"; }
       })();
+      p = Promise.race([query, timeout]).finally(() => clearTimeout(timer));
       this.pending.set(sid, p);
       const clear = (): void => { if (this.pending.get(sid) === p) this.pending.delete(sid); };
       p.then(clear, clear);
@@ -79,11 +89,24 @@ export class UserInbox extends DurableObject<Env> {
   }
 
   /** Send one frame to every live socket of this user whose session still checks out. */
-  private async deliver(frame: string): Promise<void> {
+  private async deliver(frame: string, chatId: unknown): Promise<void> {
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attach | null;
-      if (a && !(await this.sessionAlive(ws, a))) continue;
-      try { ws.send(frame); } catch { /* socket closed underneath us — drop the frame */ }
+      if (a && !(await this.sessionAlive(ws, a))) {
+        // Withheld (stale window passed / D1 unavailable): remember it, so the next delivery
+        // that does get through first tells the client to refetch what it missed.
+        try { const cur = (ws.deserializeAttachment() as Attach | null) ?? a; ws.serializeAttachment({ ...cur, missed: true }); } catch { /* socket gone */ }
+        continue;
+      }
+      try {
+        const cur = ws.deserializeAttachment() as Attach | null;
+        if (cur?.missed) {
+          if (typeof chatId === "string") ws.send(JSON.stringify({ type: "chat_update", chatId, invalidate: true }));
+          const { missed: _m, ...rest } = cur;
+          ws.serializeAttachment(rest);
+        }
+        ws.send(frame);
+      } catch { /* socket closed underneath us — drop the frame */ }
     }
   }
 
@@ -105,7 +128,7 @@ export class UserInbox extends DurableObject<Env> {
         let delta: unknown;
         try { delta = JSON.parse(await request.text()); } catch { return; }
         if (delta === null || typeof delta !== "object") return;
-        await this.deliver(JSON.stringify({ type: "chat_update", ...(delta as object) }));
+        await this.deliver(JSON.stringify({ type: "chat_update", ...(delta as object) }), (delta as { chatId?: unknown }).chatId);
       }).catch(() => { /* one bad delivery never wedges the line */ });
       this.tail = turn;
       await turn;
@@ -117,6 +140,11 @@ export class UserInbox extends DurableObject<Env> {
     const userId = url.searchParams.get("user");
     // The session hash arrives in an internal router-set header, never in the URL (logged).
     const sid = request.headers.get(SID_HEADER) || undefined;
+    if (!sid && !this.warnedNoSid) {
+      // A router regression (header lost) would silently disable session checks: make it visible once.
+      this.warnedNoSid = true;
+      console.warn("ws_no_sid inbox");
+    }
     if (!userId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
     const pair = new WebSocketPair();
     // Accept into the Hibernation API so the inbox sleeps between deltas.

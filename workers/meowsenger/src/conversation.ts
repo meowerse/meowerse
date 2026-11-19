@@ -282,6 +282,11 @@ export class Conversation extends DurableObject<Env> {
     const type = url.searchParams.get("type") || "group";
     if (!userId || !chatId) return new Response("bad ws params", { status: 400, headers: { "Cache-Control": "no-store" } });
     const sid = request.headers.get(SID_HEADER) || undefined;
+    if (!sid && !this.warnedNoSid) {
+      // A router regression (header lost) would silently disable session checks: make it visible once.
+      this.warnedNoSid = true;
+      console.warn("ws_no_sid conversation");
+    }
 
     const pair = new WebSocketPair();
     // WebSocketPair is a tuple-shaped { 0: client, 1: server }.
@@ -368,6 +373,7 @@ export class Conversation extends DurableObject<Env> {
 
   // userId -> last D1 membership verdict for THIS chat + when it was read. Short TTL;
   // cleared by dropUser. In-flight reads are shared so a frame burst costs one query.
+  private warnedNoSid = false;
   private memberVerdict = new Map<string, { ok: boolean; at: number }>();
   private memberInflight = new Map<string, Promise<boolean>>();
   /** Per user: the last typing state actually broadcast + when, and a frame-count window. */

@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import type { UserInbox } from "./inbox";
 
 // The workers-pool env exposes the real bindings from wrangler.jsonc.
@@ -183,6 +183,58 @@ describe("UserInbox DO", () => {
       await notify(stub("iu10"), "tabs");
       await Promise.all([g1, g2]);
       expect(reads("iu10")).toBe(1);
+    });
+    it("a HUNG D1 read times out to 'unavailable': inside the stale window later deltas are still delivered, the line is not frozen", async () => {
+      await seedSession("isid-hung", "iu11", FAR);
+      const ws = await open("iu11", "isid-hung");
+      await instrument("iu11", { gate: new Promise<void>(() => {}) }); // never resolves
+      await age("iu11", 60_000);
+      const seen: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => { const f = JSON.parse(String(e.data)); if (f.type === "chat_update") seen.push(f.preview); });
+      const t0 = Date.now();
+      await Promise.all([notify(stub("iu11"), "h1"), notify(stub("iu11"), "h2")]); // both resolve (queue not frozen)
+      await new Promise((r) => setTimeout(r, 50));
+      expect(seen).toEqual(["h1", "h2"]);
+      expect(Date.now() - t0).toBeLessThan(10_000);
+    }, 20_000);
+    it("a HUNG D1 read past the stale window withholds (does not hang): notify still returns", async () => {
+      await seedSession("isid-hung2", "iu12", FAR);
+      const ws = await open("iu12", "isid-hung2");
+      await instrument("iu12", { gate: new Promise<void>(() => {}) });
+      await age("iu12", 200_000);
+      const frames: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
+      const res = await notify(stub("iu12"), "never");
+      expect(res.status).toBe(204);
+      expect(frames.some((f) => f.includes("never"))).toBe(false);
+    }, 20_000);
+    it("a withheld delta is not lost silently: the next delivery is preceded by an invalidate (client refetches the list)", async () => {
+      await seedSession("isid-miss", "iu13", FAR);
+      const ws = await open("iu13", "isid-miss");
+      const frames: Array<Record<string, unknown>> = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(JSON.parse(String(e.data))));
+      await instrument("iu13", { fail: true });
+      await age("iu13", 200_000);
+      await notify(stub("iu13"), "withheld");
+      await instrument("iu13"); // D1 healthy again
+      await notify(stub("iu13"), "delivered");
+      await new Promise((r) => setTimeout(r, 50));
+      const cu = frames.filter((f) => f.type === "chat_update");
+      expect(cu).toHaveLength(2);
+      expect(cu[0]).toMatchObject({ chatId: "c1", invalidate: true });
+      expect(cu[1]).toMatchObject({ preview: "delivered" });
+      await notify(stub("iu13"), "again"); // flag cleared: no second invalidate
+      await new Promise((r) => setTimeout(r, 50));
+      expect(frames.filter((f) => f.type === "chat_update" && f.invalidate)).toHaveLength(1);
+    });
+    it("an upgrade without X-MW-Sid logs ws_no_sid once, with no ids", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        for (const u of ["iu14", "iu14"]) { const r = await stub(u).fetch(`https://do/ws?user=${u}`, { headers: { Upgrade: "websocket" } }); r.webSocket!.accept(); }
+        const calls = warn.mock.calls.map((c) => c.join(" ")).filter((l) => l.includes("ws_no_sid"));
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).not.toContain("iu14");
+      } finally { warn.mockRestore(); }
     });
     it("ordering: two overlapping /notify with a slow session read arrive in order, over ONE shared read", async () => {
       await seedSession("isid-o", "iu9", FAR);
