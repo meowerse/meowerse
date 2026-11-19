@@ -1,13 +1,21 @@
 // A prerendered page runs its scripts before the visitor is on it (see activation.ts). So any client code
 // that runs probes, fetches, or opens a WebGL context must be wrapped in afterActivation(). This is a
 // source-level guard: every .astro <script> block (frontmatter never ships, and may quote sample code) and
-// every .tsx island naming one of these effects must also name afterActivation(.
+// every .tsx island naming one of these effects must also name afterActivation(, checked per <script> block
+// with comments stripped.
+//
+// Known scope limits (a source-level guard, not a proof): imported modules are not followed (an effect hidden in
+// a lib function a script calls is only caught where the effect itself is named in a scanned file); effects
+// outside EFFECTS (new Image(), <link rel=preload> injection, XMLHttpRequest, navigator.* APIs...) are not seen;
+// comment stripping is regex-based, and the frontmatter fence finder only understands backtick strings. For
+// the build output, scripts/prerender-check.ts is the runtime backstop.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SRC = join(__dirname, "..");
-const EFFECTS = ["runProbes(", "attachAllCat3D(", "fetch(", "getContext("];
+// Matched as whole identifiers (import statements removed), so a bare reference like setTimeout(attachAllCat3D, 200) counts too.
+const EFFECTS = ["runProbes", "attachAllCat3D", "fetch", "getContext", "WebSocket", "EventSource", "sendBeacon"];
 const GUARD = "afterActivation(";
 
 /** Known-safe exceptions, keyed by path relative to src. Each needs a justification. Empty today. */
@@ -16,17 +24,38 @@ const ALLOWLIST: Record<string, string> = {};
 const walk = (d: string): string[] =>
   readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
 
-/** Client-shipped source of a file: an .astro file's executable <script> blocks, or a whole .tsx file. */
-export function clientSource(file: string, src: string): string {
-  if (file.endsWith(".tsx")) return src;
-  return [...src.replace(/^---\n[\s\S]*?\n---/, "").matchAll(/<script(?![^>]*\btype\s*=\s*["']application\/ld\+json)[^>]*>([\s\S]*?)<\/script\s*>/gi)]
-    .map((m) => m[1] ?? "").join("\n");
+/** Everything before the closing frontmatter fence is server-side and never ships. The fence is the first
+ *  line-start `---` outside a template literal: cat3d.astro quotes a whole sample .astro file (with its own
+ *  `---` fences) in a backtick string, so a plain "first \n---" would cut the frontmatter short. */
+function stripFrontmatter(src: string): string {
+  if (!src.startsWith("---\n")) return src;
+  let ticks = 0;
+  for (let i = 4; i < src.length; i++) {
+    if (src[i] === "\\") i++;
+    else if (src[i] === "`") ticks++;
+    else if (src[i] === "\n" && ticks % 2 === 0 && src.startsWith("---", i + 1) && /^(\r?\n|$)/.test(src.slice(i + 4))) return src.slice(i + 4);
+  }
+  return src;
+}
+
+/** Comments out: a mention in a comment is neither an effect nor a guard. */
+export function stripComments(code: string): string {
+  return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+}
+
+/** Client-shipped sources of a file, one per executable <script> block (an .astro file) or the whole file (.tsx),
+ *  comments removed. Checked one by one: a guard in one block does not cover an effect in another. */
+export function clientSources(file: string, src: string): string[] {
+  if (file.endsWith(".tsx")) return [stripComments(src)];
+  return [...stripFrontmatter(src).matchAll(/<script(?![^>]*\btype\s*=\s*["']application\/ld\+json)[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => stripComments(m[1] ?? ""));
 }
 
 /** The effects a client source names without guarding them; empty when fine. */
 export function unguarded(body: string): string[] {
   if (body.includes(GUARD)) return [];
-  return EFFECTS.filter((e) => body.includes(e));
+  const code = body.replace(/^\s*import\b[^;\n]*(?:;|\n)/gm, "");
+  return EFFECTS.filter((e) => new RegExp(`\\b${e}\\b`).test(code));
 }
 
 /** React islands: the modules an .astro template mounts with a client:* directive. */
@@ -45,25 +74,40 @@ function islandsOf(astro: string, src: string): string[] {
 const astros = walk(SRC).filter((f) => f.endsWith(".astro"));
 const files = [...new Set([...astros, ...astros.flatMap((f) => islandsOf(f, readFileSync(f, "utf8")))])];
 
+const blocks = (f: string) => clientSources(f, readFileSync(f, "utf8"));
+
 describe("effectful client code runs after activation (prerender-safe)", () => {
   it.each(files.map((f) => [relative(SRC, f), f] as const))("%s", (r, f) => {
     if (r in ALLOWLIST) return;
-    expect(unguarded(clientSource(f, readFileSync(f, "utf8"))), `${r} names an effect without afterActivation()`).toEqual([]);
+    blocks(f).forEach((b, i) => expect(unguarded(b), `${r} (block ${i}) names an effect without afterActivation()`).toEqual([]));
   });
 
   it("sanity: the real pages and the Playground island are scanned, and the guarded pages are seen", () => {
     expect(files.map((f) => relative(SRC, f))).toContain("ui-docs/playground/Playground.tsx");
-    const withEffects = files.filter((f) => EFFECTS.some((e) => clientSource(f, readFileSync(f, "utf8")).includes(e)));
+    const withEffects = files.filter((f) => blocks(f).some((b) => EFFECTS.some((e) => new RegExp(`\\b${e}\\b`).test(b))));
     expect(withEffects.map((f) => relative(SRC, f)).sort()).toEqual(
       ["pages/index.astro", "pages/p/[slug].astro", "pages/ui/cat3d.astro", "pages/ui/patterns/together.astro"]);
   });
 
-  it("mutation: an unguarded effect is caught, a guarded one and sample code in frontmatter are not", () => {
+  it("cat3d.astro's quoted sample page (a backtick string in its frontmatter) is not scanned as shipped code", () => {
+    const src = readFileSync(join(SRC, "pages/ui/cat3d.astro"), "utf8");
+    expect(src).toContain("// in an .astro page: server-rendered markup"); // the sample really is there...
+    expect(blocks(join(SRC, "pages/ui/cat3d.astro")).join("\n")).not.toContain("server-rendered markup"); // ...and does not ship
+    expect(blocks(join(SRC, "pages/ui/cat3d.astro"))).toHaveLength(1);
+  });
+
+  it("mutation: an unguarded effect is caught; a guarded one, a comment and frontmatter sample code are not", () => {
+    const run = (src: string) => clientSources("x.astro", src).flatMap(unguarded);
     for (const e of EFFECTS) {
-      expect(unguarded(clientSource("x.astro", `<script>\n  ${e}x);\n</script>`)), e).toEqual([e]);
-      expect(unguarded(clientSource("x.astro", `<script>\n  afterActivation(() => ${e}x));\n</script>`)), e).toEqual([]);
-      expect(unguarded(clientSource("x.astro", `---\nconst s = "${e}";\n---\n<p/>`)), e).toEqual([]);
+      expect(run(`<script>\n  ${e}(x);\n</script>`), e).toEqual([e]);
+      expect(run(`<script>\n  afterActivation(() => ${e}(x));\n</script>`), e).toEqual([]);
+      expect(run(`---\nconst s = "${e}(x)";\n---\n<p/>`), e).toEqual([]);
+      // a guard named only in a comment does not count; an effect named only in a comment is not one
+      expect(run(`<script>\n  // afterActivation(\n  /* afterActivation( */ ${e}(x);\n</script>`), e).toEqual([e]);
+      expect(run(`<script>\n  // ${e}(x)\n</script>`), e).toEqual([]);
+      // per block: a guard in one <script> does not cover an effect in another
+      expect(run(`<script>afterActivation(() => 1)</script>\n<script>${e}(x)</script>`), e).toEqual([e]);
     }
-    expect(unguarded(clientSource("X.tsx", "useEffect(() => { fetch('/x'); })"))).toEqual(["fetch("]);
+    expect(clientSources("X.tsx", "useEffect(() => { fetch('/x'); })").flatMap(unguarded)).toEqual(["fetch"]);
   });
 });
