@@ -12,6 +12,10 @@ export interface Env {
   DATABASE_AUTH_TOKEN?: string;
   AUTH_SIGNING_KEYS?: string;
   STATE_SECRET?: string;
+  /** "1" = local dev/test: allows loopback/.local Origins and the STATE_SECRET fallback. Never set in production. */
+  AUTH_DEV?: string;
+  /** Comma-separated account ids exempt from the reserved-brand client-name check (acct_system always is). Empty/unset = none. */
+  BRAND_OWNER_ACCOUNT_IDS?: string;
   BOT_USERNAME?: string;
   TELEGRAM_BOT_TOKEN?: string;
   INTERNAL_HMAC_KEY?: string;

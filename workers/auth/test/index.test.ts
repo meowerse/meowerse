@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
-import { handle } from "../src/index";
+import { handle, rlKey } from "../src/index";
 import { hashPassword, sha256Hex } from "../src/crypto";
+import { signJwt } from "../src/jwt";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
 async function fixture() {
@@ -35,9 +36,12 @@ test("redirects *.alxnko.eu.org to *.alxnko.dev with 308, CORS and HSTS", async 
   expect(r.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
 
   // Preflight OPTIONS on .eu.org domain returns 204 with CORS
-  const pre = await handle(new Request("https://auth.alxnko.eu.org/token", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), env, deps);
+  // Loopback origins are only trusted with the dev flag; production never echoes them.
+  const prePreflight = (e: typeof env) => handle(new Request("https://auth.alxnko.eu.org/token", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), e, deps);
+  const pre = await prePreflight({ ...env, AUTH_DEV: "1" });
   expect(pre.status).toBe(204);
   expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
+  expect((await prePreflight(env)).headers.get("Access-Control-Allow-Origin")).toBeNull();
 });
 
 test("serves security.txt; robots.txt and sitemap.xml are static assets, not Worker routes", async () => {
@@ -180,9 +184,9 @@ test("token: unsupported grant_type → 400 no-store (public client passes auth)
 test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "token:" + (await sha256Hex("|token")), count: 120, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "token:" + (await rlKey(env as never, new Request("https://iss/"), "token")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_demo" }) }), env as never, deps as never);
   expect(r.status).toBe(429);
 });
@@ -190,7 +194,7 @@ test("token endpoint is IP-rate-limited (429 when the bucket is exhausted)", asy
 test("token: confidential client with no secret → 401 invalid_client", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   store.tables.oauth_clients.push({ client_id: "mw_conf", status: "active", client_type: "confidential", display_name: "C", logo_url: null, allowed_scopes: '["openid"]', allow_offline_access: 0, verified_only: 0, first_party: 0 });
   const r = await handle(new Request("https://iss/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: "mw_conf", code: "x", code_verifier: "y" }) }), env as never, deps as never);
@@ -247,13 +251,17 @@ test("logout revokes + clears the session cookie and redirects to the UI", async
 });
 
 // RP-initiated logout: a `post_logout_redirect_uri` registered as a redirect_uri
-// on the client named by the (unverified) id_token_hint is honored; anything
-// else falls back to the meowerse UI. The hint is a hint, not a credential.
-const idHint = (payload: Record<string, unknown>) => `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.s`;
+// on the client named by the id_token_hint is honored — but only when the hint is a genuine
+// id_token WE signed (signature + issuer checked, expiry tolerated); anything else falls back to the UI.
+async function idHint(env: { AUTH_SIGNING_KEYS: string }, payload: Record<string, unknown>, key?: CryptoKey): Promise<string> {
+  const rec = JSON.parse(env.AUTH_SIGNING_KEYS)[0];
+  const k = key ?? (await crypto.subtle.importKey("jwk", rec.privateJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]));
+  return signJwt({ kid: rec.kid, typ: "JWT" }, { iss: "https://iss", ...payload }, k);
+}
 
 test("logout returns to a registered post_logout_redirect_uri (+state)", async () => {
   const { env, deps } = await fixture();
-  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: REDIRECT, state: "xyz" });
+  const q = new URLSearchParams({ id_token_hint: await idHint(env, { aud: "mw_demo" }), post_logout_redirect_uri: REDIRECT, state: "xyz" });
   const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
   expect(r.status).toBe(302);
   const loc = new URL(r.headers.get("Location")!);
@@ -263,9 +271,20 @@ test("logout returns to a registered post_logout_redirect_uri (+state)", async (
 
 test("logout ignores an unregistered post_logout_redirect_uri → UI", async () => {
   const { env, deps } = await fixture();
-  const q = new URLSearchParams({ id_token_hint: idHint({ aud: "mw_demo" }), post_logout_redirect_uri: "https://evil.example/steal" });
+  const q = new URLSearchParams({ id_token_hint: await idHint(env, { aud: "mw_demo" }), post_logout_redirect_uri: "https://evil.example/steal" });
   const r = await handle(new Request(`https://iss/logout?${q}`), env, deps);
   expect(r.headers.get("Location")).toBe("https://web");
+});
+
+test("logout ignores a forged, foreign-issuer or wrong-key id_token_hint → UI; an EXPIRED genuine one is honored", async () => {
+  const { env, deps } = await fixture();
+  const go = async (hint: string) => (await handle(new Request(`https://iss/logout?${new URLSearchParams({ id_token_hint: hint, post_logout_redirect_uri: REDIRECT })}`), env, deps)).headers.get("Location");
+  const unsigned = `h.${Buffer.from(JSON.stringify({ iss: "https://iss", aud: "mw_demo" })).toString("base64url")}.s`;
+  expect(await go(unsigned)).toBe("https://web");
+  expect(await go(await idHint(env, { aud: "mw_demo", iss: "https://other" }))).toBe("https://web");
+  const otherKey = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  expect(await go(await idHint(env, { aud: "mw_demo" }, otherKey.privateKey))).toBe("https://web");
+  expect(await go(await idHint(env, { aud: "mw_demo", exp: 5 }))).toContain(REDIRECT);
 });
 
 test("logout ignores post_logout_redirect_uri with no id_token_hint → UI", async () => {
@@ -278,7 +297,7 @@ test("logout ignores post_logout_redirect_uri with no id_token_hint → UI", asy
 test("revoke/introspect require a confidential client; unauthenticated → 401", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
 
   // unauthenticated → 401 (closes the token-oracle / revoke-DoS hole)
@@ -334,9 +353,9 @@ test("default fetch wrapper turns a thrown handler into a 500", async () => {
 test("/authorize is IP-rate-limited (429) once the bucket is exhausted", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "authorize:" + (await sha256Hex("|authorize")), count: 120, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "authorize:" + (await rlKey(env as never, new Request("https://iss/"), "authorize")), count: 120, window_start: 1000 });
   const q = new URLSearchParams({ client_id: "mw_demo", redirect_uri: REDIRECT, response_type: "code", scope: "openid", code_challenge: CHALLENGE, code_challenge_method: "S256" });
   const r = await handle(new Request(`https://iss/authorize?${q}`), env as never, deps as never);
   expect(r.status).toBe(429);
@@ -345,9 +364,9 @@ test("/authorize is IP-rate-limited (429) once the bucket is exhausted", async (
 test("/tg/status is IP-rate-limited (429) once the bucket is exhausted", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "tgstatus:" + (await sha256Hex("|tgstatus")), count: 120, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "tgstatus:" + (await rlKey(env as never, new Request("https://iss/"), "tgstatus")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/tg/status?ticket=x"), env as never, deps as never);
   expect(r.status).toBe(429);
 });
@@ -355,9 +374,9 @@ test("/tg/status is IP-rate-limited (429) once the bucket is exhausted", async (
 test("/avatar is IP-rate-limited (429) in front of the Bot-API amplification", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", TELEGRAM_BOT_TOKEN: "T", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", TELEGRAM_BOT_TOKEN: "T", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "avatar:" + (await sha256Hex("|avatar")), count: 120, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "avatar:" + (await rlKey(env as never, new Request("https://iss/"), "avatar")), count: 120, window_start: 1000 });
   const r = await handle(new Request("https://iss/avatar/acct_x"), env as never, deps as never);
   expect(r.status).toBe(429);
 });
@@ -365,9 +384,9 @@ test("/avatar is IP-rate-limited (429) in front of the Bot-API amplification", a
 test("/login is IP-rate-limited (429), keyed on the client IP hash (not the username)", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "login:" + (await sha256Hex("|login")), count: 10, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "login:" + (await rlKey(env as never, new Request("https://iss/"), "login")), count: 10, window_start: 1000 });
   const r = await handle(
     new Request("https://iss/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "whoever", password: "abcdefghijkl" }) }),
     env as never,

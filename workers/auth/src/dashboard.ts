@@ -22,6 +22,51 @@ export function isRegisterableRedirect(uri: string): boolean {
   return false;
 }
 
+/**
+ * Names reserved for the first-party apps. The consent screen shows a client's display name, so a third-party
+ * client must not be able to present itself as "Meowsenger"/"Meowerse" (phishing the consent grant).
+ * Matched as a substring on a skeleton of the value: lowercase, NFKD (full-width/compat forms), combining marks
+ * dropped, common Cyrillic/Greek lookalikes folded to Latin, leetspeak digits/symbols (0 1 3 4 5 7 @ $) folded,
+ * "rn"->"m" and "vv"->"w", everything else non-alphanumeric stripped. A string that mixes Latin letters with
+ * Cyrillic/Greek ones is rejected outright (mixed-script spoofing). Exempt: the system account, accounts listed in
+ * BRAND_OWNER_ACCOUNT_IDS, and edits that leave an existing row's name / display name exactly as it already is.
+ */
+const RESERVED_BRANDS = ["meowsenger", "meowerse", "moonmeow", "sunmeow", "alxnko"];
+const CONFUSABLES: Record<string, string> = {
+  // Cyrillic
+  "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x",
+  "і": "i", "ј": "j", "ѕ": "s", "ӏ": "l", "ѡ": "w", "ԁ": "d", "ԛ": "q", "ɡ": "g",
+  // Greek
+  "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "u", "ν": "v", "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "ω": "w", "ϲ": "c",
+  // leetspeak / symbols
+  "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i", "|": "l",
+};
+const LATIN = /[a-z]/i;
+const NON_LATIN_LETTER = /[\u0370-\u03ff\u0400-\u052f]/;
+export function isReservedBrand(value: string | undefined): boolean {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  if (LATIN.test(lower) && NON_LATIN_LETTER.test(lower)) return true;
+  const folded = lower.normalize("NFKD").replace(/\p{M}/gu, "");
+  let out = "";
+  for (const ch of folded) out += CONFUSABLES[ch] ?? ch;
+  const skeleton = out.replace(/[^a-z0-9]/g, "");
+  const variants = [skeleton, skeleton.replace(/rn/g, "m").replace(/vv/g, "w")];
+  return variants.some((v) => RESERVED_BRANDS.some((b) => v.includes(b)));
+}
+const SYSTEM_OWNER = "acct_system";
+
+/** Parse BRAND_OWNER_ACCOUNT_IDS (comma-separated account ids; empty/unset = none). */
+export function brandOwnerIds(raw: string | undefined): ReadonlySet<string> {
+  return new Set((raw ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+}
+export interface BrandOpts {
+  /** Extra accounts exempt from the reserved-brand check (besides acct_system). */
+  brandOwners?: ReadonlySet<string>;
+}
+const brandExempt = (ownerId: string, o: BrandOpts) => ownerId === SYSTEM_OWNER || (o.brandOwners?.has(ownerId) ?? false);
+
+
 function normalizeScopes(scopes: string[]): string[] {
   const out = scopes.filter((s) => CATALOG.has(s));
   if (!out.includes("openid")) out.unshift("openid");
@@ -41,8 +86,9 @@ export interface CreateClientInput {
 export type CreateClientResult = { ok: true; clientId: string; clientSecret?: string } | { ok: false; error: string };
 
 /** Register a new OAuth client owned by a developer (spec §8). Confidential clients get a one-time secret. */
-export async function createClient(db: DbClient, i: CreateClientInput): Promise<CreateClientResult> {
+export async function createClient(db: DbClient, i: CreateClientInput, opts: BrandOpts = {}): Promise<CreateClientResult> {
   if (!NAME_RE.test(i.name)) return { ok: false, error: "invalid_name" };
+  if (!brandExempt(i.ownerId, opts) && (isReservedBrand(i.name) || isReservedBrand(i.displayName))) return { ok: false, error: "reserved_name" };
   if (!CLIENT_TYPES.has(i.clientType)) return { ok: false, error: "invalid_client_type" };
   if (!Array.isArray(i.redirectUris) || i.redirectUris.length === 0) return { ok: false, error: "redirect_uri_required" };
   for (const uri of i.redirectUris) if (!isRegisterableRedirect(uri)) return { ok: false, error: "invalid_redirect_uri" };
@@ -86,13 +132,14 @@ export interface ClientSummary {
   clientType: string;
   allowedScopes: string[];
   verifiedOnly: boolean;
+  allowOfflineAccess: boolean;
   status: string;
 }
 
 /** List a developer's (non-deleted) clients. */
 export async function listClients(db: DbClient, ownerId: string): Promise<ClientSummary[]> {
   const r = await db.execute({
-    sql: `SELECT client_id, name, display_name, client_type, allowed_scopes, verified_only, status
+    sql: `SELECT client_id, name, display_name, client_type, allowed_scopes, verified_only, allow_offline_access, status
           FROM oauth_clients WHERE owner_account_id = ? AND deleted_at IS NULL ORDER BY created_at DESC`,
     args: [ownerId],
   });
@@ -103,6 +150,7 @@ export async function listClients(db: DbClient, ownerId: string): Promise<Client
     clientType: String(row.client_type),
     allowedScopes: safeArray(row.allowed_scopes),
     verifiedOnly: Number(row.verified_only) === 1,
+    allowOfflineAccess: Number(row.allow_offline_access) === 1,
     status: String(row.status),
   }));
 }
@@ -133,12 +181,18 @@ export async function updateClient(
   db: DbClient,
   ownerId: string,
   i: { clientId: string; redirectUris?: string[]; allowedScopes?: string[]; verifiedOnly?: boolean; allowOfflineAccess?: boolean; displayName?: string },
+  opts: BrandOpts = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const own = await db.execute({
     sql: "SELECT 1 FROM oauth_clients WHERE client_id = ? AND owner_account_id = ? AND deleted_at IS NULL",
     args: [i.clientId, ownerId],
   });
   if (!own.rows.length) return { ok: false, error: "not_found" };
+  if (!brandExempt(ownerId, opts) && isReservedBrand(i.displayName)) {
+    // Re-sending the display name the row ALREADY has is not a new claim to a brand (dashboard edits resend it).
+    const same = await db.execute({ sql: "SELECT display_name FROM oauth_clients WHERE client_id = ? AND display_name = ?", args: [i.clientId, i.displayName] });
+    if (!same.rows.length) return { ok: false, error: "reserved_name" };
+  }
   if (i.redirectUris) {
     if (i.redirectUris.length === 0) return { ok: false, error: "redirect_uri_required" };
     for (const u of i.redirectUris) if (!isRegisterableRedirect(u)) return { ok: false, error: "invalid_redirect_uri" };
@@ -220,6 +274,7 @@ export async function upsertClientByName(
   db: DbClient,
   ownerId: string,
   i: Omit<CreateClientInput, "ownerId">,
+  opts: BrandOpts = {},
 ): Promise<{ created: boolean; unchanged: boolean; clientId: string; clientSecret?: string } | { error: string }> {
   if (!NAME_RE.test(i.name)) return { error: "invalid_name" };
   for (const uri of i.redirectUris ?? []) if (!isRegisterableRedirect(uri)) return { error: "invalid_redirect_uri" };
@@ -231,11 +286,15 @@ export async function upsertClientByName(
   });
   const row = existing.rows[0];
   if (!row) {
-    const created = await createClient(db, { ...i, ownerId });
+    // createClient applies the brand check to a genuinely new row.
+    const created = await createClient(db, { ...i, ownerId }, opts);
     if (!created.ok) return { error: created.error }; // includes account_gone
     return { created: true, unchanged: false, clientId: created.clientId, clientSecret: created.clientSecret };
   }
   if (String(row.owner_account_id) !== ownerId) return { error: "not_owner" };
+  // Existing row: its name is by definition unchanged, so only a CHANGED display name is a new brand claim
+  // (an exact-name no-op re-provision, e.g. Meowsenger's, must keep working).
+  if (!brandExempt(ownerId, opts) && isReservedBrand(i.displayName) && String(row.display_name ?? "") !== i.displayName) return { error: "reserved_name" };
   const clientId = String(row.client_id);
 
   const current = await db.execute({ sql: "SELECT redirect_uri FROM oauth_client_redirect_uris WHERE client_id = ?", args: [clientId] });

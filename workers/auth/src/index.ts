@@ -1,7 +1,7 @@
 import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
-import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
-import { sha256Hex } from "./crypto";
+import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, isDevEnv, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
+import { sha256Hex, hmacSha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
 import { discoveryDoc } from "./oidc";
@@ -18,7 +18,7 @@ import { issueSession, lookupSession, rotateSession, revokeSession, whoami, roll
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
-import { codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, accountPresent, allOf, type Guard, type Stmt } from "./codeguard";
+import { codeSessionLive, codeUnconsumed, refreshUnused, consumeCodeStmt, consumeRefreshStmt, accountPresent, allOf, type Guard, type Stmt } from "./codeguard";
 import {
   verifyLoginWidget,
   verifyInternalConfirm,
@@ -56,6 +56,7 @@ import {
   createManagementToken,
   verifyManagementToken,
   upsertClientByName,
+  brandOwnerIds,
 } from "./dashboard";
 import { userinfoClaims } from "./userinfo";
 import { handleAvatar } from "./avatar";
@@ -83,6 +84,11 @@ function json(body: unknown, status: number, headers: Record<string, string> = {
     status,
     headers: { "Content-Type": "application/json", ...headers },
   });
+}
+
+/** 429 with Retry-After (the fixed window length is an upper bound on the wait). */
+function tooMany(error: string, retryAfterSec: number, headers: Record<string, string> = {}): Response {
+  return json({ error }, 429, { ...headers, "Retry-After": String(retryAfterSec) });
 }
 
 function htmlError(status: number, message: string, cors: Record<string, string>): Response {
@@ -125,8 +131,17 @@ function issuer(env: Env): string {
 function webOrigin(env: Env): string {
   return env.WEB_ORIGIN ?? "https://auth.alxnko.dev";
 }
+/**
+ * HMAC secret for the authorize-request envelope and rate-limit keys. In production it MUST be its own
+ * secret: no fallback to the signing keys (key separation) or to a public constant (forgeable envelopes).
+ * The dev/test fallback exists only when AUTH_DEV=1.
+ */
 function stateSecret(env: Env): string {
-  return env.STATE_SECRET ?? env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
+  if (env.STATE_SECRET) return env.STATE_SECRET;
+  // Fail closed unless this is explicitly local dev/test (AUTH_DEV=1): no "looks like production" heuristic, so a
+  // staging deploy or a mis-set ISSUER cannot fall back to a derived/public secret.
+  if (!isDevEnv(env)) throw new Error("STATE_SECRET is not configured");
+  return env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
 }
 
 interface Signing {
@@ -235,7 +250,7 @@ function scheduleBackgroundRevoke(deps: Deps, db: DbClient, family: string | und
 
 async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   // Cheap in-worker second line behind the edge WAF (same shape as /token).
-  if (!(await ipThrottle(req, deps, "authorize", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "authorize", 120, 60))) return tooMany("rate_limited", 60, cors);
   const url = new URL(req.url);
   const params = parseAuthorizeQuery(url);
   const db = deps.getDb();
@@ -249,8 +264,16 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
 
   const request = v.request;
   const cookies = parseCookies(req.headers.get("Cookie"));
-  const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
-  const promptNone = (request.prompt ?? "").split(/\s+/).includes("none");
+  const liveSession = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
+  const promptList = (request.prompt ?? "").split(/\s+/);
+  const promptNone = promptList.includes("none");
+  // OIDC Core 3.1.2.1: prompt=login or an exceeded max_age means the existing session must NOT be used
+  // silently: the user re-authenticates (login rotates the session and sets a fresh auth_time).
+  // With prompt=none that cannot be done, so it falls through to the login_required answer below.
+  const reauthRequired =
+    liveSession != null &&
+    (promptList.includes("login") || (request.maxAge !== undefined && (request.maxAge === 0 || now(deps) - liveSession.authTime > request.maxAge)));
+  const session = reauthRequired ? null : liveSession;
 
   if (session) {
     const verified =
@@ -286,17 +309,32 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
   if (promptNone) {
     return redirect(appendParams(request.redirectUri, { error: "login_required", state: request.state, iss: issuer(env) }), securityHeaders());
   }
-  // logged out → stash request, send to the login UI
-  const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL }, stateSecret(env));
+  // logged out (or re-auth demanded) → stash request, send to the login UI. For a demanded re-auth the ticket
+  // records the minimum auth_time, so the old live session cannot complete the request through /consent.
+  const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL, ...(reauthRequired ? { m: now(deps) } : {}) }, stateSecret(env));
   return redirect(`${webOrigin(env)}/login`, { ...securityHeaders(), "Set-Cookie": hostCookie(TKT_COOKIE, tkt, { maxAge: TKT_TTL }) });
 }
 
+/**
+ * Login/signup CSRF guard. Browsers always send `Origin` on a cross-site POST (fetch AND form), so a
+ * present-but-foreign value (including the opaque `null`) is rejected; `Sec-Fetch-Site: cross-site` too.
+ * An ABSENT Origin is allowed: only non-browser clients (curl, server-side tests) omit it on POST, and they
+ * carry no ambient cookie a forged login could ride on.
+ */
+function crossSiteForbidden(req: Request, env: Env): boolean {
+  if (req.headers.get("Sec-Fetch-Site") === "cross-site") return true;
+  const origin = req.headers.get("Origin");
+  if (origin === null) return false;
+  return !(origin === issuer(env) || origin === webOrigin(env) || isOriginAllowed(origin, env));
+}
+
 async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
   const p = await readParams(req);
   const db = deps.getDb();
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|signup");
+  const ipHash = await rlKey(env, req, "signup");
   const rl = await checkRateLimit(db, `signup:${ipHash}`, { limit: 20, windowSec: 3600, now: now(deps) });
-  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  if (!rl.allowed) return tooMany("rate_limited", 3600, cors);
   // Bot gate (before the expensive PBKDF2). No-op unless TURNSTILE_SECRET_KEY is set.
   if (!(await turnstileGate(env, p, req.headers.get("CF-Connecting-IP"), deps.fetch))) {
     return json({ error: "turnstile_failed" }, 403, cors);
@@ -319,6 +357,7 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
 }
 
 async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
   const p = await readParams(req);
   const db = deps.getDb();
   // Bot gate FIRST, so a gated bot never reaches (or writes to) the rate_limits
@@ -329,9 +368,9 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   // Key the limiter on the CLIENT IP, not sha256(username): a username-keyed bucket
   // lets an attacker mint unbounded distinct rows (write amplification) and lock
   // out victims by username; per-IP bounds the write surface and the abuser.
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|login");
+  const ipHash = await rlKey(env, req, "login");
   const rl = await checkRateLimit(db, `login:${ipHash}`, { limit: 10, windowSec: 900, now: now(deps) });
-  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  if (!rl.allowed) return tooMany("rate_limited", 900, cors);
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
   if (!res.ok) {
@@ -370,6 +409,8 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
+  // A re-authentication was demanded (prompt=login / max_age): a session older than the demand does not count.
+  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
   const request = envlp.r;
   const client = await getClient(db, request.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
@@ -412,6 +453,7 @@ async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<st
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
+  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
   const client = await getClient(db, envlp.r.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
   return json(
@@ -444,6 +486,8 @@ async function mintResponse(
      * write transaction.
      */
     atomic: { guard: Guard; consume: Stmt };
+    /** Extra issuance guard (code exchange: the originating session must still be live). A loss caused by it is not a replay. */
+    sessionGuard?: Guard;
     /** Called when the credential was already spent by another request (we are the loser). */
     onLost: (accountGone: boolean) => Promise<Response>;
   },
@@ -472,13 +516,13 @@ async function mintResponse(
   void _jti;
   // Second layer: also require the account to still exist, so no access/refresh token can be
   // inserted for a deleted account even when the credential row itself survived (leftover).
-  const guard = allOf(i.atomic.guard, accountPresent(i.accountId));
+  const guard = i.sessionGuard ? allOf(i.atomic.guard, accountPresent(i.accountId), i.sessionGuard) : allOf(i.atomic.guard, accountPresent(i.accountId));
   const { consume } = i.atomic;
   const stmts: Stmt[] = [accessTokenInsert({ jti: tokens.jti, accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t }, guard)];
   let refresh: string | undefined;
   if (i.issueRefresh) {
     const ins = await refreshTokenInsert(
-      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires },
+      { accountId: i.accountId, clientId: i.clientId, scope: i.scope, family: i.family, now: t, prevId: i.prevId, absExpires: i.absExpires, authTime: i.authTime },
       guard,
     );
     refresh = ins.token;
@@ -528,6 +572,10 @@ async function mintResponse(
     let accountGone = false;
     try {
       accountGone = (await db.execute({ sql: "SELECT 1 FROM accounts WHERE id = ?", args: [i.accountId] })).rows.length === 0;
+      // Likewise a code whose originating session was revoked is dead, not replayed: no replay audit.
+      if (!accountGone && i.sessionGuard) {
+        accountGone = (await db.execute({ sql: `SELECT 1 WHERE NOT (${i.sessionGuard.sql})`, args: i.sessionGuard.args })).rows.length > 0;
+      }
     } catch {
       accountGone = false; // unknown: fall back to the conservative (audited) path
     }
@@ -552,8 +600,13 @@ function parseClientAuth(req: Request, p: Record<string, string>): { clientId: s
 }
 
 /** Per-IP write throttle behind the edge limiter (spec §10/#10). */
-async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+/** Rate-limit bucket key: HMAC (server secret) of IP|tag, so the stored keys cannot be reversed by hashing the IPv4 space. */
+export async function rlKey(env: Env, req: Request, tag: string): Promise<string> {
+  return hmacSha256Hex(stateSecret(env), "rl|" + (req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+}
+
+async function ipThrottle(req: Request, env: Env, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
+  const ipHash = await rlKey(env, req, tag);
   const rl = await checkRateLimit(deps.getDb(), `${tag}:${ipHash}`, { limit, windowSec, now: now(deps) });
   return rl.allowed;
 }
@@ -575,7 +628,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
   const db = deps.getDb();
-  if (!(await ipThrottle(req, deps, "token", 120, 60))) return json({ error: "rate_limited" }, 429, { ...cors, ...noStore });
+  if (!(await ipThrottle(req, env, deps, "token", 120, 60))) return tooMany("rate_limited", 60, { ...cors, ...noStore });
   const { clientId, clientSecret } = parseClientAuth(req, p);
 
   // Authenticate the client: confidential clients MUST present a valid secret;
@@ -605,8 +658,10 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       nonce: ex.nonce,
       authTime: ex.authTime,
       family: ex.family,
-      issueRefresh: ex.scope.includes("offline_access"),
+      // A refresh token needs the offline_access scope AND the client's allow_offline_access flag (checked live).
+      issueRefresh: ex.scope.includes("offline_access") && (await getClient(db, clientId))?.allowOfflineAccess === true,
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
+      sessionGuard: codeSessionLive(ex.codeHash, now(deps)),
       onLost: async (accountGone) => {
         await revokeLoserFamily(db, ex.family);
         if (!accountGone) await recordAudit(deps, req, { event: "token.code_replay", accountId: ex.accountId, clientId });
@@ -617,6 +672,11 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
+    // The client's allow_offline_access flag is enforced at ISSUE time only (authorize drops offline_access from
+    // the grant; the code exchange refuses to mint a refresh token). It is deliberately NOT re-checked here:
+    // clients created before the flag existed (e.g. via the dashboard, which could not set it) already hold live
+    // refresh families, and re-checking would hard-break them on deploy. Existing families end at their natural
+    // expiry/rotation limit, or via revocation.
     if (!rot.ok) {
       // Refresh-token reuse: rotateRefresh revoked the family (with retry) before returning.
       // Audit either way; if the revoke could not be persisted, fail closed with 5xx.
@@ -634,7 +694,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       clientId,
       scope: rot.scope,
       nonce: null,
-      authTime: now(deps),
+      authTime: rot.authTime ?? now(deps),
       family: rot.family,
       issueRefresh: true,
       prevId: rot.tokenHash,
@@ -656,7 +716,7 @@ const TGOWN_COOKIE = "mw_tgown";
 
 /** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
 async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
-  if (!(await ipThrottle(req, deps, "tgstart", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgstart", 30, 600))) return tooMany("rate_limited", 600, cors);
   const db = deps.getDb();
   const p = await readParams(req);
   const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
@@ -764,7 +824,7 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
 
 /** POST /tg/verify — the ticket-owning browser submits the code the bot showed in Telegram; only now is the link/sign-in written. */
 async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
-  if (!(await ipThrottle(req, deps, "tgverify", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgverify", 30, 600))) return tooMany("rate_limited", 600, cors);
   // Browser CSRF-style defence in depth: a cross-site page must not be able to submit codes for the owner.
   const origin = req.headers.get("Origin");
   if (origin !== null && !isOriginAllowed(origin, env)) return json({ error: "bad_origin" }, 403, cors);
@@ -790,7 +850,7 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
   // The attempt is spent atomically BEFORE comparing: at most CODE_MAX_ATTEMPTS comparisons ever happen per ticket.
   if (!(await spendCodeAttempt(db, ticket.ticket_id))) {
     await burnAndAudit(db, deps, req, ticket);
-    return json({ error: "too_many_attempts" }, 429, cors);
+    return json({ error: "too_many_attempts" }, 429, cors); // ticket is burned: no Retry-After (retrying this ticket never helps)
   }
   const expected = await tgCodeHash(env.INTERNAL_HMAC_KEY, ticket.ticket_id, code ?? "x");
   if (!code || !constantTimeEqual(expected, ctx.code_hash)) {
@@ -826,7 +886,7 @@ async function burnAndAudit(db: DbClient, deps: Deps, req: Request, ticket: { ti
 /** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
 async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   // Cheap in-worker second line for the poll endpoint (same shape as /token).
-  if (!(await ipThrottle(req, deps, "tgstatus", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgstatus", 120, 60))) return tooMany("rate_limited", 60, cors);
   const db = deps.getDb();
   const ticketId = new URL(req.url).searchParams.get("ticket") ?? "";
   const cookies = parseCookies(req.headers.get("Cookie"));
@@ -870,6 +930,10 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
 
 /** POST /tg/widget — Telegram Login Widget sign-in/up. */
 async function handleTgWidget(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  // Same guards as /login: it creates a session cookie from a (replayable-within-its-window) signed widget payload,
+  // so a cross-site form post must not be able to sign a victim browser into an attacker-chosen account.
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
+  if (!(await ipThrottle(req, env, deps, "tgwidget", 30, 600))) return tooMany("rate_limited", 600, cors);
   const data = await readParams(req);
   if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram_unconfigured" }, 503, cors);
   const v = await verifyLoginWidget(data, env.TELEGRAM_BOT_TOKEN, now(deps));
@@ -907,32 +971,27 @@ async function handleUserinfo(req: Request, env: Env, deps: Deps, cors: Record<s
   }
 }
 
-/** Best-effort decode of a JWT payload — NO signature check (see resolvePostLogout). */
-function decodeJwtPayload(jwt: string | null): Record<string, unknown> | null {
-  if (!jwt) return null;
-  const parts = jwt.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    return JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!))) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * OIDC RP-Initiated Logout return target. We use the client's registered
  * redirect_uris as the post-logout allowlist. `id_token_hint` is only a HINT to
- * pick WHICH client's allowlist to consult — it is not trusted as a credential,
- * so its signature isn't verified: the real guard is allowlist membership, and
- * redirect_uris are owner-controlled URLs already trusted for that client. An
- * attacker can only land the user on a URL some legitimate client registered.
+ * pick WHICH client's allowlist to consult. It must be a genuine id_token we
+ * signed (signature + issuer verified; an expired one is accepted), so a forged
+ * hint cannot select another client's allowlist.
  * ponytail: reuses redirect_uris as the allowlist; add a dedicated
  * post_logout_redirect_uris table only if apps need distinct logout URLs.
  */
-async function resolvePostLogout(deps: Deps, hint: string | null, uri: string | null, state: string | null): Promise<string | null> {
-  if (!uri) return null;
-  const payload = decodeJwtPayload(hint);
-  const clientId = typeof payload?.aud === "string" ? payload.aud : typeof payload?.azp === "string" ? payload.azp : null;
+async function resolvePostLogout(deps: Deps, env: Env, hint: string | null, uri: string | null, state: string | null): Promise<string | null> {
+  if (!uri || !hint) return null;
+  // The hint must be an id_token WE issued: signature + issuer verified (expiry deliberately NOT enforced, per
+  // RP-initiated logout the OP accepts expired hints), so the client that picks the allowlist is authentic.
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await verifyJwt(hint, (await getSigning(env)).jwks, { iss: issuer(env), skew: Number.POSITIVE_INFINITY })).payload;
+  } catch {
+    return null;
+  }
+  const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+  const clientId = typeof aud === "string" ? aud : null;
   if (!clientId) return null;
   const client = await getClient(deps.getDb(), clientId);
   if (!client || client.status !== "active" || !client.redirectUris.includes(uri)) return null;
@@ -953,6 +1012,7 @@ async function handleLogout(req: Request, env: Env, deps: Deps, _cors: Record<st
   const dest =
     (await resolvePostLogout(
       deps,
+      env,
       url.searchParams.get("id_token_hint"),
       url.searchParams.get("post_logout_redirect_uri"),
       url.searchParams.get("state"),
@@ -1017,7 +1077,7 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       allowedScopes: splitList(p.scopes),
       verifiedOnly: asBool(p.verified_only),
       allowOfflineAccess: asBool(p.offline),
-    });
+    }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
     if (!res.ok && res.error === "account_gone") return accountGone(cors);
     if (res.ok) await recordAudit(deps, req, { event: "client.create", accountId: session.accountId, clientId: res.clientId });
     return res.ok ? json(res, 200, { ...cors, ...securityHeaders() }) : json({ error: res.error }, 400, cors);
@@ -1038,8 +1098,9 @@ async function handleDev(req: Request, env: Env, deps: Deps, cors: Record<string
       redirectUris: p.redirect_uris !== undefined ? splitList(p.redirect_uris) : undefined,
       allowedScopes: p.scopes !== undefined ? splitList(p.scopes) : undefined,
       verifiedOnly: p.verified_only !== undefined ? asBool(p.verified_only) : undefined,
+      allowOfflineAccess: p.offline !== undefined ? asBool(p.offline) : undefined,
       displayName: p.display_name,
-    });
+    }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
     if (r.ok) await recordAudit(deps, req, { event: "client.update", accountId: session.accountId, clientId: p.client_id });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
@@ -1114,7 +1175,7 @@ async function requireFreshAuth(
   if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
   if (!password) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
   const db = deps.getDb();
-  if (!(await stepUpAllowed(db, accountId, t))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await stepUpAllowed(db, accountId, t))) return tooMany("rate_limited", 900, cors);
   const v = await verifyAccountPassword(db, accountId, password);
   if (v !== "ok") {
     if (failEvent) await recordAudit(deps, req, { event: failEvent, accountId });
@@ -1150,8 +1211,8 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
 
   if (sub === "password") {
     // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
-    if (!(await stepUpAllowed(db, accountId, now(deps)))) return json({ error: "rate_limited" }, 429, cors);
-    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
+    if (!(await stepUpAllowed(db, accountId, now(deps)))) return tooMany("rate_limited", 900, cors);
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", keepSessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? "") });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }
@@ -1163,11 +1224,19 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "telegram/unlink") {
     const info = await getAccountInfo(db, accountId);
     if (!info?.hasPassword) return json({ error: "no_password_fallback" }, 409, cors); // refuse → avoid lockout
+    // Removing a login method needs fresh authentication (recent login or the current password), like account deletion.
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     await unlinkTelegram(db, accountId);
     await recordAudit(deps, req, { event: "telegram.unlink", accountId });
     return json({ ok: true }, 200, cors);
   }
   if (sub === "recovery-codes") {
+    // Regenerating recovery codes replaces account-recovery credentials: fresh authentication required.
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return accountGone(cors);
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
     if (!recoveryCodes) return accountGone(cors);
     await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
@@ -1241,7 +1310,7 @@ async function handleMgmt(req: Request, env: Env, deps: Deps, cors: Record<strin
     allowedScopes: splitList(p.scopes),
     verifiedOnly: asBool(p.verified_only),
     allowOfflineAccess: asBool(p.offline),
-  });
+  }, { brandOwners: brandOwnerIds(env.BRAND_OWNER_ACCOUNT_IDS) });
   if (!("error" in res) && (res.created || !res.unchanged)) {
     await recordAudit(deps, req, { event: res.created ? "client.create" : "client.update", accountId: ownerId, clientId: res.clientId });
   }
@@ -1337,7 +1406,7 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]{1,64})$/);
   if (av && m === "GET") {
     // Per-IP second line in front of the Bot-API amplification (same shape as /token).
-    if (!(await ipThrottle(req, d, "avatar", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+    if (!(await ipThrottle(req, env, d, "avatar", 120, 60))) return tooMany("rate_limited", 60, cors);
     return handleAvatar(req, env, d, av[1]!, cors);
   }
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, d, cors);

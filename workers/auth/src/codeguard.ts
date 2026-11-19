@@ -33,6 +33,17 @@ export const sessionLive = (sessionIdHash: string, accountId: string, now: numbe
   args: [sessionIdHash, accountId, now, now],
 });
 
+/**
+ * The session that originally authorised this authorization code is still live (unrevoked, within both
+ * expiries, same account). Evaluated inside the issuing statement at EXCHANGE time, so a session revoked
+ * (logout, password change, sign-out-everywhere) after the code was minted cannot still turn it into tokens.
+ */
+export const codeSessionLive = (codeHash: string, now: number): Guard => ({
+  sql: `EXISTS (SELECT 1 FROM oauth_codes oc JOIN sessions ss ON ss.id_hash = oc.session_id_hash AND ss.account_id = oc.account_id
+          WHERE oc.code_hash = ? AND ss.revoked_at IS NULL AND ss.idle_expires_at >= ? AND ss.absolute_expires_at >= ?)`,
+  args: [codeHash, now, now],
+});
+
 /** The authorization code row exists and is unconsumed. */
 export const codeUnconsumed = (codeHash: string): Guard => ({
   sql: "EXISTS (SELECT 1 FROM oauth_codes WHERE code_hash = ? AND consumed_at IS NULL)",

@@ -5,7 +5,7 @@ import { genSigningKeys, memStore, cookieValue } from "./helpers";
 async function loggedIn(username: string, extraEnv: Record<string, string> = { ACCOUNT_DELETE_ENABLED: "1" }) {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...extraEnv };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...extraEnv };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const su = await handle(new Request("https://iss/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: "accttest1234" }) }), env as never, deps as never);
   const b = (await su.json()) as { csrf: string };
@@ -68,7 +68,7 @@ test("grants: list + revoke; telegram unlink guarded by a password fallback", as
 test("telegram-only account cannot unlink Telegram (would lock out) → 409", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   // a telegram-only account (no password) with a session
   store.tables.accounts.push({ id: "acct_tg", username: null, display_name: "Tg", avatar_url: null, verified: 1 });
@@ -112,7 +112,7 @@ test("POST /api/account/delete on a leftover session whose account already vanis
 test("POST /api/account/delete confirms against displayName for a username-less (telegram-only) account", async () => {
   const store = memStore();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", CORS_ORIGINS: "https://web", ACCOUNT_DELETE_ENABLED: "true" };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", CORS_ORIGINS: "https://web", ACCOUNT_DELETE_ENABLED: "true" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
   const idHash = await (await import("../src/crypto")).sha256Hex("delraw");
   store.tables.accounts.push({ id: "acct_tgd", username: null, display_name: "TG Del", avatar_url: null, verified: 1 });

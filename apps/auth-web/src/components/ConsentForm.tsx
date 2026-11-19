@@ -19,7 +19,7 @@ export default function ConsentForm({ base }: { base: string }) {
   useEffect(() => {
     getPending(base)
       .then((p) => {
-        if (p.error === "no_session") setError("no_session");
+        if (p.error === "no_session" || p.error === "login_required") setError("no_session");
         else if (p.error) setError("no pending authorization request.");
         else { setPending(p); setSelected(p.scope ?? []); }
       })

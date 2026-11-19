@@ -23,7 +23,7 @@ async function setup() {
   for (const stmt of [...SCHEMA, ...SEED]) await db.execute(stmt);
   const keys = await genSigningKeys();
   const env = {
-    AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web",
+    AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web",
     BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", ACCOUNT_DELETE_ENABLED: "1",
   };
   const deps = { getDb: () => db, clock: () => T0 };

@@ -63,7 +63,19 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
   };
   // Conditional INSERT ... SELECT ... WHERE EXISTS(unspent credential): last arg is its hash.
   // Token inserts carry a second layer (account still exists): args end [..., credentialHash, accountId].
-  const guardOk = (sql: string, a: unknown[]): boolean => {
+  const guardOk = (sql: string, a0: unknown[]): boolean => {
+    let a = a0;
+    // Code-exchange session guard (codeSessionLive): trailing args [codeHash, now, now]; the code's originating session must be live.
+    if (/JOIN sessions ss ON ss.id_hash = oc.session_id_hash/.test(sql)) {
+      const [codeHash, nowT] = [a[a.length - 3], Number(a[a.length - 2])];
+      a = a.slice(0, -3);
+      const code = t.oauth_codes.find((r) => r.code_hash === codeHash);
+      const live = !!code && t.sessions.some(
+        (r) => r.id_hash === code.session_id_hash && r.account_id === code.account_id && r.revoked_at == null &&
+          Number(r.idle_expires_at) >= nowT && Number(r.absolute_expires_at) >= nowT,
+      );
+      if (!live) return false;
+    }
     let last = a[a.length - 1];
     if (/FROM accounts WHERE id = \?\)/.test(sql)) {
       if (!t.accounts.some((r) => r.id === last)) return false;
@@ -109,6 +121,10 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       if (/UPDATE access_tokens SET revoked_at .* WHERE account_id/.test(sql)) {
         for (const r of t.access_tokens) if (r.account_id === a[0] && r.client_id === a[1]) r.revoked_at = "revoked";
+        return { rows: [] };
+      }
+      if (/DELETE FROM refresh_tokens WHERE account_id/.test(sql)) {
+        t.refresh_tokens = t.refresh_tokens.filter((r) => !(r.account_id === a[0] && (a[1] === undefined || r.client_id === a[1])));
         return { rows: [] };
       }
       if (/UPDATE refresh_tokens SET used_at .* WHERE account_id/.test(sql)) {
@@ -262,7 +278,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       // userinfoClaims — collapsed: profile + telegram (id+username) + live verified.
       if (/AS telegram_id/.test(sql)) {
-        const acct = t.accounts.find((r) => r.id === a[0]);
+        // args: [jti (revocation probe), accountId]
+        const acct = t.accounts.find((r) => r.id === a[1]);
         if (!acct) return { rows: [] };
         const tg = t.telegram_links.find((r) => r.account_id === acct.id);
         return {
@@ -274,6 +291,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
               telegram_id: tg ? tg.telegram_id : null,
               telegram_username: tg ? tg.telegram_username : null,
               verified: tg ? 1 : 0,
+              tok_revoked: t.access_tokens.some((r) => r.jti === a[0] && r.revoked_at != null) ? 1 : 0,
             },
           ],
         };

@@ -26,7 +26,7 @@ interface Sess { raw: string; csrf: string }
 async function setup(envExtra: Record<string, string> = { ACCOUNT_DELETE_ENABLED: "1" }) {
   const db = await freshDb();
   const keys = await genSigningKeys();
-  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...envExtra };
+  const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...envExtra };
   let clock = T0;
   let beforeBatch: ((stmts: { sql: string }[]) => Promise<void>) | null = null;
   const wrapped: DbClient = {

@@ -15,7 +15,7 @@ test("listGrants parses scopes (bad json → []); revokeGrant drops consent + ki
   await revokeGrant(routedDb([], log), "a", "mw_1");
   expect(log.some((c) => c.sql.includes("DELETE FROM consents"))).toBe(true);
   expect(log.some((c) => c.sql.includes("UPDATE access_tokens SET revoked_at"))).toBe(true);
-  expect(log.some((c) => c.sql.includes("UPDATE refresh_tokens SET used_at"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("DELETE FROM refresh_tokens WHERE account_id"))).toBe(true);
 });
 
 const base = {

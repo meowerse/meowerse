@@ -80,7 +80,11 @@ export function validateAuthorizeParams(p: AuthorizeParams, client: LoadedClient
   if (rawScopes.length === 0 || !rawScopes.includes("openid") || !rawScopes.every((s) => allowed.has(s))) {
     return { kind: "redirect_error", error: "invalid_scope", state };
   }
-  const requested = parseScope(p.scope);
+  // offline_access (a refresh token) additionally needs the client's allow_offline_access flag. Without it
+  // the scope is silently DROPPED from the grant (OIDC: the server may ignore offline_access) rather than
+  // failing the whole login, so clients registered before the flag existed keep signing in; they just get no
+  // refresh token (the token step also refuses to mint one).
+  const requested = parseScope(p.scope).filter((s) => s !== "offline_access" || client.allowOfflineAccess);
 
   let maxAge: number | undefined;
   if (p.max_age !== undefined && p.max_age !== "") {
@@ -118,6 +122,12 @@ export interface RequestEnvelope {
   r: AuthorizeRequest;
   o: string;
   exp: number;
+  /**
+   * Minimum session auth_time (epoch s) this request may be completed with. Set when /authorize demanded
+   * re-authentication (prompt=login / exceeded max_age): the still-live OLD session must not be able to
+   * finish the request via /authorize/pending + /consent, only a login that happened after the demand.
+   */
+  m?: number;
 }
 
 const encoder = new TextEncoder();

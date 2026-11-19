@@ -87,3 +87,11 @@ test("signed request object round-trips; tamper/expiry/garbage rejected", async 
   expect(await verifyRequest("nodot", secret, 1000)).toBeNull();
   void env;
 });
+
+test("M7: offline_access is dropped (not rejected) unless the client allows it", () => {
+  const c = { ...client, allowedScopes: [...client.allowedScopes, "offline_access"] };
+  const without = validateAuthorizeParams(params({ scope: "openid offline_access" }), { ...c, allowOfflineAccess: false });
+  expect(without.kind === "ok" && without.request.scope).toEqual(["openid"]);
+  const withFlag = validateAuthorizeParams(params({ scope: "openid offline_access" }), { ...c, allowOfflineAccess: true });
+  expect(withFlag.kind === "ok" && withFlag.request.scope).toEqual(["openid", "offline_access"]);
+});

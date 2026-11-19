@@ -9,6 +9,7 @@ import {
   upsertClientByName,
   updateClient,
   isRegisterableRedirect,
+  brandOwnerIds,
 } from "../src/dashboard";
 import { sha256Hex } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
@@ -29,9 +30,9 @@ test("isRegisterableRedirect: https ok, loopback http ok, junk rejected", () => 
 });
 
 test("listClients tolerates a null display_name", async () => {
-  const db = routedDb([[/FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [{ client_id: "mw_2", name: "b", display_name: null, client_type: "public", allowed_scopes: "[]", verified_only: 1, status: "active" }] })]]);
+  const db = routedDb([[/FROM oauth_clients WHERE owner_account_id/, () => ({ rows: [{ client_id: "mw_2", name: "b", display_name: null, client_type: "public", allowed_scopes: "[]", verified_only: 1, allow_offline_access: 1, status: "active" }] })]]);
   const list = await listClients(db, "o");
-  expect(list[0]).toMatchObject({ clientId: "mw_2", displayName: null, verifiedOnly: true });
+  expect(list[0]).toMatchObject({ clientId: "mw_2", displayName: null, verifiedOnly: true, allowOfflineAccess: true });
 });
 
 test("createClient validates name/type/redirects before writing", async () => {
@@ -170,4 +171,58 @@ test("upsertClientByName: create when new, unchanged on identical, update on dif
   // owned by someone else → not_owner
   const foreign = await upsertClientByName(routedDb([[/SELECT client_id, owner_account_id, allowed_scopes/, () => ({ rows: [{ client_id: "mw_1", owner_account_id: "other", allowed_scopes: "[]" }] })]]), "o", { name: "iac-app", clientType: "public", redirectUris: ["https://x/cb"], allowedScopes: [] });
   expect(foreign).toEqual({ error: "not_owner" });
+});
+
+test("first-party brand names are reserved for non-system owners (name and display name, normalised)", async () => {
+  const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] };
+  for (const [name, displayName] of [["my-app", "Meowsenger"], ["my-app", "Meow-senger Official"], ["my-app", "ＭＥＯＷＥＲＳＥ"], ["meowerse-clone", "Clone"], ["my-app", "sun meow"]]) {
+    const r = await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: name!, displayName });
+    expect(r, `${name}/${displayName}`).toEqual({ ok: false, error: "reserved_name" });
+  }
+  // the update and the IaC upsert paths are guarded too
+  const own: Route = [/SELECT 1 FROM oauth_clients WHERE client_id = \? AND owner_account_id/, () => ({ rows: [{ x: 1 }] })];
+  expect(await updateClient(routedDb([own]), "acct_dev", { clientId: "mw_x", displayName: "Meowerse" })).toEqual({ ok: false, error: "reserved_name" });
+  expect(await upsertClientByName(routedDb([nameFree]), "acct_dev", { ...base, name: "ok-name", displayName: "Meowsenger" })).toEqual({ error: "reserved_name" });
+  // an ordinary name still registers
+  const ok = await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: "my-app", displayName: "My Cat App" });
+  expect(ok.ok).toBe(true);
+});
+
+test("M6 brand check: lookalikes (Cyrillic, 0/1/3, rn, vv, mixed script, combining marks) are rejected for ordinary owners", async () => {
+  const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] };
+  const bad = ["Me\u043ewsenger", "M\u0435owsenger", "Meowsenger".replace("o", "0"), "m3owerse", "rneowerse", "meowe\u0301rse", "meow\uff53enger", "alxnk0", "a1xnko", "meovvsenger"];
+  for (const dn of bad) {
+    const r = await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: "my-app", displayName: dn });
+    expect(r, dn).toEqual({ ok: false, error: "reserved_name" });
+  }
+  // plain non-brand names (incl. non-Latin) still register
+  for (const dn of ["Мой кот", "猫アプリ", "Nekomancer", "My 1st app"]) {
+    expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_dev", name: "my-app", displayName: dn })).ok, dn).toBe(true);
+  }
+});
+
+test("M6 brand check: exempt owners (acct_system and BRAND_OWNER_ACCOUNT_IDS) may use brand names; others may not", async () => {
+  const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"], name: "meowsenger", displayName: "Meowsenger" };
+  expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_system" })).ok).toBe(true);
+  expect(await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_ops" })).toEqual({ ok: false, error: "reserved_name" });
+  expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_ops" }, { brandOwners: brandOwnerIds(" acct_ops, acct_x ") })).ok).toBe(true);
+  expect(brandOwnerIds("").size).toBe(0);
+  expect(brandOwnerIds(undefined).size).toBe(0);
+});
+
+test("M6 brand check: re-sending a row's EXISTING name/display name is a no-op that still works; changing it to a brand does not", async () => {
+  const own: Route = [/SELECT 1 FROM oauth_clients WHERE client_id = \? AND owner_account_id/, () => ({ rows: [{ x: 1 }] })];
+  const sameDn: Route = [/SELECT display_name FROM oauth_clients WHERE client_id = \? AND display_name = \?/, (args) => ({ rows: args[1] === "Meowsenger" ? [{ display_name: "Meowsenger" }] : [] })];
+  // dashboard edit resending the existing display name
+  expect((await updateClient(routedDb([own, sameDn]), "acct_dev", { clientId: "mw_x", displayName: "Meowsenger" })).ok).toBe(true);
+  // changing to a different brand name
+  expect(await updateClient(routedDb([own, sameDn]), "acct_dev", { clientId: "mw_x", displayName: "Meowerse" })).toEqual({ ok: false, error: "reserved_name" });
+  // IaC re-provision of an existing row with the same name + display name
+  const row = { client_id: "mw_1", owner_account_id: "acct_dev", allowed_scopes: '["openid"]', verified_only: 0, allow_offline_access: 0, display_name: "Meowsenger" };
+  const existing: Route = [/SELECT client_id, owner_account_id, allowed_scopes/, () => ({ rows: [row] })];
+  const uris: Route = [/redirect_uri FROM oauth_client_redirect_uris/, () => ({ rows: [{ redirect_uri: "https://x.example/cb" }] })];
+  const same = await upsertClientByName(routedDb([existing, uris]), "acct_dev", { name: "meowsenger", displayName: "Meowsenger", clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] });
+  expect(same).toMatchObject({ created: false, unchanged: true });
+  // same row, display name changed to a different brand → rejected
+  expect(await upsertClientByName(routedDb([existing, uris]), "acct_dev", { name: "meowsenger", displayName: "Meowerse", clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] })).toEqual({ error: "reserved_name" });
 });
