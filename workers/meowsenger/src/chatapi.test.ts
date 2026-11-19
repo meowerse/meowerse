@@ -270,9 +270,9 @@ describe("handleHistory", () => {
       CONVERSATION: {
         idFromName: (n: string) => n,
         get: () => ({
-          historyFor: async (_chatId: string, before: string | null) => {
+          historyForEx: async (_chatId: string, before: string | null) => {
             seenBefore = before;
-            return [];
+            return { messages: [], found: true };
           },
         }),
       },
@@ -314,6 +314,17 @@ describe("handleHistory", () => {
     const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?around=m5", "s1"), env, db, now, "c1", cors);
     expect(seenAround).toBe("m5");
     expect(await res.json()).toEqual({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
+  });
+  it("?before=<unknown id> answers [] with found:false (never the newest page)", async () => {
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const env = {
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({ historyForEx: async () => ({ messages: [], found: false }) }),
+      },
+    } as unknown as Env;
+    const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?before=gone", "s1"), env, db, now, "c1", cors);
+    expect(await res.json()).toEqual({ messages: [], found: false });
   });
   it("?after=<id> routes to historyAfterEx (forward page + found)", async () => {
     let seenAfter: string | undefined = "UNSET";

@@ -102,12 +102,6 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   const toastTimerRef = useRef<number | null>(null);
 
-  // SR-announce bookkeeping (#7): whether the initial history for the active chat has
-  // settled (so the backlog isn't announced), and a createdAt high-water mark so only
-  // genuinely-newer incoming tail messages announce (paged-in / jumped history never
-  // crosses it). Reset on every chat switch.
-  const announceSettledRef = useRef(false);
-  const announceHighWaterRef = useRef(-Infinity);
   const resolveNameRef = useRef<(id: string) => string>(() => "");
   const meIdRef = useRef<string | null>(null);
 
@@ -138,8 +132,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
   const resolveSenderName = (senderId: string): string =>
     isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
-  // Mirror into refs so the SR-announce effect reads the current resolver + user id
-  // without re-running every render (it depends only on messages + loadingHistory).
+  // Mirror into refs so the stable `onIncoming` reads the current resolver + user id.
   resolveNameRef.current = resolveSenderName;
   meIdRef.current = me?.id ?? null;
 
@@ -273,13 +266,22 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     [applySidebarDelta],
   );
 
+  // Announce ONLY a new LIVE message from someone else (#7): the hook calls this for an
+  // attached `message` frame whose id was absent and whose sender is not us. The cache paint,
+  // revalidation, catch-up, older pages and jumps never call it, so they stay silent.
+  const onIncoming = (m: Message) => {
+    const who = resolveNameRef.current(m.senderId);
+    const body = m.body.trim().slice(0, 120) || "sent a message";
+    setAnnouncements((prev) => [...prev, { id: m.id, text: `${who}: ${body}` }].slice(-3));
+  };
+
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
     logRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
-  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onMessageDeleted, consumeReply, onRevoked });
+  } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onIncoming, onMessageDeleted, consumeReply, onRevoked });
 
   // Cross-chat realtime sidebar: one persistent inbox socket delivers a delta whenever
   // someone messages a chat you DON'T have open → it jumps to the top with a fresh
@@ -428,36 +430,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setSearchOpen(false);
     setMemberMap(new Map());
     setConfirmBulk(false);
-    // Re-arm the SR announcer so the next chat's backlog isn't read out (#7).
-    announceSettledRef.current = false;
-    announceHighWaterRef.current = -Infinity;
+    // The SR announcer starts empty for the next chat (#7).
     setAnnouncements([]);
   }, [activeId]);
-
-  // Announce ONLY new incoming messages (#7): once the initial history settles, a tail
-  // message whose timestamp beats the high-water mark and that isn't ours/deleted is
-  // pushed into the aria-live region. The backlog, paged-in older pages, and jumped
-  // windows never cross the water mark, so they stay silent.
-  useEffect(() => {
-    if (loadingHistory) return; // initial history still loading — not settled yet
-    if (!announceSettledRef.current) {
-      // Settle point: baseline the water mark at the newest loaded message (or leave it
-      // at -Infinity for an empty chat so its first live message announces).
-      announceSettledRef.current = true;
-      let hi = -Infinity;
-      for (const m of messages) if (m.createdAt > hi) hi = m.createdAt;
-      announceHighWaterRef.current = hi;
-      return;
-    }
-    const tail = messages[messages.length - 1];
-    if (!tail || tail.createdAt <= announceHighWaterRef.current) return;
-    announceHighWaterRef.current = tail.createdAt;
-    // Own sends bump the water mark but aren't announced; deleted/empty are skipped.
-    if (tail.senderId === meIdRef.current || tail.isDeleted || tail.pending) return;
-    const who = resolveNameRef.current(tail.senderId);
-    const body = tail.body.trim().slice(0, 120) || "sent a message";
-    setAnnouncements((prev) => [...prev, { id: tail.tempId ?? tail.id, text: `${who}: ${body}` }].slice(-3));
-  }, [messages, loadingHistory]);
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).

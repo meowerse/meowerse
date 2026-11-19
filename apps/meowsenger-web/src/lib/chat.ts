@@ -11,8 +11,8 @@ import { notifySessionEnded } from "./sessionEnded";
  * see sessionEnded.ts); network/timeout/5xx/403 are returned for the caller to
  * show a retryable error while keeping its last good data.
  */
-async function read<B, T>(url: string, pick: (body: B) => T, quiet = false): Promise<RequestResult<T>> {
-  const r = await request<B>(url);
+async function read<B, T>(url: string, pick: (body: B) => T, quiet = false, init?: { signal?: AbortSignal }): Promise<RequestResult<T>> {
+  const r = await request<B>(url, init?.signal ? { signal: init.signal } : {});
   if (!r.ok) {
     if (r.error.kind === "unauthorized" && !quiet) notifySessionEnded();
     return r;
@@ -216,13 +216,24 @@ export async function openDirect(base: string, username: string): Promise<{ chat
 }
 
 /** GET /api/chats/:id/messages?before= — a history page (ascending), oldest first.
- *  A failure is a typed error (never an empty page). */
-export function loadHistory(base: string, chatId: string, before?: string): Promise<RequestResult<Message[]>> {
+ *  A failure is a typed error (never an empty page). `unknown: true` on success means the
+ *  `before` cursor is not a row of the room (purged): the empty page is NOT "start of chat"
+ *  and must never be merged. `init.signal` aborts the request. */
+export async function loadHistory(
+  base: string,
+  chatId: string,
+  before?: string,
+  init?: { signal?: AbortSignal },
+): Promise<RequestResult<Message[]> & { unknown?: boolean }> {
   const q = before ? `?before=${encodeURIComponent(before)}` : "";
-  return read<{ messages?: Message[] }, Message[]>(
+  let unknown = false;
+  const r = await read<{ messages?: Message[]; found?: boolean }, Message[]>(
     `${base}/api/chats/${encodeURIComponent(chatId)}/messages${q}`,
-    (d) => d.messages ?? [],
+    (d) => { unknown = d.found === false; return d.messages ?? []; },
+    false,
+    init,
   );
+  return r.ok && unknown ? { ...r, unknown: true } : r;
 }
 
 /** GET ?around=<msgId> — a window centered on a message (deep-link jump), ascending,

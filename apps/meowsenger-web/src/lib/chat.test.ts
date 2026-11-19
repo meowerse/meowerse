@@ -109,6 +109,19 @@ describe("loadHistory", () => {
     await loadHistory(BASE, "c1", "m 9");
     expect(mock).toHaveBeenCalledWith(`${BASE}/api/chats/c1/messages?before=m%209`, expect.objectContaining({ credentials: "include" }));
   });
+  it("flags `unknown: true` when the server says found:false (a purged cursor is not a page)", async () => {
+    stubFetch({ messages: [], found: false });
+    expect(await loadHistory(BASE, "c1", "gone")).toEqual({ ok: true, status: 200, data: [], unknown: true });
+    stubFetch({ messages: [], found: true });
+    expect(await loadHistory(BASE, "c1", "m1")).toEqual({ ok: true, status: 200, data: [] });
+  });
+  it("forwards an abort signal: an aborted read is a failure, never an empty page", async () => {
+    const mock = stubFetch({ messages: [{ id: "m1" }] });
+    const ac = new AbortController();
+    ac.abort();
+    mock.mockImplementationOnce(async (_u: unknown, init?: RequestInit) => { if (init?.signal?.aborted) throw new Error("aborted"); return new Response("{}"); });
+    expect((await loadHistory(BASE, "c1", undefined, { signal: ac.signal })).ok).toBe(false);
+  });
   it("carries the Slice-4 reply/edit/delete fields through unchanged", async () => {
     const messages = [
       { id: "m2", chatId: "c1", senderId: "u1", body: "yo", createdAt: 2000, replyToId: "m1", replyTo: { id: "m1", senderId: "u2", body: "hi" }, editedAt: 2500, isDeleted: false },
