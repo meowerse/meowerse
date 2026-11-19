@@ -226,3 +226,15 @@ test("M6 brand check: re-sending a row's EXISTING name/display name is a no-op t
   // same row, display name changed to a different brand → rejected
   expect(await upsertClientByName(routedDb([existing, uris]), "acct_dev", { name: "meowsenger", displayName: "Meowerse", clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] })).toEqual({ error: "reserved_name" });
 });
+
+test("brand check matching rule: other-script lookalikes and joined tokens are rejected, bilingual and near-miss names allowed", async () => {
+  const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] };
+  const make = (displayName: string, ownerId = "acct_dev") => createClient(routedDb([nameFree]), { ...base, ownerId, name: "my-app", displayName });
+  for (const dn of ["meօwsenger", "meоwsenger", "me0wsenger", "My Meowerse app", "Meow-senger", "m e o w s e n g e r", "MeowerseApp", "meօwsenger Chat"]) {
+    expect(await make(dn), dn).toEqual({ ok: false, error: "reserved_name" });
+  }
+  for (const dn of ["Мой Blog", "Meowers Events", "Meow Sengerfan"]) expect((await make(dn)).ok, dn).toBe(true);
+  // exempt owners may still use brand names
+  expect((await make("Meowerse", "acct_system")).ok).toBe(true);
+  expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_ops", name: "my-app", displayName: "Meowerse" }, { brandOwners: brandOwnerIds("acct_ops") })).ok).toBe(true);
+});

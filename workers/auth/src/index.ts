@@ -189,6 +189,9 @@ async function mintCodeRedirect(
   return appendParams(request.redirectUri, { code, state: request.state, iss: issuer(env) });
 }
 
+/** Clock-skew slack (s) between isolates when comparing a session's auth_time with the re-auth demand time `m`. */
+const REAUTH_SKEW_SECONDS = 5;
+
 interface NextStep {
   action: "done" | "redirect" | "consent" | "verify_required";
   url?: string;
@@ -204,6 +207,10 @@ async function resolveNext(deps: Deps, env: Env, tkt: string | undefined, accoun
   if (!tkt) return { action: "done" };
   const envlp = await verifyRequest(tkt, stateSecret(env), now(deps));
   if (!envlp) return { action: "done" };
+  // A re-authentication was demanded (prompt=login / max_age): a session older than the demand must not mint a
+  // code (e.g. the Telegram VERIFY_EXISTING link path re-uses the pre-existing session). Same slack as the
+  // /authorize/pending and /consent checks.
+  if (envlp.m !== undefined && authTime + REAUTH_SKEW_SECONDS < envlp.m) return { action: "done" };
   const request = envlp.r;
   const db = deps.getDb();
   const client = await getClient(db, request.clientId);
@@ -410,7 +417,7 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
   // A re-authentication was demanded (prompt=login / max_age): a session older than the demand does not count.
-  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
+  if (envlp.m !== undefined && session.authTime + REAUTH_SKEW_SECONDS < envlp.m) return json({ error: "login_required" }, 401, cors);
   const request = envlp.r;
   const client = await getClient(db, request.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
@@ -453,7 +460,7 @@ async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<st
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
-  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
+  if (envlp.m !== undefined && session.authTime + REAUTH_SKEW_SECONDS < envlp.m) return json({ error: "login_required" }, 401, cors);
   const client = await getClient(db, envlp.r.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
   return json(
@@ -701,6 +708,13 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       absExpires: rot.absExpires,
       atomic: { guard: refreshUnused(rot.tokenHash), consume: consumeRefreshStmt(rot.tokenHash) },
       onLost: async (accountGone) => {
+        // The refresh row itself vanished (revoked by a password change / revokeGrant): the grant is dead, not
+        // reused. Answer a plain invalid_grant: no family revoke (already gone) and no reuse_detected audit.
+        // Unknown (read failed) falls through to the conservative reuse path below.
+        try {
+          const rowGone = (await db.execute({ sql: "SELECT 1 FROM refresh_tokens WHERE token_hash = ?", args: [rot.tokenHash] })).rows.length === 0;
+          if (rowGone) return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
+        } catch { /* fall through */ }
         // Lost to a concurrent rotation/reuse of the same token: treat as reuse (unless the account is gone).
         await revokeLoserFamily(db, rot.family);
         if (!accountGone) await recordAudit(deps, req, { event: "token.reuse_detected", accountId: rot.accountId, clientId });
@@ -897,9 +911,12 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
   if (ticket.status !== "consumed" || !ticket.account_id) return json({ ready: false }, 200, cors);
   // Linking is not authentication: the continuing session must be the live one for this account, and keeps its auth_time/amr.
   const rawSess = cookies[`__Host-${SESS_COOKIE}`];
+  // A link keeps the continuing session's ORIGINAL auth_time; resolveNext must judge re-auth demands by it.
+  let linkAuthTime = now(deps);
   if (ticket.kind === "VERIFY_EXISTING") {
     const cur = await lookupSession(db, rawSess, now(deps));
     if (!cur || cur.accountId !== ticket.account_id) return json({ error: "no_session" }, 401, cors); // unclaimed
+    linkAuthTime = cur.authTime;
   }
   // Single use: only the poll that atomically claims a fresh ticket gets a session; later polls see "not ready".
   if (!(await claimTicket(db, ticketId, now(deps)))) return json({ ready: false }, 200, cors);
@@ -911,7 +928,7 @@ async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<s
       : await issueSession(db, { accountId: ticket.account_id, amr: "tg", authTime: now(deps), now: now(deps) });
     if (!issued) return accountGone(cors); // account deleted since the ticket was confirmed; stays claimed
     sess = issued;
-    const resolved = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, now(deps));
+    const resolved = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], ticket.account_id, sess.idHash, linkAuthTime);
     if (!resolved) return accountGone(cors);
     next = resolved;
   } catch (e) {
