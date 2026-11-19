@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { joinPublic, createOrGetDirect, createGroup, syncLastMessage } from "./chats";
-import { leave } from "./members";
+import { leave, reconcileOwnership } from "./members";
 import type { DbClient, Row } from "./types";
 
 /**
@@ -53,53 +53,100 @@ describe("idempotent membership insert on the real SQL path (M12)", () => {
   });
 });
 
-describe("guarded owner handoff on the real SQL path (M12)", () => {
-  /** Run leave(), deleting `vanish` from the chat right after the successor SELECT (a concurrent leave). */
-  function racing(db: DbClient, sql: DatabaseSync, vanish: string[]): DbClient {
-    let n = 0;
-    return {
-      ...db,
-      async all(q, p) {
-        const rows = await db.all(q, p);
-        if (q.includes("SELECT user_id, role, joined_at") && n < vanish.length) sql.prepare("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?").run(String(p?.[0]), vanish[n++]!);
-        return rows;
-      },
-    };
-  }
-  it("promotes the oldest admin when nothing races", async () => {
+describe("atomic owner leave on the real SQL path (I2)", () => {
+  const owners = (sql: DatabaseSync, chat: string) => (sql.prepare("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'").all(chat) as Row[]).map((r) => String(r.user_id));
+  it("owner leaves with members: handoff to the oldest ADMIN in the same batch", async () => {
     const { db, members, seedChat } = realDb();
-    seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2], ["mem", "member", 3]]);
-    expect(await leave(db, "c1", "own")).toEqual({ ok: true, transferredTo: "adm" });
+    seedChat("c1", [["own", "owner", 1], ["mem", "member", 2], ["adm", "admin", 3]]);
+    expect(await leave(db, "c1", "own")).toEqual({ ok: true, transferredTo: "adm" }); // admin beats an older plain member
     expect(members("c1")).toEqual(["adm:owner", "mem:member"]);
   });
-  it("the chosen successor leaves concurrently: another successor is picked, exactly one owner remains", async () => {
-    const { db, sql, members, seedChat } = realDb();
-    seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2], ["mem", "member", 3]]);
-    const r = await leave(racing(db, sql, ["adm"]), "c1", "own");
-    expect(r).toEqual({ ok: true, transferredTo: "mem" }); // NOT the vanished "adm"
-    expect(members("c1")).toEqual(["mem:owner"]);
+  it("no admin: the oldest member (ties by user_id) is promoted", async () => {
+    const { db, members, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["zed", "member", 2], ["abe", "member", 2]]);
+    expect(await leave(db, "c1", "own")).toEqual({ ok: true, transferredTo: "abe" });
+    expect(members("c1")).toEqual(["abe:owner", "zed:member"]);
   });
-  it("the ONLY successor leaves concurrently: the chat is deleted rather than left ownerless", async () => {
-    const { db, sql, seedChat } = realDb();
+  it("the leave is ONE batch: leaver delete + handoff + empty-chat delete, no separate statements", async () => {
+    const { db, seedChat } = realDb();
     seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2]]);
-    const r = await leave(racing(db, sql, ["adm"]), "c1", "own");
-    expect(r).toEqual({ ok: true, deleted: true });
+    const calls: string[] = [];
+    const spy: DbClient = { ...db, async run(q, p) { calls.push("run"); return db.run(q, p); }, async batch(st) { calls.push(`batch:${st.length}`); return db.batch!(st); } };
+    await leave(spy, "c1", "own");
+    expect(calls).toEqual(["batch:3"]);
+  });
+  it("owner leaves alone: the chat row is deleted", async () => {
+    const { db, sql, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1]]);
+    expect(await leave(db, "c1", "own")).toEqual({ ok: true, deleted: true });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM chats WHERE id = 'c1'").get()).toEqual({ n: 0 });
   });
-  it("another owner already exists (a concurrent handoff won): no transferredTo, still one owner", async () => {
+  it("a failure part-way rolls the WHOLE leave back: the leaver is still a member and the retry completes it", async () => {
+    const { db, members, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2]]);
+    const broken: DbClient = { ...db, async batch() { throw new Error("d1 down"); } };
+    await expect(leave(broken, "c1", "own")).rejects.toThrow("d1 down");
+    expect(members("c1")).toEqual(["adm:admin", "own:owner"]); // nothing half-applied
+    expect(await leave(db, "c1", "own")).toEqual({ ok: true, transferredTo: "adm" });
+  });
+  it("the SUCCESSOR was promoted but leaves on a stale 'admin' read: the next-oldest is promoted, never ownerless", async () => {
     const { db, sql, members, seedChat } = realDb();
     seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2], ["mem", "member", 3]]);
-    const stale: DbClient = {
-      ...db,
-      async all(q, p) {
-        const rows = await db.all(q, p);
-        if (q.includes("SELECT user_id, role, joined_at")) sql.prepare("UPDATE chat_members SET role = 'owner' WHERE chat_id = 'c1' AND user_id = 'mem'").run(); // rival handoff lands after our read
-        return rows;
-      },
-    };
-    const r = await leave(stale, "c1", "own");
-    expect(r).toEqual({ ok: true });
-    expect(members("c1").filter((m) => m.endsWith(":owner"))).toEqual(["mem:owner"]);
+    // adm's role read happens before the owner's leave commits, its batch after.
+    const stale: DbClient = { ...db, async first(q, p) { const r = await db.first(q, p); if (q.includes("SELECT role FROM chat_members")) { await leave(db, "c1", "own"); } return r; } };
+    expect(await leave(stale, "c1", "adm")).toEqual({ ok: true }); // read 'admin' (stale), by commit time adm was the owner
+    expect(members("c1")).toEqual(["mem:owner"]);
+    expect(owners(sql, "c1")).toEqual(["mem"]);
+  });
+  it("owner and the only successor leave concurrently: the chat is deleted, not left ownerless", async () => {
+    const { db, sql, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2]]);
+    const stale: DbClient = { ...db, async first(q, p) { const r = await db.first(q, p); if (q.includes("SELECT role FROM chat_members") && p?.[1] === "own") await leave(db, "c1", "adm"); return r; } };
+    expect(await leave(stale, "c1", "own")).toEqual({ ok: true, deleted: true });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM chats WHERE id = 'c1'").get()).toEqual({ n: 0 });
+  });
+  it("another owner already exists: no handoff reported, still exactly one owner", async () => {
+    const { db, sql, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["adm", "admin", 2], ["mem", "member", 3]]);
+    sql.prepare("UPDATE chat_members SET role = 'owner' WHERE chat_id = 'c1' AND user_id = 'mem'").run();
+    expect(await leave(db, "c1", "own")).toEqual({ ok: true });
+    expect(owners(sql, "c1")).toEqual(["mem"]);
+  });
+  it("direct chats have no owner by design: a leave never promotes anyone", async () => {
+    const { db, sql } = realDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1);
+    expect(await leave(db, a.id, "u1")).toEqual({ ok: true });
+    expect(owners(sql, a.id)).toEqual([]);
+  });
+});
+
+describe("reconcileOwnership on the real SQL path (I2 retry)", () => {
+  const owners = (sql: DatabaseSync, chat: string) => (sql.prepare("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'").all(chat) as Row[]).map((r) => String(r.user_id));
+  it("leaver row already gone (partial failure): the retry's reconcile promotes the oldest admin", async () => {
+    const { db, sql, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["mem", "member", 2], ["adm", "admin", 3]]);
+    sql.prepare("DELETE FROM chat_members WHERE chat_id = 'c1' AND user_id = 'own'").run(); // simulated half-applied leave
+    expect(await leave(db, "c1", "own")).toEqual({ ok: false, error: "not_member" });
+    expect(await reconcileOwnership(db, "c1")).toEqual({ transferredTo: "adm" });
+    expect(owners(sql, "c1")).toEqual(["adm"]);
+  });
+  it("leaver row gone and nobody left: the empty chat is deleted", async () => {
+    const { db, sql, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1]]);
+    sql.prepare("DELETE FROM chat_members WHERE chat_id = 'c1'").run();
+    expect(await reconcileOwnership(db, "c1")).toEqual({ deleted: true });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM chats WHERE id = 'c1'").get()).toEqual({ n: 0 });
+  });
+  it("healthy chat: a no-op, and a second run changes nothing (idempotent)", async () => {
+    const { db, members, seedChat } = realDb();
+    seedChat("c1", [["own", "owner", 1], ["mem", "member", 2]]);
+    expect(await reconcileOwnership(db, "c1")).toEqual({});
+    expect(await reconcileOwnership(db, "c1")).toEqual({});
+    expect(members("c1")).toEqual(["mem:member", "own:owner"]);
+  });
+  it("an unknown chat id is a no-op", async () => {
+    const { db } = realDb();
+    expect(await reconcileOwnership(db, "nope")).toEqual({});
   });
 });
 

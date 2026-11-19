@@ -45,7 +45,7 @@ import {
   approveRequest,
   rejectRequest,
 } from "./chats";
-import { addMember, removeMember, promote, demote, leave } from "./members";
+import { addMember, removeMember, promote, demote, leave, reconcileOwnership } from "./members";
 import { getOrCreateInvite, refreshInvite, revokeInvite, resolveInvite, joinByInvite } from "./invites";
 import { getAllowAutoGroupAdd, setAllowAutoGroupAdd, userIdsByNames, isReleasedUsername } from "./users";
 import { savePushSubscription, deletePushSubscription, isAllowedPushEndpoint } from "./push";
@@ -536,6 +536,9 @@ export async function handleSetRole(
   return json({ ok: true }, 200, cors, NS);
 }
 
+/** A plausible chat id (uuid or slug-like): bounded, no path/control characters. */
+const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** POST /api/chats/:id/leave — the caller leaves (owner-transfer / last-member-delete). */
 export async function handleLeave(
   req: Request,
@@ -550,11 +553,17 @@ export async function handleLeave(
   const r = await leave(db, chatId, me);
   // Idempotent retry: the D1 leave may already be committed by an attempt whose socket
   // drop failed (503); the retry then finds the caller is no longer a member. Re-run the
-  // drop and answer success with the same body shape.
+  // drop and answer success with the same body shape. First repair the chat's ownership
+  // (idempotent: promotes an oldest admin/member into an ownerless chat, deletes an empty
+  // one) so an interrupted leave can never strand it. An id that is not a plausible chat id,
+  // or whose row does not exist, creates no throwaway Durable Object: nothing to drop.
   if (!r.ok) {
     if (r.error !== "not_member") return json({ error: r.error }, statusForMemberError(r.error), cors, NS);
-    if (!(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
-    return json({ ok: true, transferredTo: null, deleted: false }, 200, cors, NS);
+    if (!CHAT_ID_RE.test(chatId)) return json({ ok: true, transferredTo: null, deleted: false }, 200, cors, NS);
+    const fixed = await reconcileOwnership(db, chatId);
+    const exists = await db.first("SELECT 1 AS ok FROM chats WHERE id = ?", [chatId]);
+    if (exists && !(await dropUserSockets(env, chatId, me, true))) return dropFailed(cors);
+    return json({ ok: true, transferredTo: fixed.transferredTo ?? null, deleted: fixed.deleted ?? false }, 200, cors, NS);
   }
   // Close the leaver's OTHER live sockets to this chat (a second tab would keep
   // receiving otherwise). `deleted` chats have no sockets left; harmless either way.

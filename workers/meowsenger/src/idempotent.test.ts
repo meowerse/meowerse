@@ -56,18 +56,22 @@ describe("membership inserts are idempotent under a race (M12)", () => {
   });
 });
 
-describe("leave owner handoff is guarded (M12)", () => {
-  it("promotes the successor only while the chat has no owner", async () => {
-    const stmts: Array<{ sql: string; p: unknown[] }> = [];
+describe("leave owner handoff is guarded and atomic (M12 / I2)", () => {
+  it("one batch: delete leaver, promote only while ownerless, delete the chat only while memberless", async () => {
+    const batches: Array<Array<{ sql: string; params?: unknown[] }>> = [];
     const db: DbClient = {
-      async all(sql) { return sql.includes("SELECT user_id, role, joined_at") ? ([{ user_id: "b", role: "member", joined_at: 2 }] as Row[]) : []; },
-      async first() { return { role: "owner" }; },
-      async run(sql, p = []) { stmts.push({ sql, p }); },
+      async all() { return []; },
+      async first(sql) { return sql.includes("SELECT role") ? ({ role: "owner" } as Row) : sql.includes("AND role = 'owner'") ? ({ user_id: "b" } as Row) : undefined; },
+      async run() { throw new Error("must be batched"); },
+      async batch(stmts) { batches.push(stmts); return [1, 1, 0]; },
     };
     const r = await leave(db, "c1", "a");
     expect(r).toEqual({ ok: true, transferredTo: "b" });
-    const up = stmts.find((s) => s.sql.startsWith("UPDATE chat_members SET role = 'owner'"))!;
-    expect(up.sql).toContain("NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner')");
-    expect(up.p).toEqual(["c1", "b", "c1"]);
+    expect(batches).toHaveLength(1);
+    const [del, up, gone] = batches[0]!;
+    expect(del!.sql).toBe("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?");
+    expect(up!.sql).toContain("NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner')");
+    expect(up!.sql).toContain("ORDER BY role = 'admin' DESC, joined_at ASC, user_id ASC LIMIT 1");
+    expect(gone!.sql).toContain("NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ?)");
   });
 });

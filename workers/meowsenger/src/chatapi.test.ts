@@ -519,6 +519,7 @@ function groupApiDb(opts: {
         return id ? { id } : undefined;
       }
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
+      if (sql.includes("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'")) return members.find((m) => m.chat_id === p[0] && m.role === "owner");
       if (sql.includes("SELECT 1 AS ok FROM chats WHERE slug")) return [...chats.values()].some((c) => c.slug === p[0]) ? { ok: 1 } : undefined;
       if (sql.includes("SELECT id FROM chats WHERE slug")) return [...chats.values()].find((c) => c.slug === p[0]);
       // resolveChat looks the chat up by id FIRST (before falling back to slug).
@@ -566,6 +567,19 @@ function groupApiDb(opts: {
       return undefined;
     },
     async run(sql, p = []) {
+      if (sql.startsWith("UPDATE chat_members SET role = 'owner'") && sql.includes("(SELECT user_id")) {
+        // leave()'s guarded handoff: oldest admin, else oldest member, only while ownerless.
+        const rest = members.filter((m) => m.chat_id === p[0] && m.user_id !== p[2]).sort((a, b) => (b.role === "admin" ? 1 : 0) - (a.role === "admin" ? 1 : 0) || Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+        if (!rest[0] || members.some((m) => m.chat_id === p[0] && m.role === "owner")) return 0;
+        rest[0].role = "owner";
+        return 1;
+      }
+      if (sql.startsWith("DELETE FROM chats") && sql.includes("NOT EXISTS")) {
+        if (members.some((m) => m.chat_id === p[0])) return 0;
+        const had = chats.delete(String(p[0]));
+        
+        return had ? 1 : 0;
+      }
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null, invite_code: null, invite_enabled: 1 });
       else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createGroup now inserts creator ('owner') + others ('member') in ONE
@@ -836,12 +850,40 @@ describe("POST /api/chats/:id/leave", () => {
     expect(await res.json()).toMatchObject({ ok: true, transferredTo: "adm" });
   });
   it("leaving when already not a member is an idempotent success (retry after a 503) that re-runs the drop", async () => {
-    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner") });
+    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner"), chats: [{ id: "g1" }] });
     const { env, drops } = memberEnv();
     const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: false });
     expect(drops).toEqual([{ chatId: "g1", userId: "u9", revoked: true }]);
+  });
+  it("retry on a chat that does not exist (or a malformed id) creates no throwaway Durable Object", async () => {
+    const { db } = groupApiDb({ session: validSession("u9"), members: grp("own", "owner"), chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    for (const id of ["ghost", "../x", "a".repeat(65)]) {
+      const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, id, cors);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: false });
+    }
+    expect(drops).toEqual([]);
+  });
+  it("retry heals an ownerless chat left by an interrupted leave and reports the handoff", async () => {
+    // The leaver's row is already gone and nobody owns the chat: the retry (not_member) repairs it.
+    const { db, members } = groupApiDb({ session: validSession("gone"), members: [{ chatId: "g1", userId: "adm", role: "admin", joinedAt: 2 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 1 }], chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: "adm", deleted: false });
+    expect(members.find((m) => m.user_id === "adm")?.role).toBe("owner");
+    expect(drops).toEqual([{ chatId: "g1", userId: "gone", revoked: true }]);
+  });
+  it("retry on a memberless chat deletes it (no stranded empty chat) and skips the drop", async () => {
+    const { db, chats } = groupApiDb({ session: validSession("gone"), members: [], chats: [{ id: "g1" }] });
+    const { env, drops } = memberEnv();
+    const res = await handleLeave(cookieReq("https://x/api/chats/g1/leave", "s1", { method: "POST" }), env, db, now, "g1", cors);
+    expect(await res.json()).toEqual({ ok: true, transferredTo: null, deleted: true });
+    expect(chats.has("g1")).toBe(false);
+    expect(drops).toEqual([]);
   });
   it("503 on a failed drop after the leave committed, then the retry succeeds", async () => {
     const { db } = groupApiDb({ session: validSession("mem"), members: [{ chatId: "g1", userId: "own", role: "owner", joinedAt: 1 }, { chatId: "g1", userId: "mem", role: "member", joinedAt: 2 }] });
@@ -1279,9 +1321,24 @@ function accountDb(opts: {
     async first(sql, p = []) {
       if (sql.includes("FROM sessions")) return opts.session;
       if (sql.includes("SELECT role FROM chat_members")) return members.find((m) => m.chat_id === p[0] && m.user_id === p[1]);
+      if (sql.includes("SELECT user_id FROM chat_members WHERE chat_id = ? AND role = 'owner'")) return members.find((m) => m.chat_id === p[0] && m.role === "owner");
+      if (sql.includes("SELECT 1 AS ok FROM chats WHERE id")) return chats.has(String(p[0])) ? { ok: 1 } : undefined;
       return undefined;
     },
     async run(sql, p = []) {
+      if (sql.startsWith("UPDATE chat_members SET role = 'owner'") && sql.includes("(SELECT user_id")) {
+        // leave()'s guarded handoff: oldest admin, else oldest member, only while ownerless.
+        const rest = members.filter((m) => m.chat_id === p[0] && m.user_id !== p[2]).sort((a, b) => (b.role === "admin" ? 1 : 0) - (a.role === "admin" ? 1 : 0) || Number(a.joined_at) - Number(b.joined_at) || String(a.user_id).localeCompare(String(b.user_id)));
+        if (!rest[0] || members.some((m) => m.chat_id === p[0] && m.role === "owner")) return 0;
+        rest[0].role = "owner";
+        return 1;
+      }
+      if (sql.startsWith("DELETE FROM chats") && sql.includes("NOT EXISTS")) {
+        if (members.some((m) => m.chat_id === p[0])) return 0;
+        const had = chats.delete(String(p[0]));
+        deleted.chats.push(String(p[0]));
+        return had ? 1 : 0;
+      }
       if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);
         if (i >= 0) members.splice(i, 1);
