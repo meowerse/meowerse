@@ -4,6 +4,7 @@ import { tgStart, tgStatus, getAccount, postAuthLocation, type NextStep } from "
 
 export default function TelegramButton({ base, kind, label }: { base: string; kind?: "VERIFY_EXISTING"; label?: string }) {
   const [link, setLink] = useState<string | null>(null);
+  const [code, setCode] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [needPassword, setNeedPassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -24,6 +25,7 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     if (res.error === "rate_limited") { setError("too many attempts. try again later."); return; }
     if (!("deepLink" in res) || !res.deepLink || !res.ticketId) { setError("telegram sign-in isn't available right now."); return; }
     setLink(res.deepLink);
+    setCode(res.matchCode ?? null);
     const ticketId = res.ticketId;
     timer.current = setInterval(async () => {
       const s = await tgStatus(base, ticketId).catch(() => ({ ready: false }) as { ready: boolean; next?: NextStep; error?: string });
@@ -32,6 +34,7 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
       if (s.error === "no_session" || s.error === "account_gone") {
         if (timer.current) clearInterval(timer.current);
         setLink(null);
+        setCode(null);
         setError("your session ended. sign in again, then link telegram.");
       }
     }, 2000);
@@ -42,7 +45,14 @@ export default function TelegramButton({ base, kind, label }: { base: string; ki
     return (
       <div className="mw-stack">
         <a href={link} target="_blank" rel="noreferrer noopener"><Button variant="primary">open telegram to confirm</Button></a>
-        <p className="mw-muted">waiting for you to tap start in telegram…</p>
+        {code && (
+          <div>
+            <p className="mw-muted">confirm in telegram only if it shows this code:</p>
+            <p data-testid="tg-match-code" aria-label={`match code ${code}`} style={{ fontSize: "2rem", fontWeight: 700, letterSpacing: "0.3em" }}>{code}</p>
+            <p className="mw-muted">if telegram shows a different code, or you didn't start this, tap cancel.</p>
+          </div>
+        )}
+        <p className="mw-muted">waiting for you to confirm in telegram…</p>
       </div>
     );
   }

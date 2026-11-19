@@ -2,6 +2,7 @@ import { test, expect } from "vitest";
 import { handle } from "../src/index";
 import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
+import { tgMatchCode } from "@meowerse/auth-shared";
 import { genSigningKeys, memStore, cookieValue } from "./helpers";
 
 const enc = new TextEncoder();
@@ -211,4 +212,39 @@ test("a failure after the claim releases it, so the next poll still signs the us
   const retry = await t.poll();
   expect(((await retry.json()) as { ready: boolean }).ready).toBe(true);
   expect(t.ticketStatus()).toBe("claimed");
+});
+
+async function startTicket(env: unknown, deps: unknown) {
+  const r = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
+  const sb = (await r.json()) as { ticketId: string; deepLink: string; matchCode?: string };
+  return { r, sb, nonce: new URL(sb.deepLink).searchParams.get("start")!, owner: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tgown")! };
+}
+
+test("tg/start returns a 4-digit match code equal to the bot's derivation; distinct nonces get distinct codes", async () => {
+  const { env, deps } = await fixture();
+  const a = await startTicket(env, deps);
+  expect(a.sb.matchCode).toMatch(/^\d{4}$/);
+  expect(a.sb.matchCode).toBe(await tgMatchCode("ikey", a.nonce)); // deterministic per nonce, same as the bot computes
+  const codes = new Set<string | undefined>([a.sb.matchCode]);
+  for (let i = 0; i < 12; i++) codes.add((await startTicket(env, deps)).sb.matchCode);
+  expect(codes.size).toBeGreaterThan(8); // not constant
+});
+
+test("tg/start omits the match code when the HMAC key is unset (no crash)", async () => {
+  const { env, deps } = await fixture();
+  const a = await startTicket({ ...(env as object), INTERNAL_HMAC_KEY: undefined }, deps);
+  expect(a.r.status).toBe(200);
+  expect(a.sb.matchCode).toBeUndefined();
+});
+
+test("the match code never appears in /tg/status (owner or another browser)", async () => {
+  const { env, deps } = await fixture();
+  const a = await startTicket(env, deps);
+  const code = a.sb.matchCode!;
+  for (const cookie of [`__Host-mw_tgown=${a.owner}`, "__Host-mw_tgown=other-browser"]) {
+    const s = await handle(new Request(`https://iss/tg/status?ticket=${a.sb.ticketId}`, { headers: { Cookie: cookie } }), env as never, deps as never);
+    const text = await s.text();
+    expect(text).not.toContain(code);
+    expect(text).not.toContain("matchCode");
+  }
 });

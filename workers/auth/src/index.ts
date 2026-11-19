@@ -32,7 +32,7 @@ import {
   unlinkTelegram,
   TICKET_TTL,
 } from "./telegram";
-import { constantTimeEqual, b64urlDecode } from "@meowerse/auth-shared";
+import { constantTimeEqual, b64urlDecode, tgMatchCode } from "@meowerse/auth-shared";
 import {
   createClient,
   listClients,
@@ -662,7 +662,9 @@ async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<st
   const ownerSecret = randomId(32);
   const t = await createTicket(db, { kind, ownerHash: await sha256Hex(ownerSecret), accountId, now: now(deps) });
   const botUser = env.BOT_USERNAME ?? "meowerse_auth_bot";
-  return json({ ticketId: t.ticketId, deepLink: `https://t.me/${botUser}?start=${t.nonce}` }, 200, {
+  // Visual match code: the bot shows the same code (derived from the nonce) and only confirms after the user taps "Yes".
+  const matchCode = env.INTERNAL_HMAC_KEY ? await tgMatchCode(env.INTERNAL_HMAC_KEY, t.nonce) : undefined;
+  return json({ ticketId: t.ticketId, deepLink: `https://t.me/${botUser}?start=${t.nonce}`, ...(matchCode ? { matchCode } : {}) }, 200, {
     ...cors,
     ...securityHeaders(),
     "Set-Cookie": hostCookie(TGOWN_COOKIE, ownerSecret, { maxAge: TICKET_TTL }),
