@@ -98,35 +98,6 @@ export async function createOrGetDirect(
 }
 
 /**
- * Off-critical-path mirror from the DO after a send, so the sidebar shows a preview.
- * ONE D1 row write (the chat's preview + last_activity). Deliberately does NOT bump
- * a per-member unread counter: that was O(members) writes per message and a single
- * busy group could exhaust the free-tier D1 write budget. "Has unread" is instead
- * derived lazily in `listChats` (last_activity > the member's last_read_at), which
- * costs zero extra writes — see the CASE in the sidebar query.
- *
- * MONOTONIC: the WHERE only matches when `now` (the message's own createdAt) is not older
- * than the row's `last_activity`, so a late mirror of an older message (a re-mirror that read
- * M1, then lost a race to M2's mirror) can't roll the preview or `last_activity` back.
- * Resolves on success AND when the guard skips (a newer message is already mirrored: the
- * preview is current or newer, which counts as success for push gating); it throws only on a
- * real D1 failure, and only a throw is a failure.
- *
- * Accepted edge cases: (1) same millisecond: `<=` lets the last write win, so two sends in one
- * ms may leave either preview. (2) If the DO clock is behind the creation-time `last_activity`
- * of a brand-new chat, the first mirror is skipped by the guard and treated as success (the
- * preview stays empty until the next message).
- */
-export async function mirrorLastMessage(
-  db: DbClient, chatId: string, body: string, senderId: string, now: number,
-): Promise<void> {
-  await db.run(
-    "UPDATE chats SET last_message = ?, last_sender_id = ?, last_activity = ? WHERE id = ? AND (last_activity IS NULL OR last_activity <= ?)",
-    [body.slice(0, 140), senderId, now, chatId, now],
-  );
-}
-
-/**
  * Write the chat's CURRENT newest live message into the sidebar mirror (`body`/`senderId`
  * null = no live message remains). Used by the Conversation DO for every preview write
  * (send mirror, its retry, the alarm re-mirror, edit/delete re-point), serialized and
@@ -155,7 +126,7 @@ export async function chatMemberIds(db: DbClient, chatId: string): Promise<strin
  * MONOTONIC + guarded: the WHERE only matches when this moves the cursor FORWARD
  * (or it was null), so a stale/duplicate `read` is a no-op — no wasted D1 write, and
  * a late-arriving lower `upTo` can't un-read the chat. Unread is derived from this
- * vs `last_activity` in `listChats` (see mirrorLastMessage).
+ * vs `last_activity` in `listChats` (see syncLastMessage).
  */
 export async function markRead(db: DbClient, chatId: string, userId: string, upTo: number): Promise<void> {
   await db.run(

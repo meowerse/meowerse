@@ -95,6 +95,12 @@ const MEMBER_TTL_MS = 5_000;
  *  (stale-while-error), so a D1 blip does not stop live chat. Only a definite "not a
  *  member" answer, or this window elapsing, fails closed. */
 const MEMBER_STALE_MS = 60_000;
+/** Edit/delete/react frames share ONE per-user window (separate from, and more generous than,
+ *  the send cap): each edit/delete of the newest message queues a D1 preview write plus an
+ *  inbox fan-out, so an unmetered loop would amplify to every member. */
+const MUTATE_MAX = 60;
+/** At most one sidebar-invalidate fan-out per DO per this window (one trailing call follows). */
+const INVALIDATE_MIN_MS = 2_000;
 /** Membership/session verdicts are keyed per SESSION (a user with two logins is two keys); a
  *  socket without a session id (legacy) is keyed by user alone. */
 const verdictKey = (a: { userId: string; sid?: string }): string => (a.sid ? `${a.userId}\u0000${a.sid}` : a.userId);
@@ -233,6 +239,8 @@ export class Conversation extends DurableObject<Env> {
   // to remember); all sends to THIS chat funnel through this one DO. Only `send`/forward
   // are metered; typing/edit/delete are cheap and read frames are coalesced (queueRead).
   private appendTimes = new Map<string, number[]>();
+  /** Per-user edit/delete/react timestamps (in-memory, like appendTimes). */
+  private mutateTimes = new Map<string, number[]>();
   // Last time (ms) we wrote each user's last_seen_at, to debounce that D1 write to
   // ~once/60s per user (see handleDisconnect). Bounded by this chat's member count.
   private lastSeenStamp = new Map<string, number>();
@@ -545,6 +553,10 @@ export class Conversation extends DurableObject<Env> {
 
     // Edit: own message, within the 1h window, not soft-deleted. All checks are
     // server-side — never trust the client's view of ownership or the clock.
+    if ((msg.type === "edit" || msg.type === "delete" || msg.type === "react") && this.isMutateRateLimited(att.userId)) {
+      this.safeSend(ws, JSON.stringify({ type: "error", code: "rate_limited", ...corr }));
+      return;
+    }
     if (msg.type === "edit") {
       this.handleEdit(ws, att, msg.id, msg.body, corr);
       return;
@@ -1345,6 +1357,16 @@ export class Conversation extends DurableObject<Env> {
     return this.insertAndBroadcast(senderId, chatId, body, { forwarded });
   }
 
+  /** Meter an edit/delete/react from `userId` (MUTATE_MAX per RATE_WINDOW_MS, all users share nothing). */
+  private isMutateRateLimited(userId: string): boolean {
+    const now = Date.now();
+    const times = (this.mutateTimes.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    const limited = times.length >= MUTATE_MAX;
+    if (!limited) times.push(now);
+    this.mutateTimes.set(userId, times);
+    return limited;
+  }
+
   /**
    * Meter a forward on `userId`: prune timestamps older than RATE_WINDOW_MS, then
    * decide. At/over RATE_MAX in the window → true (caller stops, nothing recorded).
@@ -1502,7 +1524,12 @@ export class Conversation extends DurableObject<Env> {
    * (a deleted or pre-edit text) back over a newer state. Rejects only on a real D1 failure.
    */
   private writePreview(chatId: string): Promise<void> {
+    // COALESCE: a write that is queued but has not started yet will read the newest live row
+    // when it runs, which already includes this caller's change, so later callers share it
+    // instead of queueing another D1 write (a burst of edits costs one write, not N).
+    if (this.previewQueued) return this.previewQueued;
     const run = this.previewChain.then(async () => {
+      this.previewQueued = null; // started: a later change needs its own (fresh) write
       const last = this.ctx.storage.sql
         .exec("SELECT sender_id, body, created_at FROM messages WHERE is_deleted = 0 ORDER BY created_at DESC LIMIT 1")
         .toArray()[0];
@@ -1511,9 +1538,12 @@ export class Conversation extends DurableObject<Env> {
         last ? String(last.body) : null, last ? String(last.sender_id) : null, last ? Number(last.created_at) : 0,
       );
     });
+    this.previewQueued = run;
     this.previewChain = run.catch(() => {});
     return run;
   }
+  /** The preview write that is queued behind the chain and has not started (see writePreview). */
+  private previewQueued: Promise<void> | null = null;
 
   /**
    * After an edit/delete of message `id` (created at `createdAt`): if no LIVE message is
@@ -1529,21 +1559,52 @@ export class Conversation extends DurableObject<Env> {
       .toArray()[0];
     if (newer) return;
     this.ctx.waitUntil(
-      this.writePreview(chatId).then(() => this.inboxInvalidate(chatId)).catch(() => {}),
+      this.writePreview(chatId).then(() => this.queueInvalidate(chatId)).catch(() => {}),
     );
   }
 
+  private invalidateState: { last: number; pending: boolean; timer?: ReturnType<typeof setTimeout> } = { last: 0, pending: false };
+
+  /** Throttled sidebar invalidate: the first call runs at once, later calls inside
+   *  INVALIDATE_MIN_MS collapse into ONE trailing fan-out when the window ends. Every fan-out
+   *  re-reads the member list and hits up to internalBudget inbox DOs, so an edit/delete loop
+   *  must not trigger one per frame. */
+  private queueInvalidate(chatId: string): void {
+    const st = this.invalidateState;
+    const wait = INVALIDATE_MIN_MS - (Date.now() - st.last);
+    if (wait <= 0 && !st.timer) {
+      st.last = Date.now();
+      st.pending = false;
+      this.ctx.waitUntil(this.inboxInvalidate(chatId).catch(() => {}));
+      return;
+    }
+    st.pending = true;
+    if (!st.timer) {
+      st.timer = setTimeout(() => {
+        st.timer = undefined;
+        if (!st.pending) return;
+        st.pending = false;
+        st.last = Date.now();
+        this.ctx.waitUntil(this.inboxInvalidate(chatId).catch(() => {}));
+      }, Math.max(0, wait));
+    }
+  }
+
   /** Send a content-free `{chatId, invalidate}` delta to every member's UserInbox so open
-   *  sidebars refetch the (already re-pointed) preview. Best-effort; bounded by the
-   *  internal subrequest budget (members beyond it refresh on their next list fetch). */
+   *  sidebars refetch the (already re-pointed) preview. Best-effort; members beyond the
+   *  internal subrequest budget are queued on the overflow record the alarm already
+   *  serves (it sends them the same invalidate), so none keeps a deleted/old preview. */
   private async inboxInvalidate(chatId: string): Promise<void> {
     const ns = this.env.USER_INBOX;
     if (!ns) return;
-    const ids = (await chatMemberIds(this.d1(), chatId)).slice(0, this.internalBudget);
+    const all = await chatMemberIds(this.d1(), chatId);
+    const ids = all.slice(0, this.internalBudget);
     const body = JSON.stringify({ chatId, invalidate: true });
     await Promise.all(
       ids.map((uid) => ns.get(ns.idFromName("inbox:" + uid)).fetch("https://do/notify", { method: "POST", body }).catch(() => {})),
     );
+    const rest = all.slice(this.internalBudget);
+    if (rest.length > 0) await this.queueOverflow(chatId, "", [], rest, {}).catch(() => console.log("invalidate_overflow_queue_failed"));
   }
 
   /**

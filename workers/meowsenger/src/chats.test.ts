@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   createOrGetDirect,
   listChats,
-  mirrorLastMessage,
   markRead,
+  syncLastMessage,
   directKey,
   createGroup,
   getRole,
@@ -77,7 +77,7 @@ function memDb(users: Record<string, { username: string; displayName: string | n
         // are grouped as (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) members.push({ chat_id: p[i], user_id: p[i + 1], unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
       }
-      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c && (c.last_activity == null || Number(c.last_activity) <= Number(p[4]))) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = p[2]; } }
+      else if (sql.startsWith("UPDATE chats SET last_message")) { const c = chats.get(String(p[3])); if (c) { c.last_message = p[0]; c.last_sender_id = p[1]; c.last_activity = Math.max(Number(c.last_activity ?? 0), Number(p[2])); } } // syncLastMessage: (body, sender, createdAt, chatId)
       // markRead: advance last_read_at monotonically for one (chat, user) — the guard
       // (last_read_at IS NULL OR < upTo) means a stale/duplicate read is a no-op.
       else if (sql.startsWith("UPDATE chat_members SET last_read_at")) {
@@ -161,22 +161,6 @@ describe("createOrGetDirect concurrent create (M12)", () => {
     expect(chats.size).toBe(1);
   });
 });
-describe("mirrorLastMessage", () => {
-  it("updates last_message/last_sender/last_activity", async () => {
-    const { db, chats } = memDb();
-    const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
-    expect(chats.get(a.id)?.last_message).toBe("hi");
-  });
-  it("is monotonic: mirroring an OLDER message after a newer one leaves the newer preview and resolves (skip = success)", async () => {
-    const { db, chats } = memDb();
-    const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "M2", "u2", 4000);
-    await expect(mirrorLastMessage(db, a.id, "M1", "u1", 3000)).resolves.toBeUndefined();
-    expect(chats.get(a.id)?.last_message).toBe("M2");
-    expect(chats.get(a.id)?.last_activity).toBe(4000);
-  });
-});
 describe("markRead", () => {
   it("advances last_read_at monotonically for one member only", async () => {
     const { db, members } = memDb();
@@ -204,18 +188,18 @@ describe("unread (derived, no per-member counter)", () => {
     // Fresh DM: last_activity == joined_at → nobody unread.
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
     // A message bumps last_activity → the non-reader (u2) is now unread.
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    await syncLastMessage(db, a.id, "hi", "u1", 3000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
     // u2 reads up to the message → back to read; a later message re-flags it.
     await markRead(db, a.id, "u2", 3000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
-    await mirrorLastMessage(db, a.id, "again", "u1", 4000);
+    await syncLastMessage(db, a.id, "again", "u1", 4000);
     expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
   });
   it("sender's own message does not mark unread for the sender", async () => {
     const { db } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
-    await mirrorLastMessage(db, a.id, "hi", "u1", 3000);
+    await syncLastMessage(db, a.id, "hi", "u1", 3000);
     // u1 was the sender: unreadCount MUST be 0 for u1!
     expect((await listChats(db, "u1"))[0].unreadCount).toBe(0);
     // u2 was the recipient: unreadCount is 1 for u2

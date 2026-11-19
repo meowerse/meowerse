@@ -381,7 +381,7 @@ export async function handleForward(
   try {
     for (const b of bodies) {
       // Pass the real chatId: a target DO with no live socket can't recover it, so
-      // without it mirrorLastMessage + pushOffline would silently no-op.
+      // without it the preview mirror + pushOffline would silently no-op.
       await stub.appendMessage(chatId, me, b, true);
       forwarded++;
     }

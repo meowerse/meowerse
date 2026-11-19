@@ -1485,6 +1485,84 @@ describe("Conversation DO: security-review fixes", () => {
     await closed;
   });
 
+  describe("edit/delete amplification (I1, M2)", () => {
+    /** Count preview writes and member-list reads (= inbox fan-outs) the DO issues. */
+    async function countD1(chatId: string): Promise<{ writes: () => number; fanouts: () => number }> {
+      let writes = 0, fanouts = 0;
+      await patchD1(chatId, (real) => ({
+        ...real,
+        // A realistically slow D1 write (production D1 is tens of ms; local miniflare is ~instant).
+        run: async (sql: unknown, p?: unknown) => { if (String(sql).startsWith("UPDATE chats SET last_message")) { writes++; await sleep(40); } return real.run(sql, p); },
+        all: async (sql: unknown, p?: unknown) => { if (String(sql).includes("SELECT user_id FROM chat_members WHERE chat_id")) fanouts++; return real.all(sql, p); },
+      }));
+      return { writes: () => writes, fanouts: () => fanouts };
+    }
+    it("50 rapid edits of the newest message: a handful of D1 preview writes and ONE immediate fan-out (one trailing), and a real send mirrors promptly after", async () => {
+      await seedChat("camp1");
+      const a = await connect("camp1", "u1");
+      await connect("camp1", "u2");
+      const id = await sendAndAck(a, "t-am1", "original");
+      await vi.waitFor(async () => expect(await lastMsg("camp1")).toBe("original"));
+      await sleep(2100); // let any invalidate window from the send settle
+      const c = await countD1("camp1");
+      for (let i = 0; i < 50; i++) a.send(JSON.stringify({ type: "edit", id, body: `edit-${i}` }));
+      await vi.waitFor(async () => expect(await lastMsg("camp1")).toBe("edit-49"), { timeout: 3000 });
+      await sleep(800); // an uncoalesced backlog (50 x 40 ms) would still be draining here
+      expect(c.writes()).toBeLessThanOrEqual(3); // coalesced: NOT 50
+      expect(c.fanouts()).toBeLessThanOrEqual(2); // first call immediate (+ at most the trailing one)
+      // a real send's mirror is not queued behind a 50-deep backlog
+      const t0 = Date.now();
+      await sendAndAck(a, "t-am1b", "fresh");
+      await vi.waitFor(async () => expect(await lastMsg("camp1")).toBe("fresh"), { timeout: 1500 });
+      expect(Date.now() - t0).toBeLessThan(1500);
+      // exactly one trailing fan-out follows the burst, then it goes quiet
+      await sleep(2300);
+      expect(c.fanouts()).toBeLessThanOrEqual(4);
+      await restoreD1("camp1");
+    });
+    it("edit/delete/react frames share a per-user cap: frames beyond it get rate_limited (with the correlation id) and change nothing", async () => {
+      await seedChat("camp2");
+      const a = await connect("camp2", "u1");
+      const errs: Array<{ code: string; messageId?: string }> = [];
+      a.addEventListener("message", (e: MessageEvent) => { const m = JSON.parse(String(e.data)); if (m.type === "error") errs.push(m); });
+      for (let i = 0; i < 70; i++) a.send(JSON.stringify({ type: i % 2 ? "delete" : "edit", id: `ghost-${i}`, body: "x" }));
+      await vi.waitFor(() => expect(errs.length).toBe(70), { timeout: 3000 });
+      expect(errs.filter((e) => e.code === "rate_limited")).toHaveLength(10);
+      expect(errs.filter((e) => e.code === "cannot_edit" || e.code === "cannot_delete")).toHaveLength(60);
+      expect(errs.find((e) => e.code === "rate_limited")?.messageId).toBe("ghost-60");
+      // sends have their own window: still allowed
+      await sendAndAck(a, "t-am2", "still-can-send");
+    });
+    it("a different user's window is independent", async () => {
+      await seedChat("camp3");
+      const a = await connect("camp3", "u1");
+      const b = await connect("camp3", "u2");
+      for (let i = 0; i < 61; i++) a.send(JSON.stringify({ type: "edit", id: `g${i}`, body: "x" }));
+      const got = waitFor(b, (t) => t.includes("cannot_edit"));
+      b.send(JSON.stringify({ type: "edit", id: "nope", body: "x" }));
+      expect(JSON.parse(await got).code).toBe("cannot_edit"); // not rate_limited
+    });
+    it("M2: members beyond the inline inbox budget are queued on the overflow record for the alarm's invalidate", async () => {
+      await seedChat("camp4");
+      const a = await connect("camp4", "u1");
+      for (const u of ["m2", "m3", "m4", "m5"]) await seedChatMember("camp4", u, 0);
+      const id = await sendAndAck(a, "t-am4", "to-be-deleted");
+      await sleep(50);
+      const queued: string[][] = [];
+      await runInDurableObject(stub("camp4"), async (inst: Conversation) => {
+        const i = inst as unknown as { internalBudget: number; queueOverflow: (...x: unknown[]) => Promise<void>; invalidateState: { last: number } };
+        i.internalBudget = 2;
+        i.invalidateState.last = 0; // open the throttle window
+        i.queueOverflow = async (_c: unknown, _s: unknown, push: unknown, inbox: unknown) => { expect(push).toEqual([]); queued.push(inbox as string[]); };
+      });
+      const gone = waitFor(a, (t) => t.includes('"deleted"'));
+      a.send(JSON.stringify({ type: "delete", id }));
+      await gone;
+      await vi.waitFor(() => expect(queued).toHaveLength(1), { timeout: 2000 });
+      expect(queued[0]).toHaveLength(3); // 5 members, budget 2
+    });
+  });
+
   describe("session-bound sockets (I3)", () => {
     const FAR = Date.now() + 86_400_000;
     const clearVerdicts = (chat: string) => runInDurableObject(stub(chat), async (inst: Conversation) => { (inst as unknown as Inst).memberVerdict.clear(); });
