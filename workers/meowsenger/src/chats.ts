@@ -98,6 +98,23 @@ export async function mirrorLastMessage(
   );
 }
 
+/**
+ * Re-point the sidebar preview after the newest message was deleted or edited, so a
+ * deleted/edited body does not linger in `chats.last_message` (listChats + push/inbox
+ * previews read it). Unconditional on `last_activity` (this moves the preview BACK to an
+ * older message) and leaves `last_activity` untouched so unread math does not shift.
+ * `body`/`senderId` null = no live message remains.
+ */
+export async function setLastMessagePreview(
+  db: DbClient, chatId: string, body: string | null, senderId: string | null,
+): Promise<void> {
+  await db.run("UPDATE chats SET last_message = ?, last_sender_id = ? WHERE id = ?", [
+    body == null ? null : body.slice(0, 140),
+    senderId,
+    chatId,
+  ]);
+}
+
 /** The user ids of every member of a chat — for the realtime-sidebar inbox fan-out
  *  (ping each member's UserInbox DO). Indexed by chat_id. */
 export async function chatMemberIds(db: DbClient, chatId: string): Promise<string[]> {

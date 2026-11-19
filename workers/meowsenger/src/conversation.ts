@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_MESSAGE_BODY } from "@meowerse/ts-shared";
 import type { DbClient, Env, Row } from "./types";
-import { markRead, mirrorLastMessage, chatMemberIds } from "./chats";
+import { markRead, mirrorLastMessage, setLastMessagePreview, chatMemberIds } from "./chats";
 import { touchLastSeen } from "./users";
 import { d1Client } from "./db";
 import { pushTargetsForChat, sendPush, importVapidKey, deleteDeadPushSubscription, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
@@ -1405,6 +1405,26 @@ export class Conversation extends DurableObject<Env> {
     const editedAt = Date.now();
     this.ctx.storage.sql.exec("UPDATE messages SET body = ?, edited_at = ? WHERE id = ?", body, editedAt, id);
     this.broadcast({ type: "edited", id, body, editedAt });
+    this.remirrorIfNewest(att.chatId, id, Number(row.created_at));
+  }
+
+  /**
+   * After an edit/delete of message `id` (created at `createdAt`): if no LIVE message is
+   * newer, the D1 sidebar mirror (`chats.last_message`) may still hold the old text, so
+   * re-point it at the newest remaining live row (or clear it). Off the critical path;
+   * a failure is non-fatal (the next message re-mirrors).
+   */
+  private remirrorIfNewest(chatId: string, id: string, createdAt: number): void {
+    const newer = this.ctx.storage.sql
+      .exec("SELECT 1 AS n FROM messages WHERE is_deleted = 0 AND id <> ? AND created_at > ? LIMIT 1", id, createdAt)
+      .toArray()[0];
+    if (newer) return;
+    const last = this.ctx.storage.sql
+      .exec("SELECT sender_id, body FROM messages WHERE is_deleted = 0 ORDER BY created_at DESC LIMIT 1")
+      .toArray()[0];
+    this.ctx.waitUntil(
+      setLastMessagePreview(this.d1(), chatId, last ? String(last.body) : null, last ? String(last.sender_id) : null).catch(() => {}),
+    );
   }
 
   /**
@@ -1439,6 +1459,7 @@ export class Conversation extends DurableObject<Env> {
       id,
     );
     this.broadcast({ type: "deleted", id });
+    this.remirrorIfNewest(att.chatId, id, Number(row.created_at));
     // Schedule the hard purge for just after this row ages out of the window.
     // never postpones a sooner alarm (e.g. a queued fan-out); failure is logged, not floating
     this.ctx.waitUntil(this.armAlarm(Date.now() + PURGE_AFTER_MS + 60_000).catch(() => console.log("purge_arm_failed")));

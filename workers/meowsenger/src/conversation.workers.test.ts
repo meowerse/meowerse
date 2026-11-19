@@ -1,6 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import type { Conversation } from "./conversation";
 
 // `env` from cloudflare:test is typed as the (here empty) ambient Cloudflare.Env;
@@ -837,6 +837,62 @@ describe("Conversation DO", () => {
     expect(peerSaw).toBe(false);
     expect(Number((await stub("cmem1").historyFor("cmem1", null)).filter((m) => m.body === "leak").length)).toBe(0);
     peer.close();
+  });
+
+  async function lastMsg(chatId: string): Promise<string | null> {
+    const r = await DB.prepare("SELECT last_message FROM chats WHERE id = ?").bind(chatId).first<{ last_message: string | null }>();
+    return r?.last_message ?? null;
+  }
+  async function sendAndAck(ws: WebSocket, tempId: string, body: string): Promise<string> {
+    const ack = waitFor(ws, (t) => t.includes('"sent"') && t.includes(tempId));
+    ws.send(JSON.stringify({ type: "send", tempId, body }));
+    return (JSON.parse(await ack) as { message: { id: string } }).message.id;
+  }
+
+  it("deleting the newest message re-mirrors chats.last_message from the newest LIVE row; deleting the only one clears it", async () => {
+    await seedChat("cmir1");
+    const a = await connect("cmir1", "u1");
+    const idA = await sendAndAck(a, "t-mir-a", "alpha-keep");
+    await vi.waitFor(async () => expect(await lastMsg("cmir1")).toBe("alpha-keep"));
+    await new Promise((r) => setTimeout(r, 5));
+    const idB = await sendAndAck(a, "t-mir-b", "bravo-secret");
+    await vi.waitFor(async () => expect(await lastMsg("cmir1")).toBe("bravo-secret"));
+    const gone = waitFor(a, (t) => t.includes('"deleted"'));
+    a.send(JSON.stringify({ type: "delete", id: idB }));
+    await gone;
+    await vi.waitFor(async () => expect(await lastMsg("cmir1")).toBe("alpha-keep"));
+    // Deleting a NON-newest message must not touch the preview.
+    const idC = await sendAndAck(a, "t-mir-c", "charlie");
+    await vi.waitFor(async () => expect(await lastMsg("cmir1")).toBe("charlie"));
+    const gone2 = waitFor(a, (t) => t.includes('"deleted"') && t.includes(idA));
+    a.send(JSON.stringify({ type: "delete", id: idA }));
+    await gone2;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await lastMsg("cmir1")).toBe("charlie");
+    const gone3 = waitFor(a, (t) => t.includes('"deleted"') && t.includes(idC));
+    a.send(JSON.stringify({ type: "delete", id: idC }));
+    await gone3;
+    await vi.waitFor(async () => expect(await lastMsg("cmir1")).toBeNull());
+    a.close();
+  });
+
+  it("editing the newest message re-mirrors the new body; editing an older one leaves the preview", async () => {
+    await seedChat("cmir2");
+    const a = await connect("cmir2", "u1");
+    const idA = await sendAndAck(a, "t-mir2-a", "first");
+    await new Promise((r) => setTimeout(r, 5));
+    const idB = await sendAndAck(a, "t-mir2-b", "second");
+    await vi.waitFor(async () => expect(await lastMsg("cmir2")).toBe("second"));
+    const ed1 = waitFor(a, (t) => t.includes('"edited"') && t.includes(idB));
+    a.send(JSON.stringify({ type: "edit", id: idB, body: "second-edited" }));
+    await ed1;
+    await vi.waitFor(async () => expect(await lastMsg("cmir2")).toBe("second-edited"));
+    const ed2 = waitFor(a, (t) => t.includes('"edited"') && t.includes(idA));
+    a.send(JSON.stringify({ type: "edit", id: idA, body: "first-edited" }));
+    await ed2;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await lastMsg("cmir2")).toBe("second-edited");
+    a.close();
   });
 
   it("dropUser: leaves OTHER users' sockets untouched", async () => {
