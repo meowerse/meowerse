@@ -1,6 +1,9 @@
 import type { DbClient, Env } from "./types";
 import type { Conversation } from "./conversation";
-import { json, readCookies } from "./security";
+import { json, readCookies, retryAfter } from "./security";
+
+/** Mirrors the Conversation DO's per-user flood window (RATE_WINDOW_MS = 10 s). */
+const RETRY_AFTER_SEC = 10;
 import { getSession, SESSION_COOKIE, clearCookie } from "./session";
 import {
   createOrGetDirect,
@@ -349,7 +352,7 @@ export async function handleForward(
     // The DO throws "rate_limited" once the caller trips the per-user forward flood
     // meter — stop and report partial progress (429). Anything else propagates.
     if (e instanceof Error && e.message.includes("rate_limited")) {
-      return json({ error: "rate_limited", forwarded }, 429, cors, { "Cache-Control": "no-store" });
+      return json({ error: "rate_limited", forwarded }, 429, cors, retryAfter(RETRY_AFTER_SEC, { "Cache-Control": "no-store" }));
     }
     throw e;
   }

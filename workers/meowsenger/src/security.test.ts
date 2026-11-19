@@ -37,6 +37,11 @@ describe("corsHeaders", () => {
     const h = corsHeaders("https://meowsenger.alxnko.eu.org", env);
     expect(h["Access-Control-Allow-Origin"]).toBe("https://meowsenger.alxnko.eu.org");
   });
+  it("blanket localhost allowance requires ALLOW_LOCALHOST_CORS (default off)", () => {
+    expect(corsHeaders("http://localhost:5173", { CORS_ORIGINS: "https://a.example" } as Env)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://foo.local", { CORS_ORIGINS: "https://a.example" } as Env)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://localhost:5173", { CORS_ORIGINS: "https://a.example", ALLOW_LOCALHOST_CORS: "1" } as Env)["Access-Control-Allow-Origin"]).toBe("http://localhost:5173");
+  });
   it("omits Allow-Origin for a non-allowlisted origin", () => {
     const env = { CORS_ORIGINS: "http://localhost:4321" } as Env;
     expect(corsHeaders("https://evil.example", env)["Access-Control-Allow-Origin"]).toBeUndefined();

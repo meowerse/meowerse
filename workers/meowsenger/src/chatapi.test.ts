@@ -1539,6 +1539,7 @@ describe("handleForward", () => {
     );
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "rate_limited", forwarded: 1 });
+    expect(res.headers.get("Retry-After")).toBe("10");
   });
 });
 

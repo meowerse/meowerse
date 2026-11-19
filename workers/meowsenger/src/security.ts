@@ -3,9 +3,12 @@ export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger
 function allowlist(env: Env): string[] {
   return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
 }
-function isOriginAllowed(origin: string | null, env: Env): boolean {
+export function isOriginAllowed(origin: string | null, env: Env): boolean {
   if (!origin) return false;
   if (allowlist(env).includes(origin)) return true;
+  // Blanket localhost/.local allowance is a DEV convenience: off unless ALLOW_LOCALHOST_CORS is
+  // set (e.g. in .dev.vars). Prod relies on the explicit allowlist only.
+  if (env.ALLOW_LOCALHOST_CORS !== "1" && env.ALLOW_LOCALHOST_CORS !== "true") return false;
   try {
     const u = new URL(origin);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {
@@ -15,6 +18,22 @@ function isOriginAllowed(origin: string | null, env: Env): boolean {
     return false;
   }
   return false;
+}
+
+/**
+ * CSRF/CSWSH guard for state-changing requests and WebSocket upgrades. A browser always
+ * sends `Origin` on those, so: present + (same origin as this request OR allowlisted) -> ok;
+ * present + anything else (including the literal "null") -> reject; ABSENT -> allowed
+ * (non-browser clients such as curl/native apps; they can't ride a victim's cookie).
+ */
+export function originPermitted(origin: string | null, selfOrigin: string, env: Env): boolean {
+  if (origin === null) return true;
+  return origin === selfOrigin || isOriginAllowed(origin, env);
+}
+
+/** `Retry-After` (seconds) header for a 429, merged over `extra`. */
+export function retryAfter(seconds: number, extra: Record<string, string> = {}): Record<string, string> {
+  return { ...extra, "Retry-After": String(Math.max(1, Math.ceil(seconds))) };
 }
 
 /**

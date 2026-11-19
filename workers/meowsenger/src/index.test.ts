@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import worker, { handle } from "./index";
 import type { Env } from "./types";
 
-const env = { CORS_ORIGINS: "http://localhost:4321" } as Env;
+const env = { CORS_ORIGINS: "http://localhost:4321", ALLOW_LOCALHOST_CORS: "1" } as Env;
 const ORIGIN = "http://localhost:4321";
 const deps = { getDb: () => ({}) } as never;
 const req = (m: string, p: string) => new Request(`https://meowsenger-api.alxnko.dev${p}`, { method: m, headers: { Origin: ORIGIN } });
@@ -281,6 +281,7 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
   it("returns 429 rate_limited when the limiter denies an expensive write POST", async () => {
     const res = await handle(req("POST", "/api/chats"), throttleEnv(false), noSession);
     expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("60");
     expect(await res.json()).toEqual({ error: "rate_limited" });
   });
   it("throttles POST /api/chats/:id/forward like the other expensive writes", async () => {
@@ -296,6 +297,33 @@ describe("per-IP write throttle (WRITE_LIMIT)", () => {
     // A GET read is never gated; it must reach its handler regardless of the limiter.
     const res = await handle(req("GET", "/api/chats"), throttleEnv(false), noSession);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("Origin guard (CSRF / cross-site WebSocket hijack)", () => {
+  const e = { CORS_ORIGINS: "https://meowsenger.alxnko.dev" } as Env;
+  const d = { getDb: () => ({ async first() { return undefined; }, async all() { return []; }, async run() {} }), now: () => 1 } as never;
+  const call = (m: string, p: string, origin?: string) =>
+    handle(new Request(`https://meowsenger.alxnko.dev${p}`, { method: m, headers: { ...(origin ? { Origin: origin } : {}), ...(p.endsWith("/ws") ? { Upgrade: "websocket" } : {}) } }), e, d);
+  it("rejects a state-changing POST from a foreign or 'null' Origin with 403", async () => {
+    expect((await call("POST", "/api/chats", "https://evil.example")).status).toBe(403);
+    expect((await call("POST", "/api/account/delete", "null")).status).toBe(403);
+    expect((await call("DELETE", "/api/chats/c1/members/u2", "https://evil.example")).status).toBe(403);
+  });
+  it("rejects a WebSocket upgrade (GET) from a foreign Origin", async () => {
+    expect((await call("GET", "/ws?chat=c1", "https://evil.example")).status).toBe(403);
+    expect((await call("GET", "/inbox/ws", "null")).status).toBe(403);
+  });
+  it("allows allowlisted / same-origin / absent Origin (non-browser)", async () => {
+    expect((await call("POST", "/api/chats", "https://meowsenger.alxnko.dev")).status).toBe(401);
+    expect((await call("POST", "/api/chats")).status).toBe(401);
+    expect((await call("GET", "/ws?chat=c1")).status).toBe(426); // reached handleWs (no Upgrade header in this helper)
+  });
+  it("does not gate plain GETs (reads carry no side effect)", async () => {
+    expect((await call("GET", "/api/chats", "https://evil.example")).status).toBe(401);
+  });
+  it("localhost origins are NOT allowed in prod (no ALLOW_LOCALHOST_CORS)", async () => {
+    expect((await call("POST", "/api/chats", "http://localhost:5173")).status).toBe(403);
   });
 });
 

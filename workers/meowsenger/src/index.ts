@@ -3,7 +3,7 @@ import type { Env } from "./types";
 // can bind CONVERSATION (wrangler.jsonc) and register its SQLite migration.
 export { Conversation } from "./conversation";
 export { UserInbox } from "./inbox";
-import { corsHeaders, json, NO_STORE } from "./security";
+import { corsHeaders, json, NO_STORE, originPermitted, retryAfter } from "./security";
 import { type Deps, prodDeps } from "./deps";
 import { handleLogin, handleCallback } from "./oidc";
 import { handleSession, handleLogout } from "./api";
@@ -67,6 +67,8 @@ async function writeThrottle(env: Env, req: Request): Promise<boolean> {
 }
 
 const NS = { "Cache-Control": NO_STORE };
+/** The WRITE_LIMIT binding's window (wrangler.jsonc `ratelimits[].simple.period`), echoed as Retry-After. */
+const WRITE_LIMIT_PERIOD_SEC = 60;
 
 const SECURITY_TXT = `Contact: mailto:security@alxnko.dev
 Expires: 2027-09-30T23:59:59.000Z
@@ -108,9 +110,15 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     });
   }
 
+  // CSRF / cross-site WebSocket hijack guard: every state-changing method and both WS
+  // upgrades must come from an allowed Origin (absent Origin = non-browser client, allowed).
+  if ((m !== "GET" && m !== "HEAD") || path === "/ws" || path === "/inbox/ws") {
+    if (!originPermitted(req.headers.get("Origin"), url.origin, env)) return json({ error: "forbidden_origin" }, 403, cors);
+  }
+
   // Guard the expensive write POSTs with the per-IP throttle before any dispatch.
   if (m === "POST" && EXPENSIVE_WRITE.test(path) && !(await writeThrottle(env, req))) {
-    return json({ error: "rate_limited" }, 429, cors);
+    return json({ error: "rate_limited" }, 429, cors, retryAfter(WRITE_LIMIT_PERIOD_SEC));
   }
 
   // meow.alxnko.dev probes this cross-origin for its live status list: a plain public CORS answer
