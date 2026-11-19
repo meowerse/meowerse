@@ -270,3 +270,29 @@ test("(R-I) the refresh row vanishes (password change / revokeGrant) between val
   expect(await n(f.real, "audit_log WHERE event = 'token.reuse_detected'")).toBe(0);
   expect(await usableRefresh(f.real, family)).toBe(0);
 });
+
+test("(R-J) the row-gone read itself throws on a lost race: conservative fallback to the reuse path (one reuse audit, family revoked)", async () => {
+  let inner: (() => Promise<Response>) | undefined;
+  let armed = false;
+  let failRead = false;
+  const f = await fixture((db) => ({
+    execute: (s) => (failRead && /SELECT 1 FROM refresh_tokens WHERE token_hash/.test(firstSql(s)) ? Promise.reject(new Error("db down")) : db.execute(s)),
+    batch: async (stmts, mode) => {
+      if (armed && /INSERT INTO access_tokens/.test(firstSql(stmts[0]!))) {
+        armed = false;
+        await inner!(); // the concurrent request with the same token wins
+      }
+      return db.batch(stmts, mode);
+    },
+  }));
+  const { rt, family } = await f.initial();
+  inner = () => f.refresh(rt);
+  armed = true;
+  failRead = true;
+  const r = await f.refresh(rt);
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({ error: "invalid_grant" });
+  expect(await n(f.real, "audit_log WHERE event = 'token.reuse_detected'")).toBe(1);
+  expect(await usableRefresh(f.real, family)).toBe(0);
+  expect(await usableAccess(f.real, family)).toBe(0);
+});

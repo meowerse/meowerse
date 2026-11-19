@@ -230,10 +230,14 @@ test("M6 brand check: re-sending a row's EXISTING name/display name is a no-op t
 test("brand check matching rule: other-script lookalikes and joined tokens are rejected, bilingual and near-miss names allowed", async () => {
   const base = { clientType: "public", redirectUris: ["https://x.example/cb"], allowedScopes: ["openid"] };
   const make = (displayName: string, ownerId = "acct_dev") => createClient(routedDb([nameFree]), { ...base, ownerId, name: "my-app", displayName });
-  for (const dn of ["meօwsenger", "meоwsenger", "me0wsenger", "My Meowerse app", "Meow-senger", "m e o w s e n g e r", "MeowerseApp", "meօwsenger Chat"]) {
+  for (const dn of [
+    "me\u0585wsenger", "me\u043ewsenger", "me0wsenger", "My Meowerse app", "Meow-senger", "m e o w s e n g e r", "MeowerseApp", "me\u0585wsenger Chat", "Meowsengers",
+    "Meow\u200bsengers", "Xsun\u200bmeow", "Meow\u00adsengerz", "\u24dc\u24d4\u24de\u24e6\u24e2\u24d4\u24dd\u24d6\u24d4\u24e1",
+    "me\u00f8wsenger", "\u0251lxnko", "a\u026bxnko", "moonme\u00f8w", "meowsenge\u027c", "me\u03bfwsenger",
+  ]) {
     expect(await make(dn), dn).toEqual({ ok: false, error: "reserved_name" });
   }
-  for (const dn of ["Мой Blog", "Meowers Events", "Meow Sengerfan"]) expect((await make(dn)).ok, dn).toBe(true);
+  for (const dn of ["Мой Blog", "Meowers Events", "Meow Sengerfan", "Meow\u30c1\u30e3\u30c3\u30c8", "Meow\u30ab\u30d5\u30a7\u5e97", "Alx\u65e5\u672c\u8a9e", "Moon\u55b5\u55b5\u55b5\u55b5", "Cats \u{1F468}\u200d\u{1F469} club", "Moonme\u65e5\u672c", "Moon\u0436\u0436\u0436\u0436"]) expect((await make(dn)).ok, dn).toBe(true);
   // exempt owners may still use brand names
   expect((await make("Meowerse", "acct_system")).ok).toBe(true);
   expect((await createClient(routedDb([nameFree]), { ...base, ownerId: "acct_ops", name: "my-app", displayName: "Meowerse" }, { brandOwners: brandOwnerIds("acct_ops") })).ok).toBe(true);
