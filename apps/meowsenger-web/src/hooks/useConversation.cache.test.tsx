@@ -455,6 +455,17 @@ describe("PR-7a write path", () => {
     expect(wsA.sentFrames().slice(before).filter((f) => f.type === "send")).toEqual([]);
   });
 
+  it("T7a-17b: in that same gap sendReact does not optimistically react / send on A's socket for B", async () => {
+    const a = await open("c1", [row("x", 1000)]);
+    const wsA = a.ws;
+    const before = wsA.sentFrames().length;
+    H.gate = new Promise<void>(() => {});
+    H.history.c2 = [];
+    a.inject.fn = (r) => { r.sendReact({ ...row("x", 1000) }, "👍"); };
+    a.rerender({ activeId: "c2" });
+    expect(wsA.sentFrames().slice(before).filter((f) => f.type === "react")).toEqual([]);
+  });
+
   it("T7a-18: leaving a detached window via attachLatest / loadNewer's short page writes through once attached (W1)", async () => {
     const tail = [row("t1", 1000), row("t2", 2000), row("t3", 3000)];
     const { result, unmount } = await open("c1", tail);
