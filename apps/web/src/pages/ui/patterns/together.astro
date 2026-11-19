@@ -167,7 +167,10 @@ const headerStates = [["wait", "connecting…"], ["ok", "online"], ["fail", "off
 
   <script>
     import { attachAllCat3D } from "@meowerse/ui/cat3d/attach";
-    if ("requestIdleCallback" in window) requestIdleCallback(() => attachAllCat3D());
-    else setTimeout(() => attachAllCat3D(), 200);
+    // Same contract as lib/activation.ts (a prerendered page waits for the visit), inlined here (and without `once`: the event fires once per document) only because this
+    // page sits at the critical-JS budget and a shared one-function chunk costs more gz than the inline copy.
+    const afterActivation = (f: () => void) =>
+      (document as Document & { prerendering?: boolean }).prerendering ? addEventListener("prerenderingchange", f) : f();
+    afterActivation(() => setTimeout(attachAllCat3D, 200)); // decorative: a short timer is idle enough on this docs page
   </script>
 </DocsLayout>

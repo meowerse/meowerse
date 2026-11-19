@@ -54,6 +54,7 @@ const d = entry.data;
   </article>
   <script>
     import { runProbes } from "../../lib/probe-runner";
-    void runProbes(document, { watch: true });
+    import { afterActivation } from "../../lib/activation";
+    afterActivation(() => void runProbes(document, { watch: true })); // never probe on a prerender
   </script>
 </BaseLayout>

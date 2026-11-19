@@ -2,6 +2,9 @@ import { defineConfig } from "@playwright/test";
 
 // e2e against dist/ served with the real _headers (CSP included): run `bun run build` first.
 // Phone is 390×844 at DPR 1 (spec audit §5b size; DPR 1 keeps screenshot files small).
+// E2E_PORT: run beside another checkout's server (reuseExistingServer would otherwise test ITS dist/).
+const PORT = process.env.E2E_PORT ?? "4371";
+
 export default defineConfig({
   testDir: "tests/e2e",
   // Screenshot baselines are local-only (runner fonts differ in CI, like tokens:drift, B28):
@@ -13,14 +16,14 @@ export default defineConfig({
   snapshotPathTemplate: "tests/e2e/__screenshots__/{testFilePath}/{arg}-{projectName}{ext}",
   expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.002, animations: "disabled", caret: "hide" } },
   use: {
-    baseURL: "http://127.0.0.1:4371",
+    baseURL: `http://127.0.0.1:${PORT}`,
     colorScheme: "dark",
     trace: "retain-on-failure",
     launchOptions: { args: ["--enable-unsafe-swiftshader"] },
   },
   webServer: {
-    command: "bun scripts/serve-dist.ts 4371",
-    url: "http://127.0.0.1:4371/",
+    command: `bun scripts/serve-dist.ts ${PORT}`,
+    url: `http://127.0.0.1:${PORT}/`,
     reuseExistingServer: !process.env.CI,
   },
   projects: [

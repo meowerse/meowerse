@@ -35,7 +35,7 @@ createServer((req, res) => {
   if ("location" in hit) { res.writeHead(308, { location: hit.location + url.search }); res.end(); return; }
   const headers: Record<string, string> = Object.fromEntries(headersFor(rules, url.pathname));
   const ext = extname(hit.file);
-  headers["content-type"] = TYPES[ext] ?? "application/octet-stream";
+  headers["content-type"] ??= TYPES[ext] ?? "application/octet-stream"; // a _headers Content-Type wins, as on Pages
   let body: Buffer = readFileSync(hit.file);
   if (COMPRESS.has(ext) && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
     body = gzipSync(body);

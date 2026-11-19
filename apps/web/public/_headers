@@ -14,6 +14,10 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
+  Speculation-Rules: "/speculation-rules.json"
+
+# Speculation rules (Chromium prerender/prefetch on hover) come from a same-origin file, never an inline
+# script, so no extra CSP token is needed. scripts/postbuild.ts writes it from src/lib/speculation.ts.
 
 # Preview and branch deployments on *.pages.dev duplicate the real site: keep them out of search (W-08).
 https://:project.pages.dev/*
@@ -35,6 +39,10 @@ https://:version.:project.pages.dev/*
 /404.html
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400
 /sitemap.xml
+  Cache-Control: public, max-age=3600
+# Must be served with exactly this type or the browser ignores the rules.
+/speculation-rules.json
+  Content-Type: application/speculationrules+json
   Cache-Control: public, max-age=3600
 
 # Brand icons (packages/brand): stable URLs, not content-hashed, so a week rather than immutable.
