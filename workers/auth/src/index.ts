@@ -1151,7 +1151,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "password") {
     // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
     if (!(await stepUpAllowed(db, accountId, now(deps)))) return json({ error: "rate_limited" }, 429, cors);
-    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "" });
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", keepSessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? "") });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
   }

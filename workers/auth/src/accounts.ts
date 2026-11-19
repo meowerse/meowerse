@@ -185,7 +185,7 @@ export async function getAccountDetail(db: DbClient, accountId: string): Promise
 /** Change password — verify the current one, validate + hash the new one. */
 export async function changePassword(
   db: DbClient,
-  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params },
+  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; keepSessionIdHash?: string },
 ): Promise<{ ok: boolean; error?: string }> {
   const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [i.accountId] });
   const row = cred.rows[0];
@@ -194,7 +194,20 @@ export async function changePassword(
   const pw = validatePassword(i.newPassword);
   if (!pw.ok) return { ok: false, error: pw.error };
   const phc = await hashPassword(pw.password, i.pbkdf2 ?? DEFAULT_PBKDF2);
-  await db.execute({ sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] });
+  // One batch: the new hash lands together with the revocation of every OTHER session and every
+  // refresh/access token of the account, so a stolen session or token cannot outlive the password change.
+  await db.batch(
+    [
+      { sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] },
+      {
+        sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND id_hash IS NOT ?",
+        args: [i.accountId, i.keepSessionIdHash ?? null],
+      },
+      { sql: "UPDATE refresh_tokens SET used_at = datetime('now') WHERE account_id = ? AND used_at IS NULL", args: [i.accountId] },
+      { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL", args: [i.accountId] },
+    ],
+    "write",
+  );
   return { ok: true };
 }
 
