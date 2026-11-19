@@ -61,6 +61,7 @@ describe("runProbes", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const fetchImpl = vi.fn(async () => { await gate; return { ok: true, status: 200, body: null } as unknown as Response; });
+    p.retry.hidden = false; // jsdom >=26 refuses to focus a display:none element, as browsers do
     p.retry.focus();
     const done = runProbes(document, { fetchImpl: fetchImpl as unknown as typeof fetch });
     expect(p.retry.disabled).toBe(false); // never the real attribute — focus can't be dropped by it
