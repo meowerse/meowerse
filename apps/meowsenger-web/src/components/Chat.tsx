@@ -231,7 +231,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // with you) falls back to a full listChats fetch. Shared by the open-chat socket
   // (onActiveMessage) and the cross-chat inbox socket (onInboxDelta).
   const applySidebarDelta = useCallback(
-    (chatId: string, preview: string, at: number, senderId: string, isActive: boolean) => {
+    (chatId: string, preview: string, at: number, senderId: string, isActive: boolean, optimistic = false) => {
       let isUnindexed = false;
       setChats((prev) => {
         const idx = prev.findIndex((c) => c.id === chatId);
@@ -239,11 +239,17 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
           isUnindexed = true;
           return prev;
         }
+        // Deltas can arrive out of order (a reordered fan-out, a late replay): an OLDER message
+        // must never overwrite a newer preview. Equal `at` still applies (same-ms messages).
+        // ONLY server timestamps take part: an optimistic bubble carries the DEVICE clock, which
+        // (running fast) would otherwise make real server deltas look "older" and be dropped.
+        if (!optimistic && at < prev[idx].lastActivity) return prev;
         const isMine = meIdRef.current != null && senderId === meIdRef.current;
         const updated: ChatSummary = {
           ...prev[idx],
           lastMessage: preview,
           lastSenderId: senderId,
+          ...(optimistic ? {} : { lastActivity: at }),
           // User's own message: never unread. Active chat: preserve scroll-aware state (onActiveRead zeroes it).
           // Cross-chat from a peer: show has-unread dot (1).
           unreadCount: isMine ? 0 : (isActive ? prev[idx].unreadCount : 1),
@@ -262,7 +268,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   );
   // A message in the OPEN chat arrived over its socket → update its sidebar row now.
   const onActiveMessage = useCallback(
-    (message: Message) => applySidebarDelta(message.chatId, message.body.slice(0, 140), message.createdAt, message.senderId, true),
+    (message: Message, optimistic = false) => applySidebarDelta(message.chatId, message.body.slice(0, 140), message.createdAt, message.senderId, true, optimistic),
     [applySidebarDelta],
   );
 

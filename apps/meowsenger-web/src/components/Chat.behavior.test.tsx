@@ -528,6 +528,25 @@ describe("Chat island — realtime sidebar", () => {
     expect(names[0]).toContain("Carol");
   });
 
+  it("an OLDER inbox delta never overwrites a newer preview (out-of-order delivery)", async () => {
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
+    H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
+    await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => {
+      const i = MockWebSocket.inbox;
+      if (!i) throw new Error("inbox socket not opened");
+      return i;
+    });
+    act(() => inbox.mockOpen());
+    emit(inbox, { type: "chat_update", chatId: "c2", preview: "newer one", at: 6000, senderId: "u3" });
+    await waitFor(() => expect(screen.getByText("newer one")).toBeTruthy());
+    emit(inbox, { type: "chat_update", chatId: "c2", preview: "older one", at: 5000, senderId: "u3" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("older one")).toBeNull();
+    expect(screen.getByText("newer one")).toBeTruthy();
+  });
+
   it("a content-free inbox invalidation refetches the chat list instead of blanking a preview", async () => {
     H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
     H.history = { c1: [msg({ id: "m1", body: "hello there", createdAt: 1000 })] };
@@ -874,6 +893,23 @@ describe("Chat island — one session source (real Chat under AppShell)", () => 
     expect(screen.queryByText("not sent yet · sends when you're back online (kept only while this tab is open)")).toBeNull();
     expect(within(logEl()).getByText("sending…")).toBeTruthy();
     expect(input.disabled).toBe(false);
+  });
+
+  it("a fast DEVICE clock cannot make real server deltas look stale: optimistic send, then a peer delta with the server `at` still applies", async () => {
+    const serverNow = Date.now();
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    const inbox = await waitFor(() => { const i = MockWebSocket.inbox; if (!i) throw new Error("inbox socket not opened"); return i; });
+    act(() => inbox.mockOpen());
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => serverNow + 60_000); // phone clock 60 s fast
+    try {
+      fireEvent.change(screen.getByLabelText("message"), { target: { value: "from my fast phone" } });
+      fireEvent.click(screen.getByRole("button", { name: "send" }));
+      await waitFor(() => expect(within(logEl()).getByText("from my fast phone")).toBeTruthy());
+    } finally { spy.mockRestore(); }
+    emit(inbox, { type: "chat_update", chatId: "c1", preview: "peer reply", at: serverNow + 1000, senderId: "u2" });
+    await waitFor(() => expect(screen.getByText("peer reply")).toBeTruthy());
   });
 
   it("IME: Enter while composing (isComposing, or keyCode 229) does not send; a plain Enter does", async () => {

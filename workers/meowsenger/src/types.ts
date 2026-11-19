@@ -30,3 +30,7 @@ export interface DbClient {
   /** Run statements as ONE atomic unit (D1 `batch`: all-or-nothing). Optional only so read-only test fakes needn't implement it; `d1Client` always does. Resolves the rows changed per statement. */
   batch?(stmts: { sql: string; params?: unknown[] }[]): Promise<number[]>;
 }
+
+/** Internal router->DO header carrying the caller's session hash (kept out of URLs/logs).
+ *  The router always overwrites it; DOs are reachable only through the router. */
+export const SID_HEADER = "X-MW-Sid";

@@ -246,30 +246,46 @@ describe("GET /ws upgrade", () => {
   });
   it("inbox/ws: forwards the caller's own inbox DO the user AND the session id it must keep validating", async () => {
     let url = "";
+    let sidHeader: string | null = null;
     const stubbed = new Response("upgraded", { status: 200 });
-    const e = { ...env, USER_INBOX: { idFromName: (n: string) => n, get: () => ({ fetch: (r: Request) => { url = r.url; return stubbed; } }) } } as unknown as Env;
+    const e = { ...env, USER_INBOX: { idFromName: (n: string) => n, get: () => ({ fetch: (r: Request) => { url = r.url; sidHeader = r.headers.get("X-MW-Sid"); return stubbed; } }) } } as unknown as Env;
     const res = await handle(inboxReq({ upgrade: true, cookie: "__Host-mw_session=s1" }), e, depsWith({ session }));
     expect(res).toBe(stubbed);
     expect(url).toContain("user=u1");
-    expect(url).toContain("sid=s1");
+    expect(url).not.toContain("sid"); // the session hash never rides in a (loggable) URL
+    expect(sidHeader).toBe("s1");
+  });
+  it("a client-supplied X-MW-Sid is overwritten by the router on BOTH websocket routes (cannot spoof a session)", async () => {
+    const seen: Record<string, string | null> = {};
+    const stubbed = new Response("upgraded", { status: 200 });
+    const mk = (k: string) => ({ idFromName: (n: string) => n, get: () => ({ fetch: (r: Request) => { seen[k] = r.headers.get("X-MW-Sid"); return stubbed; } }) });
+    const e = { ...env, USER_INBOX: mk("inbox"), CONVERSATION: mk("chat") } as unknown as Env;
+    const evil = { "X-MW-Sid": "attacker-chosen" };
+    const ir = new Request("https://meowsenger-api.alxnko.dev/inbox/ws", { headers: { Origin: ORIGIN, Upgrade: "websocket", Cookie: "__Host-mw_session=s1", ...evil } });
+    await handle(ir, e, depsWith({ session }));
+    const wr = new Request("https://meowsenger-api.alxnko.dev/ws?chat=c1&sid=attacker-chosen", { headers: { Origin: ORIGIN, Upgrade: "websocket", Cookie: "__Host-mw_session=s1", ...evil } });
+    await handle(wr, e, depsWith({ session, member: true, role: "member", type: "group" }));
+    expect(seen).toEqual({ inbox: "s1", chat: "s1" });
   });
   it("forwards to the DO stub for a member, passing the gated identity", async () => {
     // The node pool's `Response` rejects a real 101 (workerd-only); the actual
     // upgrade is covered by conversation.workers.test.ts. Here we just assert the
     // gated request reaches the stub with ?user=&chat= and its response is returned.
     let forwardedUrl = "";
+    let forwardedSid: string | null = null;
     const stubbed = new Response("upgraded", { status: 200 });
     const wsEnv = {
       ...env,
       CONVERSATION: {
         idFromName: (n: string) => n,
-        get: () => ({ fetch: (r: Request) => { forwardedUrl = r.url; return stubbed; } }),
+        get: () => ({ fetch: (r: Request) => { forwardedUrl = r.url; forwardedSid = r.headers.get("X-MW-Sid"); return stubbed; } }),
       },
     } as unknown as Env;
     const res = await handle(wsReq({ upgrade: true, chat: "c1", cookie: "__Host-mw_session=s1" }), wsEnv, depsWith({ session, member: true, role: "admin", type: "channel" }));
     expect(res).toBe(stubbed);
     expect(forwardedUrl).toContain("user=u1");
-    expect(forwardedUrl).toContain("sid=s1"); // the session the DO re-validates per frame
+    expect(forwardedUrl).not.toContain("sid"); // never in the (loggable) URL
+    expect(forwardedSid).toBe("s1"); // the session the DO re-validates per frame, via the internal header
     expect(forwardedUrl).toContain("chat=c1");
     // Slice 5: the caller's D1-derived role is forwarded so the DO can authorize
     // admin/owner message-delete without a second membership read.

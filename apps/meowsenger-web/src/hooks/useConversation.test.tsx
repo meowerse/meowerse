@@ -38,6 +38,8 @@ vi.mock("../lib/chat", async (importActual) => {
 
 import { useConversation } from "./useConversation";
 import { loadHistory, loadHistoryAround } from "../lib/chat";
+import { hasSessionEnded, resetSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
+import { setScope, getScope, clearAll } from "../lib/store/scope";
 
 /** A promise a test resolves by hand, to drive the switched-away race guards. */
 function deferred<T>() {
@@ -757,6 +759,24 @@ describe("useConversation — lifecycle", () => {
     expect(MockWebSocket.instances.length).toBe(1);
   });
 
+  it("a {revoked, reason:'session'} frame is a signed-out session: session-ended path, NOT the 'removed from chat' purge", async () => {
+    resetSessionEnded();
+    // What installAuthChannel wires in the app (session-ended wipes the account cache), but with an
+    // unsubscribe so no global subscriber outlives this test.
+    const off = subscribeSessionEnded(() => clearAll());
+    const { ws, onRevoked } = await open([msg({ id: "m1", createdAt: 1000 })]);
+    setScope("u1");
+    try {
+    act(() => ws.mockEmit({ type: "revoked", reason: "session" }));
+    expect(hasSessionEnded()).toBe(true);
+    expect(getScope()).toBeNull(); // the account cache was wiped (clearAll)
+    expect(onRevoked).not.toHaveBeenCalled();
+    act(() => ws.mockDrop());
+    await new Promise((r) => setTimeout(r, 700));
+    expect(MockWebSocket.instances.length).toBe(1); // still no reconnect loop
+    } finally { off(); resetSessionEnded(); clearAll(); }
+  });
+
   it("reconnects immediately on online/visibility wake when socket is closed", async () => {
     const { ws } = await open([msg({ id: "m1", createdAt: 1000 })]);
     act(() => ws.mockDrop());
@@ -1033,6 +1053,16 @@ describe("useConversation — idempotent resend + correlated errors (PR-4)", () 
     expect(byId("b")).toMatchObject({ body: "b-orig", editFailed: true });
     expect(byId("a")).toMatchObject({ body: "a-new" });
     expect(byId("a").editFailed).toBeUndefined();
+  });
+
+  it("a rate_limited EDIT reverts its optimistic body; a rate_limited react/send with the same id does not", async () => {
+    const { result, ws } = await open([msg({ id: "a", senderId: "u1", body: "a-orig", createdAt: 1000 })]);
+    act(() => { result.current.sendEdit(result.current.messages[0], "a-new"); });
+    const byId = (id: string) => result.current.messages.find((x) => x.id === id)!;
+    act(() => ws.mockEmit({ type: "error", code: "rate_limited", messageId: "a", op: "react" }));
+    expect(byId("a")).toMatchObject({ body: "a-new" });
+    act(() => ws.mockEmit({ type: "error", code: "rate_limited", messageId: "a", op: "edit" }));
+    expect(byId("a")).toMatchObject({ body: "a-orig", editFailed: true });
   });
 
   it("a rate_limited send turns the bubble into 'not sent'; retry re-sends with the SAME tempId", async () => {
