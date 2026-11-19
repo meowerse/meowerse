@@ -33,7 +33,7 @@ async function firstLogin(f: Awaited<ReturnType<typeof setup>>) {
   const csrf = ((await r2.json()) as { csrf: string }).csrf;
   const r3 = await handle(new Request("https://iss/consent", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}` }, body: JSON.stringify({ decision: "allow", csrf }) }), f.env as never, f.deps as never);
   const code = new URL(((await r3.json()) as { redirect: string }).redirect).searchParams.get("code")!;
-  return { sess, code };
+  return { sess, code, csrf };
 }
 
 test("max_age / prompt=login with a live session route to /login; prompt=none answers login_required; a satisfied max_age stays silent", async () => {
@@ -104,4 +104,34 @@ test("M7: a code that carries offline_access but whose client lacks the flag yie
   const r = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
   expect(r.status).toBe(200);
   expect(((await r.json()) as Record<string, unknown>).refresh_token).toBeUndefined();
+});
+
+test("prompt=login cannot be bypassed: the old live session goes to /consent and clicks Allow => no code; a fresh login can", async () => {
+  const f = await setup();
+  const { sess, csrf } = await firstLogin(f);
+  f.setNow(5000);
+  const r = await handle(new Request(authorizeUrl({ prompt: "login" }), { headers: { Cookie: `__Host-mw_sess=${sess}` } }), f.env as never, f.deps as never);
+  expect(r.headers.get("Location")).toBe("https://web/login");
+  const tkt = cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_tkt")!;
+  const cookie = `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}`;
+  const json = (path: string, body: unknown, c: string) => handle(new Request(`https://iss${path}`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: c }, body: JSON.stringify(body) }), f.env as never, f.deps as never);
+
+  // the bypass: skip /login, go straight to /authorize/pending + /consent with the OLD session
+  const pending = await handle(new Request("https://iss/authorize/pending", { headers: { Cookie: cookie } }), f.env as never, f.deps as never);
+  expect(pending.status).toBe(401);
+  expect(((await pending.json()) as { error: string }).error).toBe("login_required");
+  const bypass = await json("/consent", { decision: "allow", csrf }, cookie);
+  expect(bypass.status).toBe(401);
+  const bb = (await bypass.json()) as { error?: string; redirect?: string };
+  expect(bb.error).toBe("login_required");
+  expect(bb.redirect).toBeUndefined();
+
+  // a genuine re-login (after the demand) completes the same request
+  const login = await json("/login", { username: "neko_reauth", password: "abcdefghijkl" }, `__Host-mw_sess=${sess}; __Host-mw_tkt=${tkt}`);
+  expect(login.status).toBe(200);
+  const sess2 = cookieValue(login.headers.get("Set-Cookie"), "__Host-mw_sess") ?? sess;
+  const csrf2 = ((await login.clone().json()) as { csrf?: string }).csrf ?? csrf;
+  const ok = await json("/consent", { decision: "allow", csrf: csrf2 }, `__Host-mw_sess=${sess2}; __Host-mw_tkt=${tkt}`);
+  expect(ok.status).toBe(200);
+  expect(new URL(((await ok.json()) as { redirect: string }).redirect).searchParams.get("code")).toBeTruthy();
 });

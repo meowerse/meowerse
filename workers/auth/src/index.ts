@@ -308,8 +308,9 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
   if (promptNone) {
     return redirect(appendParams(request.redirectUri, { error: "login_required", state: request.state, iss: issuer(env) }), securityHeaders());
   }
-  // logged out → stash request, send to the login UI
-  const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL }, stateSecret(env));
+  // logged out (or re-auth demanded) → stash request, send to the login UI. For a demanded re-auth the ticket
+  // records the minimum auth_time, so the old live session cannot complete the request through /consent.
+  const tkt = await signRequest({ r: request, o: randomId(16), exp: now(deps) + TKT_TTL, ...(reauthRequired ? { m: now(deps) } : {}) }, stateSecret(env));
   return redirect(`${webOrigin(env)}/login`, { ...securityHeaders(), "Set-Cookie": hostCookie(TKT_COOKIE, tkt, { maxAge: TKT_TTL }) });
 }
 
@@ -407,6 +408,8 @@ async function handleConsent(req: Request, env: Env, deps: Deps, cors: Record<st
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
+  // A re-authentication was demanded (prompt=login / max_age): a session older than the demand does not count.
+  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
   const request = envlp.r;
   const client = await getClient(db, request.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
@@ -449,6 +452,7 @@ async function handlePending(req: Request, env: Env, deps: Deps, cors: Record<st
   const tkt = cookies[`__Host-${TKT_COOKIE}`];
   const envlp = tkt ? await verifyRequest(tkt, stateSecret(env), now(deps)) : null;
   if (!envlp) return json({ error: "no_request" }, 400, cors);
+  if (envlp.m !== undefined && session.authTime < envlp.m) return json({ error: "login_required" }, 401, cors);
   const client = await getClient(db, envlp.r.clientId);
   if (!client || client.status !== "active") return json({ error: "unknown_client" }, 400, cors);
   return json(

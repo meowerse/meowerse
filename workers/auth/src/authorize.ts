@@ -122,6 +122,12 @@ export interface RequestEnvelope {
   r: AuthorizeRequest;
   o: string;
   exp: number;
+  /**
+   * Minimum session auth_time (epoch s) this request may be completed with. Set when /authorize demanded
+   * re-authentication (prompt=login / exceeded max_age): the still-live OLD session must not be able to
+   * finish the request via /authorize/pending + /consent, only a login that happened after the demand.
+   */
+  m?: number;
 }
 
 const encoder = new TextEncoder();
