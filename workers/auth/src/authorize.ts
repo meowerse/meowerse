@@ -80,6 +80,10 @@ export function validateAuthorizeParams(p: AuthorizeParams, client: LoadedClient
   if (rawScopes.length === 0 || !rawScopes.includes("openid") || !rawScopes.every((s) => allowed.has(s))) {
     return { kind: "redirect_error", error: "invalid_scope", state };
   }
+  // offline_access (a refresh token) additionally needs the client's allow_offline_access flag, not just the scope allowlist.
+  if (rawScopes.includes("offline_access") && !client.allowOfflineAccess) {
+    return { kind: "redirect_error", error: "invalid_scope", state };
+  }
   const requested = parseScope(p.scope);
 
   let maxAge: number | undefined;

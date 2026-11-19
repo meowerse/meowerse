@@ -656,7 +656,8 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
       nonce: ex.nonce,
       authTime: ex.authTime,
       family: ex.family,
-      issueRefresh: ex.scope.includes("offline_access"),
+      // A refresh token needs the offline_access scope AND the client's allow_offline_access flag (checked live).
+      issueRefresh: ex.scope.includes("offline_access") && (await getClient(db, clientId))?.allowOfflineAccess === true,
       atomic: { guard: codeUnconsumed(ex.codeHash), consume: consumeCodeStmt(ex.codeHash) },
       onLost: async (accountGone) => {
         await revokeLoserFamily(db, ex.family);
@@ -668,6 +669,8 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
 
   if (p.grant_type === "refresh_token") {
     const rot = await rotateRefresh(db, { token: p.refresh_token ?? "", clientId, now: now(deps) });
+    // The client's offline-access permission is re-checked on every refresh: turning it off ends refreshing.
+    if (rot.ok && (await getClient(db, clientId))?.allowOfflineAccess !== true) return json({ error: "invalid_grant" }, 400, { ...cors, ...noStore });
     if (!rot.ok) {
       // Refresh-token reuse: rotateRefresh revoked the family (with retry) before returning.
       // Audit either way; if the revoke could not be persisted, fail closed with 5xx.

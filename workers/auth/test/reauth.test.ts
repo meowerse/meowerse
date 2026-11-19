@@ -79,3 +79,28 @@ test("a refresh-grant id_token reports the original login time as auth_time, not
   const id3 = await verifyJwt(((await r6.json()) as Record<string, string>).id_token, f.jwks, { iss: "https://iss", aud: "mw_demo", now: 12000 });
   expect(id3.payload.auth_time).toBe(1000);
 });
+
+test("M7: offline_access needs the client's allow_offline_access flag (authorize rejects; no refresh token; refresh stops when switched off)", async () => {
+  const f = await setup();
+  const { code } = await firstLogin(f);
+  const r4 = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
+  const rt = ((await r4.json()) as Record<string, string>).refresh_token!;
+  expect(rt).toBeTruthy();
+
+  // flag switched off: the existing refresh token no longer works, and authorize refuses the scope
+  await f.db.execute("UPDATE oauth_clients SET allow_offline_access = 0 WHERE client_id = 'mw_demo'");
+  const r5 = await handle(tokenReq({ grant_type: "refresh_token", refresh_token: rt, client_id: "mw_demo" }), f.env as never, f.deps as never);
+  expect(r5.status).toBe(400);
+  expect(((await r5.json()) as { error: string }).error).toBe("invalid_grant");
+  const a = await handle(new Request(authorizeUrl()), f.env as never, f.deps as never);
+  expect(new URL(a.headers.get("Location")!).searchParams.get("error")).toBe("invalid_scope");
+});
+
+test("M7: a code that carries offline_access but whose client lacks the flag yields no refresh token", async () => {
+  const f = await setup();
+  const { code } = await firstLogin(f);
+  await f.db.execute("UPDATE oauth_clients SET allow_offline_access = 0 WHERE client_id = 'mw_demo'");
+  const r = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
+  expect(r.status).toBe(200);
+  expect(((await r.json()) as Record<string, unknown>).refresh_token).toBeUndefined();
+});

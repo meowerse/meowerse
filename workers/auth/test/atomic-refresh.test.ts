@@ -17,6 +17,7 @@ const n = async (db: DbClient, sql: string, args: unknown[] = []) => Number((awa
 async function fixture(wrap?: (db: DbClient) => DbClient, ctx?: { waitUntil: (p: Promise<unknown>) => void }) {
   const real = createClient({ url: ":memory:" }) as unknown as DbClient;
   for (const stmt of [...SCHEMA, ...SEED]) await real.execute(stmt);
+  await real.execute("UPDATE oauth_clients SET allow_offline_access = 1 WHERE client_id = 'mw_demo'"); // refresh tokens need the client flag
   const db = wrap ? wrap(real) : real;
   const keys = await genSigningKeys();
   const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow", STATE_SECRET: "s", CORS_ORIGINS: "https://web" };
