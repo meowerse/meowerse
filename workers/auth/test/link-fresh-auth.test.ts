@@ -39,14 +39,14 @@ async function setup() {
   const linkStart = (s: { raw: string; csrf: string }, extra: Record<string, unknown> = {}, csrf = s.csrf) =>
     post("/tg/start", `__Host-mw_sess=${s.raw}`, { kind: "VERIFY_EXISTING", csrf, ...extra });
   // Bot "Yes" (signed confirm -> one-time code), then the owning browser submits it at /tg/verify.
-  const confirm = async (nonce: string, tgId: string, ticketId: string, owner: string) => {
+  const confirm = async (nonce: string, tgId: string, ticketId: string, owner: string, sess?: string) => {
     const f = { nonce, telegramId: tgId, username: "u", displayName: "U", avatarUrl: "", ts: String(T0) };
     const sig = await hmacSha256Hex("ikey", internalConfirmString(f));
     const c = await handle(new Request("https://iss/internal/tg/confirm", { method: "POST", headers: { "Content-Type": "application/json", "X-Signature": sig },
       body: JSON.stringify({ nonce, telegram_id: tgId, username: "u", display_name: "U", avatar_url: "", ts: String(T0) }) }), env as never, deps as never);
     if (c.status !== 200) return c;
     const { code } = (await c.json()) as { code: string };
-    return handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tgown=${owner}` }, body: JSON.stringify({ ticket: ticketId, code }) }), env as never, deps as never);
+    return handle(new Request("https://iss/tg/verify", { method: "POST", headers: { "Content-Type": "application/json", Cookie: `__Host-mw_tgown=${owner}${sess ? `; __Host-mw_sess=${sess}` : ""}` }, body: JSON.stringify({ ticket: ticketId, code }) }), env as never, deps as never);
   };
   const status = (ticketId: string, owner: string, sess?: string) =>
     handle(new Request(`https://iss/tg/status?ticket=${ticketId}`, { headers: { Cookie: `__Host-mw_tgown=${owner}${sess ? `; __Host-mw_sess=${sess}` : ""}` } }), env as never, deps as never);
@@ -56,7 +56,7 @@ async function setup() {
     expect(st.status).toBe(200);
     const b = (await st.json()) as { ticketId: string; deepLink: string };
     const owner = cookieValue(st.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
-    expect((await confirm(new URL(b.deepLink).searchParams.get("start")!, "555", b.ticketId, owner)).status).toBe(200);
+    expect((await confirm(new URL(b.deepLink).searchParams.get("start")!, "555", b.ticketId, owner, s.raw)).status).toBe(200);
     return status(b.ticketId, owner, s.raw);
   };
   return { db, post, addSession, linkStart, link, confirm, status };
@@ -123,7 +123,7 @@ test("status without a live session of the ticket's account → 401 and the tick
   const st = await f.linkStart(s);
   const b = (await st.json()) as { ticketId: string; deepLink: string };
   const owner = cookieValue(st.headers.get("Set-Cookie"), "__Host-mw_tgown")!;
-  await f.confirm(new URL(b.deepLink).searchParams.get("start")!, "555", b.ticketId, owner);
+  await f.confirm(new URL(b.deepLink).searchParams.get("start")!, "555", b.ticketId, owner, s.raw);
   const none = await f.status(b.ticketId, owner);
   expect(none.status).toBe(401);
   expect(none.headers.get("Set-Cookie")).toBeNull();

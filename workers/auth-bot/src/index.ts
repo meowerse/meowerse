@@ -193,9 +193,11 @@ async function handleCallback(cb: NonNullable<TgUpdate["callback_query"]>, env: 
     const res = url ? await signedPost(url, env.INTERNAL_HMAC_KEY, internalCancelString({ nonce, telegramId: String(fromId), ts }), { nonce, telegram_id: String(fromId), ts }) : null;
     // Only reassure when the server really burned the ticket; otherwise the request may already have been used.
     if (res?.ok) return editReply(chatId, messageId, "Cancelled. Nothing was signed in or linked.");
+    // Network failure or a server error: we don't know the state, so don't claim it finished.
+    if (!res || res.status >= 500) return editReply(chatId, messageId, "Couldn’t reach the server; the request was not cancelled. Try again.");
     let used = false;
     try {
-      used = ((await res?.json()) as { error?: unknown } | undefined)?.error === "already_used";
+      used = ((await res.json()) as { error?: unknown })?.error === "already_used";
     } catch {
       used = false;
     }

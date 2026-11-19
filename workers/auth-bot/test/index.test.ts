@@ -194,9 +194,14 @@ test("callback Cancel refused by the server: never says 'Cancelled'; already_use
     expect(body.text.includes("unlink Telegram")).toBe(expectStrong); // sign-out/unlink advice only when it really was used
     if (!expectStrong) expect(body.text).toContain("can’t be cancelled from here");
   }
+  // network failure or a 5xx: state unknown, the user is told to retry (not that it "finished")
+  const retry = "Couldn’t reach the server; the request was not cancelled. Try again.";
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("boom")));
   const net = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
-  expect(net.text).not.toContain("Cancelled");
+  expect(net.text).toBe(retry);
+  authMock({ cancel: { error: "boom" }, cancelStatus: 503 });
+  const five = (await (await handle(req("/tg/pathsec", cbUpdate(`n:${NONCE}`), hdr), ENV, () => 1000)).json()) as Sent;
+  expect(five.text).toBe(retry);
 });
 
 test("malformed callback data fails closed → 0 fetches", async () => {
