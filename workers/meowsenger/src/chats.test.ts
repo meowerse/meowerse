@@ -54,6 +54,9 @@ function memDb(users: Record<string, { username: string; displayName: string | n
             };
           });
       }
+      if (sql.startsWith("SELECT user_id FROM chat_members WHERE chat_id")) {
+        return members.filter((m) => m.chat_id === p[0] && (m.user_id === p[1] || m.user_id === p[2])).map((m) => ({ user_id: m.user_id }));
+      }
       return [];
     },
     async first(sql, p = []) {
@@ -63,6 +66,11 @@ function memDb(users: Record<string, { username: string; displayName: string | n
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: "direct", name: null, created_by: p[1], created_at: p[2], last_activity: p[3], last_message: null, last_sender_id: null, direct_key: p[4] });
+      else if (sql.startsWith("INSERT OR IGNORE INTO chat_members")) {
+        for (let i = 0; i < p.length; i += 3) {
+          if (!members.some((m) => m.chat_id === p[i] && m.user_id === p[i + 1])) members.push({ chat_id: p[i], user_id: p[i + 1], role: "member", unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
+        }
+      }
       else if (sql.startsWith("INSERT INTO chat_members")) {
         // createOrGetDirect now inserts BOTH members in one multi-row INSERT; params
         // are grouped as (chat_id, user_id, joined_at) per row.
@@ -96,6 +104,20 @@ describe("createOrGetDirect", () => {
     const b = await createOrGetDirect(db, "u2", "u1", 2000);
     expect(b.created).toBe(false);
     expect(b.id).toBe(a.id);
+  });
+});
+describe("createOrGetDirect after a member left (I6)", () => {
+  it("re-adds the member who left, leaves the other row untouched, and is idempotent", async () => {
+    const { db, members } = memDb();
+    const a = await createOrGetDirect(db, "u1", "u2", 1000);
+    // u1 leaves the DM (leave() deletes their membership row).
+    members.splice(members.findIndex((m) => m.chat_id === a.id && m.user_id === "u1"), 1);
+    const b = await createOrGetDirect(db, "u1", "u2", 2000);
+    expect(b).toEqual({ id: a.id, created: false });
+    expect(members.filter((m) => m.chat_id === a.id).map((m) => m.user_id).sort()).toEqual(["u1", "u2"]);
+    expect(members.find((m) => m.user_id === "u2")!.joined_at).toBe(1000); // untouched
+    await createOrGetDirect(db, "u2", "u1", 3000);
+    expect(members.filter((m) => m.chat_id === a.id)).toHaveLength(2); // no duplicates
   });
 });
 describe("mirrorLastMessage", () => {
@@ -375,6 +397,30 @@ describe("createGroup", () => {
   });
 });
 
+describe("createGroup with a large roster (D1 100-param limit, I7)", () => {
+  /** A DbClient wrapper that REJECTS any statement binding more than 100 parameters, like D1. */
+  function strict(inner: DbClient): { db: DbClient; maxParams: () => number } {
+    let max = 0;
+    const check = (p?: unknown[]) => { const n = p?.length ?? 0; max = Math.max(max, n); if (n > 100) throw new Error("too many SQL variables"); };
+    const db: DbClient = {
+      all: async (sql, p) => { check(p); return inner.all(sql, p); },
+      first: async (sql, p) => { check(p); return inner.first(sql, p); },
+      run: async (sql, p) => { check(p); return inner.run(sql, p); },
+      batch: async (stmts) => { for (const st of stmts) { check(st.params); await inner.run(st.sql, st.params); } return stmts.map(() => 1); },
+    };
+    return { db, maxParams: () => max };
+  }
+  it("a 60-member group is created in <=99-param statements with every member present", async () => {
+    const g = groupDb();
+    const { db, maxParams } = strict(g.db);
+    const memberIds = Array.from({ length: 59 }, (_, i) => `m${i}`);
+    const r = await createGroup(db, { name: "Big", creatorId: "owner", memberIds }, 1000) as { id: string };
+    expect(g.members.filter((m) => m.chat_id === r.id)).toHaveLength(60);
+    expect(g.members.find((m) => m.user_id === "owner")!.role).toBe("owner");
+    expect(g.members.filter((m) => m.role === "owner")).toHaveLength(1);
+    expect(maxParams()).toBeLessThanOrEqual(99);
+  });
+});
 describe("listMembers", () => {
   it("returns members oldest-first with user identity + role", async () => {
     const { db } = groupDb({

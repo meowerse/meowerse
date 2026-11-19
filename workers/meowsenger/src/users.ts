@@ -93,9 +93,13 @@ export async function userIdsByNames(db: DbClient, names: string[]): Promise<Map
   if (names.length === 0) return map;
   names = names.filter((n) => !isReleasedUsername(n)); // a released placeholder is never addressable
   if (names.length === 0) return map;
-  const placeholders = names.map(() => "?").join(", ");
-  const rows = await db.all(`SELECT id, username FROM users WHERE username IN (${placeholders}) AND username NOT LIKE '~%'`, names);
-  for (const r of rows) map.set(String(r.username), String(r.id));
+  // D1 allows at most 100 bound parameters per statement: query in chunks of <= 99.
+  for (let i = 0; i < names.length; i += 99) {
+    const chunk = names.slice(i, i + 99);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await db.all(`SELECT id, username FROM users WHERE username IN (${placeholders}) AND username NOT LIKE '~%'`, chunk);
+    for (const r of rows) map.set(String(r.username), String(r.id));
+  }
   return map;
 }
 

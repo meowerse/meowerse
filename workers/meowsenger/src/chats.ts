@@ -55,7 +55,21 @@ export async function createOrGetDirect(
 ): Promise<{ id: string; created: boolean }> {
   const key = directKey(me, other);
   const existing = await db.first("SELECT id FROM chats WHERE direct_key = ?", [key]);
-  if (existing) return { id: String(existing.id), created: false };
+  if (existing) {
+    // A member who LEFT the DM (leave deletes their row) must be able to use it again.
+    // Read first (cheap) and write only the missing rows; INSERT OR IGNORE keeps any
+    // existing row (and its role) untouched and makes a concurrent call race-safe.
+    const chatId = String(existing.id);
+    const have = new Set((await db.all("SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id IN (?, ?)", [chatId, me, other])).map((r) => String(r.user_id)));
+    for (const uid of new Set([me, other])) {
+      if (have.has(uid)) continue;
+      await db.run(
+        "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+        [chatId, uid, now],
+      );
+    }
+    return { id: String(existing.id), created: false };
+  }
   const id = crypto.randomUUID();
   await db.run(
     "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
@@ -208,14 +222,18 @@ export async function getRole(db: DbClient, chatId: string, userId: string): Pro
 export async function getRoles(db: DbClient, chatId: string, userIds: string[]): Promise<Map<string, Role>> {
   const map = new Map<string, Role>();
   if (userIds.length === 0) return map;
-  const placeholders = userIds.map(() => "?").join(", ");
-  const rows = await db.all(
-    `SELECT user_id, role FROM chat_members WHERE chat_id = ? AND user_id IN (${placeholders})`,
-    [chatId, ...userIds],
-  );
-  for (const r of rows) {
-    const role = normalizeRole(r.role);
-    if (role != null) map.set(String(r.user_id), role);
+  // D1 caps a statement at 100 bound parameters (chatId + ids): chunk at 98 ids.
+  for (let i = 0; i < userIds.length; i += 98) {
+    const chunk = userIds.slice(i, i + 98);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await db.all(
+      `SELECT user_id, role FROM chat_members WHERE chat_id = ? AND user_id IN (${placeholders})`,
+      [chatId, ...chunk],
+    );
+    for (const r of rows) {
+      const role = normalizeRole(r.role);
+      if (role != null) map.set(String(r.user_id), role);
+    }
   }
   return map;
 }
@@ -289,16 +307,23 @@ export async function createGroup(
   const others = [...new Set(input.memberIds)].filter((uid) => uid !== input.creatorId);
   // ONE multi-row INSERT: the creator as 'owner' plus every other member as
   // 'member' (a single D1 PRIMARY write instead of 1 + N sequential writes).
-  const valueRows = ["(?, ?, 'owner', 0, NULL, ?)"];
-  const args: unknown[] = [id, input.creatorId, now];
-  for (const uid of others) {
-    valueRows.push("(?, ?, 'member', 0, NULL, ?)");
-    args.push(id, uid, now);
+  // D1 caps a statement at 100 bound parameters (3 per row): chunk at <= 32 rows (96
+  // params) and run all chunks as ONE atomic batch (a plain sequence if the client
+  // has no batch).
+  const rows: Array<[string, string]> = [["owner", input.creatorId], ...others.map((uid): [string, string] => ["member", uid])];
+  const stmts: { sql: string; params: unknown[] }[] = [];
+  for (let i = 0; i < rows.length; i += 32) {
+    const chunk = rows.slice(i, i + 32);
+    const params: unknown[] = [];
+    for (const [, uid] of chunk) params.push(id, uid, now);
+    // The role is a trusted literal (never user input), so each row binds only 3 params.
+    stmts.push({
+      sql: `INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES ${chunk.map(([role]) => `(?, ?, '${role}', 0, NULL, ?)`).join(", ")}`,
+      params,
+    });
   }
-  await db.run(
-    `INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES ${valueRows.join(", ")}`,
-    args,
-  );
+  if (db.batch) await db.batch(stmts);
+  else for (const st of stmts) await db.run(st.sql, st.params);
   return { id };
 }
 

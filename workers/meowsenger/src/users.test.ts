@@ -96,6 +96,19 @@ describe("getAllowAutoGroupAdd / setAllowAutoGroupAdd", () => {
   });
 });
 
+describe("userIdsByNames chunking (D1 100-param limit)", () => {
+  it("resolves 200 names with no statement binding more than 99 params", async () => {
+    const rows = Array.from({ length: 200 }, (_, i) => ({ id: `id${i}`, username: `user${i}` }));
+    let max = 0;
+    const db = {
+      async all(_sql: string, p: unknown[] = []) { max = Math.max(max, p.length); if (p.length > 100) throw new Error("too many SQL variables"); return rows.filter((r) => p.includes(r.username)); },
+      async first() { return undefined; }, async run() {},
+    } as DbClient;
+    const map = await userIdsByNames(db, rows.map((r) => r.username));
+    expect(map.size).toBe(200);
+    expect(max).toBeLessThanOrEqual(99);
+  });
+});
 describe("userIdsByNames", () => {
   it("maps many usernames → ids in one query, omitting unknowns", async () => {
     const { db } = memDb();
