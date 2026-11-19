@@ -58,7 +58,7 @@ function memDb(seed: {
       return undefined;
     },
     async run(sql, p = []) {
-      if (sql.startsWith("INSERT INTO chat_members")) {
+      if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         members.push({ chat_id: p[0], user_id: p[1], role: p[2], joined_at: p[5] });
       } else if (sql.startsWith("DELETE FROM chat_members")) {
         const i = members.findIndex((m) => m.chat_id === p[0] && m.user_id === p[1]);

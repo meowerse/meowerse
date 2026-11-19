@@ -71,7 +71,7 @@ function memDb(users: Record<string, { username: string; displayName: string | n
           if (!members.some((m) => m.chat_id === p[i] && m.user_id === p[i + 1])) members.push({ chat_id: p[i], user_id: p[i + 1], role: "member", unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
         }
       }
-      else if (sql.startsWith("INSERT INTO chat_members")) {
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createOrGetDirect now inserts BOTH members in one multi-row INSERT; params
         // are grouped as (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) members.push({ chat_id: p[i], user_id: p[i + 1], unread_count: 0, last_read_at: null, joined_at: p[i + 2] });
@@ -118,6 +118,30 @@ describe("createOrGetDirect after a member left (I6)", () => {
     expect(members.find((m) => m.user_id === "u2")!.joined_at).toBe(1000); // untouched
     await createOrGetDirect(db, "u2", "u1", 3000);
     expect(members.filter((m) => m.chat_id === a.id)).toHaveLength(2); // no duplicates
+  });
+});
+describe("createOrGetDirect concurrent create (M12)", () => {
+  it("a UNIQUE(direct_key) collision converges on the winner's chat instead of throwing", async () => {
+    const { db, chats } = memDb();
+    let raced = false;
+    const racy: DbClient = {
+      ...db,
+      async first(sql, p) {
+        if (sql.includes("direct_key") && !raced) return undefined; // our read predates the other insert
+        return db.first(sql, p);
+      },
+      async run(sql, p) {
+        if (sql.startsWith("INSERT INTO chats") && !raced) {
+          raced = true;
+          await db.run(sql, ["winner", ...(p ?? []).slice(1)]); // the other request commits first
+          throw new Error("UNIQUE constraint failed: chats.direct_key");
+        }
+        return db.run(sql, p);
+      },
+    };
+    const r = await createOrGetDirect(racy, "u1", "u2", 1000);
+    expect(r).toEqual({ id: "winner", created: false });
+    expect(chats.size).toBe(1);
   });
 });
 describe("mirrorLastMessage", () => {
@@ -322,7 +346,7 @@ function groupDb(users: Record<string, { username: string; displayName: string |
           id: p[0], type: p[1], name: p[2], created_by: p[3], created_at: p[4],
           last_activity: p[5], direct_key: null, visibility: p[6], slug: p[7] ?? null,
         });
-      } else if (sql.startsWith("INSERT INTO chat_members")) {
+      } else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createGroup now inserts the creator ('owner') + every other member
         // ('member') in ONE multi-row INSERT: the FIRST VALUES row is the owner,
         // all following rows are members. joinPublic/approveRequest still insert a

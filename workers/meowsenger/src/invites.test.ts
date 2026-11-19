@@ -36,7 +36,7 @@ function inviteDb(seed: {
         const c = chats.get(String(p[1])); if (c) { c.invite_code = p[0]; c.invite_enabled = 1; }
       } else if (sql.startsWith("UPDATE chats SET invite_enabled = 0")) {
         const c = chats.get(String(p[0])); if (c) c.invite_enabled = 0;
-      } else if (sql.startsWith("INSERT INTO chat_members")) {
+      } else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         members.push({ chat_id: p[0], user_id: p[1], role: "member" });
       }
     },

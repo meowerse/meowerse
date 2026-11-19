@@ -56,7 +56,7 @@ export async function addMember(
     return { ok: true, invited: true, inviteCode: inv.code };
   }
   await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
     [chatId, targetUserId, now],
   );
   return { ok: true };
@@ -159,6 +159,11 @@ export async function leave(
   const admins = remaining.filter((r: Row) => String(r.role) === "admin");
   const successor = admins[0] ?? remaining[0];
   const successorId = String(successor.user_id);
-  await db.run("UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ?", [chatId, successorId]);
+  // Guarded: only promotes while the chat has NO owner, so two concurrent handoffs can
+  // never leave two owners.
+  await db.run(
+    "UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM chat_members WHERE chat_id = ? AND role = 'owner')",
+    [chatId, successorId, chatId],
+  );
   return { ok: true, transferredTo: successorId };
 }

@@ -71,13 +71,19 @@ export async function createOrGetDirect(
     return { id: String(existing.id), created: false };
   }
   const id = crypto.randomUUID();
-  await db.run(
-    "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
-    [id, me, now, now, key],
-  );
+  try {
+    await db.run(
+      "INSERT INTO chats (id, type, name, created_by, created_at, last_activity, direct_key) VALUES (?, 'direct', NULL, ?, ?, ?, ?)",
+      [id, me, now, now, key],
+    );
+  } catch (e) {
+    // A concurrent createOrGetDirect won the UNIQUE(direct_key) race: converge on its chat.
+    if (!/UNIQUE|constraint/i.test(String((e as Error)?.message ?? e))) throw e;
+    return createOrGetDirect(db, me, other, now);
+  }
   // Both members in ONE multi-row INSERT (one D1 PRIMARY write instead of two).
   await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?), (?, ?, 'member', 0, NULL, ?)",
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?), (?, ?, 'member', 0, NULL, ?)",
     [id, me, now, id, other, now],
   );
   return { id, created: true };
@@ -518,7 +524,7 @@ export async function joinPublic(
   if (!chat || String(chat.visibility) !== "public") return { ok: false, error: "must_request" };
   if ((await getRole(db, chatId, userId)) != null) return { ok: true, joined: false };
   await db.run(
-    "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+    "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
     [chatId, userId, now],
   );
   return { ok: true, joined: true };
@@ -643,7 +649,7 @@ export async function approveRequest(
   // Add exactly once — skip the INSERT if they're already a member (idempotent).
   if ((await getRole(db, chatId, targetId)) == null) {
     await db.run(
-      "INSERT INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
+      "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, unread_count, last_read_at, joined_at) VALUES (?, ?, 'member', 0, NULL, ?)",
       [chatId, targetId, now],
     );
   }

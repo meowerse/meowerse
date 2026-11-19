@@ -71,7 +71,7 @@ function memDb(opts: { session?: Row; usersByName?: Record<string, string>; memb
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) {
         chats.set(String(p[0]), { id: p[0], type: p[1], direct_key: p[4], last_activity: p[3] });
-      } else if (sql.startsWith("INSERT INTO chat_members")) {
+      } else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createOrGetDirect inserts both DM members in one multi-row INSERT; params
         // are grouped (chat_id, user_id, joined_at) per row.
         for (let i = 0; i < p.length; i += 3) {
@@ -545,7 +545,7 @@ function groupApiDb(opts: {
     },
     async run(sql, p = []) {
       if (sql.startsWith("INSERT INTO chats")) chats.set(String(p[0]), { id: p[0], type: p[1], slug: p[7] ?? null, invite_code: null, invite_enabled: 1 });
-      else if (sql.startsWith("INSERT INTO chat_members")) {
+      else if (/^INSERT (OR IGNORE )?INTO chat_members/.test(sql)) {
         // createGroup now inserts creator ('owner') + others ('member') in ONE
         // multi-row INSERT (first VALUES row = owner, rest = member). addMember/
         // approve/joinPublic insert a single 'member' row. Params grouped
