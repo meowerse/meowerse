@@ -1217,11 +1217,19 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "telegram/unlink") {
     const info = await getAccountInfo(db, accountId);
     if (!info?.hasPassword) return json({ error: "no_password_fallback" }, 409, cors); // refuse → avoid lockout
+    // Removing a login method needs fresh authentication (recent login or the current password), like account deletion.
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     await unlinkTelegram(db, accountId);
     await recordAudit(deps, req, { event: "telegram.unlink", accountId });
     return json({ ok: true }, 200, cors);
   }
   if (sub === "recovery-codes") {
+    // Regenerating recovery codes replaces account-recovery credentials: fresh authentication required.
+    const info = await getAccountInfo(db, accountId);
+    if (!info) return accountGone(cors);
+    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
+    if (stale) return stale;
     const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
     if (!recoveryCodes) return accountGone(cors);
     await recordAudit(deps, req, { event: "recovery.regenerate", accountId });

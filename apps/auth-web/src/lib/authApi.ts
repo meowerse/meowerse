@@ -132,11 +132,12 @@ export function deleteAccount(base: string, csrf: string, confirm: string, confi
 export function revokeGrant(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/account/grants/revoke`, { csrf, client_id: clientId });
 }
-export function unlinkTelegram(base: string, csrf: string): Promise<{ ok?: boolean; error?: string }> {
-  return postJson(`${base}/api/account/telegram/unlink`, { csrf });
+/** Both need fresh authentication: a stale login answers `step_up_required`; resend with the current password. */
+export function unlinkTelegram(base: string, csrf: string, currentPassword?: string): Promise<{ ok?: boolean; error?: string; reauth?: string }> {
+  return postJson(`${base}/api/account/telegram/unlink`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
 }
-export function regenerateRecoveryCodes(base: string, csrf: string): Promise<{ recoveryCodes?: string[]; error?: string }> {
-  return postJson(`${base}/api/account/recovery-codes`, { csrf });
+export function regenerateRecoveryCodes(base: string, csrf: string, currentPassword?: string): Promise<{ recoveryCodes?: string[]; error?: string; reauth?: string }> {
+  return postJson(`${base}/api/account/recovery-codes`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
 }
 
 // --- developer dashboard (mutations) ---

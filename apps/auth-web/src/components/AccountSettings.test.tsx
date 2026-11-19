@@ -187,4 +187,32 @@ describe("AccountSettings", () => {
     expect(await screen.findByLabelText("type alxnko to confirm")).not.toBeNull();
     expect(window.location.search).toBe("");
   });
+
+  it("regenerating recovery codes on a stale login asks for the password and resends it", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/grants")) return json({ grants: [] });
+      if (u.endsWith("/api/account/recovery-codes")) {
+        const b = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(b);
+        return b.current_password ? json({ recoveryCodes: ["aaaa-bbbb"] }) : json({ error: "step_up_required", reauth: "password" }, 401);
+      }
+      return json({ ...ACCOUNT, hasPassword: true });
+    });
+    page();
+    await screen.findByText("alxnko");
+    fireEvent.click(screen.getByRole("button", { name: "regenerate" })); // opens the confirm dialog
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "regenerate" }).length).toBeGreaterThan(1));
+    const confirmBtns = screen.getAllByRole("button", { name: "regenerate" });
+    fireEvent.click(confirmBtns[confirmBtns.length - 1]!); // the dialog's confirm
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]!.current_password).toBeUndefined();
+    const pw = await screen.findByLabelText("your password");
+    fireEvent.change(pw, { target: { value: "hunter2hunter2" } });
+    const btns = screen.getAllByRole("button", { name: "regenerate" });
+    fireEvent.click(btns[btns.length - 1]!);
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1]!.current_password).toBe("hunter2hunter2");
+  });
 });
