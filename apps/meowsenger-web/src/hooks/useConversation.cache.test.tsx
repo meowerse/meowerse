@@ -528,6 +528,23 @@ describe("PR-7b read path", () => {
     expect(m.result.current.loadingHistory).toBe(false);
   });
 
+  it("T7b-1b: StrictMode warm entry: the first committed render holds the cached rows, one revalidation read, no committed render pairs B with A's rows", async () => {
+    warm("c1", rows("a", 3));
+    warm("c2", rows("b", 2, "c2"));
+    H.handler = async (chatId) => okp(chatId === "c1" ? rows("a", 3) : rows("b", 2, "c2"));
+    const m = mount("c1", { strict: true });
+    expect(m.renders[0]).toEqual({ activeId: "c1", ids: ["a1", "a2", "a3"] });
+    expect(m.result.current.loadingHistory).toBe(false);
+    await flush();
+    H.calls = [];
+    m.rerender({ activeId: "c2" });
+    expect(m.renders.filter((r) => r.activeId === "c2")[0]!.ids).toEqual(["b1", "b2"]);
+    await flush();
+    for (const r of m.renders) if (r.activeId === "c2") expect(r.ids.every((id) => id.startsWith("b"))).toBe(true);
+    expect(H.calls.filter((c) => c === "c2:")).toHaveLength(1);
+    expect(ids("c1")).toEqual(["a1", "a2", "a3"]);
+  });
+
   it("T7b-2: A -> B -> A with A1 in flight: only A2 commits (A1 resolving late does not overwrite)", async () => {
     warm("c1", [row("x", 1000, { body: "cached" })]);
     const ds: Array<(r: Message[]) => void> = [];
@@ -767,6 +784,22 @@ describe("PR-7b read path", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("T7b-19: an own reaction and an edit flushed before P0 beat P0's older copy (stamped live: no stale flash)", async () => {
+    warm("c1", [row("x", 1000, { body: "orig" }), row("y", 1001)]);
+    const d = deferred<Res>();
+    H.handler = () => d.promise;
+    const m = mount("c1");
+    await flush();
+    const ws = MockWebSocket.room;
+    act(() => ws.mockOpen());
+    act(() => { m.result.current.sendReact(m.result.current.messages.find((b) => b.id === "y")!, "🔥"); });
+    act(() => { m.result.current.sendEdit(m.result.current.messages.find((b) => b.id === "x")!, "edited"); });
+    expect(bodyOf(m, "x")).toBe("edited");
+    await act(async () => { d.resolve(okp([row("x", 1000, { body: "orig" }), row("y", 1001)])); }); // P0 predates the server's answers
+    expect(bodyOf(m, "x")).toBe("edited");
+    expect(m.result.current.messages.find((b) => b.id === "y")!.reactions?.some((r) => r.emoji === "🔥" && r.mine)).toBe(true);
+  });
+
   it("T7b-17 (C2): the cache is 300 rows behind; a live frame and an outbox flush land before P0: P0 + live + local, nothing older than P0", async () => {
     warm("c1", rows("old", 50));
     const p0 = Array.from({ length: 50 }, (_, i) => row(`n${i + 1}`, 5000 + i));
@@ -787,16 +820,47 @@ describe("PR-7b read path", () => {
     expect(cc.peek("c1")!.hasMore).toBe(true);
   });
 
-  it("T7b-18 (I3): loadOlder pages from the oldest NON-deleted row; an `unknown` answer never merges and shows olderError", async () => {
+  it("T7b-18 (I3): loadOlder pages from the oldest NON-deleted row; when every tried cursor is `unknown` nothing merges and olderError shows", async () => {
     const page = [row("t1", 1000, { isDeleted: true, body: "" }), ...Array.from({ length: 49 }, (_, i) => row(`r${i + 2}`, 1001 + i))];
     H.handler = async (_c, before) => (before ? okp([], true) : okp(page));
     const m = mount("c1");
     await waitFor(() => expect(idsOf(m)).toHaveLength(50));
     m.result.current.logRef.current = document.createElement("div");
     await act(async () => { await m.result.current.retryOlder(); });
-    expect(H.calls).toEqual(["c1:", "c1:r2"]); // not the tombstone t1
-    expect(idsOf(m)).toHaveLength(50);
+    // not the tombstone t1; each unknown cursor is dropped and the next safe one is tried (3 tries)
+    expect(H.calls).toEqual(["c1:", "c1:r2", "c1:r3", "c1:r4"]);
+    expect(idsOf(m)).toHaveLength(47); // the three rows proven absent are gone; no page was merged
+    expect(idsOf(m)).not.toContain("r2");
     expect(m.result.current.olderError).toBe(true);
+  });
+
+  it("T7b-18b: loadOlder on a purged first cursor (a cached row the server purged after 24 h) removes it and retries with the next safe cursor", async () => {
+    const page = Array.from({ length: 50 }, (_, i) => row(`r${i + 1}`, 1000 + i));
+    const older = [row("o1", 900)];
+    H.handler = async (_c, before) => (!before ? okp(page) : before === "r1" ? okp([], true) : before === "r2" ? okp(older) : okp([]));
+    const m = mount("c1");
+    await waitFor(() => expect(idsOf(m)).toHaveLength(50));
+    m.result.current.logRef.current = document.createElement("div");
+    await act(async () => { await m.result.current.retryOlder(); });
+    expect(H.calls).toEqual(["c1:", "c1:r1", "c1:r2"]);
+    expect(idsOf(m)[0]).toBe("o1");
+    expect(idsOf(m)).not.toContain("r1");
+    expect(m.result.current.olderError).toBe(false);
+  });
+
+  it("T7b-13b: a sweep cursor the server calls unknown is skipped (next safe cursor), the sweep still completes", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    const srv = server(() => all);
+    let first = true;
+    H.handler = async (c, b) => { if (b === "e71" && first) { first = false; return okp([], true); } return srv(c, b); };
+    const m = mount("c1");
+    await waitFor(() => expect(H.calls.length).toBeGreaterThanOrEqual(4));
+    await flush();
+    expect(H.calls.slice(0, 3)).toEqual(["c1:", "c1:e71", "c1:e72"]); // e71 unknown -> the next row of pages[0]
+    expect(idsOf(m)).toHaveLength(120);
+    expect(idsOf(m)).toContain("e1");
+    expect(m.result.current.olderError).toBe(false);
   });
 
   it("mergeRange (pure): keep rules", () => {
@@ -861,6 +925,26 @@ describe("PR-7b deep link + anchor", () => {
     expect(document.querySelector('[data-mid="a1"]')).toBeNull();
   });
 
+  it("T7b-11c: a deep link whose `around` resolves after the newest page but before the first sweep page: the window is unchanged and the cache never holds a gap", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    const truth = [...all, ...Array.from({ length: 5 }, (_, i) => row(`n${i + 1}`, 5000 + i))];
+    const srv = server(() => truth);
+    const sweepGate = deferred<void>();
+    H.handler = async (c, b) => { if (b) await sweepGate.promise; return srv(c, b); };
+    const aroundD = deferred<{ found: boolean; messages: Message[]; hasOlder: boolean; hasNewer: boolean }>();
+    vi.mocked(loadHistoryAround).mockImplementationOnce(() => aroundD.promise as never);
+    render(<Harness activeId="c1" jump="z1" />);
+    await waitFor(() => expect(loadHistoryAround).toHaveBeenCalled());
+    await waitFor(() => expect(H.calls.some((c) => c.startsWith("c1:e"))).toBe(true)); // P0 landed; the first sweep page is in flight
+    await act(async () => { aroundD.resolve({ found: true, messages: [row("z1", 100), row("z2", 101)], hasOlder: true, hasNewer: true }); });
+    await waitFor(() => expect(document.querySelector('[data-mid="z1"]')).toBeTruthy());
+    await act(async () => { sweepGate.resolve(); });
+    await flush(); await flush();
+    expect(Array.from(document.querySelectorAll("[data-mid]")).map((e) => e.getAttribute("data-mid"))).toEqual(["z1", "z2"]);
+    expect(ids("c1")).toEqual(all.map((r) => r.id)); // the cache never took the newest pages (no gap)
+  });
+
   describe("T7b-14: scroll anchor (stubbed rects, row i top = i*40)", () => {
     const top = new WeakMap<Element, number>();
     const rectProto = HTMLElement.prototype.getBoundingClientRect;
@@ -897,17 +981,20 @@ describe("PR-7b deep link + anchor", () => {
       expect(Math.abs(rowTop("r30") - -12)).toBeLessThanOrEqual(40);
     });
 
-    it("a user scroll during P0 is not yanked back", async () => {
+    it("a user scroll during P0 keeps the reader's top row at its offset (strengthened: it used to assert scrollTop===777, locking in a ~200px jump)", async () => {
       warm("c1", cache, { scrollAnchor: { messageId: "r30", offsetPx: -12, atBottom: false } });
+      // the server purged r1..r5 (5 rows ABOVE the reader): the anchor row moves up in the DOM
+      const shifted = [...cache.slice(5), ...Array.from({ length: 5 }, (_, i) => row(`n${i + 1}`, 1291 + i))];
       const d = deferred<Res>();
-      const srv = server(() => truth);
+      const srv = server(() => shifted);
       H.handler = (c, b) => (b ? srv(c, b) : d.promise);
       render(<Harness activeId="c1" />);
       await act(async () => { await new Promise((r) => setTimeout(r, 60)); }); // our own restore settled (rAF)
       act(() => { logEl().scrollTop = 777; fireEvent.scroll(logEl()); });
+      const before = rowTop("r20"); // the reader's top row (row i top = i*40 - scrollTop)
       await act(async () => { d.resolve(await srv("c1", undefined)); });
-      await waitFor(() => expect(document.querySelectorAll("[data-mid]")).toHaveLength(65));
-      expect(logEl().scrollTop).toBe(777);
+      await waitFor(() => expect(document.querySelector('[data-mid="r1"]')).toBeNull());
+      expect(Math.abs(rowTop("r20") - before)).toBeLessThanOrEqual(40);
     });
   });
 });

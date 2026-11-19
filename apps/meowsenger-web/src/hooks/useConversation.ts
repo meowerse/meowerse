@@ -40,6 +40,8 @@ const NEAR_BOTTOM_PX = 80;
 export const MAX_BODY = 4000;
 /** The server's history page size (a page this long may have more behind it). */
 const HISTORY_PAGE = 50;
+/** How many unknown `before=` cursors (rows the server purged) one older-page/sweep attempt may skip. */
+const OLDER_CURSOR_TRIES = 3;
 /** Reconnect catch-up pages at most this many forward pages before falling back to the newest page. */
 const CATCHUP_MAX_PAGES = 5;
 /** A failed catch-up is retried (with backoff) this many times, then left for the next reconnect. */
@@ -360,10 +362,11 @@ export interface UseConversationInput {
   onRevoked: (chatId: string) => void;
 }
 
-/** A definitive 403 from a history read: the caller is no longer a member of the chat. */
+/** A 401 from a history read: the session ended. */
 export function isUnauthorized(res: { ok: boolean; error?: { kind: string } }): boolean {
   return !res.ok && res.error?.kind === "unauthorized";
 }
+/** A definitive 403 from a history read: the caller is no longer a member of the chat. */
 export function isForbidden(res: { ok: boolean; error?: { kind: string; status?: number } }): boolean {
   return !res.ok && res.error?.kind === "http" && res.error.status === 403;
 }
@@ -713,7 +716,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!r) return;
     restoreRef.current = null;
     if (prependingRef.current) return;
-    if (r !== "bottom" && userScrolledRef.current) return;
+    // anchorRef is the reader's CURRENT position (computeAnchor runs synchronously in
+    // onLogScroll), so it is always restored: `userScrolledRef` is also set by non-user scrolls.
     applyScroll(r);
   }, [view.log, applyScroll]);
 
@@ -761,15 +765,27 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const el = logRef.current;
     const chatId = activeRef.current;
     if (!el || !chatId || prependingRef.current || !hasMoreRef.current) return;
-    // The oldest confirmed NON-deleted row: a cached tombstone may be hard-purged server-side.
-    const oldest = cursorRow(logStateRef.current);
-    if (!oldest) return;
     prependingRef.current = true;
-    const prevHeight = el.scrollHeight;
-    const olderRes = await loadHistory(base, chatId, oldest.id);
-    if (activeRef.current !== chatId) { prependingRef.current = false; return; }
-    if (olderRes.ok && olderRes.unknown) {
-      // The cursor is gone: never merge (the server's answer is empty, not "start of chat").
+    // The oldest confirmed NON-deleted row is the cursor. `found:false` proves the id is not a
+    // row of this room (a cached row the server purged): drop it from the log and retry with the
+    // next safe cursor (bounded); only if that also fails does the retry row show.
+    let olderRes: Awaited<ReturnType<typeof loadHistory>> | null = null;
+    let prevHeight = el.scrollHeight;
+    for (let tries = 0; tries < OLDER_CURSOR_TRIES; tries++) {
+      const oldest = cursorRow(logStateRef.current);
+      if (!oldest) { prependingRef.current = false; return; }
+      prevHeight = el.scrollHeight;
+      const res = await loadHistory(base, chatId, oldest.id);
+      if (activeRef.current !== chatId) { prependingRef.current = false; return; }
+      if (res.ok && res.unknown) {
+        commitLog(chatId, (prev) => prev.filter((b) => b.id !== oldest.id), { src: "local" });
+        continue;
+      }
+      olderRes = res;
+      break;
+    }
+    if (!olderRes) {
+      // Every tried cursor was unknown: never merge (the empty answer is not "start of chat").
       prependingRef.current = false;
       setOlderError(true);
       return;
@@ -1007,6 +1023,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         const cur = logStateRef.current.find((b) => b.id === item.id);
         if (cur && !editBaselineRef.current.has(item.id)) editBaselineRef.current.set(item.id, { body: cur.body, editedAt: cur.editedAt });
         inflightEditsRef.current.push({ id: item.id, body: item.body });
+        stampLive(item.id); // like an acked send: an in-flight edit beats an older fetched copy
         commitLog(chatId, (prev) => prev.map((b) => (b.id === item.id ? { ...b, body: item.body, editedAt: item.editedAt, editFailed: undefined } : b)), { src: "local" });
       }
     }
@@ -1014,7 +1031,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (changed) bumpOutbox();
     // A new message went out from a detached view: bring the live tail in so it is seen.
     if (sentNew && hasNewerRef.current) jumpAfterSendRef.current();
-  }, [bumpOutbox, commitLog]);
+  }, [bumpOutbox, commitLog, stampLive]);
   flushOutboxRef.current = flushOutbox;
 
   // After a (re)connect, BEFORE the outbox flush (so order is kept): resend every send that
@@ -1111,11 +1128,13 @@ export function useConversation(input: UseConversationInput): UseConversation {
         const P0 = p0.data;
         const ceilOf = (rows: Message[]) => rows.reduce((hi, m) => Math.max(hi, m.createdAt), -Infinity);
         const gap = P0.length === HISTORY_PAGE && !!E.newest && E.newest.createdAt < P0[0].createdAt && !P0.some((m) => m.id === E.newest!.id);
-        // Keep the reader where they are across the commit; a gap drops the cached rows, so
-        // an untouched view goes to the bottom instead.
+        // Keep the reader where they are across the commit (their anchor row survives a
+        // range-replace unless the server purged it; applyScroll then falls back to the bottom).
         const keepPlace = () => { if (!atBottomRef.current && anchorRef.current && !anchorRef.current.atBottom) restoreRef.current = anchorRef.current; };
         if (gap) {
-          if (!userScrolledRef.current) { restoreRef.current = "bottom"; atBottomRef.current = true; } else keepPlace();
+          // A gap means the cache and P0 do not touch: the merge drops EVERY cached row, so the
+          // reader's anchor row is gone by construction. Go to the bottom.
+          restoreRef.current = "bottom"; atBottomRef.current = true;
           commitLog(chatId, (cur) => mergeRange(cur, P0, P0[0].createdAt, ceilOf(P0), live, E, { dropEntryBelowFloor: true }), { src: "fetch", hasMore: true, tok: ftok, verified: true });
           if (atBottomRef.current) sendRead(logStateRef.current);
           revalStatus = "idle";
@@ -1123,19 +1142,27 @@ export function useConversation(input: UseConversationInput): UseConversation {
         }
         const pages: Message[][] = [P0];
         let sweepFailed = false;
+        const badCursors = new Set<string>(); // ids the server called unknown (purged between pages)
         // I2: the cursor and the "is it full" test ALWAYS come from pages[0], the oldest page.
         while (pages[0].length === HISTORY_PAGE && !!E.oldest && E.oldest.createdAt < pages[0][0].createdAt && pages.length < 4) {
-          const cursor = cursorRow(pages[0]); // I3: oldest NON-deleted row
+          const cursor = cursorRow(pages[0].filter((m) => !badCursors.has(m.id))); // I3: oldest NON-deleted row
           if (!cursor) break;
           const pk = await loadHistory(base, chatId, cursor.id, { signal: ac.signal });
           if (!alive()) return;
+          if (hasNewerRef.current) { revalStatus = "idle"; return; } // jumped away during the sweep
           if (!pk.ok) {
             if (isForbidden(pk)) { onRevokedRef.current(chatId); return; }
             if (isUnauthorized(pk)) return;
             sweepFailed = true;
             break;
           }
-          if (pk.unknown) { sweepFailed = true; break; } // never prepend the newest page
+          if (pk.unknown) {
+            // found:false proves the id is not a row of the room: try the next safe cursor
+            // (bounded); never prepend the newest page.
+            badCursors.add(cursor.id);
+            if (badCursors.size >= OLDER_CURSOR_TRIES) { sweepFailed = true; break; }
+            continue;
+          }
           pages.unshift(pk.data);
         }
         const byId = new Map<string, Message>();
@@ -1143,6 +1170,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
         const fetched = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
         const floor = pages[0].length === HISTORY_PAGE ? pages[0][0].createdAt : -Infinity;
         const ceil = ceilOf(fetched);
+        if (hasNewerRef.current) { revalStatus = "idle"; return; } // jumped away: never merge into that window
         const keptBelow = logStateRef.current.some((b) => !isUnconfirmed(b) && !b.queued && b.createdAt < floor && !live.isLive(b.id));
         keepPlace();
         commitLog(chatId, (cur) => mergeRange(cur, fetched, floor, ceil, live, E), { src: "fetch", hasMore: floor !== -Infinity || keptBelow, tok: ftok, verified: true });
@@ -1488,6 +1516,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const chatId = activeRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !chatId) return;
     if (socketChatRef.current !== chatId) return; // the socket still serves the chat just left
+    stampLive(m.id); // my own reaction beats a fetched copy that predates the server's answer
     commitLog(chatId, (prev) => prev.map((b) => {
       if (b.id !== m.id) return b;
       const mineNow = (b.reactions ?? []).find((r) => r.emoji === emoji)?.mine ?? false;

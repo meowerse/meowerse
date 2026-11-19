@@ -65,8 +65,10 @@ export const INSTRUMENT = `(() => {
     if (!row) { resolve(-2); return; }
     const t0 = now();
     performance.mark('switch');
+    P.skelFrames = 0; // frames in which the cold-load skeleton (.mw-skel-log) is visible before the chat shows
     row.click();
     const tick = () => {
+      if (document.querySelector('.mw-skel-log')) P.skelFrames++;
       const log = document.querySelector('.mw-chat__log');
       if (log && log.textContent.includes(marker)) { resolve(now() - t0); return; }
       if (now() - t0 > timeout) { resolve(-1); return; }

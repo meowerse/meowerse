@@ -315,6 +315,17 @@ describe("handleHistory", () => {
     expect(seenAround).toBe("m5");
     expect(await res.json()).toEqual({ messages: [{ id: "m5" }], hasOlder: true, hasNewer: false, found: true });
   });
+  it("?before=<known id> answers the page with found:true", async () => {
+    const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
+    const env = {
+      CONVERSATION: {
+        idFromName: (n: string) => n,
+        get: () => ({ historyForEx: async () => ({ messages: [{ id: "m1" }], found: true }) }),
+      },
+    } as unknown as Env;
+    const res = await handleHistory(cookieReq("https://x/api/chats/c1/messages?before=m2", "s1"), env, db, now, "c1", cors);
+    expect(await res.json()).toEqual({ messages: [{ id: "m1" }], found: true });
+  });
   it("?before=<unknown id> answers [] with found:false (never the newest page)", async () => {
     const { db } = memDb({ session: validSession("u1"), members: [["c1", "u1"]] });
     const env = {
