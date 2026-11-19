@@ -1,7 +1,7 @@
 import type { Env, DbClient } from "./types";
 import { type Deps, ensureSchema, prodDeps } from "./db";
-import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
-import { sha256Hex } from "./crypto";
+import { CF_BEACON_CSP, corsHeaders, isOriginAllowed, isDevEnv, securityHeaders, hostCookie, clearHostCookie, parseCookies, validateCsrf, randomId } from "./security";
+import { sha256Hex, hmacSha256Hex } from "./crypto";
 import { parseSigningKeys, getActiveKey, buildJwks } from "./keys";
 import { verifyJwt } from "./jwt";
 import { discoveryDoc } from "./oidc";
@@ -85,6 +85,11 @@ function json(body: unknown, status: number, headers: Record<string, string> = {
   });
 }
 
+/** 429 with Retry-After (the fixed window length is an upper bound on the wait). */
+function tooMany(error: string, retryAfterSec: number, headers: Record<string, string> = {}): Response {
+  return json({ error }, 429, { ...headers, "Retry-After": String(retryAfterSec) });
+}
+
 function htmlError(status: number, message: string, cors: Record<string, string>): Response {
   const body = `<!doctype html><html><head><meta charset="utf-8"><title>Auth error</title></head><body><h1>Authorization error</h1><p>${message}</p></body></html>`;
   return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8", ...securityHeaders(CF_BEACON_CSP), ...cors } });
@@ -125,8 +130,26 @@ function issuer(env: Env): string {
 function webOrigin(env: Env): string {
   return env.WEB_ORIGIN ?? "https://auth.alxnko.dev";
 }
+/** True for the real deployment (never for tests/dev): prod host issuer, the default issuer, or SKIP_MIGRATIONS=1. */
+function isProductionLike(env: Env): boolean {
+  if (isDevEnv(env)) return false;
+  if (env.SKIP_MIGRATIONS === "1" || !env.ISSUER) return true;
+  try {
+    const h = new URL(env.ISSUER).hostname;
+    return h === "alxnko.dev" || h.endsWith(".alxnko.dev") || h === "alxnko.eu.org" || h.endsWith(".alxnko.eu.org");
+  } catch {
+    return true;
+  }
+}
+/**
+ * HMAC secret for the authorize-request envelope and rate-limit keys. In production it MUST be its own
+ * secret: no fallback to the signing keys (key separation) or to a public constant (forgeable envelopes).
+ * The dev/test fallback exists only outside production.
+ */
 function stateSecret(env: Env): string {
-  return env.STATE_SECRET ?? env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
+  if (env.STATE_SECRET) return env.STATE_SECRET;
+  if (isProductionLike(env)) throw new Error("STATE_SECRET is not configured");
+  return env.AUTH_SIGNING_KEYS ?? "dev-state-secret";
 }
 
 interface Signing {
@@ -235,7 +258,7 @@ function scheduleBackgroundRevoke(deps: Deps, db: DbClient, family: string | und
 
 async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
   // Cheap in-worker second line behind the edge WAF (same shape as /token).
-  if (!(await ipThrottle(req, deps, "authorize", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "authorize", 120, 60))) return tooMany("rate_limited", 60, cors);
   const url = new URL(req.url);
   const params = parseAuthorizeQuery(url);
   const db = deps.getDb();
@@ -299,12 +322,26 @@ async function handleAuthorize(req: Request, env: Env, deps: Deps, cors: Record<
   return redirect(`${webOrigin(env)}/login`, { ...securityHeaders(), "Set-Cookie": hostCookie(TKT_COOKIE, tkt, { maxAge: TKT_TTL }) });
 }
 
+/**
+ * Login/signup CSRF guard. Browsers always send `Origin` on a cross-site POST (fetch AND form), so a
+ * present-but-foreign value (including the opaque `null`) is rejected; `Sec-Fetch-Site: cross-site` too.
+ * An ABSENT Origin is allowed: only non-browser clients (curl, server-side tests) omit it on POST, and they
+ * carry no ambient cookie a forged login could ride on.
+ */
+function crossSiteForbidden(req: Request, env: Env): boolean {
+  if (req.headers.get("Sec-Fetch-Site") === "cross-site") return true;
+  const origin = req.headers.get("Origin");
+  if (origin === null) return false;
+  return !(origin === issuer(env) || origin === webOrigin(env) || isOriginAllowed(origin, env));
+}
+
 async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
   const p = await readParams(req);
   const db = deps.getDb();
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|signup");
+  const ipHash = await rlKey(env, req, "signup");
   const rl = await checkRateLimit(db, `signup:${ipHash}`, { limit: 20, windowSec: 3600, now: now(deps) });
-  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  if (!rl.allowed) return tooMany("rate_limited", 3600, cors);
   // Bot gate (before the expensive PBKDF2). No-op unless TURNSTILE_SECRET_KEY is set.
   if (!(await turnstileGate(env, p, req.headers.get("CF-Connecting-IP"), deps.fetch))) {
     return json({ error: "turnstile_failed" }, 403, cors);
@@ -327,6 +364,7 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
 }
 
 async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+  if (crossSiteForbidden(req, env)) return json({ error: "bad_origin" }, 403, cors);
   const p = await readParams(req);
   const db = deps.getDb();
   // Bot gate FIRST, so a gated bot never reaches (or writes to) the rate_limits
@@ -337,9 +375,9 @@ async function handleLogin(req: Request, env: Env, deps: Deps, cors: Record<stri
   // Key the limiter on the CLIENT IP, not sha256(username): a username-keyed bucket
   // lets an attacker mint unbounded distinct rows (write amplification) and lock
   // out victims by username; per-IP bounds the write surface and the abuser.
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|login");
+  const ipHash = await rlKey(env, req, "login");
   const rl = await checkRateLimit(db, `login:${ipHash}`, { limit: 10, windowSec: 900, now: now(deps) });
-  if (!rl.allowed) return json({ error: "rate_limited" }, 429, cors);
+  if (!rl.allowed) return tooMany("rate_limited", 900, cors);
 
   const res = await loginVerify(db, { username: p.username ?? "", password: p.password ?? "" }, { dummyPhc: DEFAULT_DUMMY_PHC });
   if (!res.ok) {
@@ -560,8 +598,13 @@ function parseClientAuth(req: Request, p: Record<string, string>): { clientId: s
 }
 
 /** Per-IP write throttle behind the edge limiter (spec §10/#10). */
-async function ipThrottle(req: Request, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
-  const ipHash = await sha256Hex((req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+/** Rate-limit bucket key: HMAC (server secret) of IP|tag, so the stored keys cannot be reversed by hashing the IPv4 space. */
+export async function rlKey(env: Env, req: Request, tag: string): Promise<string> {
+  return hmacSha256Hex(stateSecret(env), "rl|" + (req.headers.get("CF-Connecting-IP") ?? "") + "|" + tag);
+}
+
+async function ipThrottle(req: Request, env: Env, deps: Deps, tag: string, limit: number, windowSec: number): Promise<boolean> {
+  const ipHash = await rlKey(env, req, tag);
   const rl = await checkRateLimit(deps.getDb(), `${tag}:${ipHash}`, { limit, windowSec, now: now(deps) });
   return rl.allowed;
 }
@@ -583,7 +626,7 @@ async function handleToken(req: Request, env: Env, deps: Deps, cors: Record<stri
   const p = await readParams(req);
   const noStore = { "Cache-Control": "no-store", Pragma: "no-cache" };
   const db = deps.getDb();
-  if (!(await ipThrottle(req, deps, "token", 120, 60))) return json({ error: "rate_limited" }, 429, { ...cors, ...noStore });
+  if (!(await ipThrottle(req, env, deps, "token", 120, 60))) return tooMany("rate_limited", 60, { ...cors, ...noStore });
   const { clientId, clientSecret } = parseClientAuth(req, p);
 
   // Authenticate the client: confidential clients MUST present a valid secret;
@@ -664,7 +707,7 @@ const TGOWN_COOKIE = "mw_tgown";
 
 /** POST /tg/start — mint a deep-link ticket bound to this browser (spec §6). */
 async function handleTgStart(req: Request, env: Env, deps: Deps, cors: Record<string, string>, ctx?: ExecutionContext): Promise<Response> {
-  if (!(await ipThrottle(req, deps, "tgstart", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgstart", 30, 600))) return tooMany("rate_limited", 600, cors);
   const db = deps.getDb();
   const p = await readParams(req);
   const kind = p.kind === "VERIFY_EXISTING" ? "VERIFY_EXISTING" : "SIGNIN_OR_SIGNUP";
@@ -772,7 +815,7 @@ async function handleTgConfirm(req: Request, env: Env, deps: Deps, cors: Record<
 
 /** POST /tg/verify — the ticket-owning browser submits the code the bot showed in Telegram; only now is the link/sign-in written. */
 async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
-  if (!(await ipThrottle(req, deps, "tgverify", 30, 600))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgverify", 30, 600))) return tooMany("rate_limited", 600, cors);
   // Browser CSRF-style defence in depth: a cross-site page must not be able to submit codes for the owner.
   const origin = req.headers.get("Origin");
   if (origin !== null && !isOriginAllowed(origin, env)) return json({ error: "bad_origin" }, 403, cors);
@@ -798,7 +841,7 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
   // The attempt is spent atomically BEFORE comparing: at most CODE_MAX_ATTEMPTS comparisons ever happen per ticket.
   if (!(await spendCodeAttempt(db, ticket.ticket_id))) {
     await burnAndAudit(db, deps, req, ticket);
-    return json({ error: "too_many_attempts" }, 429, cors);
+    return tooMany("too_many_attempts", 600, cors);
   }
   const expected = await tgCodeHash(env.INTERNAL_HMAC_KEY, ticket.ticket_id, code ?? "x");
   if (!code || !constantTimeEqual(expected, ctx.code_hash)) {
@@ -806,7 +849,7 @@ async function handleTgVerify(req: Request, env: Env, deps: Deps, cors: Record<s
     const left = CODE_MAX_ATTEMPTS - Number((await getTicketContext(db, ticket.ticket_id))?.attempts ?? CODE_MAX_ATTEMPTS);
     if (left <= 0) {
       await burnAndAudit(db, deps, req, ticket);
-      return json({ error: "too_many_attempts" }, 429, cors);
+      return tooMany("too_many_attempts", 600, cors);
     }
     return json({ error: "wrong_code", attemptsLeft: left }, 400, cors);
   }
@@ -834,7 +877,7 @@ async function burnAndAudit(db: DbClient, deps: Deps, req: Request, ticket: { ti
 /** GET /tg/status?ticket=ID — owner-bound poll; on consume, issue the session. */
 async function handleTgStatus(req: Request, env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
   // Cheap in-worker second line for the poll endpoint (same shape as /token).
-  if (!(await ipThrottle(req, deps, "tgstatus", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await ipThrottle(req, env, deps, "tgstatus", 120, 60))) return tooMany("rate_limited", 60, cors);
   const db = deps.getDb();
   const ticketId = new URL(req.url).searchParams.get("ticket") ?? "";
   const cookies = parseCookies(req.headers.get("Cookie"));
@@ -1122,7 +1165,7 @@ async function requireFreshAuth(
   if (!info.hasPassword) return json({ error: "step_up_required", reauth: "telegram" }, 401, cors);
   if (!password) return json({ error: "step_up_required", reauth: "password" }, 401, cors);
   const db = deps.getDb();
-  if (!(await stepUpAllowed(db, accountId, t))) return json({ error: "rate_limited" }, 429, cors);
+  if (!(await stepUpAllowed(db, accountId, t))) return tooMany("rate_limited", 900, cors);
   const v = await verifyAccountPassword(db, accountId, password);
   if (v !== "ok") {
     if (failEvent) await recordAudit(deps, req, { event: failEvent, accountId });
@@ -1158,7 +1201,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
 
   if (sub === "password") {
     // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
-    if (!(await stepUpAllowed(db, accountId, now(deps)))) return json({ error: "rate_limited" }, 429, cors);
+    if (!(await stepUpAllowed(db, accountId, now(deps)))) return tooMany("rate_limited", 900, cors);
     const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", keepSessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? "") });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
@@ -1345,7 +1388,7 @@ export async function handle(req: Request, env: Env, deps: Deps, ctx?: Execution
   const av = pathname.match(/^\/avatar\/([A-Za-z0-9_-]{1,64})$/);
   if (av && m === "GET") {
     // Per-IP second line in front of the Bot-API amplification (same shape as /token).
-    if (!(await ipThrottle(req, d, "avatar", 120, 60))) return json({ error: "rate_limited" }, 429, cors);
+    if (!(await ipThrottle(req, env, d, "avatar", 120, 60))) return tooMany("rate_limited", 60, cors);
     return handleAvatar(req, env, d, av[1]!, cors);
   }
   if ((pathname === "/logout" || pathname === "/session/end") && m === "GET") return handleLogout(req, env, d, cors);

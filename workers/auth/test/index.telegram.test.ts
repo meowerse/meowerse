@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { handle } from "../src/index";
+import { handle, rlKey } from "../src/index";
 import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
 import { genSigningKeys, memStore, cookieValue, botConfirm, tgVerify } from "./helpers";
@@ -113,7 +113,7 @@ test("tg/start is IP-rate-limited (429)", async () => {
   const keys = await genSigningKeys();
   const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), ISSUER: "https://iss", BOT_USERNAME: "meow_bot", CORS_ORIGINS: "https://web" };
   const deps = { getDb: () => store.db, clock: () => 1000 };
-  store.tables.rate_limits.push({ bucket: "tgstart:" + (await sha256Hex("|tgstart")), count: 30, window_start: 1000 });
+  store.tables.rate_limits.push({ bucket: "tgstart:" + (await rlKey(env as never, new Request("https://iss/"), "tgstart")), count: 30, window_start: 1000 });
   const r = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
   expect(r.status).toBe(429);
 });
@@ -316,7 +316,7 @@ test("10 parallel wrong codes spend exactly 5 attempts and burn the ticket", asy
 
 test("tg/verify is IP-rate-limited (429)", async () => {
   const { env, deps, tables } = await fixture();
-  (tables.rate_limits as Row[]).push({ bucket: "tgverify:" + (await sha256Hex("|tgverify")), count: 30, window_start: 1000 });
+  (tables.rate_limits as Row[]).push({ bucket: "tgverify:" + (await rlKey(env as never, new Request("https://iss/"), "tgverify")), count: 30, window_start: 1000 });
   const r = await tgVerify(handle, env, deps, { ticketId: "tkt_x", code: "12345678", owner: "o" });
   expect(r.status).toBe(429);
 });

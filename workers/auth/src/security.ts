@@ -9,9 +9,17 @@ function allowlist(env: Env): string[] {
   return raw.split(",").map((o) => o.trim()).filter(Boolean);
 }
 
+/** Local development flag (wrangler dev / tests): never set in production vars. */
+export function isDevEnv(env: Env): boolean {
+  return env.AUTH_DEV === "1";
+}
+
 export function isOriginAllowed(origin: string | null, env: Env): boolean {
   if (!origin) return false;
   if (allowlist(env).includes(origin)) return true;
+  // Loopback / *.local hosts are accepted ONLY in dev: in production any process on a user's machine
+  // (or a lookalike .local name) could otherwise be a credentialed CORS origin.
+  if (!isDevEnv(env)) return false;
   try {
     const u = new URL(origin);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {

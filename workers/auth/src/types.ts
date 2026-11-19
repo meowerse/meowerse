@@ -12,6 +12,8 @@ export interface Env {
   DATABASE_AUTH_TOKEN?: string;
   AUTH_SIGNING_KEYS?: string;
   STATE_SECRET?: string;
+  /** "1" = local dev/test: allows loopback/.local Origins and the STATE_SECRET fallback. Never set in production. */
+  AUTH_DEV?: string;
   BOT_USERNAME?: string;
   TELEGRAM_BOT_TOKEN?: string;
   INTERNAL_HMAC_KEY?: string;
