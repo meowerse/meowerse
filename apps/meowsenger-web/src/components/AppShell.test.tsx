@@ -187,7 +187,7 @@ describe("AppShell", () => {
     H.results = [{ ok: false, error: { kind: "unauthorized", status: 401 } }];
     render(<AppShell base="" />);
     const link = await screen.findByRole("link", { name: "sign in" });
-    expect(document.activeElement).toBe(link);
+    await waitFor(() => expect(document.activeElement).toBe(link)); // focus is set in an effect that can land after findByRole resolves (flaked under load)
     expect(screen.getByRole("alert").textContent).toMatch(/your session ended/);
     expect(screen.getByRole("alert").querySelector("a, button")).toBeNull();
   });

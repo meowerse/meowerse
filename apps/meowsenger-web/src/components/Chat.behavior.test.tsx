@@ -481,15 +481,69 @@ describe("Chat island — per-chat UI reset on switch (audit trap)", () => {
 });
 
 describe("Chat island — mobile header (connection dot + overflow menu)", () => {
-  it("the connection dot reflects the socket state", async () => {
+  it("the dot follows the inbox LINK, announces via a polite status, and a chat's room join never turns it yellow", async () => {
     const ws = await mountOpen();
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     const dot = document.querySelector(".mw-chat__conn") as HTMLElement;
     expect(dot).toBeTruthy();
-    // Socket not open yet, browser online (happy-dom default) → "reconnecting".
-    expect(dot.getAttribute("data-state")).toBe("wait");
-    open(ws);
+    // Room socket still joining, link not yet open: neutral, never "wait".
+    expect(dot.getAttribute("data-state")).toBe("idle");
+    await waitFor(() => expect(MockWebSocket.inbox).toBeTruthy());
+    act(() => MockWebSocket.inbox!.mockOpen());
     await waitFor(() => expect(dot.getAttribute("data-state")).toBe("on"));
+    const live = document.querySelector('[role="status"][aria-live="polite"]') as HTMLElement;
+    open(ws);
+    await waitFor(() => expect(live.textContent).toBe("connected"));
+    // Room drops, link up: dot stays "on" past the 800 ms join line (fake timers from here).
+    vi.useFakeTimers();
+    try {
+      act(() => ws.mockDrop());
+      act(() => { vi.advanceTimersByTime(2000); });
+      expect(dot.getAttribute("data-state")).toBe("on");
+      // ...and escalates to yellow only once the room has been down > 8 s.
+      act(() => { vi.advanceTimersByTime(6100); });
+      expect(dot.getAttribute("data-state")).toBe("wait");
+      expect(live.textContent).toBe("reconnecting…");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("an inbox-link outage > 1.5 s turns the dot yellow; reopening restores it", async () => {
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(MockWebSocket.inbox).toBeTruthy());
+    act(() => MockWebSocket.inbox!.mockOpen());
+    const dot = document.querySelector(".mw-chat__conn") as HTMLElement;
+    await waitFor(() => expect(dot.getAttribute("data-state")).toBe("on"));
+    vi.useFakeTimers();
+    try {
+      act(() => MockWebSocket.inbox!.mockDrop());
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(dot.getAttribute("data-state")).toBe("on");
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(dot.getAttribute("data-state")).toBe("wait");
+      // The reconnect backoff (<= 1 s on the first attempt) reopens a fresh inbox socket.
+      act(() => { vi.advanceTimersByTime(12000); });
+      act(() => MockWebSocket.inbox!.mockOpen());
+      expect(dot.getAttribute("data-state")).toBe("on");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("the browser's offline/online events drive the dot (netOnline wiring)", async () => {
+    const ws = await mountOpen();
+    open(ws);
+    await waitFor(() => expect(MockWebSocket.inbox).toBeTruthy());
+    act(() => MockWebSocket.inbox!.mockOpen());
+    const dot = document.querySelector(".mw-chat__conn") as HTMLElement;
+    await waitFor(() => expect(dot.getAttribute("data-state")).toBe("on"));
+    const onLine = vi.spyOn(navigator, "onLine", "get");
+    try {
+      onLine.mockReturnValue(false);
+      act(() => { window.dispatchEvent(new Event("offline")); });
+      expect(dot.getAttribute("data-state")).toBe("off");
+      onLine.mockReturnValue(true);
+      act(() => { window.dispatchEvent(new Event("online")); });
+      expect(dot.getAttribute("data-state")).toBe("on");
+    } finally { onLine.mockRestore(); }
   });
 
   it("the ⋯ overflow menu exposes search + copy link", async () => {

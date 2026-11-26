@@ -8,6 +8,7 @@ import { shownName } from "../lib/userName";
 import { fmtDay } from "../lib/messageText";
 import { useConversation, type SendResult, isForbidden } from "../hooks/useConversation";
 import { useInbox } from "../hooks/useInbox";
+import { useConnectionIndicator } from "../hooks/useConnectionIndicator";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
@@ -300,7 +301,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     [applySidebarDelta, activeRef, refetchOnInvalidate],
   );
   // A reopened inbox socket missed deltas while it was down: one coalesced list refresh.
-  useInbox(base, me != null, onInboxDelta, refetchOnInvalidate);
+  const link = useInbox(base, me != null, onInboxDelta, refetchOnInvalidate);
+  const { dot, roomJoining, label } = useConnectionIndicator(link, connected || !activeChat, netOnline);
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.
@@ -774,13 +776,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
               {/* Shared right cluster (both branches). The name column flexes to fill
                   the space these leave, so it's no longer squeezed on mobile. */}
-              <span
-                className="mw-chat__conn"
-                data-state={connected ? "on" : netOnline ? "wait" : "off"}
-                role="status"
-                title={connected ? "connected" : netOnline ? "reconnecting…" : "offline"}
-                aria-label={connected ? "connected" : netOnline ? "reconnecting" : "offline"}
-              />
+              <span className="mw-chat__joining" aria-hidden="true" hidden={!roomJoining || dot !== "on"}>connecting…</span>
+              <span className="mw-chat__conn" data-state={dot} title={label} aria-hidden="true" />
+              <span className="mw-sr-only" role="status" aria-live="polite">{label}</span>
               {/* Inline actions on desktop; collapsed into the ⋯ menu on phones (CSS). */}
               <div className="mw-chat__actions">
                 <button

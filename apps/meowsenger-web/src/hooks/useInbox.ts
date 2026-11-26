@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { LinkState } from "./useConnectionIndicator";
 import { inboxWsUrl, type InboxDelta } from "../lib/chat";
 import { retryDelay } from "../lib/backoff";
 import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
@@ -13,11 +14,15 @@ import { hasSessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
  * `onReconnect` fires on every open AFTER a drop (never the first): the caller runs ONE
  * coalesced list refresh to cover the deltas missed while offline.
  *
+ * Returns the link state (connecting | open | down).
+ *
  * `onDelta` is mirrored into a ref so the socket effect depends only on `[base,
  * enabled]` and never re-runs (a reconnect storm) when the view re-renders with a new
  * closure — the same stability discipline the conversation hook uses.
  */
-export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta) => void, onReconnect?: () => void): void {
+export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta) => void, onReconnect?: () => void): LinkState {
+  // The persistent link's health, for the header dot: "connecting" until the first open, then open/down.
+  const [link, setLink] = useState<LinkState>("connecting");
   const onDeltaRef = useRef(onDelta);
   const onReconnectRef = useRef(onReconnect);
   useEffect(() => { onDeltaRef.current = onDelta; onReconnectRef.current = onReconnect; });
@@ -40,6 +45,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     const unsubEnded = subscribeSessionEnded(() => {
       stopped = true;
       closing = true;
+      setLink("ended"); // terminal: neither "connected" nor "reconnecting" is true any more
       clearTimer();
       stopHb();
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
@@ -50,6 +56,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     function handleClosed(): void {
       stopHb();
       if (cancelled || closing || stopped) return;
+      setLink("down");
       failedOpens++;
       if (failedOpens >= PROBE_AFTER_FAILED_OPENS && failedOpens % PROBE_AFTER_FAILED_OPENS === 0) {
         void probeSession(base); // a definitive 401 raises sessionEnded -> the subscription above stops us
@@ -67,6 +74,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
         if (cancelled || ws !== sock) return;
         attempts = 0;
         failedOpens = 0;
+        setLink("open");
         const reopened = everOpened;
         everOpened = true;
         stopHb();
@@ -115,6 +123,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     }
 
     return () => {
+      setLink("connecting"); // disabled / base changed / unmounted: never keep a stale open/down/ended state
       cancelled = true;
       closing = true;
       clearTimer();
@@ -127,4 +136,5 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
     };
   }, [base, enabled]);
+  return link;
 }
