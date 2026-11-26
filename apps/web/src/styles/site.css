@@ -301,3 +301,7 @@ a.mw-btn:hover { text-decoration: none; }
   @keyframes mw-vt-out { to { opacity: 0; } }
   @keyframes mw-vt-in { from { opacity: 0; } }
 }
+
+/* the Skeleton docs examples (a static page under a strict CSP: sized by class, not by style="") */
+.mw-skeleton.doc-skel-line { width: 60%; height: 1.5em; }
+.mw-skeleton.doc-skel-button { width: 120px; height: 36px; }

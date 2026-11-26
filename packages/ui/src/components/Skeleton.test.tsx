@@ -12,4 +12,8 @@ describe("Skeleton", () => {
     expect(el.className).toContain("mw-skeleton");
     expect(el.className).toContain("x");
   });
+  it("renders no style attribute when no size is given (strict-CSP static pages size it with a class)", () => {
+    const { container } = render(<Skeleton className="x" />);
+    expect((container.firstElementChild as HTMLElement).hasAttribute("style")).toBe(false);
+  });
 });
