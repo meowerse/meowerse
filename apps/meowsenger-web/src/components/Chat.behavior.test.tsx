@@ -943,6 +943,50 @@ describe("Chat island — roster cache + role from the summary", () => {
     clearAll();
   });
 
+  const bob = { userId: "u2", username: "bob", displayName: "Bob", avatarUrl: null, role: "member" as const, joinedAt: 1 };
+
+  it("past the TTL with the chat open: names stay, one background revalidation, count follows a removal", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u2", body: "team msg" })] };
+    H.members = { c1: [...roster, bob] };
+    await mountOpen();
+    await screen.findByText("2 members");
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0);
+    const real = Date.now;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000);
+    H.members = { c1: roster }; // bob was removed meanwhile
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // never blank while revalidating
+    await screen.findByText("1 member");
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2); // fresh again: no more requests
+    spy.mockRestore();
+    clearAll();
+  });
+
+  it("a role change in a refreshed list drives the composer from the summary and revalidates the roster", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    H.members = { c1: roster }; // cached roster says member
+    await mountOpen();
+    await screen.findByText(/only admins post/);
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy()); // summary wins over the stale 'member' roster
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2));
+    H.chats = [grp({ type: "channel", myRole: "member" })]; // demoted
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/only admins post/);
+    expect(document.querySelector("textarea")).toBeNull();
+    clearAll();
+  });
+
   it("a channel member sees the read-only note with no roster", async () => {
     const { getMembers } = await import("../lib/chat");
     vi.mocked(getMembers).mockImplementationOnce(() => new Promise(() => {}));

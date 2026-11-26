@@ -134,36 +134,39 @@ describe("ConversationCache", () => {
 });
 
 describe("MemberCache", () => {
-  afterEach(() => { vi.useRealTimers(); });
-  it("expires after 5 minutes; invalidate and purge drop it", () => {
+  afterEach(() => { vi.useRealTimers(); clearAll(); });
+  it("stale-while-revalidate: past 5 minutes the roster is still returned but not fresh; invalidate and purge drop it", () => {
     vi.useFakeTimers();
+    setScope("u1");
     mc.put("c1", roster, getEpoch());
     vi.advanceTimersByTime(4 * 60_000 + 59_000);
-    expect(mc.get("c1")).toBe(roster);
+    expect(mc.isFresh("c1")).toBe(true);
     vi.advanceTimersByTime(2_000);
-    expect(mc.get("c1")).toBeUndefined();
-    mc.put("c1", roster, getEpoch()); mc.invalidate("c1");
+    expect(mc.get("c1")).toBe(roster);
+    expect(mc.isFresh("c1")).toBe(false);
+    mc.invalidate("c1");
     expect(mc.get("c1")).toBeUndefined();
     mc.put("c1", roster, getEpoch()); mc.purge("c1");
     expect(mc.get("c1")).toBeUndefined();
-    mc.invalidate("c1");
   });
-});
-
-describe("MemberCache invalidation", () => {
-  it("a list apply that changes myRole or memberCount drops that roster; a pre-invalidation fetch cannot store", () => {
+  it("markStale keeps the roster but makes it not fresh; the generation guard is per chat", () => {
     setScope("u1");
     const e = getEpoch();
-    cl.apply([{ ...chat("c1"), myRole: "member", memberCount: 2 }, { ...chat("c2"), myRole: "member" }], e);
     mc.put("c1", roster, e); mc.put("c2", roster, e);
-    cl.apply([{ ...chat("c1"), myRole: "admin", memberCount: 2 }, { ...chat("c2"), myRole: "member" }], e);
-    expect(mc.get("c1")).toBeUndefined();
-    expect(mc.get("c2")).toBe(roster);
-    const g = mc.generation();
-    mc.invalidate("c2");
-    expect(mc.put("c2", roster, e, g)).toBe(false); // fetch started before the invalidation
-    expect(mc.put("c2", roster, e)).toBe(true);
-    clearAll();
+    mc.markStale("c1");
+    expect(mc.get("c1")).toBe(roster);
+    expect(mc.isFresh("c1")).toBe(false);
+    const gA = mc.generation("c1"), gB = mc.generation("c2");
+    mc.invalidate("c2"); // chat B revoked while chat A's fetch is in flight
+    expect(mc.put("c1", roster, e, gA)).toBe(true);
+    expect(mc.isFresh("c1")).toBe(true);
+    expect(mc.put("c2", roster, e, gB)).toBe(false);
+  });
+  it("is bounded", () => {
+    setScope("u1");
+    for (let i = 0; i < 40; i++) mc.put(`b${i}`, roster, getEpoch());
+    expect(mc.get("b0")).toBeUndefined();
+    expect(mc.get("b39")).toBe(roster);
   });
 });
 

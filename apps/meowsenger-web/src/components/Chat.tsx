@@ -19,7 +19,7 @@ import { setScope, clearAll, purgeChat, broadcastLogout, begin, memberCache } fr
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 // Neutral name for a sender not (yet) in the roster; never a raw id.
-const UNKNOWN_SENDER = "member";
+const UNKNOWN_SENDER = "someone";
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
 
 // Own-message action windows (UX gating only — the server enforces both, §7).
@@ -132,7 +132,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const isMembered = isGroup || isChannel;
   // The caller's own role in the active membered chat (owner|admin|member); undefined
   // for DMs / before the roster loads.
-  const myRole = (me ? memberMap.get(me.id)?.role : undefined) ?? activeChat?.myRole;
+  // The summary is the fresher source; the roster role only backs up an older worker that omits it.
+  const myRole = activeChat?.myRole ?? (me ? memberMap.get(me.id)?.role : undefined);
   // Has the active channel's roster loaded yet? Until it has we can't know the role,
   // so we DON'T flash the Composer (a member would see it briefly before the read-
   // only note replaces it) — the input area stays empty meanwhile.
@@ -193,6 +194,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setChatsError(false);
     const act = activeRef.current;
     const cs = res.data;
+    // A role change in the refreshed list: keep showing the roster but revalidate it.
+    for (const c of cs) { const o = chatsRef.current.find((x) => x.id === c.id); if (o && o.myRole !== c.myRole) memberCache.markStale(c.id); }
     // The ?chat=/?m= deep link runs ONCE, on the FIRST successful list (initial load,
     // a sidebar retry or a poll) — a failed first load must not drop it for good.
     if (!deepLinkDoneRef.current) { deepLinkDoneRef.current = true; deepLinkRef.current(cs); }
@@ -330,9 +333,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // MessageItem can render each sender's identity. No-op for DMs.
   const loadMembers = useCallback(async (chatId: string, force = false) => {
     if (force) memberCache.invalidate(chatId);
-    else if (memberCache.get(chatId)) return; // fresh within the TTL: no request
+    else if (memberCache.isFresh(chatId)) return; // fresh within the TTL: no request
     const tok = begin();
-    const gen = memberCache.generation();
+    const gen = memberCache.generation(chatId);
     const res = await getMembers(base, chatId);
     tok.done();
     // A 403 means we're no longer a member: handled like a revoke (purge that chat from
@@ -484,9 +487,18 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).
+  // `rosterStale` (past TTL / marked stale) re-runs it; the interval + visibility return
+  // revalidate an expired roster while the chat stays open (it keeps showing meanwhile).
+  const rosterStale = memberCache.useStale(activeId);
   useEffect(() => {
-    if (activeId && isMembered) void loadMembers(activeId);
-  }, [activeId, isMembered, loadMembers]);
+    if (!activeId || !isMembered) return;
+    void loadMembers(activeId);
+    const tick = () => void loadMembers(activeId);
+    const iv = setInterval(tick, 60_000);
+    const onVis = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
+  }, [activeId, isMembered, loadMembers, rosterStale]);
 
   // Live-ish sidebar: refresh listChats on window focus + a 45s interval while the
   // tab is visible. Surfaces unread for background chats. Merge so the active chat's

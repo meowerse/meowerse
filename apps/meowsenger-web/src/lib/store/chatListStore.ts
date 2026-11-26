@@ -1,7 +1,6 @@
 // Last good chat list. Single-flight, sequence-guarded, epoch-guarded refresh.
 import type { RequestResult } from "@meowerse/ui";
 import type { ChatSummary } from "../chat";
-import { invalidate as invalidateRoster } from "./memberCache";
 import { begin, getEpoch, isCurrent, notify, registerCache, useStore } from "./scope";
 
 export type ListFetcher = (signal: AbortSignal) => Promise<RequestResult<ChatSummary[]>>;
@@ -30,9 +29,6 @@ export function apply(list: ChatSummary[], epoch?: number): void {
   if (prev) {
     const keep = new Set(list.map((c) => c.id));
     for (const c of prev) if (!keep.has(c.id)) for (const h of [...removedHooks]) h(c.id);
-    // A role or member-count change means the cached roster is stale.
-    const was = new Map(prev.map((c) => [c.id, c]));
-    for (const c of list) { const o = was.get(c.id); if (o && (o.myRole !== c.myRole || o.memberCount !== c.memberCount)) invalidateRoster(c.id); }
   }
   notify();
 }
