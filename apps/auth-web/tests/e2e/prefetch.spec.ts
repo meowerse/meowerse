@@ -36,11 +36,14 @@ async function watch(page: Page) {
 const hydrated = (page: Page) => expect(page.locator("astro-island[ssr]")).toHaveCount(0);
 const prefetched = (page: Page) => page.$$eval("link[rel=prefetch]", (ls) => ls.map((l) => new URL((l as HTMLLinkElement).href).pathname));
 
-/** Hovers every matching link (at least one must exist). */
+/** Asserts every matching link is unmarked, then hovers it (at least one must exist). */
 async function hoverAll(page: Page, sel: string) {
   const links = page.locator(sel);
   expect(await links.count()).toBeGreaterThan(0);
-  for (const a of await links.all()) await a.hover({ timeout: 2000 });
+  for (const a of await links.all()) {
+    await expect(a).not.toHaveAttribute("data-astro-prefetch"); // timing-independent: Astro's hover waits 80 ms and cancels on leave
+    await a.hover({ timeout: 2000 });
+  }
 }
 
 test("hovering every link on public pages prefetches only the allowlist and never requests a flow path", async ({ page }) => {
@@ -82,9 +85,10 @@ test("hovering the sign-in / create-account links prefetches nothing", async ({ 
 });
 
 // /login is served no-store (public/_headers), so it is intentionally NOT bfcache-eligible: back is a full reload
+// (this test also uses page.route, which can itself disable bfcache in Chromium, so it cannot tell the two causes apart)
 // and the widget renders a fresh token. This pins that (a restore would carry a stale single-use token) and proves
 // the form submits a new token after back/forward. It does not claim bfcache restore of /login works.
-test("login after back/forward is a fresh load (no-store, not bfcache) and submits a fresh Turnstile token", async ({ page }) => {
+test("login after back/forward is a fresh load (no-store or route interception, not bfcache) and submits a fresh Turnstile token", async ({ page }) => {
   await turnstileStub(page);
   const seen = await watch(page);
   const bodies: Record<string, unknown>[] = [];
@@ -107,7 +111,7 @@ test("login after back/forward is a fresh load (no-store, not bfcache) and submi
   await page.goBack();
   await expect(page).toHaveURL(/\/login\/$/);
   const shows = await page.evaluate(() => (window as Tracked).__pageshows!);
-  expect(shows.at(-1)).toBe(false); // not restored from bfcache
+  expect(shows.at(-1)).toBe(false); // not restored (no-store, or route interception)
   await submit();
   expect(bodies).toHaveLength(2);
   const tokens = bodies.map((b) => b["cf-turnstile-response"] as string);
@@ -126,6 +130,7 @@ test("public page: prefetch still works after back/forward (bfcache restore or r
   await page.goBack();
   await expect(page).toHaveURL(/\/about\/$/);
   await hydrated(page);
+  // no page.route in this test, so the annotation shows whether Chromium CAN restore pages in this setup
   info.annotations.push({ type: "bfcache-restored", description: String((await page.evaluate(() => (window as Tracked).__pageshows!)).at(-1)) });
   await page.locator("a[data-astro-prefetch][href='/docs/']").first().hover({ timeout: 2000 });
   await expect.poll(() => prefetched(page)).toContain("/docs/");
