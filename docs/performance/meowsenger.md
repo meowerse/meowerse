@@ -32,7 +32,7 @@ production host, no real data. Service workers are blocked in the test contexts.
 | `mock-server.ts` | the backend; control plane `/__mock/{config,reset,drop,push,frame,stats}`: per-route latency + seeded jitter, forced WS drop, scripted peer messages/edit/delete/reaction frames, failing poll, lost ack |
 | `instrument.ts` | init script (never bundled): WebSocket tap, `.mw-chat__conn[data-state]` observer, CLS / longtask / long-animation-frame / event-timing observers, CSP-violation counter, `switchTo()` |
 | `run.ts` | scenarios, aggregation, report writer |
-| `bundle.ts` | gzip -9 per chunk for `/app` (report only, no budget gate yet) |
+| `bundle.ts` | gzip -9 per chunk for `/app`; `EAGER_JS_GZIP_BUDGET` is enforced by `scripts/postbuild.ts` in `build` |
 
 ### Scenarios and metrics (each run = fresh browser context, so no shared cache)
 
@@ -226,3 +226,7 @@ Reduced run on a loaded host (`--runs 2 --warm 10 --leak-switches 6 --rtts 150 -
 - The harness gained a per-switch skeleton counter: a rAF loop inside `__perf.switchTo` counts the frames in which `.mw-skel-log` is in the DOM before the chat shows. It is 0 on every warm switch: a warm entry paints the cached rows in the first committed render.
 - The remaining "flash" is NOT message content. It is the connection indicator: every chat switch opens a fresh socket, so `.mw-chat__conn[data-state=wait]` shows until the socket opens (~110-120 ms dwell, i.e. the mock's WS-open delay). That is PR-10's concern (the dot), not the read path. The harness verdict column keeps the original owner target (p50, p95 AND zero dot flashes), so it still prints MISSES; the new "latency only" column separates the part PR-7 owns. The target itself is unchanged.
 
+
+## PR-16: on-demand panels (code-split)
+
+`MessageMenu`, `EmojiPicker`, `SearchPanel`, `NewChatModal`, `ForwardModal`, `MemberDrawer` and `Settings` load through `React.lazy` (`src/components/LazyPanel.tsx`), rendered only when opened and warmed on idle after first paint (skipped on Save-Data). A failed chunk load shows an alert with retry and dismiss. Eager JS (closure of `dist/app/index.html`, gzip -9): 108800 B -> 102987 B. Less than the ~14 kB of panel chunks because code shared with eager components (`@meowerse/ui`, `push`) stays eager. `build` fails if eager JS exceeds 104000 B.
