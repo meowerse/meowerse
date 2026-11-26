@@ -16,7 +16,7 @@ import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/pushLazy";
-import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch, begin, memberCache } from "../lib/store";
+import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch, begin, isCurrent, registerCache, memberCache } from "../lib/store";
 import { createListGate, watchResume } from "../lib/store/chatList";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
@@ -143,7 +143,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const peerName = activeChat ? (activeChat.peerUsername ? shownName(activeChat.peerDisplayName, activeChat.peerUsername) : (activeChat.peerDisplayName || activeChat.name || "direct message")) : "";
 
   // Resolve a sender id → a human name for the backgrounded-message notification: a
-  // group/channel uses the roster (falling back to the raw id), a DM uses the peer
+  // group/channel uses the roster (an unknown sender shows as UNKNOWN_SENDER, never the raw id), a DM uses the peer
   // name (Slice 9). Fed into the hook, which mirrors it so its stable applyFrame reads
   // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
   const resolveSenderName = (senderId: string): string =>
@@ -320,7 +320,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // count + earliest retry time per chat (exponential backoff for the background tick).
   const rosterFlight = useRef(new Map<string, object>());
   const rosterRetry = useRef(new Map<string, { fails: number; at: number }>());
-  const loadMembers = useCallback(async (chatId: string, force = false) => {
+  // Both maps die with the account (clearAll / switch): a backoff or flight must not outlive its epoch.
+  useEffect(() => registerCache(() => { rosterFlight.current.clear(); rosterRetry.current.clear(); }), []);
+  const loadMembers = useCallback(async (chatId: string, force = false, retry = true): Promise<void> => {
     // force (after a drawer change): keep the roster on screen, but a fetch that started before can't store.
     if (force) memberCache.markStale(chatId);
     else if (memberCache.isFresh(chatId) || rosterFlight.current.has(chatId)) return;
@@ -341,7 +343,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     }
     rosterRetry.current.delete(chatId);
     // Dropped if the account changed or the roster was invalidated/purged mid-fetch.
-    memberCache.put(chatId, res.data, tok.epoch, gen);
+    if (memberCache.put(chatId, res.data, tok.epoch, gen)) return;
+    // Discarded only because the counter moved (a role change during a first fetch has no cached
+    // roster to age out): refetch once now instead of showing 'someone' until the 60 s tick. Bounded: no loop.
+    if (retry && isCurrent(tok.epoch)) await loadMembers(chatId, false, false);
   }, [base, onRevoked]);
 
   // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the

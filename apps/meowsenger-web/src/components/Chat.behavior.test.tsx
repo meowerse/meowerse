@@ -1155,6 +1155,41 @@ describe("Chat island — roster cache + role from the summary", () => {
     clearAll();
   });
 
+  it("a role change landing during the FIRST roster fetch retries once at once (no 'someone' for a minute)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    H.members = { c1: roster };
+    let release!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true as const, status: 200, data: roster } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    act(() => { window.dispatchEvent(new Event("focus")); }); // markStale with no cached roster: only bumps the counter
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy());
+    await act(async () => { release(); }); // the first fetch is discarded...
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // ...and retried immediately
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    clearAll();
+  });
+
+  it("the roster retry backoff is wiped by clearAll (account switch)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "team msg" })] };
+    vi.mocked(getMembers).mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "network" as const } } as never));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1); // backing off
+    clearAll(); setScope("u1");
+    H.members = { c1: roster };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // backoff gone with the account
+    clearAll();
+  });
+
   const staleNow = () => { const real = Date.now; return vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000); };
   const setVis = (v: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
   const mountGroupWithBob = async () => {
