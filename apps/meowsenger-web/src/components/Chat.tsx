@@ -208,11 +208,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   }, [base, applyChatList]);
   // One gate for every list fetch (lib/store/chatList.ts): soft = poll/resume (single-flight,
   // 10 s min gap), force = everything else (never overlaps; a burst collapses to one trailing fetch).
-  const quietRef = useRef(false);
-  const listGate = useMemo(() => createListGate<ChatSummary[]>(() => fetchList(quietRef.current)), [fetchList]);
-  const refreshChats = useCallback((): Promise<ChatSummary[] | null> => { quietRef.current = false; return listGate("force"); }, [listGate]);
+  const listGate = useMemo(() => createListGate<ChatSummary[]>((quiet) => fetchList(quiet)), [fetchList]);
+  const refreshChats = useCallback((): Promise<ChatSummary[] | null> => listGate.request("force"), [listGate]);
   // Content-free invalidation / inbox reconnect: quiet (a failure keeps the shown list, no banner).
-  const refetchOnInvalidate = useCallback(async (): Promise<void> => { quietRef.current = true; await listGate("force"); }, [listGate]);
+  const refetchOnInvalidate = useCallback(async (): Promise<void> => { await listGate.request("force", true); }, [listGate]);
 
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
@@ -480,12 +479,12 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const linkRef = useRef(link);
   useEffect(() => { linkRef.current = link; });
   useEffect(() => {
-    const soft = () => { quietRef.current = false; void listGate("soft"); };
+    const soft = () => { void listGate.request("soft"); };
     const stopResume = watchResume(soft);
     const iv = window.setInterval(() => {
       if (document.visibilityState === "visible" && linkRef.current !== "open") soft();
     }, SIDEBAR_POLL_MS);
-    return () => { window.clearInterval(iv); stopResume(); };
+    return () => { window.clearInterval(iv); stopResume(); listGate.dispose(); };
   }, [listGate]);
 
   // Reply/edit/delete route through the hook; ownership + windows are UX gating only.

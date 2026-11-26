@@ -74,7 +74,7 @@ vi.mock("../lib/push", async (importActual) => ({
 }));
 
 // These tests drive the poll via a plain focus: remove the production 250 ms debounce / 10 s gap
-// (the real values are covered in lib/store/chatList.test.ts and Chat.listGate.test.tsx).
+// (the real values are covered in lib/store/chatList.test.ts and the "list coordinator" tests below).
 vi.mock("../lib/store/chatList", async (importActual) => {
   const m = await importActual<typeof import("../lib/store/chatList")>();
   return { ...m, createListGate: <T,>(run: () => Promise<T | null>) => m.createListGate(run, H.realGate ? {} : { gap: 0 }), watchResume: (cb: () => void) => m.watchResume(cb, H.realGate ? undefined : 0) };
@@ -658,6 +658,47 @@ describe("Chat island — realtime sidebar", () => {
       resolve({ ok: true as const, status: 200, data: [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "STALE-ACCOUNT", lastActivity: 900 })] });
       await new Promise((r) => setTimeout(r, 50));
       expect(screen.queryByText("STALE-ACCOUNT")).toBeNull();
+    });
+    it("a tab return after the 10 s gap gives exactly 1 request", async () => {
+      await mountReal();
+      const real = Date.now(); const spy = vi.spyOn(Date, "now").mockImplementation(() => real + 9_000);
+      try {
+        const base = calls();
+        act(() => { window.dispatchEvent(new Event("focus")); });
+        await new Promise((r) => setTimeout(r, 400));
+        expect(calls() - base).toBe(0); // 9 s: still inside the gap
+        spy.mockImplementation(() => real + 11_000);
+        act(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+        await waitFor(() => expect(calls() - base).toBe(1));
+        await new Promise((r) => setTimeout(r, 400));
+        expect(calls() - base).toBe(1);
+      } finally { spy.mockRestore(); }
+    });
+    it("base change while an older fetch is in flight: the older response landing after the newer is not applied", async () => {
+      H.realGate = false;
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
+      const boot = { ok: true as const, status: 200, data: H.chats };
+      const ui = (b: string) => <Chat base={b} user={H.session.user as SessionUser} initialChats={boot} />;
+      const { rerender } = render(ui(""));
+      await waitFor(() => expect(MockWebSocket.inbox).toBeTruthy());
+      const oldInbox = MockWebSocket.inbox!; act(() => oldInbox.mockOpen());
+      type R = Awaited<ReturnType<typeof listChats>>;
+      let resolveOlder!: (v: R) => void; let resolveNewer!: (v: R) => void;
+      const rows = (t: string): R => ({ ok: true as const, status: 200, data: [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: t, lastActivity: 900 })] });
+      vi.mocked(listChats).mockImplementationOnce(() => new Promise<R>((r) => { resolveOlder = r; }));
+      emit(oldInbox, { type: "chat_update", chatId: "c2", invalidate: true }); // old gate: fetch in flight
+      rerender(ui("/b")); // new base => new gate (the old fetch is still in flight)
+      await waitFor(() => expect(MockWebSocket.inbox).not.toBe(oldInbox));
+      const newInbox = MockWebSocket.inbox!; act(() => newInbox.mockOpen());
+      vi.mocked(listChats).mockImplementationOnce(() => new Promise<R>((r) => { resolveNewer = r; }));
+      emit(newInbox, { type: "chat_update", chatId: "c2", invalidate: true });
+      await waitFor(() => expect(resolveNewer).toBeTruthy());
+      resolveNewer(rows("NEWER"));
+      await waitFor(() => expect(screen.getByText("NEWER")).toBeTruthy());
+      resolveOlder(rows("OLDER"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByText("OLDER")).toBeNull();
+      expect(screen.getByText("NEWER")).toBeTruthy();
     });
     it("an unknown-chat delta forces exactly one fetch even inside the gap", async () => {
       const inbox = await mountReal();
