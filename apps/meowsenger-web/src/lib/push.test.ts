@@ -53,7 +53,7 @@ function fakeIdb(o: { failTx?: boolean } = {}) {
   return { idb, dbs, opens, value: () => dbs.get("mw-push")?.get("kv")?.get("optedInUser") ?? null };
 }
 // public/sw-core.js is the reader of that store; load its real IDB store implementation.
-const swSandbox: { self: Record<string, unknown> } = { self: {} };
+const swSandbox: { self: Record<string, unknown>; URL: typeof URL } = { self: {}, URL }; // a real SW has URL
 runInNewContext(readFileSync(new URL("../../public/sw-core.js", import.meta.url), "utf8"), swSandbox);
 const swCore = swSandbox.self.mwPushCore as { makeIdbStore(idb: unknown): { get(): Promise<string | null>; set(i: string): Promise<unknown>; clear(): Promise<unknown> } };
 afterEach(() => vi.unstubAllGlobals());
@@ -756,5 +756,19 @@ describe("describePushFailure", () => {
     expect(describePushFailure(Object.assign(new Error("x".repeat(200)), { name: "N".repeat(64) })).length).toBeLessThanOrEqual(120);
     expect(describePushFailure("boom")).toBe("unknown");
     expect(describePushFailure(null)).toBe("unknown");
+  });
+});
+
+describe("sw-core isAppWindow", () => {
+  const isApp = (swCore as unknown as { isAppWindow(c: unknown): boolean }).isAppWindow;
+  const w = (path: string, o = {}) => ({ url: `https://meowsenger.alxnko.dev${path}`, focused: false, visibilityState: "visible", ...o });
+  it("counts visible/focused /app windows only", () => {
+    for (const p of ["/app", "/app/", "/app/?chat=x", "/app?chat=x"]) expect(isApp(w(p)), p).toBe(true);
+    for (const p of ["/", "/about", "/privacy", "/apple-touch-icon.png", "/join/"]) expect(isApp(w(p)), p).toBe(false);
+  });
+  it("ignores a hidden unfocused app window and bad urls", () => {
+    expect(isApp(w("/app/", { visibilityState: "hidden" }))).toBe(false);
+    expect(isApp(w("/app/", { visibilityState: "hidden", focused: true }))).toBe(true);
+    expect(isApp({ url: "nope" })).toBe(false);
   });
 });

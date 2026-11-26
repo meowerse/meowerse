@@ -1,7 +1,7 @@
 // meowsenger service worker — Web Push notifications.
 //
 // Payloadless design: the push carries no data; it just wakes this worker. We then
-// (a) skip entirely if an app tab is focused/visible (the live WebSocket already
+// (a) skip entirely if an /app tab is focused/visible (the live WebSocket already
 // delivered the message), (b) verify the signed-in account is the one that opted in,
 // and only then (c) fetch the chat list ourselves — same-origin, so the session cookie
 // rides along — and show ONE coalesced notification for what's unread. Clicking it focuses the app and deep-links to the chat.
@@ -25,7 +25,7 @@ self.addEventListener("push", (event) => {
 async function handlePush() {
   // A focused/visible app tab already got this over the socket → don't double-notify.
   const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (wins.some((c) => c.focused || c.visibilityState === "visible")) return;
+  if (wins.some(self.mwPushCore.isAppWindow)) return;
 
   // Identity gate: show a preview ONLY when the signed-in account is the one that opted
   // in on this browser. Otherwise nothing is shown (see sw-core.js). Note: Chrome, if it

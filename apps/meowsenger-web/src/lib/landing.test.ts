@@ -5,12 +5,12 @@ import { appForward, armWarm, slowConnection, warmUrls } from "./landing";
 describe("appForward", () => {
   it("forwards old chat deep links and hashes to /app/ keeping both", () => {
     expect(appForward({ search: "?chat=x&m=1", hash: "" })).toBe("/app/?chat=x&m=1");
-    expect(appForward({ search: "", hash: "#chat" })).toBe("/app/#chat");
     expect(appForward({ search: "?a=1&chat=x", hash: "#h" })).toBe("/app/?a=1&chat=x#h");
   });
   it("leaves a plain landing visit alone", () => {
     expect(appForward({ search: "", hash: "" })).toBeNull();
     expect(appForward({ search: "?utm=1", hash: "#" })).toBeNull();
+    expect(appForward({ search: "", hash: "#chat" })).toBeNull();
     expect(appForward({ search: "?mychat=1", hash: "" })).toBeNull();
   });
 });

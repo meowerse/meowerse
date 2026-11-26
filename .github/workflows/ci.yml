@@ -54,6 +54,9 @@ jobs:
       - name: Build meow.alxnko.dev (postbuild CSP + guards)
         run: bun run --filter @meowerse/web build
 
+      - name: Build meowsenger-web (postbuild: SEO, landing warm-up manifest, /app bundle budget)
+        run: bun run --filter @meowerse/meowsenger-web build
+
       - name: Byte budgets
         run: bun run --filter @meowerse/web budget
 

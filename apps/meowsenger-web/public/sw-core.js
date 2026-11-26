@@ -129,6 +129,12 @@
     return true;
   }
 
-  var core = { decidePush: decidePush, handleMessage: handleMessage, makeIdbStore: makeIdbStore, purge: purge };
+  /** Does this window already show the live app (its socket delivered the push)? Only /app counts: the landing, /about… have no socket. */
+  function isAppWindow(c) {
+    var p; try { p = new URL(c.url).pathname; } catch (e) { return false; }
+    return (p === "/app" || p.indexOf("/app/") === 0) && (c.focused || c.visibilityState === "visible");
+  }
+
+  var core = { isAppWindow: isAppWindow, decidePush: decidePush, handleMessage: handleMessage, makeIdbStore: makeIdbStore, purge: purge };
   root.mwPushCore = core;
 })(typeof self !== "undefined" ? self : globalThis);
