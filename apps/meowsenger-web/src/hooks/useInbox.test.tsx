@@ -35,6 +35,36 @@ describe("useInbox link state", () => {
   });
 });
 
+describe("useInbox link reset", () => {
+  it("session end: open -> ended, down -> ended (never stays green / reconnecting)", () => {
+    const a = renderHook(() => useInbox("", true, vi.fn()));
+    act(() => inbox().mockOpen());
+    act(() => notifySessionEnded());
+    expect(a.result.current).toBe("ended");
+    a.unmount();
+    resetSessionEnded();
+    const b = renderHook(() => useInbox("", true, vi.fn()));
+    act(() => inbox().mockOpen());
+    act(() => inbox().mockDrop());
+    expect(b.result.current).toBe("down");
+    act(() => notifySessionEnded());
+    expect(b.result.current).toBe("ended");
+  });
+
+  it("disabled and base change reset the link to connecting", () => {
+    const { result, rerender } = renderHook((p: { base: string; on: boolean }) => useInbox(p.base, p.on, vi.fn()), { initialProps: { base: "", on: true } });
+    act(() => inbox().mockOpen());
+    expect(result.current).toBe("open");
+    rerender({ base: "", on: false });
+    expect(result.current).toBe("connecting");
+    rerender({ base: "", on: true });
+    act(() => inbox().mockOpen());
+    expect(result.current).toBe("open");
+    rerender({ base: "https://other.test", on: true });
+    expect(result.current).toBe("connecting");
+  });
+});
+
 describe("useInbox reconnect", () => {
   it("one list refresh per reopen after a drop, never on the first open", async () => {
     const onReconnect = vi.fn();

@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "../test/rtl";
-import { useConnectionIndicator, LINK_WAIT_MS, ROOM_WAIT_MS, type LinkState } from "./useConnectionIndicator";
+import { useConnectionIndicator, LINK_WAIT_MS, ROOM_WAIT_MS, ROOM_STALL_MS, type LinkState } from "./useConnectionIndicator";
 
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
@@ -56,5 +56,26 @@ describe("useConnectionIndicator", () => {
     const { result } = setup({ link: "open", room: true, net: false });
     expect(result.current.dot).toBe("off");
     expect(result.current.label).toBe("offline");
+  });
+
+  it("a room outage > 8 s with the link up turns wait; opening returns to on", async () => {
+    const { result, rerender } = setup({ link: "open", room: false, net: true });
+    await tick(ROOM_STALL_MS - 1);
+    expect(result.current.dot).toBe("on");
+    await tick(1);
+    expect(result.current.dot).toBe("wait");
+    expect(result.current.label).toBe("reconnecting…");
+    rerender({ link: "open", room: true, net: true });
+    expect(result.current.dot).toBe("on");
+  });
+
+  it("terminal room states never escalate: chat closed (room counts open) and session ended", async () => {
+    const { result, rerender } = setup({ link: "open", room: true, net: true }); // revoked/403 close the chat -> roomOpen true
+    await tick(ROOM_STALL_MS * 2);
+    expect(result.current.dot).toBe("on");
+    rerender({ link: "ended", room: false, net: true });
+    await tick(ROOM_STALL_MS * 2);
+    expect(result.current.dot).toBe("off");
+    expect(result.current.label).toBe("signed out");
   });
 });

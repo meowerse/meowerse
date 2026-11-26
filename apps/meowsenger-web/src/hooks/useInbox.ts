@@ -45,6 +45,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     const unsubEnded = subscribeSessionEnded(() => {
       stopped = true;
       closing = true;
+      setLink("ended"); // terminal: neither "connected" nor "reconnecting" is true any more
       clearTimer();
       stopHb();
       if (ws) { ws.onclose = null; try { ws.close(); } catch { /* already closed */ } }
@@ -122,6 +123,7 @@ export function useInbox(base: string, enabled: boolean, onDelta: (d: InboxDelta
     }
 
     return () => {
+      setLink("connecting"); // disabled / base changed / unmounted: never keep a stale open/down/ended state
       cancelled = true;
       closing = true;
       clearTimer();
