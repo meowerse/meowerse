@@ -13,11 +13,11 @@
     "secret:signing-keys": "wrangler secret put AUTH_SIGNING_KEYS"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.4",
+    "@libsql/client": "^0.18.0",
     "@meowerse/auth-shared": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260702.1",
+    "@cloudflare/workers-types": "^5.20261125.1",
     "@vitest/coverage-v8": "^5.1.2",
     "vitest": "^5.1.2",
     "wrangler": "4.168.0"

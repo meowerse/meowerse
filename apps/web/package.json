@@ -14,7 +14,7 @@
     "lighthouse": "bun scripts/lighthouse.ts"
   },
   "dependencies": {
-    "@astrojs/react": "^6.0.6",
+    "@astrojs/react": "^7.1.9",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@meowerse/ui": "workspace:*",
     "astro": "^7.4.13",
