@@ -12,22 +12,23 @@ const shots = process.argv[2];
 let bad = 0;
 const check = (c: boolean, m: string) => { console.log(c ? "ok  " : "FAIL", m); if (!c) bad++; };
 // Condition waits instead of fixed sleeps: the log reached `where` ("bottom" = pinned to the tail, "any" = just stable)
-// and its scrollTop was unchanged for 3 consecutive frames (>= 2 rAF); capped at ~2 s of frames.
-const settled = (page: import("@playwright/test").Page, where: "bottom" | "any") => page.evaluate((w) => new Promise<void>((done) => {
+// and its scrollTop was unchanged for 3 consecutive frames (>= 2 rAF); a cap of 600 frames THROWS (never a silent pass).
+const settled = (page: import("@playwright/test").Page, where: "bottom" | "any") => page.evaluate((w) => new Promise<void>((done, fail) => {
   const l = document.querySelector(".mw-chat__log")!; let last = -1, same = 0, n = 0;
   const f = () => {
     const there = w === "any" ? true : l.scrollHeight - l.scrollTop - l.clientHeight < 80;
     same = there && l.scrollTop === last ? same + 1 : 0; last = l.scrollTop;
-    if (same >= 3 || ++n > 120) done(); else requestAnimationFrame(f);
+    if (same >= 3) done(); else if (++n > 600) fail(new Error(`motion-check: log never settled (${w}) after 600 frames; scrollTop=${l.scrollTop} dist=${l.scrollHeight - l.scrollTop - l.clientHeight}`)); else requestAnimationFrame(f);
   };
   requestAnimationFrame(f);
 }), where);
 // Scroll the log to the top and wait for the older page the scroll triggers (if any) to land and the log to stop moving:
 // a prepend landing around the pill tap is what shifted every row (CLS 0.27-0.57).
 const toTop = async (page: import("@playwright/test").Page) => {
-  const older = page.waitForResponse((r) => r.url().includes("before="), { timeout: 1500 }).catch(() => null);
+  const req = page.waitForRequest((r) => r.url().includes("before="), { timeout: 1500 }).catch(() => null); // no request: nothing older to load
   await page.locator(".mw-chat__log").evaluate((el) => { el.scrollTop = 0; });
-  await older;
+  const r = await req;
+  if (r) await r.response(); // the request started: however slow the page is, wait for it to land
   await settled(page, "any");
 };
 const mark = (page: import("@playwright/test").Page) => page.evaluate(() => { (window as unknown as { __mark: number }).__mark = performance.now(); });
@@ -92,6 +93,50 @@ try {
         void chatId;
         await ctx.close();
       }
+  // Pill tapped WHILE an older page is still loading (delayed `before=` response): the tap is replayed once the
+  // prepend settles, the log ends at the bottom, the pill is gone, and nothing shifted (CLS <= 0.01).
+  for (const vp of [{ width: 1280, height: 800, mobile: false }]) { // phone: the chat/list navigation is covered by the main matrix
+    const tag = `${vp.width}/delayed-older`;
+    await post("/__mock/reset", {});
+    const ctx = await browser.newContext({ viewport: vp, hasTouch: vp.mobile, isMobile: vp.mobile, serviceWorkers: "block", baseURL: mock.url });
+    await ctx.addInitScript(() => {
+      const w = window as unknown as { __cls: number; __shifts: unknown[] };
+      w.__cls = 0; w.__shifts = [];
+      new PerformanceObserver((l) => l.getEntries().forEach((e) => { const x = e as unknown as { hadRecentInput: boolean; value: number }; if (!x.hadRecentInput) { w.__cls += x.value; w.__shifts.push({ value: x.value, at: Math.round(e.startTime) }); } })).observe({ type: "layout-shift", buffered: true });
+    });
+    const page = await ctx.newPage();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let pending = false;
+    await page.route(/before=/, async (route) => { pending = true; await gate; await route.continue(); });
+    await page.goto("/app");
+    await page.locator(".mw-chatrow").first().waitFor({ timeout: 20000 });
+    await page.locator(".mw-chatrow").nth(1).evaluate((el) => (el as HTMLElement).click());
+    await page.locator(".mw-chat__log .mw-msg").first().waitFor({ timeout: 20000 });
+    const chat = new URL(page.url()).searchParams.get("chat")!;
+    await settled(page, "bottom");
+    await page.locator(".mw-chat__log").evaluate((el) => { el.scrollTop = 0; }); // starts the older fetch; the route holds it
+    await page.waitForFunction(() => document.querySelector(".mw-chat__log")!.scrollTop === 0);
+    const pill = page.locator(".mw-chat__newpill");
+    // The room socket may still be connecting: push until a live message lands (the pill shows), bounded.
+    for (let i = 0; i < 20 && (await pill.count()) === 0; i++) { await post("/__mock/push", { chat, body: "scrolled-up line" }); await pill.waitFor({ timeout: 500 }).catch(() => {}); }
+    await pill.waitFor({ timeout: 2000 });
+    const before = await page.locator(".mw-chat__log .mw-msg").count();
+    await pill.click(); // the older page is still pending
+    check(pending, `${tag}: older page was pending at the tap`);
+    check((await pill.count()) === 1, `${tag}: pill kept while the prepend is pending`);
+    release();
+    await page.waitForFunction(() => { const l = document.querySelector(".mw-chat__log")!; return l.scrollHeight - l.scrollTop - l.clientHeight < 80; }, null, { timeout: 15000 });
+    await settled(page, "any");
+    // A live row that lands mid-smooth-scroll leaves the (fixed-target) scroll up to one row short: allow 120 px.
+    check(await page.evaluate(() => { const l = document.querySelector(".mw-chat__log")!; return l.scrollHeight - l.scrollTop - l.clientHeight < 120; }), `${tag}: log ends at the bottom`);
+    check((await page.locator(".mw-chat__log .mw-msg").count()) > before, `${tag}: older page prepended`);
+    check((await pill.count()) === 0, `${tag}: ends at the bottom, pill gone`);
+    const cls = await page.evaluate(() => (window as unknown as { __cls: number }).__cls);
+    const sh = cls > 0.01 ? JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: unknown[] }).__shifts)) : "";
+    check(cls <= 0.01, `${tag}: CLS ${cls.toFixed(4)} <= 0.01${sh ? ` ${sh}` : ""}`);
+    await ctx.close();
+  }
   // 320x568, tall multi-line composer: the pill (anchored to the log's bottom) must not overlap the composer.
   {
     await post("/__mock/reset", {});
@@ -104,7 +149,7 @@ try {
     const chat = new URL(page.url()).searchParams.get("chat")!;
     const ta = page.getByRole("textbox", { name: "message", exact: true });
     await ta.fill("one\ntwo\nthree\nfour\nfive"); // grows the composer
-    await settled(page, "bottom");
+    await settled(page, "any");
     await toTop(page);
     await post("/__mock/push", { chat, body: "overlap probe" });
     const pill = page.locator(".mw-chat__newpill");

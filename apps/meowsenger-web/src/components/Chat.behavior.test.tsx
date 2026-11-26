@@ -1190,6 +1190,44 @@ describe("Chat island — roster cache + role from the summary", () => {
     clearAll();
   });
 
+  it("no roster retry for a chat that left the list meanwhile (no roster returns for a purged chat)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    const other = dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" });
+    H.chats = [grp(), other];
+    H.members = { c1: roster };
+    let release!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true as const, status: 200, data: roster } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    memberCache.invalidate("c1"); // purge == invalidate: bumps the counter
+    H.chats = [other];
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(screen.queryByText("team")).toBeNull());
+    await act(async () => { release(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    expect(memberCache.get("c1")).toBeUndefined();
+    clearAll();
+  });
+
+  it("a roster failure that lands AFTER clearAll/account switch writes no backoff", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "team msg" })] };
+    let fail!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { fail = () => r({ ok: false as const, error: { kind: "network" as const } } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    clearAll(); setScope("u1"); // the in-flight fetch now belongs to a dead epoch
+    await act(async () => { fail(); });
+    H.members = { c1: roster };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // not held back by the dead epoch's backoff
+    clearAll();
+  });
+
   const staleNow = () => { const real = Date.now; return vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000); };
   const setVis = (v: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
   const mountGroupWithBob = async () => {
@@ -1820,6 +1858,8 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
       await act(async () => { release(); });
       await waitFor(() => expect(s.scrollTo).toHaveBeenCalledTimes(1));
       expect(s.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 1000 }));
+      await waitFor(() => expect(screen.queryByText(/new message/)).toBeNull()); // the replay clears the count (not the tap)
+      expect(document.activeElement).toBe(logEl());
     });
 
     it("pill tapped while an older page loads, then the reader scrolls: no deferred tail scroll", async () => {

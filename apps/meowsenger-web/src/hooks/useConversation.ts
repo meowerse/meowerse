@@ -395,7 +395,7 @@ export interface UseConversation {
   atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
   /** Returns false (does nothing) while an older page is prepending. One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
-  scrollToTail: () => boolean;
+  scrollToTail: (onStart?: () => void) => boolean;
   /** End a scrollToTail in flight (user input, scrollend): atBottom is recomputed from the REAL distance. */
   endTail: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
@@ -483,8 +483,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const activeRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const prependingRef = useRef(false);
-  const tailWantedRef = useRef(false); // pill tapped mid-prepend: scroll to the tail once it settles (unless the reader scrolls first)
-  const scrollToTailRef = useRef<() => boolean>(() => false);
+  const tailWantedRef = useRef<{ onStart?: () => void } | null>(null); // pill tapped mid-prepend: scroll to the tail once it settles (unless the reader scrolls first)
+  const prependRestoreRef = useRef<{ prevHeight: number; anchor: ScrollAnchor | null; done: () => void } | null>(null); // the reader's position when an older page lands: restored in the commit's layout effect
+  const scrollToTailRef = useRef<(onStart?: () => void) => boolean>(() => false);
   const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
   const closingRef = useRef(false);
   const typingTimerRef = useRef<number | null>(null);
@@ -741,6 +742,21 @@ export function useConversation(input: UseConversationInput): UseConversation {
     applyScroll(r);
   }, [view.log, applyScroll]);
 
+  // An older page landed: put the reader back BEFORE paint. A restore left to the next rAF can run
+  // after a frame already showed the prepended rows at scrollTop 0 (every row shifts: CLS 0.27+).
+  useLayoutEffect(() => {
+    const r = prependRestoreRef.current;
+    const el = logRef.current;
+    if (!r || !el) return;
+    prependRestoreRef.current = null;
+    r.done();
+    // Anchor row first: live rows appended while the page was in flight make a height diff overshoot.
+    if (r.anchor) { applyScroll(r.anchor); return; }
+    programmaticRef.current = true; // a scroll event from our own write is not the reader's
+    requestAnimationFrame(() => { programmaticRef.current = false; });
+    el.scrollTop = el.scrollHeight - r.prevHeight;
+  }, [view.log, applyScroll]);
+
   // Send a `read` receipt for the newest message, if we haven't already and the
   // socket is open. Optimistically zeroes the active chat's sidebar unread badge.
   const sendRead = useCallback((msgs: Bubble[]) => {
@@ -783,7 +799,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // preserving the visual scroll position.
   const settlePrepend = () => {
     prependingRef.current = false;
-    if (tailWantedRef.current) { tailWantedRef.current = false; scrollToTailRef.current(); }
+    const w = tailWantedRef.current;
+    if (w) { tailWantedRef.current = null; if (scrollToTailRef.current()) w.onStart?.(); }
   };
   const loadOlder = useCallback(async () => {
     const el = logRef.current;
@@ -800,7 +817,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (!oldest) { settlePrepend(); return; }
       prevHeight = el.scrollHeight;
       const res = await loadHistory(base, chatId, oldest.id);
-      if (activeRef.current !== chatId) { tailWantedRef.current = false; settlePrepend(); return; }
+      if (activeRef.current !== chatId) { tailWantedRef.current = null; settlePrepend(); return; }
       if (res.ok && res.unknown) {
         commitLog(chatId, (prev) => prev.filter((b) => b.id !== oldest.id), { src: "local" });
         continue;
@@ -823,10 +840,18 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     setOlderError(false);
     const older = olderRes.data;
+    let committed!: () => void;
+    const landed = new Promise<void>((r) => { committed = r; });
+    prependRestoreRef.current = { prevHeight, anchor: computeAnchor(el, false), done: committed };
     commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
+    // React may render the commit AFTER the next frame under load: wait for it (the layout effect restores before
+    // paint), else a frame-time restore would run against the old height and the rows would jump. Bounded: a commit that changes nothing.
+    await Promise.race([landed, new Promise<void>((r) => setTimeout(r, 500))]);
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
       const now = logRef.current;
-      if (now) now.scrollTop = now.scrollHeight - prevHeight;
+      // Normally the layout effect already restored; this is the fallback when the commit has not landed (or changed nothing).
+      if (now && prependRestoreRef.current) now.scrollTop = now.scrollHeight - prependRestoreRef.current.prevHeight;
+      prependRestoreRef.current = null;
       settlePrepend();
       resolve();
     }));
@@ -864,7 +889,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, [base, markAttached, commitLog]);
 
   const endTail = useCallback(() => {
-    tailWantedRef.current = false; // user input / scrollend: a deferred pill tap is void
+    if (!programmaticRef.current) tailWantedRef.current = null; // user input / the reader's scrollend voids a deferred tap; our own restore's scrollend does not
     if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     if (tailUntilRef.current === 0) return;
     tailUntilRef.current = 0;
@@ -877,11 +902,11 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
   }, [loadOlder, sendRead]);
 
-  const scrollToTail = useCallback((): boolean => {
+  const scrollToTail = useCallback((onStart?: () => void): boolean => {
     const el = logRef.current;
     // A prepend restore would cancel the scroll and skip the pin, so a message acked mid-flight would go unseen.
     if (!el) return false;
-    if (prependingRef.current) { tailWantedRef.current = true; return false; }
+    if (prependingRef.current) { tailWantedRef.current = { onStart }; return false; }
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
     lastTopRef.current = el.scrollTop;
@@ -911,7 +936,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     }
     const toTail = tailUntilRef.current !== 0;
-    if (!programmaticRef.current && !toTail) { userScrolledRef.current = true; tailWantedRef.current = false; }
+    if (!programmaticRef.current && !toTail) { userScrolledRef.current = true; tailWantedRef.current = null; }
     if (el.scrollTop < 60) void loadOlder();
     if (dist < 120 && hasNewerRef.current) void loadNewer();
     const nearBottom = dist < NEAR_BOTTOM_PX;
@@ -1165,7 +1190,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     setConnected(false);
     loadingNewerRef.current = false;
     prependingRef.current = false;
-    tailWantedRef.current = false;
+    tailWantedRef.current = null;
+    prependRestoreRef.current = null;
     const loadStartSeq = liveSeqRef.current; // live frames stamped after this beat the fetched rows
     const E = entryRef.current; // the cache as it was at entry (warm), or null (cold)
     // ---- revalidation (a warm entry) -----------------------------------------------------
@@ -1648,6 +1674,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!around.hasNewer) { setSentUnseen(false); flushOutbox(); }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
+    tailWantedRef.current = null; // a tail tap recorded during the jump's window must not replay later
     prependingRef.current = false;
     flashRow(id);
   }
