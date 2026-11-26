@@ -483,6 +483,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const activeRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const prependingRef = useRef(false);
+  const tailWantedRef = useRef(false); // pill tapped mid-prepend: scroll to the tail once it settles (unless the reader scrolls first)
+  const scrollToTailRef = useRef<() => boolean>(() => false);
   const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
   const closingRef = useRef(false);
   const typingTimerRef = useRef<number | null>(null);
@@ -779,6 +781,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   // Infinite scroll up: load an older page via before=<oldestId> and prepend it,
   // preserving the visual scroll position.
+  const settlePrepend = () => {
+    prependingRef.current = false;
+    if (tailWantedRef.current) { tailWantedRef.current = false; scrollToTailRef.current(); }
+  };
   const loadOlder = useCallback(async () => {
     const el = logRef.current;
     const chatId = activeRef.current;
@@ -791,10 +797,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
     let prevHeight = el.scrollHeight;
     for (let tries = 0; tries < OLDER_CURSOR_TRIES; tries++) {
       const oldest = cursorRow(logStateRef.current);
-      if (!oldest) { prependingRef.current = false; return; }
+      if (!oldest) { settlePrepend(); return; }
       prevHeight = el.scrollHeight;
       const res = await loadHistory(base, chatId, oldest.id);
-      if (activeRef.current !== chatId) { prependingRef.current = false; return; }
+      if (activeRef.current !== chatId) { tailWantedRef.current = false; settlePrepend(); return; }
       if (res.ok && res.unknown) {
         commitLog(chatId, (prev) => prev.filter((b) => b.id !== oldest.id), { src: "local" });
         continue;
@@ -804,14 +810,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     if (!olderRes) {
       // Every tried cursor was unknown: never merge (the empty answer is not "start of chat").
-      prependingRef.current = false;
+      settlePrepend();
       setOlderError(true);
       return;
     }
     if (!olderRes.ok) {
-      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(chatId); return; }
+      if (isForbidden(olderRes)) { settlePrepend(); onRevokedRef.current(chatId); return; }
       // Keep paging possible + show a retry row; never treat a failure as "start of chat".
-      prependingRef.current = false;
+      settlePrepend();
       setOlderError(true);
       return;
     }
@@ -821,7 +827,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
       const now = logRef.current;
       if (now) now.scrollTop = now.scrollHeight - prevHeight;
-      prependingRef.current = false;
+      settlePrepend();
       resolve();
     }));
   }, [base, commitLog]);
@@ -858,21 +864,24 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, [base, markAttached, commitLog]);
 
   const endTail = useCallback(() => {
+    tailWantedRef.current = false; // user input / scrollend: a deferred pill tap is void
     if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     if (tailUntilRef.current === 0) return;
     tailUntilRef.current = 0;
     const el = logRef.current;
     if (!el) return;
+    if (el.scrollTop < 60) void loadOlder(); // a near-top scroll event during the window was refused
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     atBottomRef.current = atBottom;
     anchorRef.current = computeAnchor(el, atBottom);
     if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
-  }, [sendRead]);
+  }, [loadOlder, sendRead]);
 
   const scrollToTail = useCallback((): boolean => {
     const el = logRef.current;
     // A prepend restore would cancel the scroll and skip the pin, so a message acked mid-flight would go unseen.
-    if (!el || prependingRef.current) return false;
+    if (!el) return false;
+    if (prependingRef.current) { tailWantedRef.current = true; return false; }
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
     lastTopRef.current = el.scrollTop;
@@ -887,6 +896,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (reduce && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX && !hasNewerRef.current) sendRead(logStateRef.current);
     return true;
   }, [endTail, sendRead]);
+  scrollToTailRef.current = scrollToTail;
   useEffect(() => () => { if (tailTimerRef.current != null) clearTimeout(tailTimerRef.current); }, []);
 
   const onLogScroll = useCallback(() => {
@@ -901,7 +911,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     }
     const toTail = tailUntilRef.current !== 0;
-    if (!programmaticRef.current && !toTail) userScrolledRef.current = true;
+    if (!programmaticRef.current && !toTail) { userScrolledRef.current = true; tailWantedRef.current = false; }
     if (el.scrollTop < 60) void loadOlder();
     if (dist < 120 && hasNewerRef.current) void loadNewer();
     const nearBottom = dist < NEAR_BOTTOM_PX;
@@ -1155,6 +1165,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     setConnected(false);
     loadingNewerRef.current = false;
     prependingRef.current = false;
+    tailWantedRef.current = false;
     const loadStartSeq = liveSeqRef.current; // live frames stamped after this beat the fetched rows
     const E = entryRef.current; // the cache as it was at entry (warm), or null (cold)
     // ---- revalidation (a warm entry) -----------------------------------------------------
