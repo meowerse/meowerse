@@ -28,6 +28,9 @@ jobs:
       - name: Lint
         run: just lint
 
+      - name: Typecheck workers (prod + test) and gate self-test
+        run: just typecheck
+
       - name: Test (with coverage gate)
         run: just test
 

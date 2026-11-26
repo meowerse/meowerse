@@ -15,6 +15,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "typecheck:selftest": "bun test scripts/typecheck-selftest.test.ts",
     "perf:meowsenger": "bun run --filter @meowerse/meowsenger-web perf:baseline"
   },
   "devDependencies": {
