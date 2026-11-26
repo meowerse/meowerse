@@ -77,7 +77,7 @@ import Chat from "./Chat";
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 import { listChats, loadHistory, resolveChat } from "../lib/chat";
-import { conversationCache, getEpoch, setScope, clearAll } from "../lib/store";
+import { conversationCache, memberCache, getEpoch, setScope, clearAll } from "../lib/store";
 
 /** Chat now receives the session user + first list from AppShell (one source of truth). */
 function ChatBoot() {
@@ -908,6 +908,48 @@ describe("Chat island — a members 403 purges that chat", () => {
     await waitFor(() => expect(conversationCache.peek("c1")).toBeUndefined());
     expect(screen.getByText("carol msg")).toBeTruthy(); // the chat they opened stays open
     expect(screen.queryByText("you're no longer a member of this chat")).toBeNull();
+    clearAll();
+  });
+});
+
+describe("Chat island — roster cache + role from the summary", () => {
+  const grp = (over: Partial<ChatSummary> = {}) => dm({ id: "c1", type: "group", name: "team", peerId: null, peerUsername: null, peerDisplayName: null, ...over });
+  const roster = [{ userId: "u1", username: "alice", displayName: "Alice", avatarUrl: null, role: "member" as const, joinedAt: 1 }];
+
+  it("re-entering a group within the TTL makes no member request", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+    H.history = { c1: [msg({ id: "m1", body: "team msg" })], c2: [msg({ id: "m2", chatId: "c2", body: "carol msg" })] };
+    H.members = { c1: roster };
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    act(() => fireEvent.click(screen.getByText("Carol")));
+    await screen.findByText("carol msg");
+    act(() => fireEvent.click(screen.getByText("team")));
+    await screen.findByText("team msg");
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    clearAll();
+  });
+
+  it("a channel admin gets the composer from the summary while the roster is still loading; a member gets the note", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise(() => {}));
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    await mountOpen();
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy());
+    expect(screen.queryByText(/only admins post/)).toBeNull();
+    clearAll();
+  });
+
+  it("a channel member sees the read-only note with no roster", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise(() => {}));
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    await mountOpen();
+    await screen.findByText(/only admins post/);
+    expect(document.querySelector("textarea")).toBeNull();
     clearAll();
   });
 });

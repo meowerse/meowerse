@@ -43,6 +43,9 @@ export interface ChatSummary {
   peerUsername: string | null;
   peerDisplayName: string | null;
   peerAvatarUrl: string | null;
+  // The caller's role from the same chat_members row the server enforces with (display
+  // only; every mutation re-checks server-side). Additive: older clients ignore it.
+  myRole: Role;
 }
 
 /** Order-independent key for a 1:1 DM, so A+B and B+A resolve to one chat. */
@@ -149,7 +152,7 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
             END AS unread_count,
             om.user_id AS peer_id,
             pu.username AS peer_username, pu.display_name AS peer_display_name, pu.avatar_url AS peer_avatar_url,
-            pu.last_seen_at AS peer_last_seen_at
+            pu.last_seen_at AS peer_last_seen_at, m.role AS my_role
      FROM chat_members m
      JOIN chats c ON c.id = m.chat_id
      LEFT JOIN chat_members om ON om.chat_id = c.id AND om.user_id <> m.user_id AND c.type = 'direct'
@@ -169,6 +172,7 @@ export async function listChats(db: DbClient, userId: string): Promise<ChatSumma
     peerDisplayName: r.peer_display_name == null ? null : String(r.peer_display_name),
     peerAvatarUrl: r.peer_avatar_url == null ? null : String(r.peer_avatar_url),
     peerLastSeenAt: r.peer_last_seen_at == null ? null : Number(r.peer_last_seen_at),
+    myRole: normalizeRole(r.my_role) ?? "member",
   }));
 }
 

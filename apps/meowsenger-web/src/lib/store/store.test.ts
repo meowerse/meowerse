@@ -150,6 +150,23 @@ describe("MemberCache", () => {
   });
 });
 
+describe("MemberCache invalidation", () => {
+  it("a list apply that changes myRole or memberCount drops that roster; a pre-invalidation fetch cannot store", () => {
+    setScope("u1");
+    const e = getEpoch();
+    cl.apply([{ ...chat("c1"), myRole: "member", memberCount: 2 }, { ...chat("c2"), myRole: "member" }], e);
+    mc.put("c1", roster, e); mc.put("c2", roster, e);
+    cl.apply([{ ...chat("c1"), myRole: "admin", memberCount: 2 }, { ...chat("c2"), myRole: "member" }], e);
+    expect(mc.get("c1")).toBeUndefined();
+    expect(mc.get("c2")).toBe(roster);
+    const g = mc.generation();
+    mc.invalidate("c2");
+    expect(mc.put("c2", roster, e, g)).toBe(false); // fetch started before the invalidation
+    expect(mc.put("c2", roster, e)).toBe(true);
+    clearAll();
+  });
+});
+
 describe("ChatListStore", () => {
   it("concurrent refreshes share one fetch", async () => {
     const f = vi.fn(async () => ok([chat("c1")]));
