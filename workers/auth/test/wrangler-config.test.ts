@@ -1,5 +1,19 @@
 import { test, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { DEFAULT_ORIGINS } from "../src/security";
+
+// A dev origin must never ship: production CORS is https on our zones only.
+const PROD_HOST = /^([a-z0-9-]+\.)*alxnko\.(dev|eu\.org)$/;
+function assertProdOrigins(list: string) {
+  const origins = list.split(",").map((o) => o.trim());
+  expect(origins.length).toBeGreaterThan(0);
+  for (const o of origins) {
+    const u = new URL(o);
+    expect(u.protocol, o).toBe("https:");
+    expect(u.hostname, o).toMatch(PROD_HOST);
+    expect(o, o).not.toMatch(/localhost|127\.0\.0\.1|\.local\b|workers\.dev/);
+  }
+}
 
 // Strip // and /* */ comments outside strings, then trailing commas, so the shipped jsonc can be parsed.
 function parseJsonc(src: string): any {
@@ -28,6 +42,7 @@ test("the shipped wrangler config enables account self-deletion (privacy/terms v
 
 test("production vars never trust localhost or enable dev mode", () => {
   const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-  expect(cfg.vars.CORS_ORIGINS).not.toMatch(/localhost|127\.0\.0\.1/);
+  assertProdOrigins(cfg.vars.CORS_ORIGINS);
+  assertProdOrigins(DEFAULT_ORIGINS);
   expect(cfg.vars.AUTH_DEV).toBeUndefined();
 });

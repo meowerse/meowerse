@@ -1,5 +1,5 @@
 import type { Env } from "./types";
-export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org";
 function allowlist(env: Env): string[] {
   return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
 }
@@ -23,11 +23,12 @@ export function isOriginAllowed(origin: string | null, env: Env): boolean {
 /**
  * CSRF/CSWSH guard for state-changing requests and WebSocket upgrades. A browser always
  * sends `Origin` on those, so: present + (same origin as this request OR allowlisted) -> ok;
- * present + anything else (including the literal "null") -> reject; ABSENT -> allowed
- * (non-browser clients such as curl/native apps; they can't ride a victim's cookie).
+ * present + anything else (including the literal "null") -> reject; ABSENT -> reject too.
+ * Every state-changing route here is cookie-authenticated and there is no documented non-browser
+ * client (no HMAC/internal routes), so a missing Origin is never legitimate; browsers always send it.
  */
 export function originPermitted(origin: string | null, selfOrigin: string, env: Env): boolean {
-  if (origin === null) return true;
+  if (origin === null) return false;
   return origin === selfOrigin || isOriginAllowed(origin, env);
 }
 

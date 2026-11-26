@@ -10,6 +10,13 @@ const env: Env = {
 };
 
 describe("corsHeaders", () => {
+  it("blanket localhost allowance requires ALLOW_LOCALHOST_CORS (default off) and defaults carry no dev origin", () => {
+    const prod = { ...env, CORS_ORIGINS: undefined } as Env;
+    expect(corsHeaders("http://localhost:5173", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://localhost:4321", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://foo.local", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://localhost:5173", { ...prod, ALLOW_LOCALHOST_CORS: "1" })["Access-Control-Allow-Origin"]).toBe("http://localhost:5173");
+  });
   it("echoes an allowlisted origin and never wildcards with credentials", () => {
     const h = corsHeaders("http://localhost:4321", env);
     expect(h["Access-Control-Allow-Origin"]).toBe("http://localhost:4321");
