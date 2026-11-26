@@ -33,6 +33,7 @@ const H = vi.hoisted(() => ({
   failSession: null as null | { kind: string; status?: number },
   /** Holds every unpaged history read until released (null = no hold). */
   historyGate: null as Promise<void> | null,
+  olderGate: null as Promise<void> | null,
   /** rows answered to a `before=` (older page) read */
   older: [] as Message[],
   disableImpl: (async () => {}) as () => Promise<void>,
@@ -54,7 +55,7 @@ vi.mock("../lib/chat", async (importActual) => {
       return { ok: true as const, status: 200, data: H.chats };
     }),
     loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => {
-      if (before) return { ok: true as const, status: 200, data: H.older };
+      if (before) { if (H.olderGate) await H.olderGate; return { ok: true as const, status: 200, data: H.older }; }
       if (H.historyGate) await H.historyGate;
       if (H.failHistory) { if (H.failHistory.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failHistory }; }
       return { ok: true as const, status: 200, data: H.history[chatId] ?? [] };
@@ -146,6 +147,7 @@ beforeEach(() => {
   H.failHistory = null;
   H.failSession = null;
   H.historyGate = null;
+  H.olderGate = null;
   resetSessionEnded();
   H.session = { authenticated: true, user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true } };
   setUrl("/app");
@@ -1494,9 +1496,10 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
     const scrollTo = vi.fn();
     (el as unknown as { scrollTo: unknown }).scrollTo = scrollTo;
     act(() => { fireEvent.scroll(el); });
-    return { writes, scrollTo, at: (u: number) => { top = 600 - u; act(() => { fireEvent.scroll(el); }); } };
+    return { writes, scrollTo, silent: (u: number) => { top = 600 - u; }, at: (u: number) => { top = 600 - u; act(() => { fireEvent.scroll(el); }); } };
   }
-  const live = (ws: MockWebSocket, id: string) => emit(ws, { type: "message", message: msg({ id, senderId: "u2", body: `line ${id}`, createdAt: 2000 }) });
+  let liveT = 2000; // strictly increasing, so a second ack is never hidden by the createdAt dedup
+  const live = (ws: MockWebSocket, id: string) => emit(ws, { type: "message", message: msg({ id, senderId: "u2", body: `line ${id}`, createdAt: ++liveT }) });
 
   it("no pill at the bottom; scrolled up it counts live messages from others, never writes scrollTop, and activating scrolls once", async () => {
     const ws = await mountOpen();
@@ -1649,13 +1652,57 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
     it("reaching the real bottom ends the window and acks the read once", async () => {
       const { ws, s } = await armed();
       const before = reads(ws);
-      s.at(0); // target reached
-      live(ws, "w2"); // at the bottom: not counted
+      s.at(0); // target reached: the one unseen message (w1) is acked now, exactly once
+      expect(reads(ws) - before).toBe(1);
+      expect(ws.sentFrames().filter((f) => f.type === "read").pop()!.upTo).toBe(liveT);
+      live(ws, "w2"); // at the bottom: seen at once, not counted
       expect(screen.queryByText(/new message/)).toBeNull();
       s.at(250); // user scrolls up again after arrival: must be honoured immediately
       live(ws, "w3");
       await screen.findByRole("button", { name: "1 new message" });
-      expect(reads(ws) - before).toBeLessThanOrEqual(1);
+      expect(reads(ws) - before).toBe(2); // w1 on settle + w2 live at the bottom; w3 (scrolled up) is NOT acked
+    });
+
+    it("scrollend with the tail really reached (no scroll event fired) acks the unseen message exactly once", async () => {
+      const { ws, s } = await armed();
+      const before = reads(ws);
+      s.silent(0);
+      act(() => { fireEvent(logEl(), new Event("scrollend")); });
+      expect(reads(ws) - before).toBe(1);
+    });
+
+    it("reduced motion: nothing scrolled (content now fits) still acks once", async () => {
+      window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "r1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      const before = reads(ws);
+      s.silent(0); // content shrank to fit: no scroll event will follow
+      act(() => fireEvent.click(pill));
+      expect(reads(ws) - before).toBe(1);
+    });
+
+    it("older page still loading + pill tapped + message mid-flight: nothing is acked unseen and the pill stays", async () => {
+      H.history = { c1: Array.from({ length: 50 }, (_, i) => msg({ id: `h${i + 1}`, body: `row ${i + 1}`, createdAt: 1000 + i })) };
+      H.older = [msg({ id: "old1", senderId: "u2", body: "older peer line", createdAt: 900 })];
+      let release!: () => void;
+      H.olderGate = new Promise<void>((r) => { release = r; });
+      const ws = await mountOpen();
+      await waitFor(() => expect(within(logEl()).getByText("row 50")).toBeTruthy());
+      open(ws);
+      act(() => { fireEvent.scroll(logEl()); }); // at the top: the older fetch starts and stays pending
+      const s = scrolledUp(300); live(ws, "p1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      const before = reads(ws);
+      act(() => fireEvent.click(pill));
+      live(ws, "p2");
+      expect(s.scrollTo).not.toHaveBeenCalled(); // no tail scroll to be cancelled by the prepend restore
+      expect(await screen.findByRole("button", { name: "2 new messages" })).toBeTruthy(); // indicator kept, count not lost
+      expect(reads(ws) - before).toBe(0); // nothing acked unseen
+      await act(async () => { release(); });
+      await waitFor(() => expect(within(logEl()).getByText("older peer line")).toBeTruthy());
     });
 
     it("a chat switch inside the window does not leak it: the new chat is not forced to bottom and not acked", async () => {

@@ -394,8 +394,8 @@ export interface UseConversation {
   /** True while the log is at (or near) the live tail; the view reads it for the new-messages pill. */
   atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
-  /** One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
-  scrollToTail: () => void;
+  /** Returns false (does nothing) while an older page is prepending. One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
+  scrollToTail: () => boolean;
   /** End a scrollToTail in flight (user input, scrollend): atBottom is recomputed from the REAL distance. */
   endTail: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
@@ -782,7 +782,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const loadOlder = useCallback(async () => {
     const el = logRef.current;
     const chatId = activeRef.current;
-    if (!el || !chatId || prependingRef.current || !hasMoreRef.current) return;
+    if (!el || !chatId || prependingRef.current || tailUntilRef.current !== 0 || !hasMoreRef.current) return; // not mid-tail: the restore would cancel it
     prependingRef.current = true;
     // The oldest confirmed NON-deleted row is the cursor. `found:false` proves the id is not a
     // row of this room (a cached row the server purged): drop it from the log and retry with the
@@ -869,9 +869,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
   }, [sendRead]);
 
-  const scrollToTail = useCallback(() => {
+  const scrollToTail = useCallback((): boolean => {
     const el = logRef.current;
-    if (!el) return;
+    // A prepend restore would cancel the scroll and skip the pin, so a message acked mid-flight would go unseen.
+    if (!el || prependingRef.current) return false;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
     lastTopRef.current = el.scrollTop;
@@ -882,7 +883,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
       tailTimerRef.current = setTimeout(endTail, 700);
     }
     el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
-  }, [endTail]);
+    // Instant scroll that moved nothing (content fits) fires no scroll event, so ack here.
+    if (reduce && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX && !hasNewerRef.current) sendRead(logStateRef.current);
+    return true;
+  }, [endTail, sendRead]);
   useEffect(() => () => { if (tailTimerRef.current != null) clearTimeout(tailTimerRef.current); }, []);
 
   const onLogScroll = useCallback(() => {

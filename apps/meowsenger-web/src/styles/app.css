@@ -892,7 +892,7 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   box-shadow: var(--shadow-md);
 }
 .mw-chat__logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.mw-chat__log:focus { outline: none; } /* programmatic focus target only */
+.mw-chat__log:focus:not(:focus-visible) { outline: none; } /* mouse/programmatic focus only; keyboard keeps the ring */
 /* Anchored to the log's own bottom edge, so a taller composer / reply bar can never overlap it. */
 .mw-chat__newpill {
   position: absolute; left: 50%; transform: translateX(-50%); z-index: 5;

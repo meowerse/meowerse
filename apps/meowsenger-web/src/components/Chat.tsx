@@ -509,9 +509,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Pill activation. The focused button unmounts with the count, so focus the log (never the
   // textarea: that would open the on-screen keyboard on touch). preventScroll keeps the smooth scroll ours.
   const toNewest = () => {
+    if (!scrollToTail()) return; // an older page is prepending: keep the pill (and its count) for the retry
     logRef.current?.focus({ preventScroll: true });
     setNewCount(0);
-    scrollToTail();
   };
   useEffect(() => { if (hasNewer) setNewCount(0); }, [hasNewer]); // a jumped window has no live tail to count
 
@@ -923,7 +923,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
             )}
 
             <div className="mw-chat__logwrap">
-            <div className="mw-chat__log" tabIndex={-1} ref={logRef} onWheel={endTail} onTouchStart={endTail} onPointerDown={endTail} onKeyDown={endTail} onScrollEnd={endTail} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
+            <div className="mw-chat__log" tabIndex={-1} aria-label="messages" ref={logRef} onWheel={endTail} onTouchStart={endTail} onPointerDown={endTail} onKeyDown={endTail} onScrollEnd={endTail} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (
@@ -1017,7 +1017,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               })}
             </div>
             {newCount > 0 && !hasNewer && (
-              <button className="mw-chat__newpill" onClick={toNewest}>
+              <button type="button" className="mw-chat__newpill" onClick={toNewest}>
                 {newCount} new message{newCount === 1 ? "" : "s"} <span aria-hidden="true">↓</span>
               </button>
             )}
