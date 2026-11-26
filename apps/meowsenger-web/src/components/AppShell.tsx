@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { RequestResult } from "@meowerse/ui";
 import { getSession, loginUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, type ChatSummary } from "../lib/chat";
-import { recordPushError } from "../lib/push";
+import { clearPushError } from "../lib/pushLazy";
 import { getEndedSnapshot, hasSessionEnded, notifySessionEnded, resetSessionEnded, clearSessionEndedFlag, subscribeSessionEnded } from "../lib/sessionEnded";
 import { clearAll, installAuthChannel, setScope } from "../lib/store";
 import Chat from "./Chat";
@@ -187,7 +187,7 @@ export default function AppShell({ base }: { base: string }) {
       setResumed(false);
       setBoot(null);
       resetSessionEnded(); // drops the previous account's handed-back draft
-      recordPushError(null);
+      clearPushError();
       // The previous account's open chat id must not linger in the address bar.
       try {
         const url = new URL(window.location.href);
