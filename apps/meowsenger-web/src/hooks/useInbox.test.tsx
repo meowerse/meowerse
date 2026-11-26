@@ -21,6 +21,20 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); resetSessionEnded(); });
 
+describe("useInbox link state", () => {
+  it("connecting -> open -> down -> open", async () => {
+    const { result } = renderHook(() => useInbox("", true, vi.fn()));
+    expect(result.current).toBe("connecting");
+    act(() => inbox().mockOpen());
+    expect(result.current).toBe("open");
+    act(() => inbox().mockDrop());
+    expect(result.current).toBe("down");
+    await tick(20000);
+    act(() => inbox().mockOpen());
+    expect(result.current).toBe("open");
+  });
+});
+
 describe("useInbox reconnect", () => {
   it("one list refresh per reopen after a drop, never on the first open", async () => {
     const onReconnect = vi.fn();

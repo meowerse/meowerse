@@ -201,6 +201,8 @@ body:has(.mw-chat) main.mw-container {
    header width): green=connected, amber=reconnecting, red=offline — compact, and
    dev-legible at a glance so a broken socket is visible. */
 .mw-chat__conn { flex: none; width: 9px; height: 9px; border-radius: var(--radius-pill); background: var(--text-muted); }
+.mw-chat__joining { flex: none; font-size: var(--text-xs); color: var(--text-muted); }
+.mw-chat__joining[hidden] { display: none; }
 .mw-chat__conn[data-state="on"] { background: var(--mw-green); }
 .mw-chat__conn[data-state="wait"] { background: var(--warning); }
 .mw-chat__conn[data-state="off"] { background: var(--text-danger); }
