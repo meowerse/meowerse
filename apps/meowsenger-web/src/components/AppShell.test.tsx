@@ -309,7 +309,7 @@ describe("AppShell", () => {
       const before = await screen.findByTestId("chat");
       H.results = [authed];
       await restore();
-      expect(H.calls).toBe(2);
+      await waitFor(() => expect(H.calls).toBe(2));
       expect(screen.getByTestId("chat")).toBe(before); // same DOM node: state kept
       expect(H.chatCalls).toHaveLength(1);
     });
@@ -423,7 +423,8 @@ describe("AppShell", () => {
       H.results = [authed];
       await restore();
       await screen.findByText(/you're signed in again/);
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "continue" }));
+      const cont = screen.getByRole("button", { name: "continue" });
+      await waitFor(() => expect(document.activeElement).toBe(cont)); // focus is set in an effect
       setSnapshotSource(null);
       H.results = [{ ok: true, status: 200, data: { authenticated: true, user: { id: "someone-else" } } }, { ok: true, status: 200, data: { authenticated: true, user: { id: "someone-else" } } }];
       await restore();

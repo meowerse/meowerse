@@ -6,7 +6,11 @@
  * reads document visibility, so a test can only exercise it black-box with these.
  */
 import { afterEach } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
+
+// The 1000 ms default for findBy*/waitFor is wall-clock and flakes when the box is saturated
+// (parallel CI shards, local full runs). It is only an upper bound: a passing wait returns at once.
+configure({ asyncUtilTimeout: 10_000 });
 
 export * from "@testing-library/react";
 
