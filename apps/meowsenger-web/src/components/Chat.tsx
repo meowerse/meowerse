@@ -95,6 +95,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Screen-reader announcements for NEW incoming messages only (#7). Rendered as
   // additive children in an aria-live region; capped so the DOM stays bounded.
   const [announcements, setAnnouncements] = useState<Array<{ id: string; text: string }>>([]);
+  // "new messages" pill: live messages from others that arrived while scrolled up.
+  const [newCount, setNewCount] = useState(0);
   // Slice 5 — group UI state.
   const [newChatOpen, setNewChatOpen] = useState(false); // the Direct|Group modal
   const [drawerOpen, setDrawerOpen] = useState(false); // the member-management drawer
@@ -292,12 +294,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     const who = resolveNameRef.current(m.senderId);
     const body = m.body.trim().slice(0, 120) || "sent a message";
     setAnnouncements((prev) => [...prev, { id: m.id, text: `${who}: ${body}` }].slice(-3));
+    if (!atBottomRef.current) setNewCount((n) => n + 1);
   };
 
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, onLogScroll, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, scrollToTail, endTail, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onIncoming, onMessageDeleted, consumeReply, onRevoked });
@@ -488,7 +491,29 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setConfirmBulk(false);
     // The SR announcer starts empty for the next chat (#7).
     setAnnouncements([]);
+    setNewCount(0);
   }, [activeId]);
+
+  // 120 ms opacity fade of the log on a chat SWITCH (composite-only, WAAPI so the log element and
+  // its scroll refs survive). Layout effect: starts before paint, so the old chat never flashes.
+  const prevChatRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const prev = prevChatRef.current;
+    prevChatRef.current = activeId;
+    const el = logRef.current;
+    if (!prev || !activeId || prev === activeId || !el?.animate) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 120, easing: "ease-out" });
+  }, [activeId, logRef]);
+
+  // Pill activation. The focused button unmounts with the count, so focus the log (never the
+  // textarea: that would open the on-screen keyboard on touch). preventScroll keeps the smooth scroll ours.
+  const toNewest = () => {
+    if (!scrollToTail()) return; // an older page is prepending: keep the pill (and its count) for the retry
+    logRef.current?.focus({ preventScroll: true });
+    setNewCount(0);
+  };
+  useEffect(() => { if (hasNewer) setNewCount(0); }, [hasNewer]); // a jumped window has no live tail to count
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).
@@ -897,7 +922,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               />
             )}
 
-            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll} onPointerEnter={preload("menu", "emoji", "forward")}>
+            <div className="mw-chat__logwrap">
+            <div className="mw-chat__log" tabIndex={-1} aria-label="messages" ref={logRef} onWheel={endTail} onTouchStart={endTail} onPointerDown={endTail} onKeyDown={endTail} onScrollEnd={endTail} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (
@@ -989,6 +1015,12 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                   </Fragment>
                 );
               })}
+            </div>
+            {newCount > 0 && !hasNewer && (
+              <button type="button" className="mw-chat__newpill" onClick={toNewest}>
+                {newCount} new message{newCount === 1 ? "" : "s"} <span aria-hidden="true">↓</span>
+              </button>
+            )}
             </div>
 
             {hasNewer && (

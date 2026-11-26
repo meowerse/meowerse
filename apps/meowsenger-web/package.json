@@ -9,7 +9,8 @@
     "test": "vitest run --coverage",
     "perf:baseline": "bun perf/run.ts",
     "perf:nav": "bun perf/nav-check.ts",
-    "perf:panels": "bun perf/panels-check.ts"
+    "perf:panels": "bun perf/panels-check.ts",
+    "perf:motion": "bun perf/motion-check.ts"
   },
   "dependencies": {
     "@meowerse/ui": "workspace:*",

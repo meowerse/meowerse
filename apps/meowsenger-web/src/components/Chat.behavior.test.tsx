@@ -33,6 +33,7 @@ const H = vi.hoisted(() => ({
   failSession: null as null | { kind: string; status?: number },
   /** Holds every unpaged history read until released (null = no hold). */
   historyGate: null as Promise<void> | null,
+  olderGate: null as Promise<void> | null,
   /** rows answered to a `before=` (older page) read */
   older: [] as Message[],
   disableImpl: (async () => {}) as () => Promise<void>,
@@ -54,7 +55,7 @@ vi.mock("../lib/chat", async (importActual) => {
       return { ok: true as const, status: 200, data: H.chats };
     }),
     loadHistory: vi.fn(async (_b: string, chatId: string, before?: string) => {
-      if (before) return { ok: true as const, status: 200, data: H.older };
+      if (before) { if (H.olderGate) await H.olderGate; return { ok: true as const, status: 200, data: H.older }; }
       if (H.historyGate) await H.historyGate;
       if (H.failHistory) { if (H.failHistory.kind === "unauthorized") notifySessionEnded(); return { ok: false as const, error: H.failHistory }; }
       return { ok: true as const, status: 200, data: H.history[chatId] ?? [] };
@@ -146,6 +147,7 @@ beforeEach(() => {
   H.failHistory = null;
   H.failSession = null;
   H.historyGate = null;
+  H.olderGate = null;
   resetSessionEnded();
   H.session = { authenticated: true, user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true } };
   setUrl("/app");
@@ -1474,5 +1476,254 @@ describe("Chat island — phone Back navigation", () => {
     popTo("/app");
     expect(shell().dataset.open).toBe("0");
     expect(push).not.toHaveBeenCalled();
+  });
+});
+
+describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
+  const mm = window.matchMedia;
+  afterEach(() => {
+    window.matchMedia = mm; vi.restoreAllMocks(); vi.useRealTimers();
+    delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
+  });
+  /** Make the log look scrolled `up` px from the tail; counts scrollTop WRITES. */
+  function scrolledUp(up: number) {
+    const el = logEl();
+    let top = 1000 - 400 - up;
+    const writes = vi.fn();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { writes(v); top = v; } });
+    const scrollTo = vi.fn();
+    (el as unknown as { scrollTo: unknown }).scrollTo = scrollTo;
+    act(() => { fireEvent.scroll(el); });
+    return { writes, scrollTo, silent: (u: number) => { top = 600 - u; }, at: (u: number) => { top = 600 - u; act(() => { fireEvent.scroll(el); }); } };
+  }
+  let liveT = 2000; // strictly increasing, so a second ack is never hidden by the createdAt dedup
+  const live = (ws: MockWebSocket, id: string) => emit(ws, { type: "message", message: msg({ id, senderId: "u2", body: `line ${id}`, createdAt: ++liveT }) });
+
+  it("no pill at the bottom; scrolled up it counts live messages from others, never writes scrollTop, and activating scrolls once", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    live(ws, "a1");
+    await waitFor(() => expect(within(logEl()).getByText("line a1")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    const s = scrolledUp(300);
+    s.writes.mockClear();
+    live(ws, "a2"); live(ws, "a3");
+    const pill = await screen.findByRole("button", { name: /2 new messages/ });
+    expect(s.writes).not.toHaveBeenCalled(); // the reader is never teleported
+    act(() => fireEvent.click(pill));
+    expect(s.scrollTo).toHaveBeenCalledTimes(1);
+    expect(s.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+    expect(screen.queryByText(/new message/)).toBeNull();
+  });
+
+  it("reduced motion scrolls instantly; reaching the bottom hides the pill", async () => {
+    window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    const s = scrolledUp(300);
+    live(ws, "b1");
+    const pill = await screen.findByRole("button", { name: /1 new message/ });
+    s.at(0); // user scrolls to the tail themselves
+    await waitFor(() => expect(screen.queryByText(/new message/)).toBeNull());
+    live(ws, "b2"); // at the bottom again: no pill
+    expect(screen.queryByText(/new message/)).toBeNull();
+    s.at(300); live(ws, "b3");
+    const pill2 = await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(pill2));
+    expect(s.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+    void pill;
+  });
+
+  it("a chat switch clears the pill and fades the log 120 ms; reduced motion => no animation", async () => {
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+    H.history = { c1: [msg()], c2: [msg({ id: "n1", chatId: "c2", senderId: "u3", body: "carol says hi", createdAt: 1500 })] };
+    const anim = vi.fn();
+    (HTMLElement.prototype as unknown as { animate: unknown }).animate = anim;
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    anim.mockClear();
+    scrolledUp(300); live(ws, "c1x");
+    await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(screen.getByText("Carol")));
+    await waitFor(() => expect(screen.getByText("carol says hi")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    expect(anim).toHaveBeenCalledTimes(1);
+    expect(anim.mock.calls[0][0]).toEqual([{ opacity: 0.3 }, { opacity: 1 }]);
+    expect(anim.mock.calls[0][1]).toMatchObject({ duration: 120 });
+    // back to c1 under reduced motion: no further animation
+    window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+    act(() => fireEvent.click(screen.getByText("Bob")));
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    expect(anim).toHaveBeenCalledTimes(1);
+  });
+
+  it("keyboard activation keeps focus on the log (not <body>); the accessible name omits the arrow", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    scrolledUp(300); live(ws, "f1");
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    pill.focus();
+    act(() => fireEvent.click(pill)); // Enter/Space on a <button> dispatch click
+    expect(screen.queryByText(/new message/)).toBeNull();
+    expect(document.activeElement).toBe(logEl());
+    expect(document.activeElement).not.toBe(screen.getByLabelText("message")); // never the textarea (touch keyboard)
+  });
+
+  it("mid-flight smooth scroll to the tail: a message arriving does not re-bump the count", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    const s = scrolledUp(300); live(ws, "g1");
+    const pill = await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(pill));
+    s.at(200); // an intermediate frame of the smooth scroll: still far from the tail
+    live(ws, "g2");
+    expect(screen.queryByText(/new message/)).toBeNull();
+  });
+
+  it("entering a detached window (jump to a reply target) clears a stale pill count", async () => {
+    H.history = { c1: [msg({ id: "m50", body: "recent tail", createdAt: 5000 }), msg({ id: "m51", body: "re: old", createdAt: 5100, replyTo: { id: "mOld", senderId: "u2", body: "quoted old" } })] };
+    H.around = { found: true, messages: [msg({ id: "mOld", body: "way back when", createdAt: 100 })], hasOlder: false, hasNewer: true };
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("re: old")).toBeTruthy());
+    open(ws);
+    scrolledUp(300); live(ws, "h1");
+    await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(screen.getByText("quoted old")));
+    await waitFor(() => expect(screen.getByLabelText("jump to latest messages")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    H.around = null;
+    act(() => fireEvent.click(screen.getByLabelText("jump to latest messages")));
+    await waitFor(() => expect(screen.queryByLabelText("jump to latest messages")).toBeNull());
+    expect(screen.queryByText(/new message/)).toBeNull(); // not resurrected with the old count
+  });
+
+  describe("scrollToTail window (smooth scroll in flight)", () => {
+    const fake = () => vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const reads = (ws: MockWebSocket) => ws.sentFrames().filter((f) => f.type === "read").length;
+    /** Pill up with 300px of real distance, fake timers on, pill activated (scrollTo is a stub: distance never shrinks). */
+    async function armed() {
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "w1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      fake();
+      act(() => fireEvent.click(pill));
+      return { ws, s };
+    }
+
+    it.each([
+      ["wheel", (l: HTMLElement) => fireEvent.wheel(l)],
+      ["touchstart", (l: HTMLElement) => fireEvent.touchStart(l)],
+      ["keydown", (l: HTMLElement) => fireEvent.keyDown(l, { key: "ArrowUp" })],
+    ])("user %s inside the window ends it: a live message is counted, never pinned", async (_n, input) => {
+      const { ws, s } = await armed();
+      act(() => { input(logEl()); });
+      s.writes.mockClear();
+      live(ws, "w2");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(s.writes).not.toHaveBeenCalled();
+    });
+
+    it("a frame that moves scrollTop UP inside the window ends it", async () => {
+      const { ws, s } = await armed();
+      s.at(200); s.at(260); // forward frame then a flick back up
+      s.writes.mockClear();
+      live(ws, "w2");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(s.writes).not.toHaveBeenCalled();
+    });
+
+    it.each([["scrollend", () => fireEvent(logEl(), new Event("scrollend"))], ["the timer fallback", () => vi.advanceTimersByTime(1000)]])(
+      "window ending by %s recomputes atBottom from the REAL distance (no stale true)", async (_n, end) => {
+        const { ws } = await armed();
+        act(() => { end(); });
+        live(ws, "w2");
+        await screen.findByRole("button", { name: "1 new message" });
+      });
+
+    it("reaching the real bottom ends the window and acks the read once", async () => {
+      const { ws, s } = await armed();
+      const before = reads(ws);
+      s.at(0); // target reached: the one unseen message (w1) is acked now, exactly once
+      expect(reads(ws) - before).toBe(1);
+      expect(ws.sentFrames().filter((f) => f.type === "read").pop()!.upTo).toBe(liveT);
+      live(ws, "w2"); // at the bottom: seen at once, not counted
+      expect(screen.queryByText(/new message/)).toBeNull();
+      s.at(250); // user scrolls up again after arrival: must be honoured immediately
+      live(ws, "w3");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(reads(ws) - before).toBe(2); // w1 on settle + w2 live at the bottom; w3 (scrolled up) is NOT acked
+    });
+
+    it("scrollend with the tail really reached (no scroll event fired) acks the unseen message exactly once", async () => {
+      const { ws, s } = await armed();
+      const before = reads(ws);
+      s.silent(0);
+      act(() => { fireEvent(logEl(), new Event("scrollend")); });
+      expect(reads(ws) - before).toBe(1);
+    });
+
+    it("reduced motion: nothing scrolled (content now fits) still acks once", async () => {
+      window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "r1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      const before = reads(ws);
+      s.silent(0); // content shrank to fit: no scroll event will follow
+      act(() => fireEvent.click(pill));
+      expect(reads(ws) - before).toBe(1);
+    });
+
+    it("older page still loading + pill tapped + message mid-flight: nothing is acked unseen and the pill stays", async () => {
+      H.history = { c1: Array.from({ length: 50 }, (_, i) => msg({ id: `h${i + 1}`, body: `row ${i + 1}`, createdAt: 1000 + i })) };
+      H.older = [msg({ id: "old1", senderId: "u2", body: "older peer line", createdAt: 900 })];
+      let release!: () => void;
+      H.olderGate = new Promise<void>((r) => { release = r; });
+      const ws = await mountOpen();
+      await waitFor(() => expect(within(logEl()).getByText("row 50")).toBeTruthy());
+      open(ws);
+      act(() => { fireEvent.scroll(logEl()); }); // at the top: the older fetch starts and stays pending
+      const s = scrolledUp(300); live(ws, "p1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      const before = reads(ws);
+      act(() => fireEvent.click(pill));
+      live(ws, "p2");
+      expect(s.scrollTo).not.toHaveBeenCalled(); // no tail scroll to be cancelled by the prepend restore
+      expect(await screen.findByRole("button", { name: "2 new messages" })).toBeTruthy(); // indicator kept, count not lost
+      expect(reads(ws) - before).toBe(0); // nothing acked unseen
+      await act(async () => { release(); });
+      await waitFor(() => expect(within(logEl()).getByText("older peer line")).toBeTruthy());
+    });
+
+    it("a chat switch inside the window does not leak it: the new chat is not forced to bottom and not acked", async () => {
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+      H.history = { c1: [msg()], c2: [msg({ id: "n1", chatId: "c2", senderId: "u3", body: "carol says hi", createdAt: 1500 })] };
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "w1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      fake();
+      act(() => fireEvent.click(pill));
+      act(() => fireEvent.click(screen.getByText("Carol")));
+      await waitFor(() => expect(screen.getByText("carol says hi")).toBeTruthy());
+      const ws2 = MockWebSocket.room;
+      open(ws2);
+      const before = reads(ws2);
+      s.at(300 - 0); // first real frame of the new chat, still inside 600 ms: 300px from the tail
+      emit(ws2, { type: "message", message: msg({ id: "z1", chatId: "c2", senderId: "u3", body: "carol again", createdAt: 3000 }) });
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(reads(ws2) - before).toBe(0);
+    });
   });
 });
