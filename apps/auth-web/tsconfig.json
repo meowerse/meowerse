@@ -5,5 +5,5 @@
     "jsxImportSource": "react"
   },
   "include": ["src", "scripts", ".astro/types.d.ts", "astro.config.mjs", "vitest.config.ts"],
-  "exclude": ["dist", "coverage", "node_modules"]
+  "exclude": ["dist", "dist-e2e", "test-results", "coverage", "node_modules"]
 }
