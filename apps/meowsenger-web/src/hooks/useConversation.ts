@@ -182,7 +182,7 @@ function saveOnLeave(s: LeaveSnapshot): void {
 
 /** Scroll to the bottom unless already there: a redundant scrollTop write cancels iOS momentum. */
 function pinBottom(el: HTMLElement): void {
-  if (el.scrollHeight - el.clientHeight - el.scrollTop >= 1 || !Number.isFinite(el.clientHeight)) el.scrollTop = el.scrollHeight;
+  if (!(el.scrollHeight - el.clientHeight - el.scrollTop < 1)) el.scrollTop = el.scrollHeight; // NaN (non-DOM stand-in) writes
 }
 
 /** DOM-based scroll anchor (never `rowsRef`): the first message row still visible. */
