@@ -41,6 +41,14 @@ test("cat3d: the live cat and its still fallback", async ({ page }, info) => {
   await expect(page.locator(".mw-cat3d--static img")).toBeVisible();
 });
 
+// The 3D attach is a dynamic import on this page (it keeps the page under the critical-JS budget): it must still load after the visit begins.
+test("together: the attach chunk loads lazily after load", async ({ page }) => {
+  const reqs: string[] = [];
+  page.on("request", (r) => reqs.push(r.url()));
+  await page.goto("/ui/patterns/together/");
+  await expect.poll(() => reqs.some((u) => /\/attach\.[^/]+\.js/.test(u)), { timeout: 5000 }).toBe(true);
+});
+
 // B10.3, extended to the patterns pages (T9 ruling: a real layout fit, not just an invisible clip)
 // at the widths this task must prove: phone (390), narrow desktop (1024) and wide desktop (1440).
 for (const width of [390, 1024, 1440]) {
