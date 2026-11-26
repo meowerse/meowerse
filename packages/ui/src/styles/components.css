@@ -6,6 +6,12 @@
 .mw-spinner--lg { width: 32px; height: 32px; border-width: 3px; }
 @keyframes mw-spin { to { transform: rotate(360deg); } }
 
+/* loading placeholder: a block whose inline width/height reserve the loaded content's box; the pulse is opacity only
+   (no layout/transform) and stops under reduced motion. */
+.mw-skeleton { display: block; max-width: 100%; height: 1em; border-radius: var(--r-s); background: var(--c-line); }
+@media (prefers-reduced-motion: no-preference) { .mw-skeleton { animation: mw-skeleton-pulse 1.4s ease-in-out infinite; } }
+@keyframes mw-skeleton-pulse { 50% { opacity: .5; } }
+
 /* flex: none (root-cause fix, T11 review): a button dropped into any flex row — a composer's icon
    row, a header's actions — must never be treated as the flexible thing that shrinks to make room.
    Two call sites (T9's .preview__stage .mw-header*, T11's .composer-row/.pairing .mw-header) had

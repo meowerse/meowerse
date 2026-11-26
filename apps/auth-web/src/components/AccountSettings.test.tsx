@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Same harness as DevelopersPage.test.tsx: jsdom by pragma, explicit cleanup, plain existence checks.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@meowerse/ui";
 import AccountSettings, { CONNECTED_SERVICES_NOTICE } from "./AccountSettings";
@@ -214,5 +214,207 @@ describe("AccountSettings", () => {
     fireEvent.click(btns[btns.length - 1]!);
     await waitFor(() => expect(bodies.length).toBe(2));
     expect(bodies[1]!.current_password).toBe("hunter2hunter2");
+  });
+});
+
+describe("AccountSettings stale-while-revalidate (PR-21)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  /** Loads the page, then triggers a revalidate (a successful unlink calls reload()) whose GETs answer with `after`. */
+  async function revalidateWith(after: (url: string) => Response | Promise<Response>) {
+    let revalidating = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { revalidating = true; return json({ ok: true }); }
+      if (revalidating) return after(u);
+      return u.endsWith("/grants") ? json({ grants: [{ clientId: "mw_x", displayName: "x app", approvedScopes: ["openid"], updatedAt: null }] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("x app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "unlink" })).at(-1)!);
+  }
+
+  it("shows a skeleton (not the loaded page, not a spinner) until the account arrives", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+    const { container } = page();
+    expect(screen.getByRole("status", { name: "loading account" })).not.toBeNull();
+    expect(container.querySelector(".mw-spinner")).toBeNull();
+    expect(container.querySelectorAll(".mw-skeleton").length).toBeGreaterThan(0);
+  });
+
+  it("a failed revalidate keeps the account and grants and says so; retry heals it", async () => {
+    await revalidateWith(() => json({ error: "boom" }, 500));
+    expect(await screen.findByText(/couldn't refresh your account/)).not.toBeNull();
+    expect(screen.getByText("alxnko")).not.toBeNull();
+    expect(screen.getByText("x app")).not.toBeNull();
+    expect(screen.queryByText("couldn't load your account.")).toBeNull();
+  });
+
+  it("a signed-out answer on revalidate drops the previous account's data and clears the session cache", async () => {
+    sessionStorage.setItem("mw-session", "stale");
+    await revalidateWith(() => json({}, 401));
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.queryByText("x app")).toBeNull();
+    expect(sessionStorage.getItem("mw-session")).toBeNull();
+  });
+});
+
+describe("AccountSettings identity, ordering and restore (PR-21 review)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  /** Loads account A with one grant, then a successful unlink triggers reload() whose GETs answer with `after`. */
+  async function revalidateWith(after: (url: string) => Response | Promise<Response>) {
+    let revalidating = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { revalidating = true; return json({ ok: true }); }
+      if (revalidating) return after(u);
+      return u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "unlink" })).at(-1)!);
+  }
+
+  it("a different account whose grants fail to load shows none of the previous account's apps (no revoke for them)", async () => {
+    await revalidateWith((u) => u.endsWith("/grants") ? json({ error: "boom" }, 500) : json({ ...LINKED, username: "bob", csrf: "c2" }));
+    expect(await screen.findByText("bob")).not.toBeNull();
+    expect(screen.queryByText("a app")).toBeNull();
+    expect(screen.queryByRole("button", { name: "revoke" })).toBeNull();
+    expect(screen.getByText(/couldn't load your connected apps/)).not.toBeNull();
+  });
+
+  it("the same account whose grants fail to refresh keeps its apps", async () => {
+    await revalidateWith((u) => u.endsWith("/grants") ? json({ error: "boom" }, 500) : json(LINKED));
+    expect(await screen.findByText(/couldn't refresh your connected apps/)).not.toBeNull();
+    expect(screen.getByText("a app")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "revoke" })).not.toBeNull();
+  });
+
+  it("a grants-only sign-out is a sign-out: sign-in alert, no endless skeleton, no false 'no apps have access'", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({}, 401) : json(ACCOUNT));
+    page();
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("no apps have access.")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("'try again' on a failed grants load clears the failure while refetching, and is disabled while a refresh runs", async () => {
+    let fail = true;
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => String(url).endsWith("/grants")
+      ? (fail ? Promise.resolve(json({ error: "x" }, 500)) : new Promise<Response>(() => {}))
+      : Promise.resolve(json(ACCOUNT)));
+    page();
+    const retry = await screen.findByRole("button", { name: "try again" });
+    fail = false;
+    fireEvent.click(retry);
+    expect(await screen.findByRole("status", { name: "loading connected apps" })).not.toBeNull();
+    expect(screen.queryByText(/couldn't load your connected apps/)).toBeNull();
+  });
+
+  it("a bfcache restore drops the shown account at once and re-checks the session", async () => {
+    let signedOut = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => signedOut ? json({}, 401) : String(url).endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(ACCOUNT));
+    page();
+    await screen.findByText("a app");
+    signedOut = true;
+    act(() => { window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); });
+    expect(screen.queryByText("a app")).toBeNull();
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+  });
+});
+
+describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  /** GETs: first pair answers normally; later ones go to `later(url)`. POSTs: recovery codes / ok. */
+  function setup(later: (u: string) => Response | Promise<Response>) {
+    let loaded = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") return u.endsWith("/recovery-codes") ? json({ recoveryCodes: ["code-aaaa"] }) : json({ ok: true });
+      if (!loaded) { if (u.endsWith("/account")) return json(LINKED); loaded = true; return json({ grants: [GRANT_A] }); }
+      return later(u);
+    });
+    page();
+  }
+  const confirmLast = async (name: string) => fireEvent.click((await screen.findAllByRole("button", { name })).at(-1)!);
+
+  it("a late 200 from an older reload never undoes a newer sign-out", async () => {
+    let late!: (r: Response) => void;
+    let n = 0;
+    setup(() => (n++ < 2 ? new Promise<Response>((r) => { if (n === 1) late = r; }) : json({}, 401)));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink"); // reload #1: account pending (late)
+    act(() => { window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); }); // reload #2 -> 401
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    late(json(LINKED));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.getByText(/to manage your account/)).not.toBeNull();
+  });
+
+  it("the same account keeps its shown recovery codes across a refresh; a different one hides them with a notice", async () => {
+    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
+    await confirmLast("regenerate");
+    expect(await screen.findByText("code-aaaa")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "unlink" })); // success -> reload() for the same account
+    await confirmLast("unlink");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.getByText("code-aaaa")).not.toBeNull();
+  });
+
+  it("an account change hides shown recovery codes and says so", async () => {
+    let who = LINKED;
+    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(who));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
+    await confirmLast("regenerate");
+    await screen.findByText("code-aaaa");
+    who = { ...LINKED, username: "bob", csrf: "c2" };
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink");
+    expect(await screen.findByText("bob")).not.toBeNull();
+    expect(screen.queryByText("code-aaaa")).toBeNull();
+    expect(await screen.findByText(/recovery codes were hidden/)).not.toBeNull();
+  });
+
+  it("a revoke wins over an older in-flight reload whose grants still list the app", async () => {
+    let late!: (r: Response) => void;
+    let n = 0;
+    setup((u) => u.endsWith("/grants") ? new Promise<Response>((r) => { late = r; n++; }) : json(LINKED));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink"); // reload pending on grants
+    await waitFor(() => expect(n).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    await confirmLast("revoke access");
+    await waitFor(() => expect(screen.queryByText("a app")).toBeNull());
+    late(json({ grants: [GRANT_A] })); // older answer: stale
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("a app")).toBeNull();
+  });
+
+  it("a failed revoke (401) neither shows success nor leaves signed-out data: the page ends signed out", async () => {
+    let signedOut = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { signedOut = true; return json({ error: "no_session" }, 401); }
+      if (signedOut) return json({}, 401);
+      return u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    await confirmLast("revoke access");
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("access revoked")).toBeNull();
+    expect(screen.queryByText("a app")).toBeNull();
   });
 });

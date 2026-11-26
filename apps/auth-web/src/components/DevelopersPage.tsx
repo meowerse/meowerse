@@ -4,7 +4,8 @@ import DashboardPage from "./DashboardPage";
 
 export default function DevelopersPage({ base }: { base: string }) {
   const s = useSession(base);
-  if (s.loading) return <div className="mw-stack"><Spinner label="loading" /></div>;
+  // A full-viewport holder (like AuthGate's): the footer starts below the fold and never visibly jumps when the page replaces it (CLS).
+  if (s.loading) return <div className="mw-stack" style={{ minHeight: "100svh" }}><Spinner label="loading" /></div>;
   // A session-check error (network/timeout/server) is not the same as being signed
   // out — showing the guest marketing page here would hide a real problem from a
   // signed-in developer on a network blip (B9/B18). Mirrors AuthGate's error state.

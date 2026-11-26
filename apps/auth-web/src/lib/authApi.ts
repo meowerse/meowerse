@@ -102,11 +102,18 @@ export interface Grant {
   updatedAt: string | null;
 }
 
+/** A hung GET must end (callers show an honest error and re-enable "try again"): abort after this long. */
+export const GET_TIMEOUT_MS = 15_000;
+
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { credentials: "include" });
-  if (res.status === 401) return { error: "no_session" } as T;
-  if (!res.ok) return { error: "http" } as T;
-  return (await res.json()) as T;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), GET_TIMEOUT_MS); // not AbortSignal.timeout: fake-timer testable
+  try {
+    const res = await fetch(url, { credentials: "include", signal: ctl.signal });
+    if (res.status === 401) return { error: "no_session" } as T;
+    if (!res.ok) return { error: "http" } as T;
+    return (await res.json()) as T;
+  } finally { clearTimeout(timer); }
 }
 
 export function getAccount(base: string): Promise<AccountInfo> {
