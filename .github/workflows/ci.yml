@@ -59,3 +59,6 @@ jobs:
 
       - name: e2e (screenshots are compared locally only)
         run: bun run --filter @meowerse/web e2e
+
+      - name: e2e (auth-web prefetch / bfcache)
+        run: bun run --filter @meowerse/auth-web e2e
