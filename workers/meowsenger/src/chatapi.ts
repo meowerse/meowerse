@@ -30,6 +30,8 @@ import {
   listMembers,
   isMember,
   getRole,
+  getSessionAndRole,
+  type Role,
   chatType,
   roleAtLeast,
   renameChat,
@@ -81,6 +83,15 @@ export async function callerSession(req: Request, db: DbClient, now: number): Pr
   const sid = readCookies(req.headers.get("Cookie"))[SESSION_COOKIE];
   if (!sid) return null;
   return getSession(db, sid, now);
+}
+
+/** Session + this chat's role in one D1 read (see getSessionAndRole); 401 callers get session null. */
+export async function callerSessionRole(
+  req: Request, db: DbClient, now: number, chatId: string,
+): Promise<{ session: Session | null; role: Role | null }> {
+  const sid = readCookies(req.headers.get("Cookie"))[SESSION_COOKIE];
+  if (!sid) return { session: null, role: null };
+  return getSessionAndRole(db, sid, chatId, now);
 }
 
 /** GET /api/chats — the caller's sidebar list, plus `viewerId` (the authenticated user, same as /api/session user.id) so a client can bind this response to an account. */
@@ -180,9 +191,10 @@ export async function handleHistory(
   chatId: string,
   cors: Record<string, string>,
 ): Promise<Response> {
-  const me = await callerId(req, db, now);
-  if (!me) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
-  if (!(await isMember(db, chatId, me))) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
+  const { session, role } = await callerSessionRole(req, db, now, chatId);
+  if (!session) return json({ error: "unauthorized" }, 401, cors, { "Cache-Control": "no-store" });
+  const me = session.userId;
+  if (role == null) return json({ error: "forbidden" }, 403, cors, { "Cache-Control": "no-store" });
   const q = new URL(req.url).searchParams;
   const stub = conversation(env).get(conversation(env).idFromName(chatId));
   const around = q.get("around");
@@ -421,9 +433,9 @@ export async function handleListMembers(
   chatId: string,
   cors: Record<string, string>,
 ): Promise<Response> {
-  const me = await callerId(req, db, now);
-  if (!me) return json({ error: "unauthorized" }, 401, cors, NS);
-  if ((await getRole(db, chatId, me)) == null) return json({ error: "forbidden" }, 403, cors, NS);
+  const { session, role } = await callerSessionRole(req, db, now, chatId);
+  if (!session) return json({ error: "unauthorized" }, 401, cors, NS);
+  if (role == null) return json({ error: "forbidden" }, 403, cors, NS);
   return json({ members: await listMembers(db, chatId) }, 200, cors, NS);
 }
 

@@ -45,7 +45,7 @@ export async function createSession(
   return s;
 }
 
-function toSession(row: Record<string, unknown>): Session {
+export function toSession(row: Record<string, unknown>): Session {
   return {
     id: String(row.id), userId: String(row.user_id),
     accessExp: Number(row.access_exp), createdAt: Number(row.created_at), expiresAt: Number(row.expires_at),

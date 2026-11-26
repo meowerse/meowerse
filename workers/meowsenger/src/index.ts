@@ -9,6 +9,7 @@ import { handleLogin, handleCallback } from "./oidc";
 import { handleSession, handleLogout } from "./api";
 import {
   callerSession,
+  callerSessionRole,
   handleListChats,
   handleCreateChat,
   handleHistory,
@@ -40,7 +41,7 @@ import {
   handleSetPrivacy,
   handleDeleteAccount,
 } from "./chatapi";
-import { getRole, chatType } from "./chats";
+import { chatType } from "./chats";
 
 // The expensive D1-write POSTs (create-group / add-member / join|subscribe /
 // invite / join-request / forward / push-subscribe). Free-tier D1 caps writes at 100k/day
@@ -233,13 +234,11 @@ async function handleWs(req: Request, env: Env, deps: Deps): Promise<Response> {
   if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426, headers: NS });
   const chatId = new URL(req.url).searchParams.get("chat");
   if (!chatId) return new Response("chat required", { status: 400, headers: NS });
-  const sess = await callerSession(req, deps.getDb(), deps.now());
+  // One D1 read for session + membership role: role is null for non-members (the gate) and is
+  // forwarded to the DO so it can authorize admin/owner message-delete (Slice 5) without a D1 read.
+  const { session: sess, role } = await callerSessionRole(req, deps.getDb(), deps.now(), chatId);
   if (!sess) return new Response("unauthorized", { status: 401, headers: NS });
   const me = sess.userId;
-  // A single membership lookup: getRole returns null for non-members (the gate)
-  // and the caller's role otherwise. The role is forwarded to the DO so it can
-  // authorize admin/owner message-delete (Slice 5) without a second D1 read.
-  const role = await getRole(deps.getDb(), chatId, me);
   if (role == null) return new Response("forbidden", { status: 403, headers: NS });
   // Slice 6: forward the chat's `type` too, so the DO can enforce the channel
   // read-only rule (member sockets on a channel can't post) without a D1 read.
