@@ -119,7 +119,7 @@ async function getJson<T>(url: string): Promise<T> {
 export function getAccount(base: string): Promise<AccountInfo> {
   return getJson<AccountInfo>(`${base}/api/account`);
 }
-export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; error?: string }> {
+export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; csrf?: string; error?: string }> {
   return postJson(`${base}/api/account/password`, { csrf, current_password: current, new_password: next });
 }
 export function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {

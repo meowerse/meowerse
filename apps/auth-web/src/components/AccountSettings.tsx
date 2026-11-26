@@ -52,6 +52,7 @@ export default function AccountSettings({ base }: { base: string }) {
   const [needPassword, setNeedPassword] = useState(false); // server said our login is stale and this account has a password
   const [needTelegram, setNeedTelegram] = useState(false); // stale login on a Telegram-only account: sign in again
 
+  const [pwBusy, setPwBusy] = useState(false);
   const seq = useRef(0); // reload counter: only the latest request's answer may change state (a late 200 must not undo a newer 401)
   const acctRef = useRef(acct);
   acctRef.current = acct;
@@ -121,9 +122,18 @@ export default function AccountSettings({ base }: { base: string }) {
 
   async function changePassword(e: FormEvent) {
     e.preventDefault();
-    if (!acct) return;
-    const r = await postAccountPassword(base, acct.csrf, cur, next);
-    if (r.ok) { toast({ message: "password changed", variant: "success" }); setCur(""); setNext(""); }
+    if (!acct || pwBusy) return;
+    setPwBusy(true);
+    let r: Awaited<ReturnType<typeof postAccountPassword>>;
+    try { r = await postAccountPassword(base, acct.csrf, cur, next); } catch { r = { error: "network" }; } finally { setPwBusy(false); }
+    if (r.ok) {
+      supersedeReloads(); // an account read that started before the rotation would bring back the old csrf
+      // The server rotated this session: adopt its CSRF token in place (acctRef too, so the csrf-changed reset in reload() doesn't fire).
+      const cur0 = acctRef.current; // not the submit-time `acct`: a reload may have landed during the request
+      if (r.csrf && cur0) { const a = { ...cur0, csrf: r.csrf }; acctRef.current = a; setAcct(a); }
+      toast({ message: "password changed. you were signed out everywhere else.", variant: "success" }); setCur(""); setNext("");
+    }
+    else if (r.error === "conflict" || r.error === "no_session") toast({ message: "your password may have been changed from somewhere else or your session ended. reload the page and sign in again if needed.", variant: "error" });
     else toast({ message: r.error === "wrong_password" ? "current password is wrong" : "could not change password", variant: "error" });
   }
 
@@ -226,7 +236,7 @@ export default function AccountSettings({ base }: { base: string }) {
           <form onSubmit={changePassword} className="mw-stack">
             <Field label="current password" type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" required />
             <Field label="new password" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" minLength={12} required />
-            <Button variant="primary" type="submit">update password</Button>
+            <Button variant="primary" type="submit" disabled={pwBusy}>update password</Button>
           </form>
         </Card>
       )}

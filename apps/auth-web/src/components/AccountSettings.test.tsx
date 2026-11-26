@@ -327,6 +327,118 @@ describe("AccountSettings identity, ordering and restore (PR-21 review)", () => 
   });
 });
 
+describe("AccountSettings password change rotates the session", () => {
+  const WITH_PW = { ...ACCOUNT, hasPassword: true };
+  const GRANT = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  function setup(pwResponse: unknown) {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, body: JSON.parse(String(init.body)) }); return u.endsWith("/password") ? json(pwResponse) : json({ ok: true }); }
+      return u.endsWith("/grants") ? json({ grants: [GRANT] }) : json(WITH_PW);
+    });
+    page();
+    return posts;
+  }
+  async function change() {
+    fireEvent.change(await screen.findByLabelText("current password"), { target: { value: "oldpassword12" } });
+    fireEvent.change(screen.getByLabelText("new password"), { target: { value: "newpassword123" } });
+    fireEvent.submit(screen.getByRole("button", { name: "update password" }).closest("form")!);
+  }
+
+  it("adopts the csrf from the response: the next action posts the NEW token and the page stays signed in", async () => {
+    const posts = setup({ ok: true, csrf: "c-new" });
+    await change();
+    await waitFor(() => expect(posts.map((p) => p.url)).toEqual(["https://api/api/account/password"]));
+    expect(posts[0]!.body.csrf).toBe("c");
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c-new");
+    expect(screen.queryByText(/to manage your account/)).toBeNull();
+  });
+
+  it("the submit button is disabled while the change is in flight: a double click posts once", async () => {
+    let release!: () => void;
+    const posts: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push(u); await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      return u.endsWith("/grants") ? json({ grants: [] }) : json(WITH_PW);
+    });
+    page();
+    await change();
+    const btn = screen.getByRole("button", { name: "update password" }) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(true));
+    fireEvent.submit(btn.closest("form")!);
+    expect(posts).toHaveLength(1);
+    release();
+    await waitFor(() => expect(btn.disabled).toBe(false));
+  });
+
+  it("a conflict answer is reported honestly (not 'could not change password' as if nothing happened), and the form re-enables", async () => {
+    setup({ error: "conflict" });
+    await change();
+    expect(await screen.findByText(/changed from somewhere else or your session ended/)).not.toBeNull();
+    expect((screen.getByRole("button", { name: "update password" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a reload that started BEFORE the change cannot revert the adopted csrf", async () => {
+    let late!: (r: Response) => void;
+    let accountGets = 0;
+    const posts: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, ...JSON.parse(String(init.body)) }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500); // leaves a "try again" that reloads WITHOUT resetting the form
+      return ++accountGets === 1 ? json(WITH_PW) : new Promise<Response>((r) => { late = r; });
+    });
+    page();
+    fireEvent.click(await screen.findByRole("button", { name: "try again" })); // reload in flight (answers with the OLD csrf)
+    await waitFor(() => expect(accountGets).toBe(2));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await screen.findByText(/password changed/);
+    late(json(WITH_PW)); // stale answer, csrf "c"
+    await new Promise((r) => setTimeout(r, 20));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.csrf).toBe("c-new");
+  });
+
+  it("a reload that LANDED during the request is not overwritten by the submit-time account (only csrf changes)", async () => {
+    let release!: () => void;
+    let accountGets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500);
+      return json(++accountGets === 1 ? WITH_PW : { ...WITH_PW, username: "renamed" });
+    });
+    page();
+    await screen.findByText("alxnko");
+    await change();
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "try again" }));
+    await screen.findByText("renamed");
+    release();
+    await screen.findByText(/password changed/);
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.getByText("renamed")).not.toBeNull();
+  });
+
+  it("an old worker answering { ok: true } without csrf still works (additive response)", async () => {
+    const posts = setup({ ok: true });
+    await change();
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c");
+  });
+});
+
 describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
   const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
   const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };

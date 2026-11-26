@@ -42,9 +42,14 @@ test("change password: bad csrf 403, wrong current 400, correct 200; recovery re
   const { env, deps, sess, csrf } = await loggedIn("neko_pw");
   expect((await post(env, deps, "/api/account/password", sess, { csrf: "WRONG", current_password: "accttest1234", new_password: "newpass123456" })).status).toBe(403);
   expect((await post(env, deps, "/api/account/password", sess, { csrf, current_password: "nope", new_password: "newpass123456" })).status).toBe(400);
-  expect((await post(env, deps, "/api/account/password", sess, { csrf, current_password: "accttest1234", new_password: "newpass123456" })).status).toBe(200);
+  const ok = await post(env, deps, "/api/account/password", sess, { csrf, current_password: "accttest1234", new_password: "newpass123456" });
+  expect(ok.status).toBe(200);
+  // the session was rotated: the old cookie is dead, the new cookie + csrf from the response carry on
+  expect((await post(env, deps, "/api/account/recovery-codes", sess, { csrf })).status).toBe(401);
+  const sess2 = cookieValue(ok.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  const csrf2 = ((await ok.json()) as { csrf: string }).csrf;
 
-  const rc = await post(env, deps, "/api/account/recovery-codes", sess, { csrf });
+  const rc = await post(env, deps, "/api/account/recovery-codes", sess2, { csrf: csrf2 });
   expect(((await rc.json()) as { recoveryCodes: string[] }).recoveryCodes.length).toBe(8);
 });
 

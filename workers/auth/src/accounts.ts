@@ -1,7 +1,8 @@
 import { validatePassword, genRecoveryCodes, normalizeRecoveryCode } from "@meowerse/auth-shared";
 import { hashPassword, verifyPassword, DEFAULT_PBKDF2, CHEAP_PBKDF2, type Pbkdf2Params } from "./crypto";
 import { randomId } from "./security";
-import { accountPresent, allOf, sessionLive, guardedInsert } from "./codeguard";
+import { IDLE_TTL, ABSOLUTE_TTL } from "./session";
+import { accountPresent, allOf, sessionLive, guardedInsert, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
@@ -185,31 +186,48 @@ export async function getAccountDetail(db: DbClient, accountId: string): Promise
 /** Change password — verify the current one, validate + hash the new one. */
 export async function changePassword(
   db: DbClient,
-  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; keepSessionIdHash?: string },
+  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; sessionIdHash: string; newSession: { idHash: string; csrf: string; now: number } },
 ): Promise<{ ok: boolean; error?: string }> {
   const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [i.accountId] });
   const row = cred.rows[0];
   if (!row) return { ok: false, error: "no_password" };
-  if (!(await verifyPassword(i.currentPassword, String(row.phc)))) return { ok: false, error: "wrong_password" };
+  const oldPhc = String(row.phc);
+  if (!(await verifyPassword(i.currentPassword, oldPhc))) return { ok: false, error: "wrong_password" };
   const pw = validatePassword(i.newPassword);
   if (!pw.ok) return { ok: false, error: pw.error };
   const phc = await hashPassword(pw.password, i.pbkdf2 ?? DEFAULT_PBKDF2);
-  // One batch: the new hash lands together with the revocation of every OTHER session and every
-  // refresh/access token of the account, so a stolen session or token cannot outlive the password change.
-  await db.batch(
+  const ns = i.newSession;
+  // The verify + hash above take ~1 s, so everything is re-checked INSIDE the batch. Statement 0 is the gate: it only
+  // writes while the credential is still the one we verified (no lost update between two submits) AND the calling session
+  // is still live (a session revoked meanwhile cannot mint a new one). Every later statement is guarded on OUR new hash
+  // being the current one (salted, so unique): a loser of the race changes nothing and can never revoke the winner's
+  // fresh session. Atomic: the user never ends with zero or two valid sessions.
+  const ours: Guard = { sql: "EXISTS (SELECT 1 FROM password_credentials WHERE account_id = ? AND phc = ?)", args: [i.accountId, phc] };
+  const gate = allOf({ sql: "phc = ?", args: [oldPhc] }, sessionLive(i.sessionIdHash, i.accountId, ns.now));
+  const res = await db.batch(
     [
-      { sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] },
+      { sql: `UPDATE password_credentials SET phc = ? WHERE account_id = ? AND ${gate.sql}`, args: [phc, i.accountId, ...gate.args] },
+      { sql: `UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
       {
-        sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND id_hash IS NOT ?",
-        args: [i.accountId, i.keepSessionIdHash ?? null],
+        // auth_time = now / amr = pwd: the user just proved the password (same shape as rotateSession).
+        sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+              SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${accountPresent(i.accountId).sql} AND ${ours.sql}`,
+        args: [ns.idHash, i.accountId, ns.now, "pwd", ns.csrf, ns.now + IDLE_TTL, ns.now + ABSOLUTE_TTL, i.accountId, ...ours.args],
       },
       // DELETE (not "mark used"): a used row would make the holder's next refresh look like token REUSE and raise a
       // false token.reuse_detected audit. With no row it is a plain invalid_grant.
-      { sql: "DELETE FROM refresh_tokens WHERE account_id = ?", args: [i.accountId] },
-      { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL", args: [i.accountId] },
+      { sql: `DELETE FROM refresh_tokens WHERE account_id = ? AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
+      { sql: `UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
     ],
     "write",
   );
+  if ((res[0]?.rowsAffected ?? 0) !== 1) {
+    // Nothing was written. Say why (read-only): account deleted, session no longer live, or someone else changed the password first.
+    if (!(await accountExists(db, i.accountId))) return { ok: false, error: "account_gone" };
+    const live = await db.execute({ sql: `SELECT ${sessionLive(i.sessionIdHash, i.accountId, ns.now).sql} AS live`, args: sessionLive(i.sessionIdHash, i.accountId, ns.now).args });
+    return { ok: false, error: Number(live.rows[0]?.live) === 1 ? "conflict" : "no_session" };
+  }
+  if ((res[2]?.rowsAffected ?? 0) !== 1) return { ok: false, error: "account_gone" };
   return { ok: true };
 }
 
