@@ -300,7 +300,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, atBottomRef, onLogScroll, scrollToTail, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, scrollToTail, endTail, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onIncoming, onMessageDeleted, consumeReply, onRevoked });
@@ -923,7 +923,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
             )}
 
             <div className="mw-chat__logwrap">
-            <div className="mw-chat__log" tabIndex={-1} ref={logRef} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
+            <div className="mw-chat__log" tabIndex={-1} ref={logRef} onWheel={endTail} onTouchStart={endTail} onPointerDown={endTail} onKeyDown={endTail} onScrollEnd={endTail} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (

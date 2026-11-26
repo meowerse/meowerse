@@ -396,6 +396,8 @@ export interface UseConversation {
   onLogScroll: () => void;
   /** One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
   scrollToTail: () => void;
+  /** End a scrollToTail in flight (user input, scrollend): atBottom is recomputed from the REAL distance. */
+  endTail: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
   /** Read-only mirror of the active chat id, for the view's own async guards. */
   activeRef: RefObject<string | null>;
@@ -504,6 +506,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const restoreRef = useRef<ScrollAnchor | "bottom" | null>(null);
   const programmaticRef = useRef(false); // our own scroll writes are not the user's
   const tailUntilRef = useRef(0); // a smooth scrollToTail is in flight until this time (ms)
+  const tailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTopRef = useRef(0); // previous frame's scrollTop (an upward frame = the user, not us)
   const userScrolledRef = useRef(false);
   // Revalidation generation, shared by every entry: bumped by each run and by the socket
   // effect's cleanup, so a run that was superseded (or whose chat was left) can never commit.
@@ -697,6 +701,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // "fresh" cache entry that has a hole in the middle.
       verifiedRef.current = false;
       userScrolledRef.current = false;
+      tailUntilRef.current = 0; // a smooth scroll of the chat just left must not force this one to bottom
+      if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
       restoreRef.current = null;
       const cached = chatId && !view.cold ? peekEntry(chatId) : undefined;
       if (cached && cached.messages.length > 0) {
@@ -851,30 +857,57 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
   }, [base, markAttached, commitLog]);
 
+  const endTail = useCallback(() => {
+    if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
+    if (tailUntilRef.current === 0) return;
+    tailUntilRef.current = 0;
+    const el = logRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    atBottomRef.current = atBottom;
+    anchorRef.current = computeAnchor(el, atBottom);
+    if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
+  }, [sendRead]);
+
   const scrollToTail = useCallback(() => {
     const el = logRef.current;
     if (!el) return;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    tailUntilRef.current = performance.now() + (reduce ? 0 : 600); // shortcut: 600 ms cap on the smooth scroll
     atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
+    lastTopRef.current = el.scrollTop;
+    if (!reduce) {
+      // The window ends on scrollend / user input / reaching the tail; this timer is only the fallback.
+      tailUntilRef.current = performance.now() + 700;
+      if (tailTimerRef.current != null) clearTimeout(tailTimerRef.current);
+      tailTimerRef.current = setTimeout(endTail, 700);
+    }
     el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
-  }, []);
+  }, [endTail]);
+  useEffect(() => () => { if (tailTimerRef.current != null) clearTimeout(tailTimerRef.current); }, []);
 
   const onLogScroll = useCallback(() => {
     const el = logRef.current;
     if (!el) return;
-    const toTail = performance.now() < tailUntilRef.current;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const movedUp = el.scrollTop < lastTopRef.current - 1;
+    lastTopRef.current = el.scrollTop;
+    // Trust the in-flight window only while we are still travelling DOWN toward a tail we have not reached.
+    if (tailUntilRef.current !== 0 && (movedUp || dist < NEAR_BOTTOM_PX || performance.now() >= tailUntilRef.current)) {
+      tailUntilRef.current = 0;
+      if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
+    }
+    const toTail = tailUntilRef.current !== 0;
     if (!programmaticRef.current && !toTail) userScrolledRef.current = true;
     if (el.scrollTop < 60) void loadOlder();
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (dist < 120 && hasNewerRef.current) void loadNewer();
-    const atBottom = dist < NEAR_BOTTOM_PX || toTail; // mid-flight frames are not "scrolled up"
+    const nearBottom = dist < NEAR_BOTTOM_PX;
+    const atBottom = nearBottom || toTail; // mid-flight frames are not "scrolled up"
     atBottomRef.current = atBottom;
     // TODO(perf, review 5): this measures the DOM on every scroll event. Kept synchronous on purpose:
     // the leave-save reads it in a layout cleanup, where a throttled/rAF value could be stale or
     // belong to the previous chat. Revisit only with a way to flush the pending value on leave.
     anchorRef.current = computeAnchor(el, atBottom);
-    if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
+    if (nearBottom && !hasNewerRef.current) sendRead(logStateRef.current); // acks only on a really settled bottom; sendRead dedups on newest createdAt
   }, [loadOlder, loadNewer, sendRead]);
 
   // `chatId` is the chat of the SOCKET that delivered the frame (its effect's closure), never
@@ -1714,7 +1747,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   return {
     messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, atBottomRef, onLogScroll, scrollToTail, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, scrollToTail, endTail, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };

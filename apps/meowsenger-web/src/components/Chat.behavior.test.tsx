@@ -1480,7 +1480,7 @@ describe("Chat island — phone Back navigation", () => {
 describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
   const mm = window.matchMedia;
   afterEach(() => {
-    window.matchMedia = mm; vi.restoreAllMocks();
+    window.matchMedia = mm; vi.restoreAllMocks(); vi.useRealTimers();
     delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
   });
   /** Make the log look scrolled `up` px from the tail; counts scrollTop WRITES. */
@@ -1599,5 +1599,84 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
     act(() => fireEvent.click(screen.getByLabelText("jump to latest messages")));
     await waitFor(() => expect(screen.queryByLabelText("jump to latest messages")).toBeNull());
     expect(screen.queryByText(/new message/)).toBeNull(); // not resurrected with the old count
+  });
+
+  describe("scrollToTail window (smooth scroll in flight)", () => {
+    const fake = () => vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const reads = (ws: MockWebSocket) => ws.sentFrames().filter((f) => f.type === "read").length;
+    /** Pill up with 300px of real distance, fake timers on, pill activated (scrollTo is a stub: distance never shrinks). */
+    async function armed() {
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "w1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      fake();
+      act(() => fireEvent.click(pill));
+      return { ws, s };
+    }
+
+    it.each([
+      ["wheel", (l: HTMLElement) => fireEvent.wheel(l)],
+      ["touchstart", (l: HTMLElement) => fireEvent.touchStart(l)],
+      ["keydown", (l: HTMLElement) => fireEvent.keyDown(l, { key: "ArrowUp" })],
+    ])("user %s inside the window ends it: a live message is counted, never pinned", async (_n, input) => {
+      const { ws, s } = await armed();
+      act(() => { input(logEl()); });
+      s.writes.mockClear();
+      live(ws, "w2");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(s.writes).not.toHaveBeenCalled();
+    });
+
+    it("a frame that moves scrollTop UP inside the window ends it", async () => {
+      const { ws, s } = await armed();
+      s.at(200); s.at(260); // forward frame then a flick back up
+      s.writes.mockClear();
+      live(ws, "w2");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(s.writes).not.toHaveBeenCalled();
+    });
+
+    it.each([["scrollend", () => fireEvent(logEl(), new Event("scrollend"))], ["the timer fallback", () => vi.advanceTimersByTime(1000)]])(
+      "window ending by %s recomputes atBottom from the REAL distance (no stale true)", async (_n, end) => {
+        const { ws } = await armed();
+        act(() => { end(); });
+        live(ws, "w2");
+        await screen.findByRole("button", { name: "1 new message" });
+      });
+
+    it("reaching the real bottom ends the window and acks the read once", async () => {
+      const { ws, s } = await armed();
+      const before = reads(ws);
+      s.at(0); // target reached
+      live(ws, "w2"); // at the bottom: not counted
+      expect(screen.queryByText(/new message/)).toBeNull();
+      s.at(250); // user scrolls up again after arrival: must be honoured immediately
+      live(ws, "w3");
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(reads(ws) - before).toBeLessThanOrEqual(1);
+    });
+
+    it("a chat switch inside the window does not leak it: the new chat is not forced to bottom and not acked", async () => {
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+      H.history = { c1: [msg()], c2: [msg({ id: "n1", chatId: "c2", senderId: "u3", body: "carol says hi", createdAt: 1500 })] };
+      const ws = await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      open(ws);
+      const s = scrolledUp(300); live(ws, "w1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      fake();
+      act(() => fireEvent.click(pill));
+      act(() => fireEvent.click(screen.getByText("Carol")));
+      await waitFor(() => expect(screen.getByText("carol says hi")).toBeTruthy());
+      const ws2 = MockWebSocket.room;
+      open(ws2);
+      const before = reads(ws2);
+      s.at(300 - 0); // first real frame of the new chat, still inside 600 ms: 300px from the tail
+      emit(ws2, { type: "message", message: msg({ id: "z1", chatId: "c2", senderId: "u3", body: "carol again", createdAt: 3000 }) });
+      await screen.findByRole("button", { name: "1 new message" });
+      expect(reads(ws2) - before).toBe(0);
+    });
   });
 });
