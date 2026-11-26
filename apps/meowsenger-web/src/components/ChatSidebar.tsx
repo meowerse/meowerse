@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type SyntheticEvent } from "react";
 import { shownName, shownUsername } from "../lib/userName";
-import { searchGlobal, type ChatSummary, type Message } from "../lib/chat";
+import { searchGlobal, loadHistory, type ChatSummary, type Message } from "../lib/chat";
+import { enter, beginWork, peekEntry, putT } from "../lib/store/conversationTokens";
 import { Avatar } from "./Avatar";
 import { Icon } from "@meowerse/ui";
 
@@ -91,6 +92,8 @@ export function ChatSidebar({
     return () => { cancelled = true; window.clearTimeout(t); };
   }, [q, base]);
   const searchMode = q.trim().length > 0;
+  // Intent prefetch (hover / keyboard focus / touch down on a row): all logic lives in a lazy chunk.
+  const intent = (e: SyntheticEvent) => { void import("../lib/store/prefetch").then((m) => m.onIntent({ enter, beginWork, peekEntry, putT, loadHistory }, base, e as never)).catch(() => {}); };
 
   return (
     <aside className="mw-chat__side">
@@ -135,7 +138,7 @@ export function ChatSidebar({
         </nav>
       ) : (
 
-      <nav className="mw-chat__list" aria-label="chats">
+      <nav className="mw-chat__list" aria-label="chats" onPointerOver={intent} onPointerOut={intent} onPointerDown={intent} onFocus={intent} onBlur={intent}>
         {loading && chats.length === 0 && (
           // Shimmer placeholder rows while the first list load is in flight.
           <div className="mw-skel-list" aria-hidden="true">
@@ -176,6 +179,7 @@ export function ChatSidebar({
             <button
               key={c.id}
               className={`mw-chatrow${c.id === activeId ? " is-active" : ""}${unread ? " has-unread" : ""}`}
+              data-intent={c.id === activeId ? undefined : c.id}
               onClick={() => onSelect(c.id)}
             >
               <span className="mw-chatrow__avatar">
