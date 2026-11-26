@@ -36,6 +36,7 @@ const H = vi.hoisted(() => ({
   olderGate: null as Promise<void> | null,
   /** rows answered to a `before=` (older page) read */
   older: [] as Message[],
+  rowRenders: 0,
   disableImpl: (async () => {}) as () => Promise<void>,
 }));
 
@@ -66,6 +67,12 @@ vi.mock("../lib/chat", async (importActual) => {
     resolveChat: vi.fn(async () => ({ error: "not_found" })),
     openDirect: vi.fn(async () => ({ error: "user_not_found" })),
   };
+});
+
+// Count row renders: MessageItem calls renderBody once per non-deleted row render.
+vi.mock("../lib/messageText", async (importActual) => {
+  const a = await importActual<typeof import("../lib/messageText")>();
+  return { ...a, renderBody: (t: string) => { H.rowRenders++; return a.renderBody(t); } };
 });
 
 // The real drawer needs a full mutation flow; a stub that reports a change is enough here.
@@ -286,6 +293,57 @@ describe("Chat island — presence + typing", () => {
     await waitFor(() => expect(screen.getAllByText("online").length).toBeGreaterThan(0));
     emit(ws, { type: "typing", userId: "u2", on: true });
     await waitFor(() => expect(screen.getByText("typing…")).toBeTruthy());
+  });
+});
+
+describe("Chat island — render isolation (N6/N7)", () => {
+  async function mountMany(n: number): Promise<MockWebSocket> {
+    H.history = { c1: Array.from({ length: n }, (_, i) => msg({ id: `m${i}`, body: `line ${i}`, createdAt: 1000 + i * 1000, senderId: i % 3 ? "u2" : "u1" })) };
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText(`line ${n - 1}`)).toBeTruthy());
+    open(ws);
+    return ws;
+  }
+
+  it("a typing frame, a presence frame and a toast re-render 0 message rows", async () => {
+    const ws = await mountMany(30);
+    const before = H.rowRenders;
+    emit(ws, { type: "typing", userId: "u2", on: true });
+    await waitFor(() => expect(screen.getByText("typing…")).toBeTruthy());
+    emit(ws, { type: "presence_snapshot", online: ["u2"], away: [] });
+    await waitFor(() => expect(screen.getAllByText("online").length).toBeGreaterThan(0));
+    emit(ws, { type: "error", code: "rate_limited" });
+    await waitFor(() => expect(screen.getByText("you're sending too fast — slow down a moment")).toBeTruthy());
+    expect(H.rowRenders - before).toBe(0);
+  });
+
+  it("a new live message renders only the rows it touches, not the whole log", async () => {
+    const ws = await mountMany(30);
+    const before = H.rowRenders;
+    emit(ws, { type: "message", message: msg({ id: "mnew", senderId: "u2", body: "fresh", createdAt: 99_000 }) });
+    await waitFor(() => expect(within(logEl()).getByText("fresh")).toBeTruthy());
+    expect(H.rowRenders - before).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("Chat island — last-seen label", () => {
+  it("refreshes on the one-minute clock with no other state change", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); // Date only: waitFor keeps its real timers
+    try {
+      vi.setSystemTime(1_000_000_000);
+      H.chats = [dm({ peerLastSeenAt: 1_000_000_000 - 30_000 })];
+      const tick: Array<() => void> = [];
+      const real = window.setInterval.bind(window);
+      vi.spyOn(window, "setInterval").mockImplementation(((fn: () => void, ms?: number) => { if (ms === 60_000) tick.push(fn); return real(fn, ms); }) as typeof window.setInterval);
+      await mountOpen();
+      await waitFor(() => expect(screen.getByText("last seen just now")).toBeTruthy());
+      vi.setSystemTime(1_000_000_000 + 61_000);
+      act(() => tick.forEach((f) => f()));
+      await waitFor(() => expect(screen.getByText("last seen 1m ago")).toBeTruthy());
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
   });
 });
 

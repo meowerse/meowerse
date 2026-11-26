@@ -1,4 +1,4 @@
-import { useEffect, useState, type SyntheticEvent } from "react";
+import { memo, useEffect, useState, type SyntheticEvent } from "react";
 import { shownName, shownUsername } from "../lib/userName";
 import { searchGlobal, loadHistory, type ChatSummary, type Message } from "../lib/chat";
 import { enter, beginWork, peekEntry, putT } from "../lib/store/conversationTokens";
@@ -32,7 +32,7 @@ function chatTitle(c: ChatSummary): string {
   return c.peerUsername ? shownName(c.peerDisplayName, c.peerUsername) : (c.peerDisplayName || c.name || "direct message");
 }
 
-export function ChatSidebar({
+export const ChatSidebar = memo(function ChatSidebar({
   chats,
   activeId,
   online,
@@ -262,4 +262,4 @@ export function ChatSidebar({
       )}
     </aside>
   );
-}
+});

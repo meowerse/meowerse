@@ -10,6 +10,7 @@ import { useConversation, type SendResult, isForbidden } from "../hooks/useConve
 import { useInbox } from "../hooks/useInbox";
 import { useConnectionIndicator } from "../hooks/useConnectionIndicator";
 import { ChatSidebar } from "./ChatSidebar";
+import { PeerStatus, ToastHost } from "./Leaves";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
@@ -31,15 +32,9 @@ const DELETE_WINDOW_MS = 24 * 3600_000; // 24h
 // still feeling live; a focused tab also refreshes on visibilitychange/focus.
 const SIDEBAR_POLL_MS = 45000;
 
-/** DM header sub-line when the peer is offline: "last seen 5m ago" (else "offline"). */
-function lastSeenLabel(ms: number | null | undefined): string {
-  if (!ms) return "offline";
-  const s = Math.floor((Date.now() - ms) / 1000);
-  if (s < 60) return "last seen just now";
-  if (s < 3600) return `last seen ${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `last seen ${Math.floor(s / 3600)}h ago`;
-  if (s < 604800) return `last seen ${Math.floor(s / 86400)}d ago`;
-  return "last seen " + new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+/** Own + not pending/queued-for-delete/tombstone + inside `win` at time `t` (UX gating; the server enforces). */
+function canAct(meId: string | undefined, m: Bubble, win: number, t: number): boolean {
+  return !!meId && m.senderId === meId && !m.pending && m.queued !== "delete" && !m.isDeleted && t - m.createdAt <= win;
 }
 
 /**
@@ -90,7 +85,6 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set()); // selected message ids
   const [menu, setMenu] = useState<{ m: Bubble; x: number; y: number } | null>(null); // context menu
-  const [toast, setToast] = useState<string | null>(null); // transient non-blocking note
   const [confirmBulk, setConfirmBulk] = useState(false); // bulk-delete confirmation dialog
   // Screen-reader announcements for NEW incoming messages only (#7). Rendered as
   // additive children in an aria-live region; capped so the DOM stays bounded.
@@ -121,7 +115,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     return map;
   }, [roster]);
 
-  const toastTimerRef = useRef<number | null>(null);
+  const toastRef = useRef<{ show: (text: string) => void }>(null);
 
   const resolveNameRef = useRef<(id: string) => string>(() => "");
   const meIdRef = useRef<string | null>(null);
@@ -167,11 +161,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // Surface a small transient note (e.g. a server rejection). Non-blocking: it
   // auto-dismisses after a few seconds and never interrupts typing.
-  const showToast = useCallback((text: string) => {
-    setToast(text);
-    if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 3200);
-  }, []);
+  const showToast = useCallback((text: string) => { toastRef.current?.show(text); }, []);
 
   // Conversation-driven callbacks into the view (stable — the hook mirrors them):
   //  - a read receipt was sent → zero the active chat's sidebar unread badge.
@@ -453,8 +443,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Warm the on-demand panel chunks once the browser is idle after first paint.
   useEffect(() => prefetchPanels(), []);
 
-  // Clear the toast timer on unmount so it can't fire into a dead component.
-  useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
+  // Clock for the edit/delete windows: ticks once a minute so rows stay memo-stable between ticks.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const iv = window.setInterval(() => setNow(Date.now()), 60_000); return () => window.clearInterval(iv); }, []);
 
   // Track browser connectivity so the header connection dot distinguishes "offline"
   // (red) from "reconnecting" (amber) — a compact, dev-visible health signal.
@@ -558,12 +549,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // Can I still edit / delete this message? (own + within window, ignoring optimistic
   // bubbles and tombstones). Mirrors the server's checks — purely for showing the action.
-  function canEdit(m: Bubble): boolean {
-    return !!me && m.senderId === me.id && !m.pending && m.queued !== "delete" && !m.isDeleted && Date.now() - m.createdAt <= EDIT_WINDOW_MS;
-  }
-  function canDelete(m: Bubble): boolean {
-    return !!me && m.senderId === me.id && !m.pending && m.queued !== "delete" && !m.isDeleted && Date.now() - m.createdAt <= DELETE_WINDOW_MS;
-  }
+  function canEdit(m: Bubble): boolean { return canAct(me?.id, m, EDIT_WINDOW_MS, Date.now()); }
+  function canDelete(m: Bubble): boolean { return canAct(me?.id, m, DELETE_WINDOW_MS, Date.now()); }
 
   // Best-effort clipboard write with a toast on the outcome. Falls back to a toast
   // when the Clipboard API is unavailable (insecure context / older browser).
@@ -759,6 +746,88 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
       }
     : null;
 
+  // Latest closures, read through stable wrappers so memoised rows/sidebar never see a new callback.
+  const L = useRef({ onSaveEdit, sendDelete, toggleSelect, openEmoji, sendReact, jumpToMessage, retrySend, discardFailedSend, openSearchResult, refreshChats });
+  // Layout effect (not render-time): runs before any event handler and never writes a ref from a discarded render.
+  useLayoutEffect(() => { L.current = { onSaveEdit, sendDelete, toggleSelect, openEmoji, sendReact, jumpToMessage, retrySend, discardFailedSend, openSearchResult, refreshChats }; });
+  const rowH = useMemo(() => ({
+    onReply: (m: Bubble) => setReplyingTo(m),
+    onStartEdit: (m: Bubble) => setEditingId(m.id),
+    onCancelEdit: () => setEditingId(null),
+    onSaveEdit: (m: Bubble, body: string) => L.current.onSaveEdit(m, body),
+    onDelete: (m: Bubble) => { L.current.sendDelete(m); },
+    onToggleSelect: (m: Bubble) => L.current.toggleSelect(m),
+    onContextMenu: (m: Bubble, x: number, y: number) => setMenu({ m, x, y }),
+    onReact: (m: Bubble, x: number, y: number) => L.current.openEmoji(m, x, y),
+    onToggleReaction: (m: Bubble, emoji: string) => L.current.sendReact(m, emoji),
+    onJumpToReply: (id: string) => L.current.jumpToMessage(id),
+    onRetrySend: (m: Bubble) => { L.current.retrySend(m); },
+    onEditFailedSend: (m: Bubble) => { const text = L.current.discardFailedSend(m); setRestoreText((r) => ({ text, nonce: (r?.nonce ?? 0) + 1 })); },
+  }), []);
+  const onSidebarSelect = useCallback((id: string) => selectChat(id), []); // eslint-disable-line react-hooks/exhaustive-deps -- selectChat only touches refs + setters
+  const onSidebarOpenResult = useCallback((c: string, m: string) => L.current.openSearchResult(c, m), []);
+  const onNewChatClick = useCallback(() => setNewChatOpen(true), []);
+  const onSettingsClick = useCallback(() => setSettingsOpen(true), []);
+  const onSidebarIntent = useCallback((k: "newChat" | "settings") => preload(k)(), []);
+  const onSidebarRetry = useCallback(() => { void L.current.refreshChats(); }, []);
+
+  // Run / day-separator flags, derived once per `messages` change (not per row per render).
+  const runFlags = useMemo(() => messages.map((m, i) => {
+    const prev = messages[i - 1];
+    return {
+      // Group consecutive messages from the same sender (within 5 min): avatar + name once per run.
+      firstInRun: !prev || prev.senderId !== m.senderId || !!prev.isDeleted || m.createdAt - prev.createdAt > 5 * 60_000,
+      // A day separator precedes the first message of each calendar day (#10/#12).
+      newDay: !prev || new Date(m.createdAt).toDateString() !== new Date(prev.createdAt).toDateString(),
+    };
+  }), [messages]);
+  const peerAvatarUrl = activeChat?.peerAvatarUrl ?? null;
+  // The row elements are memoised on what rows actually read, so a typing/presence/toast/sidebar
+  // render reuses them and React skips the whole log.
+  const rows = useMemo(() => messages.map((m, i) => {
+    const mine = me != null && m.senderId === me.id;
+    const key = m.tempId ?? m.id;
+    const { firstInRun, newDay } = runFlags[i];
+    // Sender avatar + name are group/channel-only, and only on the first of a run.
+    const showSenderMeta = isMembered && !mine && firstInRun;
+    // "seen" only for DMs: in a group one member's read watermark isn't "everyone saw it". (§ audit #1)
+    const seen = !isMembered && mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
+    const sender = isMembered
+      ? (memberMap.get(m.senderId) ?? { name: UNKNOWN_SENDER, avatarUrl: null })
+      : { name: peerName, avatarUrl: peerAvatarUrl };
+    const replyName = isMembered && m.replyTo
+      ? (memberMap.get(m.replyTo.senderId)?.name ?? UNKNOWN_SENDER)
+      : peerName;
+    return (
+      <Fragment key={key}>
+        {newDay && (
+          <div className="mw-daysep" role="separator">
+            <span>{fmtDay(m.createdAt)}</span>
+          </div>
+        )}
+        <MessageItem
+          m={m}
+          meId={me?.id ?? null}
+          mine={mine}
+          senderName={sender.name}
+          senderAvatarUrl={sender.avatarUrl}
+          grouped={isMembered}
+          showSenderMeta={showSenderMeta}
+          firstInRun={firstInRun}
+          replyName={replyName}
+          seen={seen}
+          canEdit={canAct(me?.id, m, EDIT_WINDOW_MS, now)}
+          canDelete={canAct(me?.id, m, DELETE_WINDOW_MS, now)}
+          selectMode={selectMode}
+          selected={selected.has(m.id)}
+          editing={editingId === m.id}
+          registerRef={registerRow}
+          {...rowH}
+        />
+      </Fragment>
+    );
+  }), [messages, runFlags, me, isMembered, memberMap, peerName, peerAvatarUrl, myLastId, peerLastReadAt, now, selectMode, selected, editingId, rowH, registerRow]);
+
   return (
     <div className="mw-chat" data-open={open ? "1" : "0"}>
       {/* Anchors the document outline at h1 for the /app view (#34). */}
@@ -777,16 +846,16 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         meId={me?.id}
         me={me}
         base={base}
-        onSelect={selectChat}
-        onOpenResult={openSearchResult}
-        onNewChatClick={() => setNewChatOpen(true)}
-        onSettingsClick={() => setSettingsOpen(true)}
-        onIntent={(k) => preload(k)()}
+        onSelect={onSidebarSelect}
+        onOpenResult={onSidebarOpenResult}
+        onNewChatClick={onNewChatClick}
+        onSettingsClick={onSettingsClick}
+        onIntent={onSidebarIntent}
         onLogout={onLogout}
         unsent={queuedByChat}
         loading={loadingChats}
         error={chatsError}
-        onRetry={() => { void refreshChats(); }}
+        onRetry={onSidebarRetry}
       />
 
       <section className="mw-chat__main">
@@ -840,9 +909,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                   </span>
                   <span className="mw-chat__headcol">
                     <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
-                    {peerTyping
-                      ? <span className="mw-chat__typing">typing…</span>
-                      : <span className="mw-chat__presence">{peerAway ? "away" : peerOnline ? "online" : lastSeenLabel(activeChat.peerLastSeenAt)}</span>}
+                    <PeerStatus typing={peerTyping} away={peerAway} online={peerOnline} lastSeenAt={activeChat.peerLastSeenAt} now={now} />
                   </span>
                 </>
               )}
@@ -951,70 +1018,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                   <p className="mw-emptylog__text mw-muted">no messages yet. say hi</p>
                 </div>
               )}
-              {messages.map((m, i) => {
-                const mine = me != null && m.senderId === me.id;
-                const key = m.tempId ?? m.id;
-                // Group consecutive messages from the same sender (within 5 min) so
-                // the avatar + name render once per run, not on every bubble.
-                const prev = messages[i - 1];
-                const firstInRun =
-                  !prev || prev.senderId !== m.senderId || prev.isDeleted || m.createdAt - prev.createdAt > 5 * 60_000;
-                // A day separator precedes the first message of each calendar day (#10/#12).
-                const newDay = !prev || new Date(m.createdAt).toDateString() !== new Date(prev.createdAt).toDateString();
-                // Sender avatar + name are group/channel-only, and only on the first
-                // of a run. DMs never show them (the peer is named in the header).
-                const showSenderMeta = isMembered && !mine && firstInRun;
-                // "seen" only for DMs — in a group one member's read watermark
-                // isn't "everyone saw it". (§ audit #1)
-                const seen = !isMembered && mine && key === myLastId && !m.pending && peerLastReadAt >= m.createdAt;
-                // Resolve the sender's name + avatar (groups/channels look up the map,
-                // falling back to the raw id; DMs keep the peer shortcut).
-                const sender = isMembered
-                  ? (memberMap.get(m.senderId) ?? { name: UNKNOWN_SENDER, avatarUrl: null })
-                  : { name: peerName, avatarUrl: activeChat.peerAvatarUrl };
-                const replyName = isMembered && m.replyTo
-                  ? (memberMap.get(m.replyTo.senderId)?.name ?? UNKNOWN_SENDER)
-                  : peerName;
-                return (
-                  <Fragment key={key}>
-                    {newDay && (
-                      <div className="mw-daysep" role="separator">
-                        <span>{fmtDay(m.createdAt)}</span>
-                      </div>
-                    )}
-                    <MessageItem
-                    m={m}
-                    meId={me?.id ?? null}
-                    mine={mine}
-                    senderName={sender.name}
-                    senderAvatarUrl={sender.avatarUrl}
-                    grouped={isMembered}
-                    showSenderMeta={showSenderMeta}
-                    firstInRun={firstInRun}
-                    replyName={replyName}
-                    seen={seen}
-                    canEdit={canEdit(m)}
-                    canDelete={canDelete(m)}
-                    selectMode={selectMode}
-                    selected={selected.has(m.id)}
-                    editing={editingId === m.id}
-                    onReply={setReplyingTo}
-                    onStartEdit={(mm) => setEditingId(mm.id)}
-                    onCancelEdit={() => setEditingId(null)}
-                    onSaveEdit={onSaveEdit}
-                    onDelete={sendDelete}
-                    onToggleSelect={toggleSelect}
-                    onContextMenu={(mm, x, y) => setMenu({ m: mm, x, y })}
-                    onReact={openEmoji}
-                    onToggleReaction={sendReact}
-                    onJumpToReply={jumpToMessage}
-                    registerRef={registerRow}
-                    onRetrySend={retrySend}
-                    onEditFailedSend={(mm) => { const text = discardFailedSend(mm); setRestoreText((r) => ({ text, nonce: (r?.nonce ?? 0) + 1 })); }}
-                    />
-                  </Fragment>
-                );
-              })}
+              {rows}
             </div>
             {newCount > 0 && !hasNewer && (
               <button type="button" className="mw-chat__newpill" onClick={toNewest}>
@@ -1111,7 +1115,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
           props={{ x: emojiFor.x, y: emojiFor.y, onPick: (emoji: string) => sendReact(emojiFor.m, emoji), onClose: () => setEmojiFor(null) }}
         />
       )}
-      {toast && <div className="mw-apptoast" role="status">{toast}</div>}
+      <ToastHost ref={toastRef} />
 
       <ConfirmDialog
         open={confirmBulk}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Message } from "../lib/chat";
 import { renderBody } from "../lib/messageText";
 import { Avatar } from "./Avatar";
@@ -32,7 +32,7 @@ function fmtTime(ms: number): string {
  * a select checkbox. The frame/socket logic lives in Chat.tsx — this component is
  * pure presentation + local edit-draft state, driven by callbacks.
  */
-export function MessageItem({
+export const MessageItem = memo(function MessageItem({
   m,
   meId,
   mine,
@@ -353,4 +353,4 @@ export function MessageItem({
       </div>
     </div>
   );
-}
+});
