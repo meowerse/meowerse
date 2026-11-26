@@ -8,7 +8,13 @@ const load = () => (core ??= import("./push").catch((e) => { core = null; throw 
 export const syncPushSubscription = (base: string, userId: string): Promise<boolean> =>
   load().then((m) => m.syncPushSubscription(base, userId), () => false);
 // Rejects when the core can't load; the logout caller treats disablePush as best-effort (and a later call retries the load).
-export const disablePush = (base: string, userId?: string): Promise<void> => load().then((m) => m.disablePush(base, userId));
+// Without the push code the most important local step still runs: drop the browser subscription so this device stops getting the
+// old account's pushes. The "synced" marker is left alone: the next sign-in sees a foreign marker and repairs it.
+export const disablePush = (base: string, userId?: string): Promise<void> =>
+  load().then((m) => m.disablePush(base, userId), async (e) => {
+    try { await (await (await navigator.serviceWorker?.getRegistration())?.pushManager.getSubscription())?.unsubscribe(); } catch { /* best effort */ }
+    throw e;
+  });
 // A load failure rejects into maybeNotify's try/catch, which then falls back to the page notification: at worst a
 // duplicate toast on a device whose push is confirmed AND whose chunk failed to load, never a lost one.
 export const pushConfirmedFor = (userId: string): Promise<boolean> => load().then((m) => m.pushConfirmedFor(userId));

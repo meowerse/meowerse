@@ -28,4 +28,23 @@ describe("pushLazy", () => {
     await m.syncPushSubscription("b", "u").catch(() => {});
     expect(() => m.clearPushError()).not.toThrow();
   });
+
+  it("when the chunk can't load, disablePush still unsubscribes the browser subscription and rejects", async () => {
+    const unsubscribe = vi.fn(async () => true);
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistration: async () => ({ pushManager: { getSubscription: async () => ({ unsubscribe }) } }) } });
+    const m = await import("./pushLazy");
+    await expect(m.disablePush("b", "u")).rejects.toThrow();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+  it("a successful load does not take the fallback path", async () => {
+    attempts = 1; // skip the failing first attempt
+    const unsubscribe = vi.fn(async () => true);
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistration: async () => ({ pushManager: { getSubscription: async () => ({ unsubscribe }) } }) } });
+    const m = await import("./pushLazy");
+    await m.disablePush("b", "u");
+    expect(core.disablePush).toHaveBeenCalled();
+    expect(unsubscribe).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });
