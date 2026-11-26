@@ -9,6 +9,7 @@ function assertProdOrigins(list: string) {
   expect(origins.length).toBeGreaterThan(0);
   for (const o of origins) {
     const u = new URL(o);
+    expect(u.origin, o).toBe(o); // rejects trailing slash, path, userinfo, uppercase: must equal a browser Origin
     expect(u.protocol, o).toBe("https:");
     expect(u.hostname, o).toMatch(PROD_HOST);
     expect(o, o).not.toMatch(/localhost|127\.0\.0\.1|\.local\b|workers\.dev/);
@@ -52,6 +53,11 @@ test("production vars never trust localhost or enable dev mode", () => {
   const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
   assertConfig(cfg);
   assertProdOrigins(DEFAULT_ORIGINS);
+});
+
+test("assertProdOrigins rejects non-canonical entries (trailing slash never matches a browser Origin)", () => {
+  expect(() => assertProdOrigins("https://x.alxnko.dev/")).toThrow();
+  expect(() => assertProdOrigins("https://x.alxnko.dev")).not.toThrow();
 });
 
 test("assertConfig also inspects env.<name>.vars (a staging localhost fails)", () => {
