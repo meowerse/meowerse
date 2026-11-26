@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { MenuItem } from "./MessageMenu";
-import { LazyPanel, panels, prefetchPanels } from "./LazyPanel";
+import { LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
 import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
 import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
@@ -706,6 +706,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
         onSettingsClick={() => setSettingsOpen(true)}
+        onIntent={(k) => preload(k)()}
         onLogout={onLogout}
         unsent={queuedByChat}
         loading={loadingChats}
@@ -732,6 +733,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 <button
                   className="mw-chat__grouphead"
                   onClick={() => setDrawerOpen(true)}
+                  onPointerEnter={preload("members")}
+                  onFocus={preload("members")}
                   aria-label={isChannel ? "channel members" : "group members"}
                 >
                   <span className="mw-chat__headavatar">
@@ -791,6 +794,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 <button
                   className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
                   onClick={() => setSearchOpen((v) => !v)}
+                  onPointerEnter={preload("search")}
+                  onFocus={preload("search")}
                   aria-label="search this chat"
                   aria-pressed={searchOpen}
                   title="search"
@@ -803,6 +808,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 aria-label="more chat actions"
                 aria-haspopup="menu"
                 aria-expanded={moreMenu != null}
+                onPointerEnter={preload("menu", "search")}
+                onFocus={preload("menu", "search")}
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
                   setMoreMenu({ x: r.right - 168, y: r.bottom + 6 });
@@ -844,7 +851,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               />
             )}
 
-            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
+            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (

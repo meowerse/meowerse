@@ -17,7 +17,9 @@ const dupes = html.filter((f, i) => html.findIndex((g) => sitePath(g) === sitePa
 if (dupes.length) throw new Error(`built files that map to an already-built page: ${dupes.join(", ")}`);
 const problems = checkBuild(SITE, PAGES, built);
 if (problems.length) throw new Error(`search-engine signals:\n  ${problems.join("\n  ")}`);
-const eager = bundleReport(dist).eagerJsGzip;
+const report = bundleReport(dist);
+const eager = report.eagerJsGzip;
+if (report.eagerJs.length === 0 || eager === 0) throw new Error("bundle budget: no eager JS found for /app (dist/app/index.html markers changed?); refusing to pass vacuously");
 if (eager > EAGER_JS_GZIP_BUDGET) throw new Error(`/app eager JS is ${eager} B gzip, over the ${EAGER_JS_GZIP_BUDGET} B budget (perf/bundle.ts): lazy-load the new code`);
 console.log(`bundle: /app eager JS ${eager} B gzip (budget ${EAGER_JS_GZIP_BUDGET})`);
 const paths = sitemapPaths(PAGES);

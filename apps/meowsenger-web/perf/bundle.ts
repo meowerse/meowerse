@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
-// Eager-closure ceiling (gzip -9 bytes). Measured 102987 after the on-demand panels were split out (was 108800); ~1 kB headroom.
+// Eager-closure ceiling (gzip -9 bytes). Measured 103502 (102987 before the focus/pending/preload fixes) after the on-demand panels were split out (was 108800); ~0.5 kB headroom.
 // Raise only with a reason in the PR; a panel imported statically from Chat/AppShell again trips this.
 export const EAGER_JS_GZIP_BUDGET = 104_000;
 
