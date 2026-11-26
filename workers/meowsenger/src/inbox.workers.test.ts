@@ -242,7 +242,7 @@ describe("UserInbox DO", () => {
       await age("iu13", 200_000);
       await notify(stub("iu13"), "withheld");
       await instrument("iu13"); // D1 healthy again
-      await runInDurableObject(stub("iu13"), async (inst: UserInbox) => { (inst as unknown as { unavailableUntil: Map<string, number> }).unavailableUntil.clear(); }); // back-off elapsed
+      await runInDurableObject(stub("iu13"), async (inst: UserInbox) => { (inst as unknown as { unavailableUntil: Map<string, number> }).unavailableUntil.forEach((_, k, m) => m.set(k, Date.now() - 1)); }); // back-off elapsed (exercise the real expiry comparison)
       await notify(stub("iu13"), "delivered");
       await new Promise((r) => setTimeout(r, 50));
       const cu = frames.filter((f) => f.type === "chat_update");
