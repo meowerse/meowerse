@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
-// @ts-expect-error node typings are not in this package tsconfig (realsql.test.ts has the same baseline error)
 import { readFileSync } from "node:fs";
-// @ts-expect-error see above
 import { DatabaseSync } from "node:sqlite";
 import { getRole, getSessionAndRole } from "./chats";
 import { getSession, sha256hex } from "./session";

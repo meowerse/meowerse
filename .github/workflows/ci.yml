@@ -6,62 +6,120 @@ on:
 permissions:
   contents: read
 
+# New pushes to a PR supersede the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.5
 
-      - uses: actions/setup-node@v4
+      - name: Workflow guard (YAML parse, SHA pins, timeouts, concurrency)
+        run: bun scripts/ci-lint.ts
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 26
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+
+      - name: Cache bun downloads (never node_modules; install still runs)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" install bun install --frozen-lockfile
 
       - name: Lint
-        run: just lint
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" lint just lint
+
+      - name: Typecheck workers (prod + test) and gate self-test
+        run: just typecheck
 
       - name: Test (with coverage gate)
-        run: just test
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" test just test
+
+      - name: Step timing summary
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" --summary
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 26
 
+      - name: Cache bun downloads (never node_modules; install still runs)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" install bun install --frozen-lockfile
+
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('./apps/web/package.json').devDependencies['@playwright/test']")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
 
       - name: Install Chromium for Playwright
         working-directory: apps/web
-        run: bunx playwright install --with-deps chromium
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" playwright-install bunx playwright install --with-deps chromium
 
       - name: Build meow.alxnko.dev (postbuild CSP + guards)
-        run: bun run --filter @meowerse/web build
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" build-web bun run --filter @meowerse/web build
 
       - name: Build meowsenger-web (postbuild asserts SEO, landing warm-up manifest, app bundle budget)
-        run: bun run --filter @meowerse/meowsenger-web build
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" build-meowsenger-web bun run --filter @meowerse/meowsenger-web build
 
       - name: Byte budgets
-        run: bun run --filter @meowerse/web budget
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" budget bun run --filter @meowerse/web budget
 
       - name: e2e (screenshots are compared locally only)
-        run: bun run --filter @meowerse/web e2e
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" e2e-web bun run --filter @meowerse/web e2e
 
       - name: e2e (auth-web prefetch / bfcache)
-        run: bun run --filter @meowerse/auth-web e2e
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" e2e-auth-web bun run --filter @meowerse/auth-web e2e
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-failure
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+            apps/auth-web/test-results
+            apps/auth-web/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Step timing summary
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" --summary

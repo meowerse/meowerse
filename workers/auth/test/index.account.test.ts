@@ -142,7 +142,8 @@ test("GET /api/account reports deleteEnabled true only for flag \"1\"/\"true\"",
 }, 20000); // heavy: many real PBKDF2 (600k) logins; >5s on loaded CI runners (flaked 3x). Assertions unchanged.
 
 test("POST /api/account/delete with the flag off/unset → 503 deletion_unavailable, nothing changes, no audit row", async () => {
-  for (const extra of [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }]) {
+  const offFlags: Record<string, string>[] = [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }];
+  for (const extra of offFlags) {
     const { store, env, deps, sess, csrf, accountId } = await loggedIn(`neko_off_${Object.values(extra)[0] ?? "unset"}`, extra);
     const before = JSON.stringify(store.tables);
     const auditBefore = (store.tables.audit_log ?? []).length;

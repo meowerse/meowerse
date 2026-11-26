@@ -1,5 +1,4 @@
 import { expect, test } from "vitest";
-// @ts-ignore -- this package has no @types/node; vitest runs it in node
 import { readFileSync } from "node:fs";
 import { DEFAULT_ORIGINS } from "./security";
 

@@ -41,8 +41,28 @@ export function cookieValue(setCookie: string | null, name: string): string | un
  * userinfo loop end-to-end without a real Turso. Handlers are written against
  * the worker's own SQL, so they track the real column order.
  */
-export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
-  const t: Record<string, Row[]> = {
+/** Every table the in-memory store models (a closed set so `tables.x` is never `undefined`). */
+export type TableName =
+  | "accounts"
+  | "password_credentials"
+  | "recovery_codes"
+  | "telegram_links"
+  | "sessions"
+  | "oauth_codes"
+  | "access_tokens"
+  | "refresh_tokens"
+  | "oauth_clients"
+  | "oauth_client_redirect_uris"
+  | "oauth_client_secrets"
+  | "consents"
+  | "rate_limits"
+  | "login_tickets"
+  | "login_ticket_ctx"
+  | "audit_log"
+  | "account_delete_confirmations";
+
+export function memStore(): { db: DbClient; tables: Record<TableName, Row[]> } {
+  const t: Record<TableName, Row[]> = {
     accounts: [],
     password_credentials: [],
     recovery_codes: [],

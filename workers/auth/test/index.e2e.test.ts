@@ -95,7 +95,7 @@ test("full loop: signup → authorize → consent → token → userinfo, then r
     env,
     deps,
   );
-  const b4 = (await r4.json()) as Record<string, string>;
+  const b4 = (await r4.json()) as { token_type: string; scope: string; id_token: string; access_token: string };
   expect(r4.status).toBe(200);
   expect(r4.headers.get("Cache-Control")).toContain("no-store");
   expect(b4.token_type).toBe("Bearer");

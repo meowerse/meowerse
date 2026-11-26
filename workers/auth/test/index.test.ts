@@ -37,7 +37,7 @@ test("redirects *.alxnko.eu.org to *.alxnko.dev with 308, CORS and HSTS", async 
 
   // Preflight OPTIONS on .eu.org domain returns 204 with CORS
   // Loopback origins are only trusted with the dev flag; production never echoes them.
-  const prePreflight = (e: typeof env) => handle(new Request("https://auth.alxnko.eu.org/token", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), e, deps);
+  const prePreflight = (e: typeof env & { AUTH_DEV?: string }) => handle(new Request("https://auth.alxnko.eu.org/token", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } }), e, deps);
   const pre = await prePreflight({ ...env, AUTH_DEV: "1" });
   expect(pre.status).toBe(204);
   expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
@@ -97,7 +97,7 @@ test("run_worker_first GET pages (/login,/signup,/consent) serve the real asset;
       return new Response("", { status: 404 });
     },
   };
-  const env = { ...base, ASSETS };
+  const env = { ...base, ASSETS: ASSETS as unknown as Fetcher };
   for (const p of ["/login", "/signup", "/consent"]) {
     const r = await handle(new Request(`https://iss${p}`), env, deps);
     expect(r.status).toBe(200);
@@ -343,7 +343,7 @@ test("malformed JSON body degrades to empty params (no throw)", async () => {
 
 test("default fetch wrapper turns a thrown handler into a 500", async () => {
   const mod = (await import("../src/index")).default;
-  const r = await mod.fetch(new Request("https://iss/jwks"), { AUTH_SIGNING_KEYS: "not json" } as never);
+  const r = await mod.fetch(new Request("https://iss/jwks"), { AUTH_SIGNING_KEYS: "not json" } as never, { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext);
   expect(r.status).toBe(500);
   expect(((await r.json()) as { error: string }).error).toBe("internal_error");
 });

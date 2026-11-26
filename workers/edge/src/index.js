@@ -7,13 +7,30 @@
  */
 
 /**
- * @typedef {Object} Rule
- * @property {RegExp}   [pattern]
- * @property {Function} [match]   (text, msg) => replyString | null
- * @property {string | ((msg: any) => string)} [reply]
+ * @typedef {Object} Msg  The slice of a Telegram message this bot reads.
+ * @property {string} [text]
+ * @property {string} [caption]
+ * @property {number} message_id
+ * @property {{ id: number }} chat
+ * @property {{ id?: number, is_bot?: boolean }} [from]
  */
 
-const pick = a => a[Math.floor(Math.random() * a.length)];
+/**
+ * @typedef {Object} Env  Worker bindings (secrets + the optional KV namespace).
+ * @property {string} [PATH_SECRET]
+ * @property {string} [TG_SECRET]
+ * @property {{ get(key: string): Promise<string | null>, put(key: string, value: string, opts?: { expirationTtl: number }): Promise<void> }} [BOT_KV]
+ */
+
+/**
+ * @typedef {Object} Rule
+ * @property {RegExp}   [pattern]
+ * @property {(text: string, msg: Msg) => string | null} [match]   dynamic reply or null
+ * @property {string | ((msg: Msg) => string)} [reply]
+ */
+
+/** @param {readonly string[]} a */
+const pick = a => a[Math.floor(Math.random() * a.length)] ?? "";
 
 // ── Catspeak token table ─────────────────────────────────────────────────────
 // kind: 'cat'  = unambiguous cat sound (a real signal)
@@ -73,6 +90,7 @@ const CAT_TAILS      = ['', '', '', '', '~', ' 🐾', ' 😺', ' 😻', ' :3', '
 const CAT_TAILS_HYPE = ['!', '~', '!!', ' 😻', ' 🐾😻', ' 😸💕', '!!~', ' 💙'];
 
 // Classify a whole message; return a dynamic reply, or null if not catspeak.
+/** @param {string | undefined} text @returns {string | null} */
 function catspeakReply(text) {
   const raw = (text || '').trim();
   const tokens = raw.split(/[\s!.?~,–—()-]+/u).filter(Boolean);
@@ -94,7 +112,7 @@ function catspeakReply(text) {
   // A lone single face/fragment with no laughter defers to its dedicated rule.
   if (cat === 0 && (face + frag) === 1 && filler === 0) return null;
 
-  const excited = /(.)\1\1/u.test(raw) || /!{2,}/.test(text);
+  const excited = /(.)\1\1/u.test(raw) || /!{2,}/.test(raw);
   const base = Math.random() < 0.7 ? raw.slice(0, 60) : pick(CAT_REPLIES);
   return (base + pick(excited ? CAT_TAILS_HYPE : CAT_TAILS)).slice(0, 64);
 }
@@ -106,7 +124,7 @@ const RULES = [
   { pattern: /meow\s+or\s+not\s+meow/iu, reply: 'meow' },
 
   // Catspeak → dynamic mirror (sounds + faces + light laughter; protected)
-  { match: text => catspeakReply(text) },
+  { match: (/** @type {string} */ text) => catspeakReply(text) },
 
   // Lone cat emoji → a random cat reaction
   { pattern: /^[\s]*[🐱🐈😺😸😻🙀😼😽😾🐾]+[\s]*$/u, reply: () => pick(['😺', '😸', '😻', '🐾', 'nya~']) },
@@ -172,6 +190,7 @@ Disallow: /
 `;
 
 export default {
+  /** @param {Request} request @param {Env} env */
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/.well-known/security.txt' || url.pathname === '/security.txt') {
@@ -202,6 +221,7 @@ export default {
   },
 };
 
+/** @param {{ business_message?: Msg & { business_connection_id?: string }, message?: Msg }} update @param {Env} env */
 async function buildReply(update, env) {
   const biz = update.business_message;
   if (biz) return matchAndBuild(biz, biz.business_connection_id, env);
@@ -212,6 +232,7 @@ async function buildReply(update, env) {
   return null;
 }
 
+/** @param {Msg} msg @param {string | null | undefined} businessConnId @param {Env | undefined} env */
 async function matchAndBuild(msg, businessConnId, env) {
   if (msg.from?.is_bot) return null;
   if (businessConnId && msg.from?.id === OWNER_ID) return null;
@@ -225,7 +246,7 @@ async function matchAndBuild(msg, businessConnId, env) {
     let reply = null;
     if (rule.match) {
       reply = rule.match(text, msg);
-    } else if (rule.pattern.test(text)) {
+    } else if (rule.pattern?.test(text)) {
       reply = typeof rule.reply === 'function' ? rule.reply(msg) : rule.reply;
     }
     if (reply) return makeAction(msg, reply, businessConnId);
@@ -242,7 +263,9 @@ async function matchAndBuild(msg, businessConnId, env) {
   return null;
 }
 
+/** @param {Msg} msg @param {string} text @param {string | null | undefined} businessConnId */
 function makeAction(msg, text, businessConnId) {
+  /** @type {{ method: string, chat_id: number, text: string, business_connection_id?: string, reply_parameters?: { message_id: number } }} */
   const action = { method: 'sendMessage', chat_id: msg.chat.id, text };
   if (businessConnId) action.business_connection_id = businessConnId;
   if (REPLY_TO_TRIGGER) action.reply_parameters = { message_id: msg.message_id };

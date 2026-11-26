@@ -19,7 +19,8 @@ const ROLE_RANK: Record<string, number> = { owner: 2, admin: 1, member: 0 };
 export function roleAtLeast(role: string | null | undefined, min: Role): boolean {
   if (role == null) return false;
   const r = ROLE_RANK[role];
-  return r != null && r >= ROLE_RANK[min];
+  const need = ROLE_RANK[min];
+  return r != null && need != null && r >= need;
 }
 
 /** Slug format shared by validation + availability checks. */

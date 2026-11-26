@@ -22,3 +22,4 @@ workers/*/tmp/
 apps/web/test-results/
 apps/auth-web/test-results/
 apps/web/playwright-report/
+.selftest-*/

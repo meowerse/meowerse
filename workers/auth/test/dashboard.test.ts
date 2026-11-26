@@ -138,6 +138,7 @@ test("updateClient: owner-scoped; not-found + bad redirect rejected; updates sco
 test("management tokens: create + verify; revoked/unknown → null", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const tok = await createManagementToken(routedDb([], log), "o", "ci");
+  if (tok === null) throw new Error("management token not created");
   expect(tok.startsWith("mgmt_")).toBe(true);
   const ins = log.find((c) => c.sql.includes("INSERT INTO management_tokens"));
   expect(ins?.args[0]).toBe(await sha256Hex(tok));
