@@ -394,7 +394,7 @@ export interface UseConversation {
   /** True while the log is at (or near) the live tail; the view reads it for the new-messages pill. */
   atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
-  /** Returns false (does nothing) while an older page is prepending. One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
+  /** Returns false while an older page is prepending (the tap is remembered and replayed once the prepend settles, unless the reader scrolls first). Otherwise one scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
   scrollToTail: (onStart?: () => void) => boolean;
   /** End a scrollToTail in flight (user input, scrollend): atBottom is recomputed from the REAL distance. */
   endTail: () => void;
@@ -484,7 +484,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const logRef = useRef<HTMLDivElement | null>(null);
   const prependingRef = useRef(false);
   const tailWantedRef = useRef<{ onStart?: () => void } | null>(null); // pill tapped mid-prepend: scroll to the tail once it settles (unless the reader scrolls first)
-  const prependRestoreRef = useRef<{ prevHeight: number; anchor: ScrollAnchor | null; done: () => void } | null>(null); // the reader's position when an older page lands: restored in the commit's layout effect
+  const prependRestoreRef = useRef<{ chatId: string; prevHeight: number; anchor: ScrollAnchor | null; done: () => void } | null>(null); // the reader's position when an older page lands: restored in the commit's layout effect
   const scrollToTailRef = useRef<(onStart?: () => void) => boolean>(() => false);
   const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
   const closingRef = useRef(false);
@@ -730,8 +730,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, [view.chatId]);
 
   // A fetch commit made while the user is scrolled up re-applies their anchor before paint
-  // (rows inserted above it must not move the reader). A prepend keeps its own height-diff
-  // restore, and a user scroll since the commit wins.
+  // (rows inserted above it must not move the reader). A prepend is skipped here: it has its own
+  // restore (the layout effect below: anchor row first, height diff only without an anchor).
   useLayoutEffect(() => {
     const r = restoreRef.current;
     if (!r) return;
@@ -750,6 +750,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!r || !el) return;
     prependRestoreRef.current = null;
     r.done();
+    if (r.chatId !== activeRef.current) return; // the chat switched between the commit and this render: never apply the old chat's anchor
     // Anchor row first: live rows appended while the page was in flight make a height diff overshoot.
     if (r.anchor) { applyScroll(r.anchor); return; }
     programmaticRef.current = true; // a scroll event from our own write is not the reader's
@@ -842,17 +843,31 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const older = olderRes.data;
     let committed!: () => void;
     const landed = new Promise<void>((r) => { committed = r; });
-    prependRestoreRef.current = { prevHeight, anchor: computeAnchor(el, false), done: committed };
-    commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
-    // React may render the commit AFTER the next frame under load: wait for it (the layout effect restores before
-    // paint), else a frame-time restore would run against the old height and the rows would jump. Bounded: a commit that changes nothing.
-    await Promise.race([landed, new Promise<void>((r) => setTimeout(r, 500))]);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => {
-      const now = logRef.current;
-      // Normally the layout effect already restored; this is the fallback when the commit has not landed (or changed nothing).
-      if (now && prependRestoreRef.current) now.scrollTop = now.scrollHeight - prependRestoreRef.current.prevHeight;
+    prependRestoreRef.current = { chatId, prevHeight, anchor: computeAnchor(el, false), done: committed };
+    const before = logStateRef.current;
+    const after = commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
+    if (after === null) return; // the chat switched: the entry effect already reset the prepend state
+    if (after === before) {
+      // An empty / all-duplicate page leaves the log unchanged, so no layout effect will run: nothing to restore, settle now.
       prependRestoreRef.current = null;
       settlePrepend();
+      return;
+    }
+    // React may render the commit AFTER the next frame under load: wait for it (the layout effect restores before
+    // paint), else a frame-time restore would run against the old height and the rows would jump. Bounded.
+    await Promise.race([landed, new Promise<void>((r) => setTimeout(r, 500))]);
+    if (activeRef.current !== chatId) return;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => {
+      const now = logRef.current;
+      const r = prependRestoreRef.current;
+      // Fallback when the commit has not rendered yet. With an anchor the DOM is uncommitted (a height diff would be ~0), so
+      // leave the restore pending for the late commit's layout effect (it is chat-guarded and cleared on chat switch);
+      // only the anchor-less height diff is applied here.
+      if (r && !r.anchor) {
+        if (now) now.scrollTop = now.scrollHeight - r.prevHeight;
+        prependRestoreRef.current = null;
+      }
+      if (activeRef.current === chatId) settlePrepend();
       resolve();
     }));
   }, [base, commitLog]);
