@@ -18,15 +18,15 @@ const rules = parseHeaders(app("public/_headers"));
 
 describe("meowsenger.alxnko.dev search-engine classification", () => {
   it("lists exactly the public pages the spec allows (no chats: none are anonymously viewable)", () =>
-    expect(PUBLIC.sort()).toEqual(["/about/", "/privacy/", "/terms/"]));
+    expect(PUBLIC.sort()).toEqual(["/", "/about/", "/privacy/", "/terms/"]));
   it("classifies every page in src/pages, and only those", () =>
     expect([...PUBLIC, ...UNLISTED, ...PRIVATE].sort()).toEqual(sourcePaths));
   it("keeps the app, join and 404 pages out of search", () => {
     for (const p of ["/app/", "/join/", "/404"]) expect(pageSeo(SITE, PAGES, p), p).toEqual({ index: false });
   });
-  it("leaves the home page (the app shell) indexable, canonical to itself, but out of the sitemap", () => {
+  it("lists the landing page: indexable, canonical to itself, in the sitemap", () => {
     expect(pageSeo(SITE, PAGES, "/")).toMatchObject({ index: true, canonical: "https://meowsenger.alxnko.dev/" });
-    expect(sitemapPaths(PAGES)).not.toContain("/");
+    expect(sitemapPaths(PAGES)).toContain("/");
   });
   it("gives each indexable page a canonical on the .dev host and a short sentence-case description", () => {
     for (const p of [...PUBLIC, ...UNLISTED]) {
@@ -38,7 +38,7 @@ describe("meowsenger.alxnko.dev search-engine classification", () => {
     }
   });
   it("builds the sitemap from the public pages only", () => {
-    expect(sitemapPaths(PAGES)).toEqual(["/about/", "/privacy/", "/terms/"]);
+    expect(sitemapPaths(PAGES)).toEqual(["/", "/about/", "/privacy/", "/terms/"]);
     const xml = sitemapXml(SITE, sitemapPaths(PAGES));
     for (const p of [...UNLISTED, ...PRIVATE]) expect(xml).not.toContain(`${SITE}${p}<`);
   });

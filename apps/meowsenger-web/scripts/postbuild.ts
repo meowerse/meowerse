@@ -2,7 +2,7 @@
 // page against the public/unlisted/private classification in src/lib/seo.ts (a new page must be
 // classified; each page must carry the canonical or noindex its class needs) and writes dist/sitemap.xml
 // from the public pages. Any problem fails the build, as does /app's eager JS going over its gzip budget.
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { checkBuild, sitemapPaths, sitemapXml, sitePath } from "@meowerse/ui/seo";
 import { PAGES, SITE } from "../src/lib/seo";
@@ -22,6 +22,23 @@ const eager = report.eagerJsGzip;
 if (report.eagerJs.length === 0 || eager === 0) throw new Error("bundle budget: no eager JS found for /app (dist/app/index.html markers changed?); refusing to pass vacuously");
 if (eager > EAGER_JS_GZIP_BUDGET) throw new Error(`/app eager JS is ${eager} B gzip, over the ${EAGER_JS_GZIP_BUDGET} B budget (perf/bundle.ts): lazy-load the new code`);
 console.log(`bundle: /app eager JS ${eager} B gzip (budget ${EAGER_JS_GZIP_BUDGET})`);
+// PR-22 warm-up manifest: the hashed chunks /app/ needs eagerly, as a data-warm attribute on the landing's "open app"
+// link (src/lib/landing.ts preloads them on intent), so the landing needs no extra request to learn them.
+const warmList = report.eagerJs.map((c) => `/_astro/${c.file}`);
+const warm = warmList.join(" ");
+const shell = /component-url="(\/_astro\/[^"]+\.js)"/.exec(readFileSync(join(dist, "app", "index.html"), "utf8"))?.[1];
+if (!shell || !warmList.includes(shell)) throw new Error("landing warm-up: the AppShell component-url chunk is missing from the manifest");
+for (const u of warmList) if (!/^\/_astro\/[\w.-]+\.js$/.test(u) || !existsSync(join(dist, u))) throw new Error(`landing warm-up: ${u} is not a real dist/_astro chunk`);
+const landing = join(dist, "index.html");
+const lhtml = readFileSync(landing, "utf8");
+if (!lhtml.includes('id="open-app"')) throw new Error('landing: dist/index.html has no id="open-app" link');
+writeFileSync(landing, lhtml.replace('id="open-app"', `id="open-app" data-warm="${warm}"`));
+if (!/<a id="open-app"[^>]*href="\/app\/"/.test(lhtml) || lhtml.includes("astro-island")) throw new Error("landing: needs an #open-app link to /app/ and no React island");
+if (!/<title>[^<]+<\/title>/.test(lhtml)) throw new Error("landing: empty <title>");
+for (const p of ["/about", "/privacy", "/terms"]) if (!lhtml.includes(`href="${p}"`)) throw new Error(`landing: no link to ${p}`);
 const paths = sitemapPaths(PAGES);
+if (!paths.includes("/")) throw new Error("landing: / must be in the sitemap");
+if (/noindex/.test(lhtml) || !lhtml.includes(`rel="canonical" href="${SITE}/"`)) throw new Error("landing: / must be indexable with a self canonical");
+if (!/<meta name="robots" content="noindex">/.test(readFileSync(join(dist, "app", "index.html"), "utf8"))) throw new Error("/app/ must stay noindex");
 writeFileSync(join(dist, "sitemap.xml"), sitemapXml(SITE, paths));
 console.log(`seo: ${Object.keys(built).length} pages classified; sitemap: ${paths.length} pages`);

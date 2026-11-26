@@ -1,8 +1,19 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import AppShell from "../components/AppShell.tsx";
-const base = import.meta.env.PUBLIC_MEOWSENGER_API_URL ?? "";
 ---
-<Layout title="meowsenger" bodyClass="app-page" footer={false} header={false}>
-  <AppShell client:load base={base} />
+<Layout title="meowsenger — real-time chat for the meowerse">
+  <div class="mw-prose">
+    <h1>meowsenger</h1>
+    <p>Fast, real-time chat for the meowerse. Sign in with your meowerse account and start messaging — direct chats, groups, and broadcast channels.</p>
+    <p><a id="open-app" class="mw-btn mw-btn--primary mw-btn--md" href="/app/">open app</a></p>
+    <p class="mw-muted">A personal project by alxnko, run on a best-effort basis on free-tier infrastructure. No ads, no tracking beyond cookieless page counts. Meowsenger is <strong>not end-to-end encrypted</strong>: the server can read your messages. See <a href="/about">about</a> and <a href="/privacy">privacy</a>.</p>
+  </div>
 </Layout>
+<script>
+  import { appForward, armWarm } from "../lib/landing";
+  // Old app deep links (`/?chat=…`) land here: forward them. Otherwise warm the app's chunks on intent.
+  const to = appForward(location);
+  if (to) location.replace(to);
+  const a = document.getElementById("open-app");
+  if (a) armWarm(a, (navigator as { connection?: { saveData?: boolean; effectiveType?: string } }).connection);
+</script>
