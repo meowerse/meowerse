@@ -112,7 +112,7 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   }
 
   // CSRF / cross-site WebSocket hijack guard: every state-changing method and both WS
-  // upgrades must come from an allowed Origin (absent Origin = non-browser client, allowed).
+  // upgrades must come from an allowed Origin (absent Origin is rejected too: browsers always send it).
   if ((m !== "GET" && m !== "HEAD") || path === "/ws" || path === "/inbox/ws") {
     if (!originPermitted(req.headers.get("Origin"), url.origin, env)) return json({ error: "forbidden_origin" }, 403, cors);
   }

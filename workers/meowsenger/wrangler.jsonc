@@ -22,7 +22,7 @@
     "OIDC_CLIENT_ID": "mw_3r2h7kHnfV_tOLGTTND4Yw",
     "OIDC_REDIRECT_URI": "https://meowsenger.alxnko.dev/auth/callback",
     "WEB_ORIGIN": "https://meowsenger.alxnko.dev",
-    "CORS_ORIGINS": "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321,http://127.0.0.1:8787",
+    "CORS_ORIGINS": "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org",
     // Web Push (VAPID). The PUBLIC key + subject are public; the PRIVATE key is a
     // secret set once via `wrangler secret put VAPID_PRIVATE_JWK`.
     "VAPID_PUBLIC_KEY": "BKUWUCdMbpAxBrJdzMMiCvHIokH8F8e-DA3bgIwz9tmFlxMDWQOx9LXhHnhXTc6F7mVviScV9Kcvc5SOzqAg4vo",

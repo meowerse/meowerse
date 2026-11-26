@@ -34,8 +34,10 @@ The purge is best-effort (errors ignored — staleness self-heals at TTL).
 ## Security
 
 - **CORS**: strict allowlist from `CORS_ORIGINS` (default
-  `https://meow.alxnko.eu.org,http://localhost:4321`). The request Origin is
+  `https://meow.alxnko.dev,https://meow.alxnko.eu.org`, https only). The request Origin is
   echoed only when allowlisted; credentials are allowed, so `*` is never used.
+  Local dev: set `ALLOW_LOCALHOST_CORS="1"` in `.dev.vars` (see `.dev.vars.example`) to also
+  accept localhost/`.local` origins; never put dev origins in `wrangler.jsonc` (a config test enforces it).
 - **Auth**: `Authorization: Bearer <API_TOKEN>` on POST routes, compared in
   constant time (`constantTimeEqual`, length-aware, no early return).
 - All input validated; malformed/oversized JSON → 400 (never 500).

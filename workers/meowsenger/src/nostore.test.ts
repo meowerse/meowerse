@@ -15,7 +15,7 @@ import type { Env } from "./types";
 
 const NOT_FOUND_BODY = JSON.stringify({ error: "not found" });
 const ORIGIN = "http://localhost:4321";
-const env = { CORS_ORIGINS: ORIGIN, WEB_ORIGIN: "https://meowsenger.alxnko.dev" } as Env;
+const env = { CORS_ORIGINS: ORIGIN, ALLOW_LOCALHOST_CORS: "1", WEB_ORIGIN: "https://meowsenger.alxnko.dev" } as Env;
 const noRows = { async first() { return undefined; }, async all() { return []; }, async run() {} };
 const auth = {
   async buildAuthorizationUrl() { return { url: "https://auth/authorize", state: "s", nonce: "n", codeVerifier: "c" }; },
@@ -147,7 +147,7 @@ describe("Cache-Control: every response is no-store unless explicitly public", (
     expect(pre.status).toBe(204);
     expect(pre.headers.get("Cache-Control")).toContain("no-store");
     const limited = { ...env, WRITE_LIMIT: { limit: async () => ({ success: false }) } } as Env;
-    const r = await handle(new Request("https://meowsenger.alxnko.dev/api/chats", { method: "POST" }), limited, deps);
+    const r = await handle(new Request("https://meowsenger.alxnko.dev/api/chats", { method: "POST", headers: { Origin: ORIGIN } }), limited, deps);
     expect(r.status).toBe(429);
     expect(r.headers.get("Cache-Control")).toContain("no-store");
   });

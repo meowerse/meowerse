@@ -6,6 +6,7 @@ import type { Env, DbClient, Meow } from "./types";
 
 const env: Env = {
   CORS_ORIGINS: "http://localhost:4321",
+  ALLOW_LOCALHOST_CORS: "1",
   API_TOKEN: "s3cret",
   DATABASE_URL: "libsql://x",
   DATABASE_AUTH_TOKEN: "tok",
