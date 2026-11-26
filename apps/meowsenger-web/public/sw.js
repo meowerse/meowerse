@@ -50,7 +50,7 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const c of wins) {
-      if (c.url.includes("/app")) {
+      if (self.mwPushCore.isAppUrl(c.url)) {
         await c.focus();
         if (chatId && "navigate" in c) await c.navigate(url).catch(() => {});
         return;

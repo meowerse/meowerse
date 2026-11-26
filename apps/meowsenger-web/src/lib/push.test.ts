@@ -771,4 +771,9 @@ describe("sw-core isAppWindow", () => {
     expect(isApp(w("/app/", { visibilityState: "hidden", focused: true }))).toBe(true);
     expect(isApp({ url: "nope" })).toBe(false);
   });
+  it("notificationclick matches by pathname: not /apple-touch-icon.png or /?x=/app", () => {
+    const u = (swCore as unknown as { isAppUrl(u: string): boolean }).isAppUrl;
+    expect(u("https://meowsenger.alxnko.dev/app/?chat=x")).toBe(true);
+    for (const p of ["/apple-touch-icon.png", "/?x=/app", "/about"]) expect(u(`https://meowsenger.alxnko.dev${p}`), p).toBe(false);
+  });
 });
