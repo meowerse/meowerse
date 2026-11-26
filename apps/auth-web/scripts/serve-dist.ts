@@ -43,4 +43,4 @@ createServer((req, res) => {
   }
   res.writeHead(hit.status, headers);
   res.end(req.method === "HEAD" ? undefined : body);
-}).listen(port, "127.0.0.1", () => console.log(`serving dist/ with _headers on http://127.0.0.1:${port}`));
+}).listen(port, "127.0.0.1", () => console.log(`serving ${dist} with _headers on http://127.0.0.1:${port}`));

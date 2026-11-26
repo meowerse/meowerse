@@ -8,6 +8,7 @@ export default defineConfig({
   testDir: "tests/e2e",
   timeout: 45_000,
   reporter: "list",
-  use: { baseURL: `http://127.0.0.1:${PORT}`, browserName: "chromium" },
+  // bfcache is enabled (Playwright disables it by default) so back/forward behaves like a real browser.
+  use: { baseURL: `http://127.0.0.1:${PORT}`, browserName: "chromium", launchOptions: { ignoreDefaultArgs: ["--disable-back-forward-cache"] } },
   webServer: { command: `bun scripts/serve-dist.ts ${PORT} dist-e2e`, url: `http://127.0.0.1:${PORT}/`, reuseExistingServer: false },
 });
