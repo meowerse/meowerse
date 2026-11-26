@@ -4,7 +4,7 @@ import type { Message } from "../chat";
 const loadHistory = vi.fn();
 vi.mock("../chat", () => ({ loadHistory: (...a: unknown[]) => loadHistory(...a) }));
 
-import { prefetchChat, MAX_CONCURRENT } from "./prefetch";
+import { prefetchChat, MAX_CONCURRENT, MAX_STORES_PER_MIN, _resetForTests } from "./prefetch";
 import { setScope, clearAll, conversationCache as cc, getEpoch, purgeChat } from "./index";
 import * as tokens from "./conversationTokens";
 import { loadHistory as lh } from "../chat";
@@ -14,7 +14,7 @@ const rows = (n: number): Message[] => Array.from({ length: n }, (_, i) => ({ id
 const deferred = () => { let res!: (v: unknown) => void; const p = new Promise((r) => { res = r; }); return { p, res }; };
 const setConn = (c: unknown) => Object.defineProperty(navigator, "connection", { value: c, configurable: true });
 
-beforeEach(() => { clearAll(); setScope("A"); loadHistory.mockReset(); loadHistory.mockResolvedValue({ ok: true, status: 200, data: rows(3) }); setConn(undefined); });
+beforeEach(() => { _resetForTests(); clearAll(); setScope("A"); loadHistory.mockReset(); loadHistory.mockResolvedValue({ ok: true, status: 200, data: rows(3) }); setConn(undefined); });
 afterEach(() => setConn(undefined));
 
 describe("prefetchChat", () => {
@@ -82,5 +82,27 @@ describe("prefetchChat", () => {
     loadHistory.mockResolvedValue({ ok: true, status: 200, data: rows(3) });
     await prefetchChat(deps, "", "c4");
     expect([1, 2, 3, 4].map((n) => cc.peek(`c${n}`))).toEqual([undefined, undefined, undefined, undefined]);
+  });
+  it("a failed / empty / unknown result is not refetched for 30 s, then may retry", async () => {
+    vi.useFakeTimers();
+    try {
+      loadHistory.mockResolvedValue({ ok: true, status: 200, data: [] });
+      await prefetchChat(deps, "", "c1");
+      await prefetchChat(deps, "", "c1");
+      expect(loadHistory).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(30_001);
+      await prefetchChat(deps, "", "c1");
+      expect(loadHistory).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it("stores per minute are budgeted so hovering cannot flush the LRU", async () => {
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < MAX_STORES_PER_MIN + 2; i++) await prefetchChat(deps, "", `x${i}`);
+      expect(loadHistory).toHaveBeenCalledTimes(MAX_STORES_PER_MIN);
+      vi.advanceTimersByTime(60_001);
+      await prefetchChat(deps, "", "y");
+      expect(cc.peek("y")).toBeDefined();
+    } finally { vi.useRealTimers(); }
   });
 });

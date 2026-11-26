@@ -46,18 +46,39 @@ describe("ChatSidebar intent prefetch", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     expect(loadHistory).not.toHaveBeenCalled();
   });
-  it("touch pointerdown prefetches at once; touch hover does not arm", async () => {
+  it("touch / pen never prefetch: pointerdown + click makes no request", async () => {
     const { a, b } = mount();
-    fireEvent.pointerOver(a, { pointerType: "touch" }); await flush();
-    await flush();
-    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    for (const pointerType of ["touch", "pen"]) {
+      fireEvent.pointerOver(a, { pointerType }); await flush();
+      fireEvent.pointerDown(b, { pointerType }); await flush();
+      fireEvent.click(b);
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     expect(loadHistory).not.toHaveBeenCalled();
-    fireEvent.pointerDown(b, { pointerType: "touch" }); await flush();
-    await flush();
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await flush();
-    expect(loadHistory).toHaveBeenCalledTimes(1);
-    expect(loadHistory.mock.calls[0].slice(0, 2)).toEqual(["/b", "b"]);
+  });
+  it("hover then click within 150 ms makes no prefetch request", async () => {
+    const { a } = mount();
+    fireEvent.pointerOver(a, { pointerType: "mouse" }); await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    fireEvent.click(a);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(loadHistory).not.toHaveBeenCalled();
+  });
+  it("mouse pointerdown cancels a pending hover timer", async () => {
+    const { a } = mount();
+    fireEvent.pointerOver(a, { pointerType: "mouse" }); await flush();
+    fireEvent.pointerDown(a, { pointerType: "mouse" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(loadHistory).not.toHaveBeenCalled();
+  });
+  it("the timer re-checks at fire time: a row that became the open chat is not prefetched", async () => {
+    const chats = [chat("a", "alpha"), chat("b", "beta")];
+    const props = { chats, online: new Set<string>(), base: "/b", onSelect: () => {}, onOpenResult: () => {}, onNewChatClick: () => {}, loading: false };
+    const { rerender } = render(<ChatSidebar {...props} activeId={null} />);
+    fireEvent.pointerOver(screen.getByRole("button", { name: /alpha/ }), { pointerType: "mouse" }); await flush();
+    rerender(<ChatSidebar {...props} activeId="a" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(loadHistory).not.toHaveBeenCalled();
   });
   it("never arms for the open chat", async () => {
     const { a } = mount("a");
