@@ -129,7 +129,8 @@ test("callback Yes: ONE signed confirm with identity from callback_query.from; t
   expect(body.method).toBe("editMessageText");
   expect(body.chat_id).toBe(42);
   expect(body.message_id).toBe(7);
-  expect(body.text).toContain("1234 5678");
+  expect(body.text).toContain("<code>1234 5678</code>"); // monospace: one tap copies it in Telegram
+  expect((body as unknown as { parse_mode?: string }).parse_mode).toBe("HTML");
   expect(body.text).toContain("auth.alxnko.dev in the browser YOU opened");
   expect(body.text).toContain("Never send it to anyone");
   expect(body.text).not.toContain("signed in");
