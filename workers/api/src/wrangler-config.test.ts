@@ -34,10 +34,22 @@ function assertProdOrigins(list: string) {
   }
 }
 
+function assertConfig(cfg: any) {
+  for (const vars of [cfg.vars, ...Object.values<any>(cfg.env ?? {}).map((e) => e.vars)]) {
+    if (!vars) continue;
+    if (vars.CORS_ORIGINS !== undefined) assertProdOrigins(vars.CORS_ORIGINS);
+    expect(vars.ALLOW_LOCALHOST_CORS).toBeUndefined();
+  }
+}
+
 test("production wrangler CORS_ORIGINS is https-only on the alxnko zones", () => {
   const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-  assertProdOrigins(cfg.vars.CORS_ORIGINS);
-  expect(cfg.vars.ALLOW_LOCALHOST_CORS).toBeUndefined();
+  assertConfig(cfg);
+});
+
+test("assertConfig also inspects env.<name>.vars (a staging localhost fails)", () => {
+  expect(() => assertConfig({ vars: { CORS_ORIGINS: "https://x.alxnko.dev" }, env: { staging: { vars: { CORS_ORIGINS: "https://x.alxnko.dev,http://localhost:4321" } } } })).toThrow();
+  expect(() => assertConfig({ vars: { CORS_ORIGINS: "https://x.alxnko.dev" }, env: { staging: { vars: { ALLOW_LOCALHOST_CORS: "1" } } } })).toThrow();
 });
 
 test("fallback DEFAULT_ORIGINS is https-only on the alxnko zones", () => {

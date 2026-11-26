@@ -34,6 +34,14 @@ function parseJsonc(src: string): any {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
 }
 
+function assertConfig(cfg: any) {
+  for (const vars of [cfg.vars, ...Object.values<any>(cfg.env ?? {}).map((e) => e.vars)]) {
+    if (!vars) continue;
+    if (vars.CORS_ORIGINS !== undefined) assertProdOrigins(vars.CORS_ORIGINS);
+    expect(vars.AUTH_DEV).toBeUndefined();
+  }
+}
+
 test("the shipped wrangler config enables account self-deletion (privacy/terms v4 describe it as live)", () => {
   const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
   // index.ts accountDeleteEnabled() accepts exactly "1" or "true"; a drift here would silently turn deletion off in production.
@@ -42,7 +50,11 @@ test("the shipped wrangler config enables account self-deletion (privacy/terms v
 
 test("production vars never trust localhost or enable dev mode", () => {
   const cfg = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-  assertProdOrigins(cfg.vars.CORS_ORIGINS);
+  assertConfig(cfg);
   assertProdOrigins(DEFAULT_ORIGINS);
-  expect(cfg.vars.AUTH_DEV).toBeUndefined();
+});
+
+test("assertConfig also inspects env.<name>.vars (a staging localhost fails)", () => {
+  expect(() => assertConfig({ vars: { CORS_ORIGINS: "https://x.alxnko.dev" }, env: { staging: { vars: { CORS_ORIGINS: "http://localhost:4321" } } } })).toThrow();
+  expect(() => assertConfig({ vars: { CORS_ORIGINS: "https://x.alxnko.dev" }, env: { staging: { vars: { AUTH_DEV: "1" } } } })).toThrow();
 });

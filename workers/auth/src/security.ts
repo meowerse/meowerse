@@ -6,7 +6,8 @@ export const DEFAULT_ORIGINS = "https://auth.alxnko.dev,https://auth.alxnko.eu.o
 
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;
-  return raw.split(",").map((o) => o.trim()).filter(Boolean);
+  // Fail closed: a non-https entry (e.g. a dashboard-set http://localhost) is ignored outside dev.
+  return raw.split(",").map((o) => o.trim()).filter((o) => o && (o.startsWith("https://") || isDevEnv(env)));
 }
 
 /** Local development flag (wrangler dev / tests): never set in production vars. */

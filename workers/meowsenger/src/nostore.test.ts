@@ -15,7 +15,7 @@ import type { Env } from "./types";
 
 const NOT_FOUND_BODY = JSON.stringify({ error: "not found" });
 const ORIGIN = "http://localhost:4321";
-const env = { CORS_ORIGINS: ORIGIN, WEB_ORIGIN: "https://meowsenger.alxnko.dev" } as Env;
+const env = { CORS_ORIGINS: ORIGIN, ALLOW_LOCALHOST_CORS: "1", WEB_ORIGIN: "https://meowsenger.alxnko.dev" } as Env;
 const noRows = { async first() { return undefined; }, async all() { return []; }, async run() {} };
 const auth = {
   async buildAuthorizationUrl() { return { url: "https://auth/authorize", state: "s", nonce: "n", codeVerifier: "c" }; },

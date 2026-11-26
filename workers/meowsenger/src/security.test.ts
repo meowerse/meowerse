@@ -30,6 +30,12 @@ describe("readCookies", () => {
 });
 
 describe("corsHeaders", () => {
+  it("ignores a non-https CORS_ORIGINS entry unless ALLOW_LOCALHOST_CORS is set (fail closed)", () => {
+    const e = { CORS_ORIGINS: "https://a.example,http://localhost:4321" } as Env;
+    expect(corsHeaders("https://a.example", e)["Access-Control-Allow-Origin"]).toBe("https://a.example");
+    expect(corsHeaders("http://localhost:4321", e)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://localhost:4321", { ...e, ALLOW_LOCALHOST_CORS: "1" })["Access-Control-Allow-Origin"]).toBe("http://localhost:4321");
+  });
   it("falls back to DEFAULT_ORIGINS when CORS_ORIGINS is unset", () => {
     // env.CORS_ORIGINS undefined → `?? ""` then `|| DEFAULT_ORIGINS`; default list
     // includes the UI origin, so it is echoed back.

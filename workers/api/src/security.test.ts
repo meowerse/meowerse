@@ -4,14 +4,21 @@ import type { Env } from "./types";
 
 const env: Env = {
   CORS_ORIGINS: "https://meow.alxnko.eu.org,http://localhost:4321",
+  ALLOW_LOCALHOST_CORS: "1",
   API_TOKEN: "s3cret",
   DATABASE_URL: "libsql://x",
   DATABASE_AUTH_TOKEN: "tok",
 };
 
 describe("corsHeaders", () => {
+  it("ignores a non-https CORS_ORIGINS entry unless ALLOW_LOCALHOST_CORS is set (fail closed)", () => {
+    const e = { ...env, ALLOW_LOCALHOST_CORS: undefined, CORS_ORIGINS: "https://a.example,http://localhost:4321" } as Env;
+    expect(corsHeaders("https://a.example", e)["Access-Control-Allow-Origin"]).toBe("https://a.example");
+    expect(corsHeaders("http://localhost:4321", e)["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(corsHeaders("http://localhost:4321", { ...e, ALLOW_LOCALHOST_CORS: "1" })["Access-Control-Allow-Origin"]).toBe("http://localhost:4321");
+  });
   it("blanket localhost allowance requires ALLOW_LOCALHOST_CORS (default off) and defaults carry no dev origin", () => {
-    const prod = { ...env, CORS_ORIGINS: undefined } as Env;
+    const prod = { ...env, ALLOW_LOCALHOST_CORS: undefined, CORS_ORIGINS: undefined } as Env;
     expect(corsHeaders("http://localhost:5173", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
     expect(corsHeaders("http://localhost:4321", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
     expect(corsHeaders("http://foo.local", prod)["Access-Control-Allow-Origin"]).toBeUndefined();
