@@ -407,6 +407,27 @@ describe("AccountSettings password change rotates the session", () => {
     expect(posts[1]!.csrf).toBe("c-new");
   });
 
+  it("a reload that LANDED during the request is not overwritten by the submit-time account (only csrf changes)", async () => {
+    let release!: () => void;
+    let accountGets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500);
+      return json(++accountGets === 1 ? WITH_PW : { ...WITH_PW, username: "renamed" });
+    });
+    page();
+    await screen.findByText("alxnko");
+    await change();
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "try again" }));
+    await screen.findByText("renamed");
+    release();
+    await screen.findByText(/password changed/);
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.getByText("renamed")).not.toBeNull();
+  });
+
   it("an old worker answering { ok: true } without csrf still works (additive response)", async () => {
     const posts = setup({ ok: true });
     await change();

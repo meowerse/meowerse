@@ -129,7 +129,8 @@ export default function AccountSettings({ base }: { base: string }) {
     if (r.ok) {
       supersedeReloads(); // an account read that started before the rotation would bring back the old csrf
       // The server rotated this session: adopt its CSRF token in place (acctRef too, so the csrf-changed reset in reload() doesn't fire).
-      if (r.csrf) { const a = { ...acct, csrf: r.csrf }; acctRef.current = a; setAcct(a); }
+      const cur0 = acctRef.current; // not the submit-time `acct`: a reload may have landed during the request
+      if (r.csrf && cur0) { const a = { ...cur0, csrf: r.csrf }; acctRef.current = a; setAcct(a); }
       toast({ message: "password changed. you were signed out everywhere else.", variant: "success" }); setCur(""); setNext("");
     }
     else if (r.error === "conflict" || r.error === "no_session") toast({ message: "your password may have been changed from somewhere else or your session ended. reload the page and sign in again if needed.", variant: "error" });

@@ -2,7 +2,7 @@ import { test, expect } from "vitest";
 import { handle } from "../src/index";
 import { issueSession, lookupSession } from "../src/session";
 import { changePassword } from "../src/accounts";
-import { sha256Hex } from "../src/crypto";
+import { sha256Hex, verifyPassword } from "../src/crypto";
 import { createRefreshToken, rotateRefresh } from "../src/refresh";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
@@ -77,6 +77,9 @@ test("after a password change, a stale refresh token over HTTP is a plain invali
   expect(Number(audit.rows[0]!.n)).toBe(0);
 });
 
+const FASTP = { rounds: 1, iter: 500 };
+const livePhc = async (db: DbClient, accountId: string) => String((await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] })).rows[0]!.phc);
+
 const setup = async (name: string) => {
   const store = { db: await freshDb() };
   const keys = await genSigningKeys();
@@ -148,20 +151,22 @@ test("account deleted mid-change: account_gone, no live session, no new cookie v
 
 test("concurrent double submit: exactly ONE request wins (200), the other writes nothing; the live session is the winner's cookie", async () => {
   const { store, s1, csrf, change, accountId } = await setup("neko_rot_conc");
-  const rs = await Promise.all([change(s1, csrf, "newpass123456"), change(s1, csrf, "otherpass1234")]);
-  expect(rs.map((r) => r.status).sort()).toEqual([200, 401]);
+  const pws = ["newpass123456", "otherpass1234"];
+  const rs = await Promise.all(pws.map((pw) => change(s1, csrf, pw)));
+  // Timing decides HOW the loser fails (stale session 401, lost update 409, or it read the new hash first: 400), never whether it does.
+  expect(rs.filter((r) => r.status === 200)).toHaveLength(1);
   const win = rs.find((r) => r.status === 200)!;
-  const lose = rs.find((r) => r.status === 401)!;
+  const lose = rs.find((r) => r.status !== 200)!;
+  expect([401, 409, 400]).toContain(lose.status);
   expect(lose.headers.get("Set-Cookie")).toBeNull();
-  expect(((await lose.json()) as { error: string }).error).toBe("no_session"); // the winner revoked the loser's (shared) session first
+  const winnerPw = pws[rs.indexOf(win)]!;
+  expect(await verifyPassword(winnerPw, await livePhc(store.db, accountId))).toBe(true);
   const cookie = cookieValue(win.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const live = await store.db.execute({ sql: "SELECT id_hash FROM sessions WHERE account_id = ? AND revoked_at IS NULL", args: [accountId] });
   expect(live.rows.map((r) => String(r.id_hash))).toEqual([await sha256Hex(cookie)]);
   expect(await lookupSession(store.db, s1, 1000)).toBeNull();
 }, 30000);
 
-const FASTP = { rounds: 1, iter: 500 };
-const livePhc = async (db: DbClient, accountId: string) => String((await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] })).rows[0]!.phc);
 
 test("scenario A (lost update): a stale-read second change with the SAME old password loses; the winner's password + session survive untouched", async () => {
   const { store, s1, accountId } = await setup("neko_rot_a");
