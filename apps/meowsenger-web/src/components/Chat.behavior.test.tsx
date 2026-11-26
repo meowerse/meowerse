@@ -16,6 +16,7 @@ import type { SessionUser } from "../lib/meowsengerApi";
 
 // Controlled fixtures + spies, referenced from the hoisted vi.mock factories.
 const H = vi.hoisted(() => ({
+  realGate: false, // true: use the production 10 s gap / 250 ms resume debounce
   session: {
     authenticated: true,
     user: { id: "u1", username: "alice", displayName: "Alice", avatarUrl: null, verified: true },
@@ -71,6 +72,13 @@ vi.mock("../lib/push", async (importActual) => ({
   syncPushSubscription: vi.fn(async () => false),
   disablePush: vi.fn(async () => { H.order.push("disablePush"); await H.disableImpl(); }),
 }));
+
+// These tests drive the poll via a plain focus: remove the production 250 ms debounce / 10 s gap
+// (the real values are covered in lib/store/chatList.test.ts and Chat.listGate.test.tsx).
+vi.mock("../lib/store/chatList", async (importActual) => {
+  const m = await importActual<typeof import("../lib/store/chatList")>();
+  return { ...m, createListGate: <T,>(run: () => Promise<T | null>) => m.createListGate(run, H.realGate ? {} : { gap: 0 }), watchResume: (cb: () => void) => m.watchResume(cb, H.realGate ? undefined : 0) };
+});
 
 // Imported AFTER the mocks register (vi.mock is hoisted, so this order is fine).
 import Chat from "./Chat";
@@ -128,6 +136,7 @@ beforeEach(() => {
   H.around = null;
   H.after = [];
   H.older = [];
+  H.realGate = false;
   H.failChats = null;
   H.failHistory = null;
   H.failSession = null;
@@ -619,6 +628,60 @@ describe("Chat island — realtime sidebar", () => {
     expect(screen.queryByText("old")).toBeNull();
   });
 
+  describe("list coordinator (real gap + debounce)", () => {
+    const calls = () => vi.mocked(listChats).mock.calls.length;
+    async function mountReal(real = true): Promise<MockWebSocket> {
+      H.realGate = real;
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 })];
+      await mountOpen();
+      await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+      const inbox = await waitFor(() => { const i = MockWebSocket.inbox; if (!i) throw new Error("no inbox"); return i; });
+      act(() => inbox.mockOpen());
+      return inbox;
+    }
+    it("tab hide/show and rapid focus toggles within the gap make 0 list requests", async () => {
+      await mountReal();
+      const base = calls();
+      for (let i = 0; i < 5; i++) {
+        act(() => setVisibility("hidden")); act(() => setVisibility("visible")); act(() => { window.dispatchEvent(new Event("focus")); });
+      }
+      await new Promise((r) => setTimeout(r, 400)); // past the 250 ms debounce
+      expect(calls() - base).toBe(0);
+    });
+    it("a list response that lands after clearAll (account switch) is dropped", async () => {
+      const inbox = await mountReal();
+      let resolve!: (v: Awaited<ReturnType<typeof listChats>>) => void;
+      vi.mocked(listChats).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+      emit(inbox, { type: "chat_update", chatId: "c2", invalidate: true });
+      await waitFor(() => expect(resolve).toBeTruthy());
+      act(() => clearAll());
+      resolve({ ok: true as const, status: 200, data: [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "STALE-ACCOUNT", lastActivity: 900 })] });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByText("STALE-ACCOUNT")).toBeNull();
+    });
+    it("an unknown-chat delta forces exactly one fetch even inside the gap", async () => {
+      const inbox = await mountReal();
+      const base = calls();
+      H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "old", lastActivity: 100 }), dm({ id: "c9", peerId: "u9", peerUsername: "zed", peerDisplayName: "Zed", lastMessage: "new chat", lastActivity: 5000 })];
+      inbox.mockEmit({ type: "chat_update", chatId: "c9", preview: "new chat", at: 5000, senderId: "u9" }); // outside act(), like a real socket event
+      await waitFor(() => expect(screen.getByText("Zed")).toBeTruthy());
+      await new Promise((r) => setTimeout(r, 100));
+      expect(calls() - base).toBe(1);
+    });
+    it("the 45 s poll is skipped while the inbox socket is open, and runs when it is not", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        const inbox = await mountReal(false);
+        const base = calls();
+        act(() => { vi.advanceTimersByTime(46_000); });
+        expect(calls() - base).toBe(0);
+        act(() => inbox.mockDrop());
+        act(() => { vi.advanceTimersByTime(46_000); });
+        await waitFor(() => expect(calls() - base).toBe(1));
+      } finally { vi.useRealTimers(); }
+    });
+  });
+
   describe("invalidation refetch coalescing", () => {
     type ListRes = Awaited<ReturnType<typeof listChats>>;
     const okList = (rows: ChatSummary[]): ListRes => ({ ok: true as const, status: 200, data: rows });
@@ -661,16 +724,15 @@ describe("Chat island — realtime sidebar", () => {
       const inbox = await mountWithInbox();
       const mock = vi.mocked(listChats);
       const older = deferred(); const newer = deferred();
-      mock.mockImplementationOnce(() => older.promise); // started first (invalidation)
+      mock.mockImplementationOnce(() => older.promise); // slow, started first
       invalidate(inbox);
-      mock.mockImplementationOnce(() => newer.promise); // started second (window focus poll)
-      act(() => { window.dispatchEvent(new Event("focus")); });
+      mock.mockImplementationOnce(() => newer.promise); // the trailing fetch (never overlaps the slow one)
+      invalidate(inbox);
+      older.resolve(okList([dm(), row("OLDER")]));
+      await waitFor(() => expect(screen.getByText("OLDER")).toBeTruthy());
       newer.resolve(okList([dm(), row("NEWER")]));
       await waitFor(() => expect(screen.getByText("NEWER")).toBeTruthy());
-      older.resolve(okList([dm(), row("OLDER")]));
-      await new Promise((r) => setTimeout(r, 30));
-      expect(screen.queryByText("OLDER")).toBeNull();
-      expect(screen.getByText("NEWER")).toBeTruthy();
+      expect(screen.queryByText("OLDER")).toBeNull(); // the newest applied last
     });
 
     it("a single failed background refetch keeps the list and raises no error banner", async () => {

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MenuItem } from "./MessageMenu";
 import { ConfirmDialog, LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
 import { Icon, type RequestResult } from "@meowerse/ui";
@@ -15,7 +15,8 @@ import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/pushLazy";
-import { setScope, clearAll, purgeChat, broadcastLogout } from "../lib/store";
+import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch } from "../lib/store";
+import { createListGate, watchResume } from "../lib/store/chatList";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
@@ -197,27 +198,21 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const listSeqRef = useRef({ started: 0, applied: 0 });
   const fetchList = useCallback(async (quiet = false, isStale?: () => boolean): Promise<ChatSummary[] | null> => {
     const seq = ++listSeqRef.current.started;
+    const epoch = getEpoch();
     const res = await listChats(base);
+    if (getEpoch() !== epoch) return null; // clearAll / account switch while in flight: drop
     if (isStale?.()) return null; // unmounted / base changed while in flight: apply nothing
     if (seq < listSeqRef.current.applied) return null; // superseded by a newer applied list
     if (res.ok) listSeqRef.current.applied = seq;
     return applyChatList(res, quiet);
   }, [base, applyChatList]);
-  const refreshChats = useCallback((): Promise<ChatSummary[] | null> => fetchList(false), [fetchList]);
-  // A burst of content-free invalidations runs at most ONE refetch in flight plus ONE
-  // trailing refetch (the trailing one sees everything that arrived meanwhile).
-  const invalidateRef = useRef({ inFlight: false, trailing: false });
-  const refetchOnInvalidate = useCallback(async (): Promise<void> => {
-    const g = invalidateRef.current;
-    if (g.inFlight) { g.trailing = true; return; }
-    g.inFlight = true;
-    try {
-      do {
-        g.trailing = false;
-        await fetchList(true).catch(() => null);
-      } while (g.trailing);
-    } finally { g.inFlight = false; }
-  }, [fetchList]);
+  // One gate for every list fetch (lib/store/chatList.ts): soft = poll/resume (single-flight,
+  // 10 s min gap), force = everything else (never overlaps; a burst collapses to one trailing fetch).
+  const quietRef = useRef(false);
+  const listGate = useMemo(() => createListGate<ChatSummary[]>(() => fetchList(quietRef.current)), [fetchList]);
+  const refreshChats = useCallback((): Promise<ChatSummary[] | null> => { quietRef.current = false; return listGate("force"); }, [listGate]);
+  // Content-free invalidation / inbox reconnect: quiet (a failure keeps the shown list, no banner).
+  const refetchOnInvalidate = useCallback(async (): Promise<void> => { quietRef.current = true; await listGate("force"); }, [listGate]);
 
   // Membership revoked (removed by an admin / left elsewhere): close the chat, tell
   // the user, and refresh the sidebar (the revoked chat drops out — they're no longer
@@ -242,13 +237,11 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // (onActiveMessage) and the cross-chat inbox socket (onInboxDelta).
   const applySidebarDelta = useCallback(
     (chatId: string, preview: string, at: number, senderId: string, isActive: boolean, optimistic = false) => {
-      let isUnindexed = false;
+      // From the ref, not the updater: React may run the updater after this line (batched).
+      const isUnindexed = !chatsRef.current.some((c) => c.id === chatId);
       setChats((prev) => {
         const idx = prev.findIndex((c) => c.id === chatId);
-        if (idx === -1) {
-          isUnindexed = true;
-          return prev;
-        }
+        if (idx === -1) return prev;
         // Deltas can arrive out of order (a reordered fan-out, a late replay): an OLDER message
         // must never overwrite a newer preview. Equal `at` still applies (same-ms messages).
         // ONLY server timestamps take part: an optimistic bubble carries the DEVICE clock, which
@@ -481,32 +474,19 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     if (activeId && isMembered) void loadMembers(activeId);
   }, [activeId, isMembered, loadMembers]);
 
-  // Live-ish sidebar: refresh listChats on window focus + a 45s interval while the
-  // tab is visible. Surfaces unread for background chats. Merge so the active chat's
-  // optimistic unread=0 isn't clobbered by a stale poll. (The read catch-up on focus
-  // lives in the conversation hook — these listeners only refresh the list.)
+  // Live-ish sidebar safety net: a tab return (focus + visibilitychange merged, 250 ms) and a
+  // 45 s poll, both soft (rate-limited); the poll is skipped while the inbox socket is open
+  // (it delivers deltas). The active chat's optimistic unread=0 is merged in applyChatList.
+  const linkRef = useRef(link);
+  useEffect(() => { linkRef.current = link; });
   useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      if (cancelled) return;
-      // fetchList's sequence guard drops out-of-order lists; `cancelled` also stops a
-      // response that lands after unmount or a base change from being applied.
-      await fetchList(false, () => cancelled);
-    }
-    function onFocus() { void refresh(); }
-    function onVisible() { if (document.visibilityState === "visible") void refresh(); }
+    const soft = () => { quietRef.current = false; void listGate("soft"); };
+    const stopResume = watchResume(soft);
     const iv = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible" && linkRef.current !== "open") soft();
     }, SIDEBAR_POLL_MS);
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      cancelled = true;
-      window.clearInterval(iv);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [base, activeRef, fetchList]);
+    return () => { window.clearInterval(iv); stopResume(); };
+  }, [listGate]);
 
   // Reply/edit/delete route through the hook; ownership + windows are UX gating only.
   function sendWith(body: string): SendResult {
