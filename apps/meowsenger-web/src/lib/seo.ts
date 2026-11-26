@@ -4,21 +4,19 @@
 // Astro frontmatter and the postbuild script, never from island code.
 //
 // There are no anonymously viewable chats: every chat API needs a session and /join sends signed-out
-// visitors to sign in, so only the static pages below are listed — nothing dynamic.
+// visitors to sign in, so only the static pages below are listed — nothing dynamic. "/" is the public
+// landing page; the app shell lives at /app/ (private).
 import type { SeoPages } from "@meowerse/ui/seo";
 
 export const SITE = "https://meowsenger.alxnko.dev";
 
 export const PAGES = {
   public: {
+    "/": "Meowsenger: real-time chat for the meowerse — direct messages, groups and channels, signed in with your meowerse account.",
     "/about/": "Meowsenger is real-time chat for the meowerse: direct messages, groups and channels, signed in with your meowerse account.",
     "/privacy/": "What Meowsenger keeps about you and your chats, how deletion works today, and a link to the full meowerse privacy policy.",
     "/terms/": "Meowsenger terms of use in short, with a link to the full meowerse terms.",
   },
-  // The app shell: signed-out visitors are sent to sign in, so it stays out of the sitemap, but it
-  // is the home page, so it keeps a canonical and isn't noindexed.
-  unlisted: {
-    "/": "Meowsenger: real-time chat for the meowerse — direct messages, groups and channels.",
-  },
+  unlisted: {},
   private: ["/app/", "/join/", "/404"],
 } as const satisfies SeoPages;

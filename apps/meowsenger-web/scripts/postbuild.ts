@@ -22,6 +22,13 @@ const eager = report.eagerJsGzip;
 if (report.eagerJs.length === 0 || eager === 0) throw new Error("bundle budget: no eager JS found for /app (dist/app/index.html markers changed?); refusing to pass vacuously");
 if (eager > EAGER_JS_GZIP_BUDGET) throw new Error(`/app eager JS is ${eager} B gzip, over the ${EAGER_JS_GZIP_BUDGET} B budget (perf/bundle.ts): lazy-load the new code`);
 console.log(`bundle: /app eager JS ${eager} B gzip (budget ${EAGER_JS_GZIP_BUDGET})`);
+// PR-22 warm-up manifest: the hashed chunks /app/ needs eagerly, as a data-warm attribute on the landing's "open app"
+// link (src/lib/landing.ts preloads them on intent), so the landing needs no extra request to learn them.
+const warm = report.eagerJs.map((c) => `/_astro/${c.file}`).join(" ");
+const landing = join(dist, "index.html");
+const lhtml = readFileSync(landing, "utf8");
+if (!lhtml.includes('id="open-app"')) throw new Error('landing: dist/index.html has no id="open-app" link');
+writeFileSync(landing, lhtml.replace('id="open-app"', `id="open-app" data-warm="${warm}"`));
 const paths = sitemapPaths(PAGES);
 writeFileSync(join(dist, "sitemap.xml"), sitemapXml(SITE, paths));
 console.log(`seo: ${Object.keys(built).length} pages classified; sitemap: ${paths.length} pages`);
