@@ -1,4 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import type { MenuItem } from "./MessageMenu";
+import { LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
 import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
 import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
@@ -9,14 +11,7 @@ import { useInbox } from "../hooks/useInbox";
 import { ChatSidebar } from "./ChatSidebar";
 import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
-import { MessageMenu, type MenuItem } from "./MessageMenu";
-import { EmojiPicker } from "./EmojiPicker";
-import { SearchPanel } from "./SearchPanel";
-import { NewChatModal } from "./NewChatModal";
-import { ForwardModal } from "./ForwardModal";
-import { MemberDrawer } from "./MemberDrawer";
 import { Avatar } from "./Avatar";
-import Settings from "./Settings";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/push";
 import { setScope, clearAll, purgeChat, broadcastLogout } from "../lib/store";
@@ -399,6 +394,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     window.history.replaceState({}, "", url.pathname + url.search);
   }, [activeId]);
 
+  // Warm the on-demand panel chunks once the browser is idle after first paint.
+  useEffect(() => prefetchPanels(), []);
+
   // Clear the toast timer on unmount so it can't fire into a dead component.
   useEffect(() => () => { if (toastTimerRef.current != null) clearTimeout(toastTimerRef.current); }, []);
 
@@ -708,6 +706,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
         onSettingsClick={() => setSettingsOpen(true)}
+        onIntent={(k) => preload(k)()}
         onLogout={onLogout}
         unsent={queuedByChat}
         loading={loadingChats}
@@ -734,6 +733,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 <button
                   className="mw-chat__grouphead"
                   onClick={() => setDrawerOpen(true)}
+                  onPointerEnter={preload("members")}
+                  onFocus={preload("members")}
                   aria-label={isChannel ? "channel members" : "group members"}
                 >
                   <span className="mw-chat__headavatar">
@@ -793,6 +794,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 <button
                   className={`mw-btn mw-btn--ghost mw-btn--sm mw-chat__searchbtn${searchOpen ? " is-on" : ""}`}
                   onClick={() => setSearchOpen((v) => !v)}
+                  onPointerEnter={preload("search")}
+                  onFocus={preload("search")}
                   aria-label="search this chat"
                   aria-pressed={searchOpen}
                   title="search"
@@ -805,6 +808,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 aria-label="more chat actions"
                 aria-haspopup="menu"
                 aria-expanded={moreMenu != null}
+                onPointerEnter={preload("menu", "search")}
+                onFocus={preload("menu", "search")}
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
                   setMoreMenu({ x: r.right - 168, y: r.bottom + 6 });
@@ -815,30 +820,38 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
             </header>
 
             {moreMenu && (
-              <MessageMenu
-                x={moreMenu.x}
-                y={moreMenu.y}
-                items={[
-                  { label: "search", icon: "search", onClick: () => setSearchOpen((v) => !v) },
-                  { label: "copy link", icon: "link", onClick: copyChatLink },
-                ]}
+              <LazyPanel
+                load={panels.menu}
                 onClose={() => setMoreMenu(null)}
+                props={{
+                  x: moreMenu.x,
+                  y: moreMenu.y,
+                  items: [
+                    { label: "search", icon: "search", onClick: () => setSearchOpen((v) => !v) },
+                    { label: "copy link", icon: "link", onClick: copyChatLink },
+                  ],
+                  onClose: () => setMoreMenu(null),
+                }}
               />
             )}
 
             {searchOpen && activeId && (
-              <SearchPanel
+              <LazyPanel
                 key={activeId}
-                base={base}
-                chatId={activeId}
-                resolveName={(id) => resolveSenderName(id)}
-                meId={me?.id ?? null}
-                onJump={jumpToMessage}
+                load={panels.search}
                 onClose={() => setSearchOpen(false)}
+                props={{
+                  base,
+                  chatId: activeId,
+                  resolveName: (id: string) => resolveSenderName(id),
+                  meId: me?.id ?? null,
+                  onJump: jumpToMessage,
+                  onClose: () => setSearchOpen(false),
+                }}
               />
             )}
 
-            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll}>
+            <div className="mw-chat__log" ref={logRef} onScroll={onLogScroll} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (
@@ -1011,14 +1024,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
       </section>
 
       {menu && (
-        <MessageMenu x={menu.x} y={menu.y} items={menuItems(menu.m, { x: menu.x, y: menu.y })} onClose={() => setMenu(null)} />
+        <LazyPanel load={panels.menu} onClose={() => setMenu(null)} props={{ x: menu.x, y: menu.y, items: menuItems(menu.m, { x: menu.x, y: menu.y }), onClose: () => setMenu(null) }} />
       )}
       {emojiFor && (
-        <EmojiPicker
-          x={emojiFor.x}
-          y={emojiFor.y}
-          onPick={(emoji) => sendReact(emojiFor.m, emoji)}
+        <LazyPanel
+          load={panels.emoji}
           onClose={() => setEmojiFor(null)}
+          props={{ x: emojiFor.x, y: emojiFor.y, onPick: (emoji: string) => sendReact(emojiFor.m, emoji), onClose: () => setEmojiFor(null) }}
         />
       )}
       {toast && <div className="mw-apptoast" role="status">{toast}</div>}
@@ -1034,37 +1046,34 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
       />
 
 
-      <NewChatModal
-        base={base}
+      <LazyPanel
+        load={panels.newChat}
         open={newChatOpen}
         onClose={() => setNewChatOpen(false)}
-        onDirect={onDirect}
-        onCreated={onCreatedGroup}
+        props={{ base, open: newChatOpen, onClose: () => setNewChatOpen(false), onDirect, onCreated: onCreatedGroup }}
       />
 
-      <ForwardModal
-        base={base}
+      <LazyPanel
+        load={panels.forward}
         open={forwardBodies !== null}
-        chats={chats}
-        bodies={forwardBodies ?? []}
-        excludeId={activeId}
         onClose={() => setForwardBodies(null)}
-        onDone={onForwardDone}
+        props={{ base, open: forwardBodies !== null, chats, bodies: forwardBodies ?? [], excludeId: activeId, onClose: () => setForwardBodies(null), onDone: onForwardDone }}
       />
 
       {drawerOpen && activeChat && isMembered && (
-        <MemberDrawer
-          base={base}
-          chat={activeChat}
-          meId={me?.id ?? null}
-          online={online}
+        <LazyPanel
+          load={panels.members}
           onClose={() => setDrawerOpen(false)}
-          onChanged={refreshAfterMemberChange}
-          onLeft={onLeftGroup}
+          props={{ base, chat: activeChat, meId: me?.id ?? null, online, onClose: () => setDrawerOpen(false), onChanged: refreshAfterMemberChange, onLeft: onLeftGroup }}
         />
       )}
 
-      <Settings base={base} userId={me?.id} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <LazyPanel
+        load={panels.settings}
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        props={{ base, userId: me?.id, open: settingsOpen, onClose: () => setSettingsOpen(false) }}
+      />
     </div>
   );
 }

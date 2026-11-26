@@ -42,6 +42,7 @@ export function ChatSidebar({
   onOpenResult,
   onNewChatClick,
   onSettingsClick,
+  onIntent,
   onLogout,
   loading,
   error,
@@ -64,6 +65,8 @@ export function ChatSidebar({
   // Open the new-chat modal (Direct | Group). The modal lives in Chat.tsx.
   onNewChatClick: () => void;
   onSettingsClick?: () => void;
+  /** Hover/focus on a panel trigger: lets the parent preload that panel's chunk. */
+  onIntent?: (panel: "newChat" | "settings") => void;
   onLogout?: () => void;
   loading: boolean;
   // The last list refresh failed. Existing rows stay; a subtle retry line is shown, and
@@ -92,7 +95,7 @@ export function ChatSidebar({
   return (
     <aside className="mw-chat__side">
       <div className="mw-chat__new">
-        <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" aria-label="new chat" onClick={onNewChatClick}>
+        <button className="mw-btn mw-btn--primary mw-btn--md mw-chat__newbtn" aria-label="new chat" onClick={onNewChatClick} onPointerEnter={() => onIntent?.("newChat")} onFocus={() => onIntent?.("newChat")}>
           <span className="mw-tlabel">+ new chat</span>
           <span className="mw-ticon" aria-hidden="true"><Icon name="plus" size={16} /></span>
         </button>
@@ -232,6 +235,8 @@ export function ChatSidebar({
               <button
                 className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__acctbtn"
                 onClick={onSettingsClick}
+                onPointerEnter={() => onIntent?.("settings")}
+                onFocus={() => onIntent?.("settings")}
                 title="settings"
                 aria-label="settings"
               >

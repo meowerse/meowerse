@@ -1,8 +1,12 @@
-// Bundle report for /app (report-only in PR-0): gzip -9 per JS/CSS chunk reachable from dist/app/index.html, the
+// Bundle report for /app (enforced at build via scripts/postbuild.ts against EAGER_JS_GZIP_BUDGET): gzip -9 per JS/CSS chunk reachable from dist/app/index.html, the
 // eager closure (renderer + island + their static imports) and the total of all built JS.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+
+// Eager-closure ceiling (gzip -9 bytes). Measured 103502 (102987 before the focus/pending/preload fixes) after the on-demand panels were split out (was 108800); ~0.5 kB headroom.
+// Raise only with a reason in the PR; a panel imported statically from Chat/AppShell again trips this.
+export const EAGER_JS_GZIP_BUDGET = 104_000;
 
 const gz = (b: Uint8Array) => gzipSync(b, { level: 9 }).length;
 export type Chunk = { file: string; raw: number; gzip: number };
