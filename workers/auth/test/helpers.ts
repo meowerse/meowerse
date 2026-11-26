@@ -461,6 +461,10 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         if (row) row.idle_expires_at = a[0];
         return { rows: [], rowsAffected: row ? 1 : 0 };
       }
+      if (/UPDATE sessions SET revoked_at .* WHERE account_id/.test(sql)) {
+        for (const r of t.sessions) if (r.account_id === a[0] && r.revoked_at == null) r.revoked_at = "revoked";
+        return { rows: [] };
+      }
       if (/UPDATE sessions SET revoked_at/.test(sql)) {
         const row = t.sessions.find((r) => r.id_hash === a[0]);
         if (row) row.revoked_at = "revoked";

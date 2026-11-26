@@ -14,7 +14,7 @@ import {
   type AuthorizeRequest,
 } from "./authorize";
 import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
-import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
+import { issueSession, mintSessionIds, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
@@ -1229,9 +1229,15 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "password") {
     // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
     if (!(await stepUpAllowed(db, accountId, now(deps)))) return tooMany("rate_limited", 900, cors);
-    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", keepSessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? "") });
+    // Rotate the CURRENT session too: the cookie that was used to change the password may be the stolen one.
+    const fresh = await mintSessionIds();
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", newSession: { idHash: fresh.idHash, csrf: fresh.csrf, now: now(deps) } });
+    if (r.error === "account_gone") return json({ error: "account_gone" }, 401, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
-    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
+    // csrf is additive: an old client that ignores it still sees ok:true.
+    return r.ok
+      ? json({ ok: true, csrf: fresh.csrf }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": hostCookie(SESS_COOKIE, fresh.rawId, { maxAge: 30 * 24 * 3600 }) })
+      : json({ error: r.error }, 400, cors);
   }
   if (sub === "grants/revoke") {
     const revoked = await revokeGrant(db, accountId, p.client_id ?? "");

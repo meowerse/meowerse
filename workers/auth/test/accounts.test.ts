@@ -98,8 +98,9 @@ test("changePassword: no password row → no_password; wrong current → wrong_p
 
   const log: { sql: string; args: unknown[] }[] = [];
   const db = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]], log);
-  expect((await changePassword(db, { accountId: "a", currentPassword: "currentpass12", newPassword: "newpass123456", pbkdf2: FAST })).ok).toBe(true);
+  expect((await changePassword(db, { accountId: "a", currentPassword: "currentpass12", newPassword: "newpass123456", pbkdf2: FAST, newSession: { idHash: "h", csrf: "c", now: 1000 } })).ok).toBe(true);
   expect(log.some((c) => c.sql.includes("UPDATE password_credentials SET phc"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("INSERT INTO sessions"))).toBe(true);
 });
 
 test("getAccountInfo + countRecoveryCodes", async () => {

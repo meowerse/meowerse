@@ -123,7 +123,11 @@ export default function AccountSettings({ base }: { base: string }) {
     e.preventDefault();
     if (!acct) return;
     const r = await postAccountPassword(base, acct.csrf, cur, next);
-    if (r.ok) { toast({ message: "password changed", variant: "success" }); setCur(""); setNext(""); }
+    if (r.ok) {
+      // The server rotated this session: adopt its CSRF token in place (acctRef too, so the csrf-changed reset in reload() doesn't fire).
+      if (r.csrf) { const a = { ...acct, csrf: r.csrf }; acctRef.current = a; setAcct(a); }
+      toast({ message: "password changed. you were signed out everywhere else.", variant: "success" }); setCur(""); setNext("");
+    }
     else toast({ message: r.error === "wrong_password" ? "current password is wrong" : "could not change password", variant: "error" });
   }
 

@@ -1,6 +1,7 @@
 import { validatePassword, genRecoveryCodes, normalizeRecoveryCode } from "@meowerse/auth-shared";
 import { hashPassword, verifyPassword, DEFAULT_PBKDF2, CHEAP_PBKDF2, type Pbkdf2Params } from "./crypto";
 import { randomId } from "./security";
+import { IDLE_TTL, ABSOLUTE_TTL } from "./session";
 import { accountPresent, allOf, sessionLive, guardedInsert } from "./codeguard";
 import type { DbClient } from "./types";
 
@@ -185,7 +186,7 @@ export async function getAccountDetail(db: DbClient, accountId: string): Promise
 /** Change password — verify the current one, validate + hash the new one. */
 export async function changePassword(
   db: DbClient,
-  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; keepSessionIdHash?: string },
+  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; newSession: { idHash: string; csrf: string; now: number } },
 ): Promise<{ ok: boolean; error?: string }> {
   const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [i.accountId] });
   const row = cred.rows[0];
@@ -194,14 +195,23 @@ export async function changePassword(
   const pw = validatePassword(i.newPassword);
   if (!pw.ok) return { ok: false, error: pw.error };
   const phc = await hashPassword(pw.password, i.pbkdf2 ?? DEFAULT_PBKDF2);
-  // One batch: the new hash lands together with the revocation of every OTHER session and every
-  // refresh/access token of the account, so a stolen session or token cannot outlive the password change.
-  await db.batch(
+  // One batch: the new hash lands together with the revocation of EVERY session (the current one included, so a
+  // stolen copy of its cookie dies too), a fresh session for the caller, and every refresh/access token of the
+  // account. Atomic: the user never has zero or two valid sessions.
+  const exists = accountPresent(i.accountId);
+  const ns = i.newSession;
+  const res = await db.batch(
     [
       { sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] },
       {
-        sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND id_hash IS NOT ?",
-        args: [i.accountId, i.keepSessionIdHash ?? null],
+        sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL",
+        args: [i.accountId],
+      },
+      {
+        // auth_time = now / amr = pwd: the user just proved the password (same shape as rotateSession).
+        sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+              SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${exists.sql}`,
+        args: [ns.idHash, i.accountId, ns.now, "pwd", ns.csrf, ns.now + IDLE_TTL, ns.now + ABSOLUTE_TTL, ...exists.args],
       },
       // DELETE (not "mark used"): a used row would make the holder's next refresh look like token REUSE and raise a
       // false token.reuse_detected audit. With no row it is a plain invalid_grant.
@@ -210,6 +220,8 @@ export async function changePassword(
     ],
     "write",
   );
+  // The account vanished between the checks and the batch: every session is revoked and none issued (fail closed).
+  if ((res[2]?.rowsAffected ?? 0) !== 1) return { ok: false, error: "account_gone" };
   return { ok: true };
 }
 

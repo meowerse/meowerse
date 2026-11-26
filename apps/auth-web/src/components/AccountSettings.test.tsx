@@ -327,6 +327,49 @@ describe("AccountSettings identity, ordering and restore (PR-21 review)", () => 
   });
 });
 
+describe("AccountSettings password change rotates the session", () => {
+  const WITH_PW = { ...ACCOUNT, hasPassword: true };
+  const GRANT = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  function setup(pwResponse: unknown) {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, body: JSON.parse(String(init.body)) }); return u.endsWith("/password") ? json(pwResponse) : json({ ok: true }); }
+      return u.endsWith("/grants") ? json({ grants: [GRANT] }) : json(WITH_PW);
+    });
+    page();
+    return posts;
+  }
+  async function change() {
+    fireEvent.change(await screen.findByLabelText("current password"), { target: { value: "oldpassword12" } });
+    fireEvent.change(screen.getByLabelText("new password"), { target: { value: "newpassword123" } });
+    fireEvent.submit(screen.getByRole("button", { name: "update password" }).closest("form")!);
+  }
+
+  it("adopts the csrf from the response: the next action posts the NEW token and the page stays signed in", async () => {
+    const posts = setup({ ok: true, csrf: "c-new" });
+    await change();
+    await waitFor(() => expect(posts.map((p) => p.url)).toEqual(["https://api/api/account/password"]));
+    expect(posts[0]!.body.csrf).toBe("c");
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c-new");
+    expect(screen.queryByText(/to manage your account/)).toBeNull();
+  });
+
+  it("an old worker answering { ok: true } without csrf still works (additive response)", async () => {
+    const posts = setup({ ok: true });
+    await change();
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c");
+  });
+});
+
 describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
   const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
   const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };

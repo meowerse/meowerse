@@ -194,14 +194,22 @@ test("logout -> one row with the session's account; no cookie or already-revoked
 
 test("password.change only on success; recovery.regenerate; consent.revoke; telegram.unlink; account.delete", async () => {
   const h = await harness();
-  const { sess, csrf, accountId } = await h.signup("aud_acct");
+  let { sess, csrf } = await h.signup("aud_acct");
+  const accountId = h.store.tables.accounts.find((a) => a.username === "aud_acct")!.id as string;
   const n = h.rows().length;
   // failures record nothing
   await h.call("/api/account/password", { sess, body: { csrf, current_password: "nope", new_password: "newpass123456" } });
   await h.call("/api/account/password", { sess, body: { csrf: "WRONG", current_password: PW, new_password: "newpass123456" } });
   expect(h.rows()).toHaveLength(n);
 
-  expect(await h.one(() => h.call("/api/account/password", { sess, body: { csrf, current_password: PW, new_password: "newpass123456" } }))).toMatchObject({ event: "password.change", account_id: accountId, client_id: null });
+  let pwRes!: Response;
+  const pwRow = await h.one(async () => { pwRes = await h.call("/api/account/password", { sess, body: { csrf, current_password: PW, new_password: "newpass123456" } }); });
+  expect(pwRow).toMatchObject({ event: "password.change", account_id: accountId, client_id: null });
+  // The session was rotated: continue with the NEW cookie + csrf (the audit row itself carries neither).
+  csrf = ((await pwRes.json()) as { csrf: string }).csrf;
+  sess = cookieValue(pwRes.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  expect(JSON.stringify(pwRow)).not.toContain(csrf);
+  expect(JSON.stringify(pwRow)).not.toContain(sess);
   expect(await h.one(() => h.call("/api/account/recovery-codes", { sess, body: { csrf } }))).toMatchObject({ event: "recovery.regenerate", account_id: accountId });
 
   // revoking a grant that never existed writes no row (and stores no caller-supplied client id)
@@ -528,7 +536,8 @@ test("no secrets: no password, recovery code, auth code, token, client secret, P
   const sess2 = cookieValue(login.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const pw = await h.call("/api/account/password", { sess: sess2, body: { csrf: lb.csrf, current_password: PW, new_password: "newpass123456" } });
   expect(pw.status).toBe(200);
-  const rc = await h.call("/api/account/recovery-codes", { sess: sess2, body: { csrf: lb.csrf } });
+  const sess3 = cookieValue(pw.headers.get("Set-Cookie"), "__Host-mw_sess")!; // rotated by the password change
+  const rc = await h.call("/api/account/recovery-codes", { sess: sess3, body: { csrf: ((await pw.json()) as { csrf: string }).csrf } });
   const regenerated = ((await rc.json()) as { recoveryCodes: string[] }).recoveryCodes;
   expect(h.seen.length).toBe(4); // signup, login.ok, password.change, recovery.regenerate
 
