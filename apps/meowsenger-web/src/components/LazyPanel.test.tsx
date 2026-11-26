@@ -106,6 +106,21 @@ describe("LazyPanel", () => {
     expect(screen.getByText("hello f")).toBeTruthy(); // closed panels stay mounted (own exit behaviour)
   });
 
+  it("a persistent failure does not loop after dismiss: the dead chunk is not re-fetched while closed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const load = vi.fn(() => Promise.reject(chunkErr()));
+    const { rerender } = render(<LazyPanel load={load} open props={{ name: "z" }} onClose={() => {}} />);
+    await screen.findByRole("alert");
+    const before = load.mock.calls.length;
+    rerender(<LazyPanel load={load} open={false} props={{ name: "z" }} onClose={() => {}} />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    expect(load.mock.calls.length).toBe(before); // no remount/refetch while closed
+    expect(screen.queryByRole("alert")).toBeNull();
+    rerender(<LazyPanel load={load} open props={{ name: "z" }} onClose={() => {}} />);
+    await screen.findByRole("alert"); // re-open tries again, visibly
+    expect(load.mock.calls.length).toBe(before + 1);
+  });
+
   it("focus returns to the trigger on retry, dismiss and Escape", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const onClose = vi.fn();

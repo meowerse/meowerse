@@ -72,8 +72,14 @@ export function LazyPanel<P extends object>({ load, props, open = true, onClose 
   const trigger = useRef<Element | null>(null);
   if (open && !seen.current) trigger.current = document.activeElement; // the trigger still has focus when the panel is first requested
   if (open) seen.current = true;
-  // Closing a failed panel forgets the failure, so re-opening tries again.
-  useEffect(() => { if (!open && err) { setErr(null); retried.current = false; setGen((n) => n + 1); } }, [open, err]);
+  // A failure is forgotten when the panel is RE-OPENED, not while closed: remounting a closed failed panel would re-fetch the
+  // dead chunk and fail again in a loop (persistent 404 after a stale deploy).
+  const closed = useRef(true);
+  useEffect(() => {
+    if (!open) { closed.current = true; return; }
+    if (closed.current && err) { retried.current = false; setErr(null); setGen((n) => n + 1); }
+    closed.current = false;
+  }, [open, err]);
   if (!seen.current) return null;
   const Panel = getPanel(load);
   const back = () => { const t = trigger.current as HTMLElement | null; if (t?.isConnected) t.focus(); };
