@@ -199,6 +199,9 @@ describe("GET /ws upgrade", () => {
     ({
       getDb: () => ({
         async first(sql: string) {
+          if (sql.includes("FROM sessions s LEFT JOIN chat_members")) {
+            return over.session && { ...(over.session as object), role: over.member ? (over.role ?? "member") : null };
+          }
           if (sql.includes("FROM sessions")) return over.session;
           // getRole (membership gate + role forwarding) reads `role`.
           if (sql.includes("FROM chat_members")) return over.member ? { role: over.role ?? "member" } : undefined;

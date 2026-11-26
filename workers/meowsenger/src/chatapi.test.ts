@@ -55,6 +55,10 @@ function memDb(opts: { session?: Row; usersByName?: Record<string, string>; memb
       return [];
     },
     async first(sql, p = []) {
+      // Combined session+role join (getSessionAndRole): same row plus the caller's role in chat p[0].
+      if (sql.includes("FROM sessions s LEFT JOIN chat_members")) {
+        return opts.session && { ...opts.session, role: members.has(`${String(p[0])}::${String(opts.session.user_id)}`) ? "member" : null };
+      }
       if (sql.includes("FROM sessions")) return opts.session;
       if (sql.includes("FROM users WHERE username")) {
         const id = opts.usersByName?.[String(p[0])];
@@ -513,6 +517,9 @@ function groupApiDb(opts: {
       return [];
     },
     async first(sql, p = []) {
+      if (sql.includes("FROM sessions s LEFT JOIN chat_members")) {
+        return opts.session && { ...opts.session, role: members.find((m) => m.chat_id === p[0] && m.user_id === opts.session!.user_id)?.role ?? null };
+      }
       if (sql.includes("FROM sessions")) return opts.session;
       if (sql.includes("FROM users WHERE username")) {
         const id = opts.usersByName?.[String(p[0])];

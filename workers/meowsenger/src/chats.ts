@@ -1,5 +1,6 @@
 import { slugify } from "@meowerse/ts-shared";
 import type { DbClient, Row } from "./types";
+import { getSession, sha256hex, toSession, type Session } from "./session";
 
 /** A chat member as surfaced to the member drawer (JOIN chat_members × users). */
 export interface MemberView {
@@ -192,6 +193,32 @@ function normalizeRole(raw: unknown): Role | null {
   if (raw == null) return null;
   const role = String(raw);
   return role === "owner" || role === "admin" || role === "member" ? role : "member";
+}
+
+/**
+ * Session + membership role in ONE D1 read for the hot gates (history, members, WS upgrade).
+ * Fast path: a live hashed-id session row LEFT JOINed to this chat's membership row (both
+ * keys bound as parameters). Anything that is not a clean hit - no row (missing / legacy raw
+ * id needing migration), or an expired row (getSession deletes it) - takes the unchanged
+ * two-step path (getSession then getRole), so those branches keep their exact behaviour.
+ * Read-only on the fast path: it adds no writes.
+ */
+export async function getSessionAndRole(
+  db: DbClient, cookie: string, chatId: string, now: number,
+): Promise<{ session: Session | null; role: Role | null }> {
+  if (!cookie) return { session: null, role: null };
+  const hash = await sha256hex(cookie);
+  const row = await db.first(
+    `SELECT s.id, s.user_id, s.access_exp, s.created_at, s.expires_at, m.role AS role
+       FROM sessions s LEFT JOIN chat_members m ON m.chat_id = ? AND m.user_id = s.user_id
+      WHERE s.id = ?`,
+    [chatId, hash],
+  );
+  if (row && Number(row.expires_at) >= now) {
+    return { session: toSession(row), role: normalizeRole(row.role) };
+  }
+  const session = await getSession(db, cookie, now);
+  return { session, role: session ? await getRole(db, chatId, session.userId) : null };
 }
 
 /** The caller's role in a chat, or null if not a member. Authoritative — every
