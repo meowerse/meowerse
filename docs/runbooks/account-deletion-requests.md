@@ -1,5 +1,7 @@
 # Account deletion requests
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 **Status (2026-10-31): self-service deletion is LIVE.** `ACCOUNT_DELETE_ENABLED` is `"1"` in
 `workers/auth/wrangler.jsonc` (a config test fails CI if it drifts) and the `account_delete_confirmations` table exists in
 production. Users delete their own account from account settings (`POST /api/account/delete`) after server-verified fresh

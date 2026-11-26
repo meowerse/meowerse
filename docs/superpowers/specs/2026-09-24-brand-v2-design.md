@@ -1,5 +1,7 @@
 # Brand v2 — meowerse on the alxnko.dev design system
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 Status: approved by owner 2026-09-24 (B25) · Date: 2026-09-24 · Decisions: `docs/superpowers/decisions/2026-09-24-brand-v2-log.md`
 (B1–B10). Where this spec and the log disagree, the log wins and this spec is corrected.
 

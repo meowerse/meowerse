@@ -4,7 +4,7 @@ test("every component has a page with props, css variables, a11y notes and do/do
   test.setTimeout(120_000);
   await page.goto("/ui/components/");
   const links = page.locator(".component-list a");
-  await expect(links).toHaveCount(27);
+  await expect(links).toHaveCount(26);
   for (const href of await links.evaluateAll((as) => as.map((a) => a.getAttribute("href")!))) {
     await page.goto(href);
     for (const id of ["props-title", "css-title", "a11y-title", "dodont-title"]) await expect(page.locator(`#${id}`), `${href} #${id}`).toBeVisible();

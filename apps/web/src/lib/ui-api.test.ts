@@ -24,7 +24,7 @@ describe("extractUiApi (TypeScript compiler API over @meowerse/ui)", () => {
     expect(api.components.map((c) => c.name)).toEqual([
       "Alert", "AppHeader", "AuthGate", "Avatar", "Badge", "Button", "Card", "Cat3D", "Checkbox", "Code",
       "ConfirmDialog", "ContactLinks", "Cursor", "Field", "Footer", "Icon", "Kbd", "Modal", "Prompt",
-      "RadioGroup", "RecoveryCodes", "Skeleton", "Spinner", "StatusLine", "ThemeToggle", "ToastProvider", "Wordmark",
+      "RadioGroup", "Skeleton", "Spinner", "StatusLine", "ThemeToggle", "ToastProvider", "Wordmark",
     ]));
   it("reads a forwardRef component's own props, values and destructuring defaults", () => {
     expect(prop("Button", "variant")).toMatchObject({ type: '"primary" | "secondary" | "ghost" | "danger"', required: false, default: '"secondary"' });
