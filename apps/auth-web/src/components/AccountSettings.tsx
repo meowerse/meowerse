@@ -251,7 +251,7 @@ export default function AccountSettings({ base }: { base: string }) {
       {grantsFailed && grantsLoaded && <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>couldn't refresh your connected apps.</StatusLine>}
       {acct.hasPassword !== acct.telegram.linked && (
         <Alert variant="info">
-          this account has only one sign-in method. if you lose it, the account cannot be recovered. add a second sign-in method (password and telegram) to be safe.
+          {acct.hasPassword ? "this account has only one sign-in method. if you lose it, the account cannot be recovered. link telegram to add a second method." : "this account has only one sign-in method. if you lose it, the account cannot be recovered. adding a password to a telegram-only account is coming soon."}
         </Alert>
       )}
 

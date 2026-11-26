@@ -23,7 +23,7 @@ acknowledgment below is drafted either way.
 1. Acknowledge within 7 days (an internal acknowledgment target, not a promise of completed erasure):
    - we received the request;
    - deletion is self-service: from inside their account settings, after they sign in again and confirm (if they cannot
-     sign in, we can only point them at regaining access; nothing is deleted from an email);
+     sign in, we cannot restore access or delete anything from an email: there is no recovery path);
    - they should delete their data in each service they signed in to with meowerse first (e.g. Meowsenger settings,
      danger zone), because deletion of the meowerse account does not delete it and they cannot sign in afterwards;
    - never send recovery codes, passwords or Telegram login codes by email; we will never ask for them.

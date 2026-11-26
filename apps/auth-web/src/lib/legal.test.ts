@@ -39,7 +39,7 @@ describe("shared privacy page copy", () => {
     expect(rendered).not.toMatch(/Google Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v4, 2026-10-31");
+    expect(POLICY_VERSION).toBe("v5, 2026-11-26");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
@@ -78,6 +78,8 @@ describe("shared privacy page copy", () => {
     expect(about).not.toMatch(/recovery code/i);
     expect(terms).not.toMatch(/recovery codes safe/i);
     for (const doc of [terms, privacy]) expect(doc).toMatch(/cannot be recovered/);
+    // no promise of a recovery mechanism or manual help (owner decision 2026-11-26: no recovery path, no admin bypass)
+    for (const doc of [terms, privacy]) expect(doc).not.toMatch(/recovery codes or Telegram|help you regain access|will help you regain/i);
     expect(privacy).toMatch(/Recovery codes were removed/);
   });
   it("lists the role addresses and no personal email address", () => {
