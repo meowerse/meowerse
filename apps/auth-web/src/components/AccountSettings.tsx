@@ -56,6 +56,11 @@ export default function AccountSettings({ base }: { base: string }) {
   const acctRef = useRef(acct);
   acctRef.current = acct;
   const [refreshing, setRefreshing] = useState(false);
+  const codesRef = useRef(codes);
+  codesRef.current = codes;
+
+  /** A successful mutation is newer than any reload still in flight: that reload's (older) answer must not overwrite it. */
+  function supersedeReloads() { seq.current++; setRefreshing(false); }
 
   /** Everything that belongs to one account: dropped whenever the account is gone or may be a different one. */
   function resetAccountState() {
@@ -87,7 +92,10 @@ export default function AccountSettings({ base }: { base: string }) {
       const prev = acctRef.current;
       // No stable account id comes back, so a changed name or CSRF token is treated as maybe-another-account: the previous
       // one's grants/codes/dialog must not survive next to it (a revoke would POST the new CSRF with the old client id).
-      if (!prev || prev.username !== a.username || prev.displayName !== a.displayName || prev.avatarUrl !== a.avatarUrl || prev.csrf !== a.csrf) resetAccountState();
+      if (!prev || prev.username !== a.username || prev.displayName !== a.displayName || prev.avatarUrl !== a.avatarUrl || prev.csrf !== a.csrf) {
+        if (prev && codesRef.current) toast({ message: "your session changed; recovery codes were hidden — regenerate them", variant: "error" });
+        resetAccountState();
+      }
       setAcct(a); setError("");
       if (gErr || gr.status === "rejected") setGrantsFailed(true);
       else { setGrants(gr.value.grants ?? []); setGrantsLoaded(true); }
@@ -164,6 +172,7 @@ export default function AccountSettings({ base }: { base: string }) {
     try {
       if (confirm.kind === "revoke" && confirm.clientId) {
         await revokeGrant(base, acct.csrf, confirm.clientId);
+        supersedeReloads();
         setGrants((g) => g.filter((x) => x.clientId !== confirm.clientId));
         toast({ message: "access revoked", variant: "success" });
       } else if (confirm.kind === "unlink") {

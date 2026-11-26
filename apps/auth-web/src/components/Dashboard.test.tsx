@@ -109,6 +109,65 @@ describe("Dashboard ordering and restore (PR-21 review)", () => {
   });
 });
 
+describe("Dashboard one-time secrets, mutations and timeouts (PR-21 review 2)", () => {
+  /** Load account A (csrf "c"), create an app (POST answers with a secret), whose reload GET answers with `after`. */
+  async function createThenReload(after: () => Response) {
+    let n = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_u, init) => {
+      if (init?.method === "POST") return json({ ok: true, clientId: "mw_new", clientSecret: "sec-of-A" });
+      return n++ === 0 ? json({ clients: [CLIENT], csrf: "c" }) : after();
+    });
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    await screen.findByText("My App");
+    await createApp();
+  }
+
+  it("a reload that answers for a different account (new CSRF) hides the previous account's one-time secret", async () => {
+    await createThenReload(() => json({ clients: [{ ...CLIENT, clientId: "mw_b", displayName: "B App" }], csrf: "c2" }));
+    expect(await screen.findByText("B App")).not.toBeNull();
+    expect(screen.queryByText("sec-of-A")).toBeNull();
+  });
+
+  it("a reload with the same CSRF keeps the one-time secret visible", async () => {
+    await createThenReload(() => json({ clients: [CLIENT], csrf: "c" }));
+    await waitFor(() => expect(screen.getByText("sec-of-A")).not.toBeNull());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText("sec-of-A")).not.toBeNull();
+  });
+
+  it("a successful mutation wins over an older in-flight reload", async () => {
+    let n = 0;
+    let late!: (r: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "POST") return Promise.resolve(json({ ok: true, clientId: "mw_new" }));
+      return n++ === 0 ? Promise.resolve(json({ clients: [CLIENT], csrf: "c" })) : new Promise<Response>((r) => { late = r; });
+    });
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "refresh tokens: off" }));
+    expect(await screen.findByRole("button", { name: "refresh tokens: on" })).not.toBeNull();
+    await createApp(); // reload pending
+    await waitFor(() => expect(n).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "refresh tokens: on" }));
+    expect(await screen.findByRole("button", { name: "refresh tokens: off" })).not.toBeNull();
+    late(json({ clients: [{ ...CLIENT, allowOfflineAccess: true }], csrf: "c" })); // older answer: stale
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole("button", { name: "refresh tokens: off" })).not.toBeNull();
+  });
+
+  it("a hung request ends in an honest error with 'try again' enabled", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => new Promise<Response>((_, rej) => {
+        init?.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      }));
+      render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+      await act(async () => { vi.advanceTimersByTime(16_000); });
+      expect(screen.getByText("couldn't load your apps.")).not.toBeNull();
+      expect((screen.getByRole("button", { name: "try again" }) as HTMLButtonElement).disabled).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("Dashboard refresh-token toggle (M7)", () => {
   it("create form sends offline=true when 'allow refresh tokens' is ticked", async () => {
     const calls: { url: string; body: Record<string, string> }[] = [];

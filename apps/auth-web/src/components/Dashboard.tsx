@@ -32,12 +32,18 @@ export default function Dashboard({ base }: { base: string }) {
   const seq = useRef(0); // reload counter: only the latest request's answer may change state (a late 200 must not undo a newer 401)
   const loadedRef = useRef(false);
   loadedRef.current = loaded;
+  const csrfRef = useRef("");
+  csrfRef.current = csrf;
   const [refreshing, setRefreshing] = useState(false);
 
   /** Everything that belongs to the signed-in account: dropped when it is gone or may be a different one. */
   function resetAccountState() {
     setClients([]); setCsrf(""); setCreated(null); setRotated(null); setMgmtToken(null); setToDelete(null); setLoaded(false);
+    setError(""); setName(""); setDisplayName(""); setRedirect("");
   }
+
+  /** A successful mutation is newer than any reload still in flight: that reload's (older) answer must not overwrite it. */
+  function supersedeReloads() { seq.current++; setRefreshing(false); }
 
   function reload() {
     const mine = ++seq.current;
@@ -51,7 +57,12 @@ export default function Dashboard({ base }: { base: string }) {
         clearSessionCache();
         resetAccountState(); setSignedOut(true);
       } else if (r.error) setLoadError(true);
-      else { setClients(r.clients ?? []); setCsrf(r.csrf ?? ""); setLoaded(true); setLoadError(false); setSignedOut(false); }
+      else {
+        // CSRF is per session and none of this page's own actions issue a new one, so a changed token means another
+        // account: its predecessor's one-time secrets (api key, rotated secret, management token) must not stay on screen.
+        if (loadedRef.current && r.csrf !== csrfRef.current) resetAccountState();
+        setClients(r.clients ?? []); setCsrf(r.csrf ?? ""); setLoaded(true); setLoadError(false); setSignedOut(false);
+      }
     }).catch(() => { if (mine === seq.current) { setRefreshing(false); setLoadError(true); } });
   }
   useEffect(reload, [base]);
@@ -79,7 +90,7 @@ export default function Dashboard({ base }: { base: string }) {
   async function doDelete() {
     if (!toDelete) return;
     setBusy(true);
-    try { await deleteClient(base, csrf, toDelete.clientId); setClients((c) => c.filter((x) => x.clientId !== toDelete.clientId)); toast({ message: "app deleted", variant: "success" }); }
+    try { await deleteClient(base, csrf, toDelete.clientId); supersedeReloads(); setClients((c) => c.filter((x) => x.clientId !== toDelete.clientId)); toast({ message: "app deleted", variant: "success" }); }
     finally { setBusy(false); setToDelete(null); }
   }
 
@@ -92,7 +103,7 @@ export default function Dashboard({ base }: { base: string }) {
   async function onToggleOffline(c: ClientSummary) {
     const next = !c.allowOfflineAccess;
     const r = await updateClient(base, { csrf, client_id: c.clientId, offline: next ? "true" : "false" });
-    if (r.ok) setClients((cur) => cur.map((x) => (x.clientId === c.clientId ? { ...x, allowOfflineAccess: next } : x)));
+    if (r.ok) { supersedeReloads(); setClients((cur) => cur.map((x) => (x.clientId === c.clientId ? { ...x, allowOfflineAccess: next } : x))); }
     else toast({ message: "could not update the app", variant: "error" });
   }
 

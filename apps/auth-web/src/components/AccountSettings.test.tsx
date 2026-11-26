@@ -326,3 +326,78 @@ describe("AccountSettings identity, ordering and restore (PR-21 review)", () => 
     expect(await screen.findByText(/to manage your account/)).not.toBeNull();
   });
 });
+
+describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  /** GETs: first pair answers normally; later ones go to `later(url)`. POSTs: recovery codes / ok. */
+  function setup(later: (u: string) => Response | Promise<Response>) {
+    let loaded = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") return u.endsWith("/recovery-codes") ? json({ recoveryCodes: ["code-aaaa"] }) : json({ ok: true });
+      if (!loaded) { if (u.endsWith("/account")) return json(LINKED); loaded = true; return json({ grants: [GRANT_A] }); }
+      return later(u);
+    });
+    page();
+  }
+  const confirmLast = async (name: string) => fireEvent.click((await screen.findAllByRole("button", { name })).at(-1)!);
+
+  it("a late 200 from an older reload never undoes a newer sign-out", async () => {
+    let late!: (r: Response) => void;
+    let n = 0;
+    setup(() => (n++ < 2 ? new Promise<Response>((r) => { if (n === 1) late = r; }) : json({}, 401)));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink"); // reload #1: account pending (late)
+    act(() => { window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); }); // reload #2 -> 401
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    late(json(LINKED));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.getByText(/to manage your account/)).not.toBeNull();
+  });
+
+  it("the same account keeps its shown recovery codes across a refresh; a different one hides them with a notice", async () => {
+    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
+    await confirmLast("regenerate");
+    expect(await screen.findByText("code-aaaa")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "unlink" })); // success -> reload() for the same account
+    await confirmLast("unlink");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.getByText("code-aaaa")).not.toBeNull();
+  });
+
+  it("an account change hides shown recovery codes and says so", async () => {
+    let who = LINKED;
+    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(who));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
+    await confirmLast("regenerate");
+    await screen.findByText("code-aaaa");
+    who = { ...LINKED, username: "bob", csrf: "c2" };
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink");
+    expect(await screen.findByText("bob")).not.toBeNull();
+    expect(screen.queryByText("code-aaaa")).toBeNull();
+    expect(await screen.findByText(/recovery codes were hidden/)).not.toBeNull();
+  });
+
+  it("a revoke wins over an older in-flight reload whose grants still list the app", async () => {
+    let late!: (r: Response) => void;
+    let n = 0;
+    setup((u) => u.endsWith("/grants") ? new Promise<Response>((r) => { late = r; n++; }) : json(LINKED));
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    await confirmLast("unlink"); // reload pending on grants
+    await waitFor(() => expect(n).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    await confirmLast("revoke access");
+    await waitFor(() => expect(screen.queryByText("a app")).toBeNull());
+    late(json({ grants: [GRANT_A] })); // older answer: stale
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("a app")).toBeNull();
+  });
+});
