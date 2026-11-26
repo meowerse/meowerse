@@ -10,6 +10,6 @@
     "secret:path": "wrangler secret put PATH_SECRET"
   },
   "devDependencies": {
-    "wrangler": "4.116.0"
+    "wrangler": "4.168.0"
   }
 }
