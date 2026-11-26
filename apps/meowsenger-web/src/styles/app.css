@@ -780,26 +780,28 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 }
 .mw-forwardrow__check.is-on { background: var(--mw-green); border-color: var(--mw-green); }
 
-/* Skeleton shimmer: a moving highlight sweep over placeholder blocks. */
+/* Skeleton shimmer: a highlight sweep on a ::after layer moved with transform only
+   (composite-only; the old background-position sweep repainted every frame). */
 .mw-skel {
   display: block; border-radius: var(--radius-sm);
   background: var(--surface-muted);
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--surface-muted) 100%, transparent) 0%,
-    color-mix(in srgb, var(--border) 55%, var(--surface-muted)) 50%,
-    color-mix(in srgb, var(--surface-muted) 100%, transparent) 100%
-  );
-  background-size: 200% 100%;
-  animation: mw-shimmer 1.4s ease-in-out infinite;
+  position: relative; overflow: hidden; isolation: isolate;
 }
-@keyframes mw-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.mw-skel::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--border) 55%, var(--surface-muted)), transparent);
+  transform: translateX(-100%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mw-skel::after { animation: mw-shimmer 1.4s ease-in-out infinite; will-change: transform; }
+}
+@keyframes mw-shimmer { to { transform: translateX(100%); } }
 
-.mw-skel--avatar { width: 40px; height: 40px; border-radius: var(--radius-pill); flex: none; }
+.mw-skel--avatar { width: 36px; height: 36px; border-radius: var(--radius-pill); flex: none; }
 .mw-skel--line { height: 12px; }
 .mw-skel--w60 { width: 60%; }
 .mw-skel--w80 { width: 80%; }
-.mw-skel--bubble { height: 34px; border-radius: var(--radius-lg); }
+.mw-skel--bubble { height: 40px; border-radius: var(--radius-lg); }
 
 /* Sidebar skeleton rows mirror the real .mw-chatrow layout. */
 .mw-skel-list { display: flex; flex-direction: column; }
@@ -819,7 +821,7 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 .mw-bootskel .mw-chat__account-info { gap: 4px; }
 
 /* Log skeleton bubbles alternate sides like a real conversation. */
-.mw-skel-log { display: flex; flex-direction: column; gap: var(--space-3); padding-block: var(--space-2); }
+.mw-skel-log { display: flex; flex-direction: column; gap: var(--space-2); padding-block: var(--space-2); }
 .mw-skelbubble { display: flex; }
 .mw-skelbubble--me { justify-content: flex-end; }
 .mw-skelbubble .mw-skel--bubble { max-width: 82%; }
@@ -847,9 +849,6 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
 .mw-emptylog__glyph { font-size: 2rem; line-height: 1; }
 .mw-emptylog__text { margin: 0; font-size: var(--text-sm); }
 
-@media (prefers-reduced-motion: reduce) {
-  .mw-skel { animation: none; }
-}
 
 /* ---- slice 9: reactions, in-chat search, notifications, danger zone -------- */
 
@@ -1055,7 +1054,7 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   .mw-search__results { max-height: 52vh; }
   .mw-danger__btn, .mw-danger__title { align-self: flex-start; }
   /* audit #7 — chat rows: tighter vertical padding so more fit on a phone screen. */
-  .mw-chatrow { padding-block: var(--space-2); }
+  .mw-chatrow, .mw-skelrow { padding-block: var(--space-2); }
   /* audit #3 — sidebar chrome: put the "+ new chat" button and the search on one
      row (button shrinks to its label, search takes the rest) to reclaim height. */
   .mw-chat__new { flex-direction: row; align-items: center; }

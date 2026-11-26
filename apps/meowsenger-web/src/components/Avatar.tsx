@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+const PX = { sm: 28, md: 36, lg: 48 } as const; // mirrors .mw-avatar--* in packages/ui
+
 /**
  * Avatar with a guaranteed fallback. The Telegram photo (served from the auth
  * host `/avatar/<id>`) can 404 (hash changed after a photo update), be hidden
@@ -28,8 +30,10 @@ export function Avatar({ url, name, size = "md" }: {
         <img
           src={url ?? undefined}
           alt=""
-          width="100%"
-          height="100%"
+          width={PX[size]}
+          height={PX[size]}
+          loading="lazy"
+          decoding="async"
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
           onError={() => setBroken(true)}
         />
