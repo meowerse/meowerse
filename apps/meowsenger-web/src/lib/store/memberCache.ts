@@ -28,9 +28,10 @@ export function put(chatId: string, roster: Member[], epoch: number, g = generat
 }
 /** Keep showing the roster but force a revalidation (e.g. the caller's role changed). */
 export function markStale(chatId: string): void {
+  bump(chatId);
   const e = rosters.get(chatId);
   if (!e) return;
-  e.at = 0; bump(chatId); notify();
+  e.at = 0; notify();
 }
 export function invalidate(chatId: string): void {
   bump(chatId);

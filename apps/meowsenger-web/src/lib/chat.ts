@@ -394,10 +394,12 @@ export async function createChannel(
 }
 
 /** GET /api/chats/:id/members — the group roster. A failure is a typed error. */
-export function getMembers(base: string, chatId: string): Promise<RequestResult<Member[]>> {
+export function getMembers(base: string, chatId: string, init?: { signal?: AbortSignal }): Promise<RequestResult<Member[]>> {
   return read<{ members?: Member[] }, Member[]>(
     `${base}/api/chats/${encodeURIComponent(chatId)}/members`,
     (d) => d.members ?? [],
+    false,
+    init,
   );
 }
 

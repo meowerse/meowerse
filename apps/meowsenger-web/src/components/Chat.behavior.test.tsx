@@ -66,6 +66,11 @@ vi.mock("../lib/chat", async (importActual) => {
   };
 });
 
+// The real drawer needs a full mutation flow; a stub that reports a change is enough here.
+vi.mock("./MemberDrawer", () => ({
+  MemberDrawer: ({ onChanged }: { onChanged: () => void }) => <button onClick={onChanged}>drawer-changed</button>,
+}));
+
 vi.mock("../lib/push", async (importActual) => ({
   ...(await importActual<typeof import("../lib/push")>()),
   syncPushSubscription: vi.fn(async () => false),
@@ -985,6 +990,61 @@ describe("Chat island — roster cache + role from the summary", () => {
     await screen.findByText(/only admins post/);
     expect(document.querySelector("textarea")).toBeNull();
     clearAll();
+  });
+
+  const staleNow = () => { const real = Date.now; return vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000); };
+  const setVis = (v: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
+  const mountGroupWithBob = async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u2", body: "team msg" })] };
+    H.members = { c1: [...roster, bob] };
+    await mountOpen();
+    await screen.findByText("2 members");
+    return vi.mocked(getMembers);
+  };
+
+  it("a drawer change keeps the names on screen while the roster refetches, then replaces them", async () => {
+    const gm = await mountGroupWithBob();
+    let release!: (v: unknown) => void;
+    gm.mockImplementationOnce(() => new Promise((r) => { release = r; }) as never);
+    act(() => fireEvent.click(screen.getByLabelText("group members")));
+    const changed = await screen.findByText("drawer-changed");
+    act(() => fireEvent.click(changed));
+    await waitFor(() => expect(gm).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // not blanked to the placeholder
+    expect(screen.queryByText("someone")).toBeNull();
+    await act(async () => { release({ ok: true, status: 200, data: [...roster, { ...bob, displayName: "Robert" }] }); });
+    await waitFor(() => expect(screen.getAllByText("Robert").length).toBeGreaterThan(0));
+    clearAll();
+  });
+
+  it("a hidden tab never revalidates; returning to visible does, once, with no overlapping requests", async () => {
+    const gm = await mountGroupWithBob();
+    const spy = staleNow();
+    setVis("hidden");
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(1);
+    setVis("visible");
+    gm.mockImplementationOnce(() => new Promise(() => {}) as never); // stays in flight
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(2);
+    spy.mockRestore(); clearAll();
+  });
+
+  it("a failing revalidation backs off: the next ticks inside the backoff make no request", async () => {
+    const gm = await mountGroupWithBob();
+    const spy = staleNow();
+    gm.mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "network" as const } }) as never);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(gm).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // still showing the last roster
+    spy.mockRestore(); clearAll();
   });
 
   it("a channel member sees the read-only note with no roster", async () => {

@@ -331,17 +331,30 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.
+  // In-flight roster fetches per chat (no overlapping requests) and the consecutive-failure
+  // count + earliest retry time per chat (exponential backoff for the background tick).
+  const rosterFlight = useRef(new Map<string, object>());
+  const rosterRetry = useRef(new Map<string, { fails: number; at: number }>());
   const loadMembers = useCallback(async (chatId: string, force = false) => {
-    if (force) memberCache.invalidate(chatId);
-    else if (memberCache.isFresh(chatId)) return; // fresh within the TTL: no request
+    // force (after a drawer change): keep the roster on screen, but a fetch that started before can't store.
+    if (force) memberCache.markStale(chatId);
+    else if (memberCache.isFresh(chatId) || rosterFlight.current.has(chatId)) return;
     const tok = begin();
+    const mine = {};
+    rosterFlight.current.set(chatId, mine);
     const gen = memberCache.generation(chatId);
-    const res = await getMembers(base, chatId);
+    const res = await getMembers(base, chatId, { signal: tok.signal });
     tok.done();
+    if (rosterFlight.current.get(chatId) === mine) rosterFlight.current.delete(chatId);
     // A 403 means we're no longer a member: handled like a revoke (purge that chat from
     // every cache, and close it only if it's still open), even if we switched away.
     if (isForbidden(res)) { onRevoked(chatId); return; }
-    if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
+    if (!res.ok) { // keep the last known roster; never blank it on a failed fetch
+      const f = (rosterRetry.current.get(chatId)?.fails ?? 0) + 1;
+      rosterRetry.current.set(chatId, { fails: f, at: Date.now() + Math.min(60_000 * 2 ** f, 5 * 60_000) });
+      return;
+    }
+    rosterRetry.current.delete(chatId);
     // Dropped if the account changed or the roster was invalidated/purged mid-fetch.
     memberCache.put(chatId, res.data, tok.epoch, gen);
   }, [base, onRevoked]);
@@ -492,12 +505,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const rosterStale = memberCache.useStale(activeId);
   useEffect(() => {
     if (!activeId || !isMembered) return;
-    void loadMembers(activeId);
-    const tick = () => void loadMembers(activeId);
+    // A failing chat waits out its backoff; a hidden tab never polls.
+    const attempt = () => { if (Date.now() >= (rosterRetry.current.get(activeId)?.at ?? 0)) void loadMembers(activeId); };
+    const tick = () => { if (document.visibilityState === "visible") attempt(); };
+    attempt();
     const iv = setInterval(tick, 60_000);
-    const onVis = () => { if (document.visibilityState === "visible") tick(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", tick); };
   }, [activeId, isMembered, loadMembers, rosterStale]);
 
   // Live-ish sidebar: refresh listChats on window focus + a 45s interval while the
@@ -722,6 +736,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const peerAway = peerOnline && peerId != null && away.has(peerId);
   // Membered-chat header derivations.
   const groupName = activeChat?.name || (isChannel ? "channel" : "group");
+  // Known limit: a member removed by another admin stays counted until the roster revalidates (<= TTL + 1 min).
   const memberCount = memberMap.size || activeChat?.memberCount || 0;
   const onlineCount = isMembered ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
   const open = activeChat != null; // a popstate to a chat no longer in the list shows the list
