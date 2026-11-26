@@ -848,7 +848,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     const after = commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
     if (after === null) return; // the chat switched: the entry effect already reset the prepend state
     if (after === before) {
-      // An empty / all-duplicate page leaves the log unchanged, so no layout effect will run: nothing to restore, settle now.
+      // An empty older page leaves the log unchanged, so no layout effect will run: nothing to restore, settle now.
       prependRestoreRef.current = null;
       settlePrepend();
       return;
@@ -863,7 +863,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       // Fallback when the commit has not rendered yet. With an anchor the DOM is uncommitted (a height diff would be ~0), so
       // leave the restore pending for the late commit's layout effect (it is chat-guarded and cleared on chat switch);
       // only the anchor-less height diff is applied here.
-      if (r && !r.anchor) {
+      if (r && !r.anchor && r.chatId === chatId && activeRef.current === chatId) {
         if (now) now.scrollTop = now.scrollHeight - r.prevHeight;
         prependRestoreRef.current = null;
       }
