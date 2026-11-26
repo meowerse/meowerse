@@ -1,5 +1,6 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ComponentType, type LazyExoticComponent, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ComponentType, type LazyExoticComponent, type ReactNode } from "react";
 
+import type { ConfirmDialog as UiConfirmDialog } from "@meowerse/ui/confirm-dialog";
 // On-demand panels (modals, menus, drawer) live in their own chunks so they are not in the eager /app closure.
 // Rendered only once opened; the chunk is warmed after first paint (prefetchPanels) so a click rarely waits.
 type Loader<P> = () => Promise<{ default: ComponentType<P> }>;
@@ -12,6 +13,7 @@ export const panels = {
   forward: () => import("./ForwardModal").then((m) => ({ default: m.ForwardModal })),
   members: () => import("./MemberDrawer").then((m) => ({ default: m.MemberDrawer })),
   settings: () => import("./Settings"),
+  confirm: () => import("@meowerse/ui/confirm-dialog").then((m) => ({ default: m.ConfirmDialog })),
 };
 
 /** Hover/focus preload for a trigger: starts the chunk fetch early; failures are ignored (the click shows them). */
@@ -105,4 +107,9 @@ export function LazyPanel<P extends object>({ load, props, open = true, onClose 
       </Suspense>
     </Boundary>
   );
+}
+
+/** Drop-in for @meowerse/ui's ConfirmDialog that keeps Modal/Field/Button out of the eager closure (loaded on first open, warmed at idle). */
+export function ConfirmDialog(p: ComponentProps<typeof UiConfirmDialog>) {
+  return <LazyPanel load={panels.confirm} props={p} open={p.open} onClose={p.onCancel} />;
 }

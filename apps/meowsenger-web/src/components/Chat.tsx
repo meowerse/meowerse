@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { MenuItem } from "./MessageMenu";
-import { LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
-import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
+import { ConfirmDialog, LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
+import { Icon, type RequestResult } from "@meowerse/ui";
 import { loginUrl, logoutUrl, type SessionUser } from "../lib/meowsengerApi";
 import { listChats, openDirect, resolveChat, getMembers, type ChatSummary, type Member, type Message, type InboxDelta } from "../lib/chat";
 import { shownName } from "../lib/userName";
@@ -14,7 +14,7 @@ import { Composer, type ReplyDraft } from "./Composer";
 import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
 import { setSnapshotSource } from "../lib/sessionEnded";
-import { syncPushSubscription, disablePush } from "../lib/push";
+import { syncPushSubscription, disablePush } from "../lib/pushLazy";
 import { setScope, clearAll, purgeChat, broadcastLogout } from "../lib/store";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
