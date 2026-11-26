@@ -105,9 +105,9 @@ async function harness(opts: { wrap?: (db: DbClient) => DbClient; ctx?: Executio
   const call = (path: string, o: Parameters<typeof req>[1] = {}) => handle(req(path, o), env as never, deps as never, opts.ctx);
   async function signup(username: string) {
     const r = await call("/signup", { body: { username, password: PW } });
-    const b = (await r.json()) as { csrf: string; recoveryCodes: string[] };
+    const b = (await r.json()) as { csrf: string };
     const accountId = store.tables.accounts.find((a) => a.username === username)!.id as string;
-    return { sess: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")!, csrf: b.csrf, recoveryCodes: b.recoveryCodes, accountId };
+    return { sess: cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")!, csrf: b.csrf, accountId };
   }
   const rows = () => store.tables.audit_log;
   /** Run `fn`, assert it added exactly ONE audit row and return it (with the shape every row must have). */
@@ -192,7 +192,7 @@ test("logout -> one row with the session's account; no cookie or already-revoked
   expect(h.rows()).toHaveLength(none + 1);
 });
 
-test("password.change only on success; recovery.regenerate; consent.revoke; telegram.unlink; account.delete", async () => {
+test("password.change only on success; recovery-codes endpoint gone (no audit row); consent.revoke; telegram.unlink; account.delete", async () => {
   const h = await harness();
   let { sess, csrf } = await h.signup("aud_acct");
   const accountId = h.store.tables.accounts.find((a) => a.username === "aud_acct")!.id as string;
@@ -210,7 +210,9 @@ test("password.change only on success; recovery.regenerate; consent.revoke; tele
   sess = cookieValue(pwRes.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   expect(JSON.stringify(pwRow)).not.toContain(csrf);
   expect(JSON.stringify(pwRow)).not.toContain(sess);
-  expect(await h.one(() => h.call("/api/account/recovery-codes", { sess, body: { csrf } }))).toMatchObject({ event: "recovery.regenerate", account_id: accountId });
+  const beforeGone = h.rows().length;
+  expect((await h.call("/api/account/recovery-codes", { sess, body: { csrf } })).status).toBe(410);
+  expect(h.rows()).toHaveLength(beforeGone); // the old path emits no recovery.regenerate
 
   // revoking a grant that never existed writes no row (and stores no caller-supplied client id)
   const none = h.rows().length;
@@ -528,7 +530,7 @@ test("mgmt PAT upsert: create and update are recorded, unchanged and unauthorize
 
 // ---------------------------------------------------------------- no secrets
 
-test("no secrets: no password, recovery code, auth code, token, client secret, PAT, session/csrf id, Telegram id or username reaches any audit_log parameter", async () => {
+test("no secrets: no password, auth code, token, client secret, PAT, session/csrf id, Telegram id or username reaches any audit_log parameter", async () => {
   const h = await harness();
   const su = await h.signup("aud_secret_user");
   const login = await h.call("/login", { body: { username: "aud_secret_user", password: PW } });
@@ -536,10 +538,7 @@ test("no secrets: no password, recovery code, auth code, token, client secret, P
   const sess2 = cookieValue(login.headers.get("Set-Cookie"), "__Host-mw_sess")!;
   const pw = await h.call("/api/account/password", { sess: sess2, body: { csrf: lb.csrf, current_password: PW, new_password: "newpass123456" } });
   expect(pw.status).toBe(200);
-  const sess3 = cookieValue(pw.headers.get("Set-Cookie"), "__Host-mw_sess")!; // rotated by the password change
-  const rc = await h.call("/api/account/recovery-codes", { sess: sess3, body: { csrf: ((await pw.json()) as { csrf: string }).csrf } });
-  const regenerated = ((await rc.json()) as { recoveryCodes: string[] }).recoveryCodes;
-  expect(h.seen.length).toBe(4); // signup, login.ok, password.change, recovery.regenerate
+  expect(h.seen.length).toBe(3); // signup, login.ok, password.change
 
   // OAuth flow: auth code -> access + refresh token -> rotation -> reuse detection
   const { tkt, csrf, sess } = await consentFlow(h, "aud_secret_oauth");
@@ -583,13 +582,12 @@ test("no secrets: no password, recovery code, auth code, token, client secret, P
   const blob = JSON.stringify([...h.seen, ...d.audits()]);
   const secrets = [
     PW, "newpass123456", "aud_secret_user", "aud_secret_oauth", su.sess, su.csrf, sess2, lb.csrf, sess, csrf, tkt,
-    ...su.recoveryCodes, ...regenerated, UA, IP,
+    UA, IP,
     code, t1.access_token, t1.refresh_token, t2.access_token, t2.refresh_token,
     TG_ID, WG_ID, "widgetnek", t.nonce, t.own,
     cb.clientSecret!, rb.clientSecret!, pat, "pat-label",
   ];
   for (const x of secrets) expect(blob).not.toContain(x);
-  for (const c of [...su.recoveryCodes, ...regenerated]) expect(blob.toLowerCase()).not.toContain(c.toLowerCase().replace(/-/g, ""));
 }, 20000); // heavy: many real PBKDF2 (600k) logins; >5s on loaded CI runners (flaked 3x). Assertions unchanged.
 
 // ---------------------------------------------------------------- never throws

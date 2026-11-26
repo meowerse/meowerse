@@ -110,8 +110,6 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.recovery_codes = t.recovery_codes.filter((r) => r.account_id !== a[0]);
         return { rows: [] };
       }
-      if (/SELECT COUNT\(\*\) AS n FROM recovery_codes/.test(sql))
-        return { rows: [{ n: t.recovery_codes.filter((r) => r.account_id === a[0] && r.used_at == null).length }] };
       if (/SELECT c\.client_id, c\.approved_scope_snapshot, c\.updated_at, o\.display_name FROM consents c/.test(sql))
         return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null, display_name: t.oauth_clients.find((o) => o.client_id === r.client_id)?.display_name ?? null })) };
       if (/DELETE FROM consents WHERE account_id/.test(sql)) {
@@ -296,8 +294,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           ],
         };
       }
-      // getAccountDetail — collapsed: profile + password + telegram + verified + recovery count.
-      if (/AS recovery_remaining/.test(sql)) {
+      // getAccountDetail — collapsed: profile + password + telegram + verified.
+      if (/AS telegram_username/.test(sql)) {
         const acct = t.accounts.find((r) => r.id === a[0]);
         if (!acct) return { rows: [] };
         const tg = t.telegram_links.find((r) => r.account_id === acct.id);
@@ -310,7 +308,6 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
               has_password: t.password_credentials.some((r) => r.account_id === acct.id) ? 1 : 0,
               telegram_username: tg ? tg.telegram_username : null,
               verified: tg ? 1 : 0,
-              recovery_remaining: t.recovery_codes.filter((r) => r.account_id === acct.id && r.used_at == null).length,
             },
           ],
         };
@@ -324,16 +321,6 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       }
       if (/^SELECT phc FROM password_credentials WHERE account_id/.test(sql))
         return { rows: t.password_credentials.filter((r) => r.account_id === a[0]).map((r) => ({ phc: r.phc })) };
-      if (/INSERT INTO recovery_codes .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
-        // conditional on the account existing (a[2] = account id)
-        if (!t.accounts.some((r) => r.id === a[2])) return { rows: [], rowsAffected: 0 };
-        t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
-        return { rows: [], rowsAffected: 1 };
-      }
-      if (/INSERT INTO recovery_codes/.test(sql)) {
-        t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
-        return { rows: [] };
-      }
 
       // --- telegram ---
       if (/SELECT account_id FROM telegram_links WHERE telegram_id/.test(sql))
