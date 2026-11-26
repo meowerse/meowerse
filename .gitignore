@@ -2,6 +2,7 @@
 node_modules/
 .turbo/
 dist/
+dist-e2e/
 .astro/
 *.tfstate*
 .terraform/
@@ -19,4 +20,5 @@ workers/*/tmp/
 /.agents
 /.tmp-export-claude
 apps/web/test-results/
+apps/auth-web/test-results/
 apps/web/playwright-report/

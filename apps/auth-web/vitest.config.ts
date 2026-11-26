@@ -8,6 +8,7 @@ import type { ViteUserConfig } from "vitest/config";
 // getViteConfig is typed for plain Vite config; vitest's `test` key is accepted at runtime.
 export default getViteConfig({
   test: {
+    exclude: ["tests/e2e/**", "node_modules/**", "dist*/**"], // Playwright specs run via `bun run e2e`
     coverage: {
       provider: "v8",
       thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
