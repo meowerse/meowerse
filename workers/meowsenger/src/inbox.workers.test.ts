@@ -37,7 +37,11 @@ const instrument = (user: string, opts: { gate?: Promise<void>; fail?: boolean }
   } } };
   (globalThis as unknown as Record<string, unknown>)["__reads_" + user] = counter;
 });
-const reads = (user: string) => ((globalThis as unknown as Record<string, { reads: number }>)["__reads_" + user]).reads;
+const reads = (user: string) => {
+  const c = (globalThis as unknown as Record<string, { reads: number }>)["__reads_" + user];
+  if (!c) throw new Error(`no read counter for ${user}`);
+  return c.reads;
+};
 
 function stub(userId: string) {
   return INBOX.get(INBOX.idFromName("inbox:" + userId));

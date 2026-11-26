@@ -33,7 +33,9 @@ test("B16: no write demo, no input, no token anywhere in the build", async ({ pa
   test.skip(info.project.name !== "desktop", "the file scan runs once");
   const walk = (d: string): string[] =>
     readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
-  for (const f of walk(join(process.cwd(), "dist")).filter((f) => /\.(html|js)$/.test(f))) {
+  const files = walk(join(process.cwd(), "dist")).filter((f) => /\.(html|js)$/.test(f));
+  expect(files.length, "dist has html/js to scan (an empty scan would prove nothing)").toBeGreaterThan(0);
+  for (const f of files) {
     const src = readFileSync(f, "utf8");
     expect(src, f).not.toMatch(/PUBLIC_DEMO_TOKEN|Bearer |\/api\/meows/);
   }

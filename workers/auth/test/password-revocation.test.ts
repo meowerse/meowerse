@@ -177,7 +177,7 @@ test("scenario A (lost update): a stale-read second change with the SAME old pas
   const winPhc = await livePhc(store.db, accountId);
   await store.db.execute({ sql: "INSERT INTO refresh_tokens (token_hash, account_id, client_id, scope, family_id, idle_expires_at, absolute_expires_at) VALUES ('rt_after', ?, 'c1', 'openid', 'f', 99999, 99999)", args: [accountId] });
   // the loser read the OLD hash before the winner committed (and holds a still-live session, as an attacker with the stolen cookie would)
-  const stale: DbClient = { execute: async (st) => (typeof st !== "string" && /SELECT phc FROM password_credentials/.test(st.sql) ? { rows: [{ phc: oldPhc }] } : store.db.execute(st)), batch: (x: never, m: never) => store.db.batch(x, m) } as unknown as DbClient;
+  const stale: DbClient = { execute: async (st: Parameters<DbClient["execute"]>[0]) => (typeof st !== "string" && /SELECT phc FROM password_credentials/.test(st.sql) ? { rows: [{ phc: oldPhc }] } : store.db.execute(st)), batch: (x: never, m: never) => store.db.batch(x, m) } as unknown as DbClient;
   const r = await changePassword(stale, { accountId, currentPassword: "accttest1234", newPassword: "attackerpass12", pbkdf2: FASTP, sessionIdHash: "h_winner", newSession: { idHash: "h_loser", csrf: "cl", now: 1000 } });
   expect(r.ok).toBe(false);
   expect(r.error).toBe("conflict");

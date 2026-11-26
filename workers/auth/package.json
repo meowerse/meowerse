@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "bash ../../infra/cloudflare/preflight-auth.sh && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "lint": "bun run --filter @meowerse/auth-web build && wrangler deploy --dry-run --outdir tmp/wr-auth",
     "test": "vitest run --coverage",
     "secret:db-url": "wrangler secret put DATABASE_URL",
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.1.1",
     "vitest": "^5.1.1",
     "wrangler": "4.116.0"

@@ -19,9 +19,9 @@ import { getOrCreateInvite } from "./invites";
  *             member) or deletes the chat if they were the last member.
  */
 
-type Ok<T = Record<string, never>> = { ok: true } & T;
+type Ok<T extends object = object> = { ok: true } & T;
 type Err = { ok: false; error: string };
-type Result<T = Record<string, never>> = Ok<T> | Err;
+type Result<T extends object = object> = Ok<T> | Err;
 
 /**
  * Add `targetUserId` to `chatId` as a plain member. Actor must be owner/admin.
@@ -159,7 +159,10 @@ function reconcileStatements(chatId: string, exceptUserId: string): Stmt[] {
 async function runAtomic(db: DbClient, stmts: Stmt[]): Promise<Array<number | undefined>> {
   if (db.batch) return db.batch(stmts);
   const out: Array<number | undefined> = [];
-  for (const st of stmts) out.push(await db.run(st.sql, st.params));
+  for (const st of stmts) {
+    const n = await db.run(st.sql, st.params);
+    out.push(typeof n === "number" ? n : undefined);
+  }
   return out;
 }
 

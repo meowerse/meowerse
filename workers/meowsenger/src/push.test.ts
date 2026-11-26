@@ -1,3 +1,4 @@
+import { at } from "../test/at";
 import { describe, it, expect, beforeAll } from "vitest";
 import { sendPush, savePushSubscription, deletePushSubscription, deleteDeadPushSubscription, pushTargetsForChat, isAllowedPushEndpoint, pushHostFamily, MAX_PUSH_SUBS_PER_USER } from "./push";
 import type { DbClient, Env, Row } from "./types";
@@ -42,7 +43,7 @@ function pushDb() {
         const i = subs.findIndex((s) => s.endpoint === endpoint);
         if (i >= 0) {
           // Mirrors `ON CONFLICT … DO UPDATE … WHERE push_subscriptions.user_id = excluded.user_id`.
-          if (/DO UPDATE SET[^]*WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) && subs[i].user_id === user_id) {
+          if (/DO UPDATE SET[^]*WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) && at(subs, i).user_id === user_id) {
             subs[i] = { endpoint, user_id, p256dh, auth, created_at };
           } else if (!/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql)) {
             subs[i] = { endpoint, user_id, p256dh, auth, created_at }; // unguarded upsert (would transfer)
@@ -72,7 +73,7 @@ function pushDb() {
         const mine = subs.map((s, idx) => ({ s, idx })).filter((x) => x.s.user_id === uid)
           .sort((a, b) => (b.s.created_at ?? 0) - (a.s.created_at ?? 0) || b.idx - a.idx);
         const drop = new Set(mine.slice(limit).map((x) => x.s.endpoint));
-        for (let i = subs.length - 1; i >= 0; i--) if (drop.has(subs[i].endpoint)) subs.splice(i, 1);
+        for (let i = subs.length - 1; i >= 0; i--) if (drop.has(at(subs, i).endpoint)) subs.splice(i, 1);
       }
     },
   };
@@ -145,7 +146,7 @@ describe("sendPush", () => {
       }) as unknown as typeof fetch;
       expect(await sendPush("https://fcm.googleapis.com/fcm/send/abc", env, Date.now(), fetchFn)).toBe(0);
       expect(calls).toHaveLength(1); // not followed
-      expect(calls[0].init.redirect).toBe("manual");
+      expect(at(calls, 0).init.redirect).toBe("manual");
     }
   });
   it("treats an opaque redirect response as failure", async () => {
@@ -180,7 +181,7 @@ describe("savePushSubscription / deletePushSubscription", () => {
     expect(subs).toHaveLength(1);
     expect(subs[0]).toMatchObject({ user_id: "u1", p256dh: "k2", auth: "a2", created_at: 2 }); // nothing written
     expect(await savePushSubscription(db, "u2", { endpoint: "e1" }, 4, "repair")).toBe("owned");
-    expect(subs[0].user_id).toBe("u1");
+    expect(at(subs, 0).user_id).toBe("u1");
     await deletePushSubscription(db, "e1");
     expect(subs).toHaveLength(0);
   });
@@ -263,7 +264,7 @@ describe("deleteDeadPushSubscription (cleanup vs fresh re-registration)", () => 
     await savePushSubscription(db, "u1", { endpoint: "e1", p256dh: "fresh" }, 250, "repair"); // … user re-registers meanwhile
     await deleteDeadPushSubscription(db, "e1", "u1", sentAt); // late cleanup
     expect(subs).toHaveLength(1);
-    expect(subs[0].p256dh).toBe("fresh");
+    expect(at(subs, 0).p256dh).toBe("fresh");
   });
   it("never deletes another user's row for that endpoint", async () => {
     const { db, subs } = pushDb();

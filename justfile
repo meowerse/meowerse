@@ -24,6 +24,11 @@ lint: lint-js
 lint-js:
     bun run lint
 
+# Typecheck every worker (prod + test configs), then prove the gate fails on a type error.
+typecheck:
+    bun run typecheck
+    bun run typecheck:selftest
+
 # Build the JS workspace via Turbo.
 build:
     bun run build

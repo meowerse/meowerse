@@ -44,6 +44,9 @@ jobs:
       - name: Lint
         run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" lint just lint
 
+      - name: Typecheck workers (prod + test) and gate self-test
+        run: just typecheck
+
       - name: Test (with coverage gate)
         run: bash "$GITHUB_WORKSPACE/scripts/ci-time.sh" test just test
 

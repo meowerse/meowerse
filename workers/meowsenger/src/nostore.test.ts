@@ -22,7 +22,8 @@ const auth = {
   async exchangeCode() { return {}; }, async refresh() { return {}; },
   async verifyIdToken() { return {}; }, buildLogoutUrl() { return ""; },
 };
-const deps = { getDb: () => noRows, auth: () => auth, fetchFn: fetch, now: () => 1, newId: () => "x" } as never;
+const baseDeps = { getDb: () => noRows, auth: () => auth, fetchFn: fetch, now: () => 1, newId: () => "x" };
+const deps = baseDeps as never;
 const call = (m: string, p: string, headers: Record<string, string> = {}) =>
   handle(new Request(`https://meowsenger.alxnko.dev${p}`, { method: m, headers: { Origin: ORIGIN, ...headers } }), env, deps);
 
@@ -95,8 +96,8 @@ const indexSrc = () => readFileSync(fileURLToPath(new URL("./index.ts", import.m
 function routerPatterns(): string[] {
   const src = indexSrc();
   const found = new Set<string>();
-  for (const m of src.matchAll(/path === "([^"]+)"/g)) found.add(m[1]);
-  for (const m of src.matchAll(/path\.match\((\/\^.*\$\/)\)/g)) found.add(m[1]);
+  for (const m of src.matchAll(/path === "([^"]+)"/g)) if (m[1]) found.add(m[1]);
+  for (const m of src.matchAll(/path\.match\((\/\^.*\$\/)\)/g)) if (m[1]) found.add(m[1]);
   return [...found];
 }
 
@@ -227,7 +228,7 @@ const authedDb = {
 };
 const conv = { get: () => ({ historyFor: async () => [] }), idFromName: (n: string) => n };
 const authedEnv = { ...env, CONVERSATION: conv, OIDC_ISSUER: "https://auth" } as unknown as Env;
-const authedDeps = { ...deps, getDb: () => authedDb } as never;
+const authedDeps = { ...baseDeps, getDb: () => authedDb } as never;
 const authedCall = (p: string, method = "GET") =>
   handle(new Request(`https://meowsenger.alxnko.dev${p}`, { method, headers: { Origin: ORIGIN, Cookie: `${SESSION_COOKIE}=${COOKIE}` } }), authedEnv, authedDeps);
 
@@ -271,7 +272,7 @@ describe("Cache-Control: authenticated 200 responses are no-store", () => {
       async verifyIdToken() { return { sub: "u1" }; },
     };
     const okDeps = {
-      ...deps,
+      ...baseDeps,
       getDb: () => authedDb,
       auth: () => okAuth,
       fetchFn: async () => new Response(JSON.stringify({ sub: "u1", preferred_username: "alice" }), { status: 200 }),

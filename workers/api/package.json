@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "lint": "wrangler deploy --dry-run --outdir /tmp/wr-api",
     "test": "vitest run --coverage",
     "secret:db-url": "wrangler secret put DATABASE_URL",
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.1.1",
     "vitest": "^5.1.1",
     "wrangler": "4.116.0"
