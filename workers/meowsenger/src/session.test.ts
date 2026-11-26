@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { at } from "../test/at";
 import { createSession, getSession, deleteSession, sessionCookie, clearCookie, sha256hex, SESSION_COOKIE } from "./session";
 import type { DbClient, Row } from "./types";
 
@@ -51,7 +52,7 @@ describe("session store", () => {
   it("persists no tokens", async () => {
     const { db, t } = memDb();
     await createSession(db, { id: "sess1", userId: "u1", accessExp: now, now });
-    const row = [...t.values()][0];
+    const row = at([...t.values()], 0);
     expect(row.access_token).toBe("");
     expect(row.refresh_token).toBeNull();
   });

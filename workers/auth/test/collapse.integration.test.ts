@@ -13,6 +13,12 @@ import type { DbClient } from "../src/types";
 // the pattern-matched memStore fake can't verify that a JOIN / EXISTS / expiry
 // predicate is correct, and /api/session gates authentication, so it gets a
 // real database. Each test gets a fresh, isolated in-memory DB.
+async function mustIssue(db: DbClient, input: Parameters<typeof issueSession>[1]) {
+  const s = await issueSession(db, input);
+  if (!s) throw new Error("session not issued");
+  return s;
+}
+
 async function freshDb(): Promise<DbClient> {
   const c = createClient({ url: ":memory:" }) as unknown as DbClient;
   for (const stmt of SCHEMA) await c.execute(stmt);
@@ -22,7 +28,7 @@ async function freshDb(): Promise<DbClient> {
 test("whoami: validates the session and returns profile + live verified in one query", async () => {
   const db = await freshDb();
   await db.execute({ sql: "INSERT INTO accounts (id, username, display_name) VALUES (?, ?, ?)", args: ["acct_1", "alice", "Alice"] });
-  const sess = await issueSession(db, { accountId: "acct_1", amr: "pwd", authTime: 1000, now: 1000 });
+  const sess = await mustIssue(db, { accountId: "acct_1", amr: "pwd", authTime: 1000, now: 1000 });
 
   // valid session, no telegram link → verified false
   const w1 = await whoami(db, sess.rawId, 1000);
@@ -40,7 +46,7 @@ test("whoami: validates the session and returns profile + live verified in one q
 test("whoami: rejects unknown, revoked, and expired sessions", async () => {
   const db = await freshDb();
   await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES (?, ?)", args: ["acct_2", "bob"] });
-  const sess = await issueSession(db, { accountId: "acct_2", amr: "pwd", authTime: 1000, now: 1000 });
+  const sess = await mustIssue(db, { accountId: "acct_2", amr: "pwd", authTime: 1000, now: 1000 });
 
   expect(await whoami(db, undefined, 1000)).toBeNull();
   expect(await whoami(db, "not-a-real-cookie", 1000)).toBeNull();
@@ -71,12 +77,13 @@ test("getAccountInfo: folds the password-existence check into one query", async 
 
 test("getClient: one query returns the client + its redirect URIs (json_group_array)", async () => {
   const db = await freshDb();
-  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_owner', 'owner')" }); // FK target for owner_account_id
+  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_owner', 'owner')", args: [] }); // FK target for owner_account_id
   await db.execute({
     sql: `INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, display_name, allowed_scopes, first_party)
           VALUES ('c1', 'app-one', 'acct_owner', 'public', 'App One', '["openid","profile"]', 0)`,
+    args: [],
   });
-  await db.execute({ sql: "INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, allowed_scopes) VALUES ('c2','app-two','acct_owner','public','[]')" });
+  await db.execute({ sql: "INSERT INTO oauth_clients (client_id, name, owner_account_id, client_type, allowed_scopes) VALUES ('c2','app-two','acct_owner','public','[]')", args: [] });
   for (const uri of ["https://a.example/cb", "https://a.example/cb2"]) {
     await db.execute({ sql: "INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri) VALUES ('c1', ?)", args: [uri] });
   }
@@ -93,21 +100,21 @@ test("getClient: one query returns the client + its redirect URIs (json_group_ar
 test("loginVerify: one query gets id + phc; correct/wrong/no-credential/unknown all behave", async () => {
   const db = await freshDb();
   const phc = await hashPassword("correct-horse", CHEAP_PBKDF2);
-  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_l', 'log_user')" });
+  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_l', 'log_user')", args: [] });
   await db.execute({ sql: "INSERT INTO password_credentials (account_id, phc) VALUES ('acct_l', ?)", args: [phc] });
 
   expect(await loginVerify(db, { username: "log_user", password: "correct-horse" })).toEqual({ ok: true, accountId: "acct_l" });
   expect((await loginVerify(db, { username: "log_user", password: "wrong-pass-here" })).ok).toBe(false);
   expect((await loginVerify(db, { username: "ghost", password: "correct-horse" })).ok).toBe(false); // unknown user
   // account with no password credential → phc null → not ok
-  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_np', 'no_pw')" });
+  await db.execute({ sql: "INSERT INTO accounts (id, username) VALUES ('acct_np', 'no_pw')", args: [] });
   expect((await loginVerify(db, { username: "no_pw", password: "correct-horse" })).ok).toBe(false);
 });
 
 test("userinfoClaims: one query yields scope-filtered profile + telegram + live verified", async () => {
   const db = await freshDb();
-  await db.execute({ sql: "INSERT INTO accounts (id, username, display_name, avatar_url) VALUES ('acct_u','uni','Uni','http://img')" });
-  await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (77, 'acct_u', 'uni_tg')" });
+  await db.execute({ sql: "INSERT INTO accounts (id, username, display_name, avatar_url) VALUES ('acct_u','uni','Uni','http://img')", args: [] });
+  await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (77, 'acct_u', 'uni_tg')", args: [] });
   const base = { header: { typ: TYP.ACCESS }, resourceAud: "https://api.meow", issuer: "https://iss" };
   const payload = (scope: string) => ({ token_use: TOKEN_USE.ACCESS, sub: "acct_u", scope, aud: "https://api.meow" });
 
@@ -126,7 +133,7 @@ test("userinfoClaims: one query yields scope-filtered profile + telegram + live 
 
 test("getAccountDetail: one query returns profile + password + telegram + verified + recovery count", async () => {
   const db = await freshDb();
-  await db.execute({ sql: "INSERT INTO accounts (id, username, display_name) VALUES ('acct_d','deet','Deet')" });
+  await db.execute({ sql: "INSERT INTO accounts (id, username, display_name) VALUES ('acct_d','deet','Deet')", args: [] });
   // no password, no telegram, no recovery codes yet
   expect(await getAccountDetail(db, "acct_d")).toEqual({
     username: "deet",
@@ -138,10 +145,10 @@ test("getAccountDetail: one query returns profile + password + telegram + verifi
     recoveryRemaining: 0,
   });
 
-  await db.execute({ sql: "INSERT INTO password_credentials (account_id, phc) VALUES ('acct_d','x')" });
-  await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (88,'acct_d','deet_tg')" });
-  await db.execute({ sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES ('acct_d','h1'),('acct_d','h2')" });
-  await db.execute({ sql: "UPDATE recovery_codes SET used_at = datetime('now') WHERE account_id='acct_d' AND code_hash='h1'" });
+  await db.execute({ sql: "INSERT INTO password_credentials (account_id, phc) VALUES ('acct_d','x')", args: [] });
+  await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (88,'acct_d','deet_tg')", args: [] });
+  await db.execute({ sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES ('acct_d','h1'),('acct_d','h2')", args: [] });
+  await db.execute({ sql: "UPDATE recovery_codes SET used_at = datetime('now') WHERE account_id='acct_d' AND code_hash='h1'", args: [] });
 
   const d = await getAccountDetail(db, "acct_d");
   expect(d).toMatchObject({
@@ -155,7 +162,7 @@ test("getAccountDetail: one query returns profile + password + telegram + verifi
 
 test("null profile fields survive the collapses (all-null account)", async () => {
   const db = await freshDb();
-  await db.execute({ sql: "INSERT INTO accounts (id) VALUES ('acct_z')" }); // username/display/avatar all NULL
+  await db.execute({ sql: "INSERT INTO accounts (id) VALUES ('acct_z')", args: [] }); // username/display/avatar all NULL
 
   expect(await getAccountInfo(db, "acct_z")).toEqual({ username: null, displayName: null, avatarUrl: null, hasPassword: false });
   expect(await getAccountDetail(db, "acct_z")).toEqual({

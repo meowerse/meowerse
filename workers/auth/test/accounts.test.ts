@@ -87,14 +87,17 @@ test("signup and loginVerify tolerate a missing username field", async () => {
   expect((await loginVerify(db, { password: "abcdefghijkl" } as never, { dummyPhc: phc })).ok).toBe(false);
 });
 
+// Session fields changePassword requires; the early-return cases below never reach them.
+const SESSION = { sessionIdHash: "sh", newSession: { idHash: "h", csrf: "c", now: 1000 } };
+
 test("changePassword: no password row → no_password; wrong current → wrong_password; weak new → policy error; ok → updates", async () => {
   const noPw = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [] })]]);
-  expect(await changePassword(noPw, { accountId: "a", currentPassword: "x", newPassword: "y".repeat(12), pbkdf2: FAST })).toEqual({ ok: false, error: "no_password" });
+  expect(await changePassword(noPw, { accountId: "a", currentPassword: "x", newPassword: "y".repeat(12), pbkdf2: FAST, ...SESSION })).toEqual({ ok: false, error: "no_password" });
 
   const phc = await hashPassword("currentpass12", FAST);
   const has = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]]);
-  expect((await changePassword(has, { accountId: "a", currentPassword: "WRONG", newPassword: "newpass123456", pbkdf2: FAST })).error).toBe("wrong_password");
-  expect((await changePassword(has, { accountId: "a", currentPassword: "currentpass12", newPassword: "short", pbkdf2: FAST })).ok).toBe(false);
+  expect((await changePassword(has, { accountId: "a", currentPassword: "WRONG", newPassword: "newpass123456", pbkdf2: FAST, ...SESSION })).error).toBe("wrong_password");
+  expect((await changePassword(has, { accountId: "a", currentPassword: "currentpass12", newPassword: "short", pbkdf2: FAST, ...SESSION })).ok).toBe(false);
 
   const log: { sql: string; args: unknown[] }[] = [];
   const db = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })], [/UPDATE password_credentials SET phc/, () => ({ rows: [], rowsAffected: 1 })]], log);

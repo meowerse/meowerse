@@ -12,6 +12,7 @@ const client: LoadedClient = {
   allowedScopes: ["openid", "profile", "telegram", "verified"],
   verifiedOnly: false,
   firstParty: false,
+  allowOfflineAccess: false,
   redirectUris: ["https://app.example.com/cb"],
 };
 

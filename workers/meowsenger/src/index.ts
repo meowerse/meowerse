@@ -60,6 +60,13 @@ const EXPENSIVE_WRITE = /^\/api\/(?:chats(?:\/[^/]+\/(?:members|join|subscribe|i
  * by client IP. That binding is edge-local and performs NO D1 writes, so throttling
  * never itself consumes the write budget it exists to protect.
  */
+/** Capture group `i` of a route match; every route regex captures its groups unconditionally, so a miss is a programming error. */
+function grp(m: RegExpMatchArray, i: number): string {
+  const v = m[i];
+  if (v === undefined) throw new Error(`route group ${i} missing`);
+  return v;
+}
+
 async function writeThrottle(env: Env, req: Request): Promise<boolean> {
   if (!env.WRITE_LIMIT) return true;
   const ip = req.headers.get("CF-Connecting-IP") ?? "";
@@ -144,9 +151,9 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // Global cross-chat message search (fans out to the caller's chats' DOs).
   if (path === "/api/search" && m === "GET") return handleGlobalSearch(req, env, deps.getDb(), deps.now(), cors);
   const inviteAccept = path.match(/^\/api\/invite\/([^/]+)\/accept$/);
-  if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteAccept[1]), cors);
+  if (inviteAccept && m === "POST") return handleAcceptInvite(req, deps.getDb(), deps.now(), decodeURIComponent(grp(inviteAccept, 1)), cors);
   const inviteResolve = path.match(/^\/api\/invite\/([^/]+)$/);
-  if (inviteResolve && m === "GET") return handleResolveInvite(req, deps.getDb(), deps.now(), decodeURIComponent(inviteResolve[1]), cors);
+  if (inviteResolve && m === "GET") return handleResolveInvite(req, deps.getDb(), deps.now(), decodeURIComponent(grp(inviteResolve, 1)), cors);
 
   // Slice 2 chat graph (REST over D1) + the /ws upgrade into the Conversation DO.
   if (path === "/api/chats" && m === "GET") return handleListChats(req, deps.getDb(), deps.now(), cors);
@@ -155,57 +162,57 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
   // Slice 6 discovery: resolve a public chat by slug. Placed before the bare
   // `/api/chats/:id` so `by-slug` isn't mistaken for a chat id.
   const bySlug = path.match(/^\/api\/chats\/by-slug\/([^/]+)$/);
-  if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(bySlug[1]), cors);
+  if (bySlug && m === "GET") return handleGetBySlug(req, deps.getDb(), deps.now(), decodeURIComponent(grp(bySlug, 1)), cors);
   const hist = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
-  if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), hist[1], cors);
+  if (hist && m === "GET") return handleHistory(req, env, deps.getDb(), deps.now(), grp(hist, 1), cors);
   // Resolve a chat by id-or-slug for a shareable deep-link (member → open; public/
   // private+slug → preview; else 404). The `/resolve` suffix disambiguates from
   // the bare `/api/chats/:id` PATCH below.
   const resolveM = path.match(/^\/api\/chats\/([^/]+)\/resolve$/);
-  if (resolveM && m === "GET") return handleResolveChat(req, deps.getDb(), deps.now(), decodeURIComponent(resolveM[1]), cors);
+  if (resolveM && m === "GET") return handleResolveChat(req, deps.getDb(), deps.now(), decodeURIComponent(grp(resolveM, 1)), cors);
   // Slice 9: within-chat search (member-gated). :id is the chat being searched.
   const search = path.match(/^\/api\/chats\/([^/]+)\/search$/);
-  if (search && m === "GET") return handleSearch(req, env, deps.getDb(), deps.now(), search[1], cors);
+  if (search && m === "GET") return handleSearch(req, env, deps.getDb(), deps.now(), grp(search, 1), cors);
   // Slice 8: forward messages into a target chat (gated on target membership +
   // the channel-post rule). :id is the TARGET chat.
   const forward = path.match(/^\/api\/chats\/([^/]+)\/forward$/);
-  if (forward && m === "POST") return handleForward(req, env, deps.getDb(), deps.now(), forward[1], cors);
+  if (forward && m === "POST") return handleForward(req, env, deps.getDb(), deps.now(), grp(forward, 1), cors);
 
   // Slice 5: member management + chat metadata. Order matters — the more
   // specific member/role sub-routes must precede the bare `/api/chats/:id`.
   const memberRole = path.match(/^\/api\/chats\/([^/]+)\/members\/([^/]+)\/role$/);
-  if (memberRole && m === "POST") return handleSetRole(req, env, deps.getDb(), deps.now(), memberRole[1], memberRole[2], cors);
+  if (memberRole && m === "POST") return handleSetRole(req, env, deps.getDb(), deps.now(), grp(memberRole, 1), grp(memberRole, 2), cors);
   const member = path.match(/^\/api\/chats\/([^/]+)\/members\/([^/]+)$/);
-  if (member && m === "DELETE") return handleRemoveMember(req, env, deps.getDb(), deps.now(), member[1], member[2], cors);
+  if (member && m === "DELETE") return handleRemoveMember(req, env, deps.getDb(), deps.now(), grp(member, 1), grp(member, 2), cors);
   const members = path.match(/^\/api\/chats\/([^/]+)\/members$/);
-  if (members && m === "GET") return handleListMembers(req, deps.getDb(), deps.now(), members[1], cors);
-  if (members && m === "POST") return handleAddMember(req, deps.getDb(), deps.now(), members[1], cors);
+  if (members && m === "GET") return handleListMembers(req, deps.getDb(), deps.now(), grp(members, 1), cors);
+  if (members && m === "POST") return handleAddMember(req, deps.getDb(), deps.now(), grp(members, 1), cors);
   const leaveM = path.match(/^\/api\/chats\/([^/]+)\/leave$/);
-  if (leaveM && m === "POST") return handleLeave(req, env, deps.getDb(), deps.now(), leaveM[1], cors);
+  if (leaveM && m === "POST") return handleLeave(req, env, deps.getDb(), deps.now(), grp(leaveM, 1), cors);
   // Slice 6 open-join: `/join` (groups) + its `/subscribe` alias (channels) share
   // one handler — both add the caller to a public chat as a plain member.
   const joinM = path.match(/^\/api\/chats\/([^/]+)\/(?:join|subscribe)$/);
-  if (joinM && m === "POST") return handleJoin(req, deps.getDb(), deps.now(), joinM[1], cors);
+  if (joinM && m === "POST") return handleJoin(req, deps.getDb(), deps.now(), grp(joinM, 1), cors);
 
   // Slice 7 chat-scoped: invite create/refresh (POST) + revoke (DELETE); a join
   // request (POST /request); the requests inbox (GET) + approve/reject decisions.
   // The more specific /requests/:rid/(approve|reject) precede the bare /requests.
   const invite = path.match(/^\/api\/chats\/([^/]+)\/invite$/);
-  if (invite && m === "POST") return handleCreateInvite(req, deps.getDb(), deps.now(), invite[1], cors);
-  if (invite && m === "DELETE") return handleRevokeInvite(req, deps.getDb(), deps.now(), invite[1], cors);
+  if (invite && m === "POST") return handleCreateInvite(req, deps.getDb(), deps.now(), grp(invite, 1), cors);
+  if (invite && m === "DELETE") return handleRevokeInvite(req, deps.getDb(), deps.now(), grp(invite, 1), cors);
   const request = path.match(/^\/api\/chats\/([^/]+)\/request$/);
-  if (request && m === "POST") return handleRequestJoin(req, deps.getDb(), deps.now(), request[1], cors);
+  if (request && m === "POST") return handleRequestJoin(req, deps.getDb(), deps.now(), grp(request, 1), cors);
   const reqDecide = path.match(/^\/api\/chats\/([^/]+)\/requests\/([^/]+)\/(approve|reject)$/);
   if (reqDecide && m === "POST") {
-    return reqDecide[3] === "approve"
-      ? handleApproveRequest(req, deps.getDb(), deps.now(), reqDecide[1], reqDecide[2], cors)
-      : handleRejectRequest(req, deps.getDb(), deps.now(), reqDecide[1], reqDecide[2], cors);
+    return grp(reqDecide, 3) === "approve"
+      ? handleApproveRequest(req, deps.getDb(), deps.now(), grp(reqDecide, 1), grp(reqDecide, 2), cors)
+      : handleRejectRequest(req, deps.getDb(), deps.now(), grp(reqDecide, 1), grp(reqDecide, 2), cors);
   }
   const requests = path.match(/^\/api\/chats\/([^/]+)\/requests$/);
-  if (requests && m === "GET") return handleListRequests(req, deps.getDb(), deps.now(), requests[1], cors);
+  if (requests && m === "GET") return handleListRequests(req, deps.getDb(), deps.now(), grp(requests, 1), cors);
 
   const chat = path.match(/^\/api\/chats\/([^/]+)$/);
-  if (chat && m === "PATCH") return handleUpdateChat(req, deps.getDb(), deps.now(), chat[1], cors);
+  if (chat && m === "PATCH") return handleUpdateChat(req, deps.getDb(), deps.now(), grp(chat, 1), cors);
 
   if (path === "/ws" && m === "GET") return handleWs(req, env, deps);
   if (path === "/inbox/ws" && m === "GET") return handleInboxWs(req, env, deps);
