@@ -48,4 +48,9 @@ main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
 
 /* PR-21: the session check (AuthGate) holds a full viewport, so the footer starts below the fold and never visibly
    jumps when the gated page replaces the loader (CLS). */
-.mw-gate { min-height: 100svh; }
+.mw-gate:not(.mw-gate--error) { min-height: 100svh; } /* the loading holder only: an error is not centred in a full viewport */
+
+/* PR-21: "your apps" holds the height of one app row (36px on wide screens, where the buttons set it; a wrapped
+   row is taller on phones), so the loading, empty and one-app states take the same box. */
+.mw-apps-slot { min-height: 36px; }
+@media (max-width: 520px) { .mw-apps-slot { min-height: 96px; } }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Skeleton, StatusLine, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
@@ -12,14 +12,25 @@ export const CONNECTED_SERVICES_NOTICE =
 
 const ROW_H = 36; // the small buttons set a row's height; skeletons and one-line states reserve the same
 
-/** The account page's shape while nothing is loaded (same cards and order as the loaded page for a password account; the deletion section is below the fold and appears with the data). */
+/** The account page's shape while nothing is loaded (same cards and order as the loaded page for a password account; the deletion section is below the fold and appears with the data).
+ *  The password card is the real form, disabled and inert, so its geometry is exact; min-height keeps the footer below the fold in tall viewports. */
 function AccountSkeleton() {
   return (
-    <div className="mw-stack" role="status" aria-label="loading account">
+    <div className="mw-stack" aria-busy="true" style={{ minHeight: "100svh" }}>
+      <span role="status" aria-label="loading account" className="sr-only">loading account</span>
       <h1>account</h1>
-      <Skeleton width="40%" height={ROW_H} />
+      <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
+        <Skeleton width="30%" height="1em" />
+        <span style={{ visibility: "hidden" }}><Badge>unverified</Badge></span>
+      </p>
       <Card title="telegram"><Skeleton height={ROW_H} /></Card>
-      <Card title="change password"><div className="mw-stack"><Skeleton height="var(--control-height)" /><Skeleton height="var(--control-height)" /><Skeleton height="var(--control-height)" /></div></Card>
+      <Card title="change password">
+        <div className="mw-stack" inert aria-hidden="true" style={{ opacity: 0.5 }}>
+          <Field label="current password" type="password" disabled />
+          <Field label="new password" type="password" disabled />
+          <Button variant="primary" disabled>update password</Button>
+        </div>
+      </Card>
       <Card title="connected apps"><Skeleton height={ROW_H} /></Card>
       <Card title="recovery codes"><Skeleton height={ROW_H} /></Card>
     </div>
@@ -41,26 +52,57 @@ export default function AccountSettings({ base }: { base: string }) {
   const [needPassword, setNeedPassword] = useState(false); // server said our login is stale and this account has a password
   const [needTelegram, setNeedTelegram] = useState(false); // stale login on a Telegram-only account: sign in again
 
+  const seq = useRef(0); // reload counter: only the latest request's answer may change state (a late 200 must not undo a newer 401)
+  const acctRef = useRef(acct);
+  acctRef.current = acct;
+  const [refreshing, setRefreshing] = useState(false);
+
+  /** Everything that belongs to one account: dropped whenever the account is gone or may be a different one. */
+  function resetAccountState() {
+    setAcct(null); setGrants([]); setGrantsLoaded(false); setGrantsFailed(false); setCodes(null); setConfirm(null);
+    setNeedPassword(false); setNeedTelegram(false); setCur(""); setNext("");
+  }
+
   function reload() {
-    if (!acct) setError(""); // a refresh keeps the account on screen (and any error banner) until the new answer arrives
-    // Any other failure (a 404 once the account behind a live session is gone, a 5xx) comes back as
-    // `{ error }` with none of the account's fields: it's an error to show, never an account to render
-    // (`acct.telegram.linked` on it threw and blanked the whole page).
-    getAccount(base).then((a) => {
-      if (a.error === "no_session") {
+    const mine = ++seq.current;
+    setRefreshing(true);
+    setGrantsFailed(false);
+    if (!acctRef.current) setError(""); // a refresh keeps the account on screen (and any error banner) until the new answer arrives
+    // Both answers are applied together, from the latest request only. Any other failure (a 404 once the account
+    // behind a live session is gone, a 5xx) comes back as `{ error }` with none of the account's fields: it's an
+    // error to show, never an account to render (`acct.telegram.linked` on it threw and blanked the whole page).
+    Promise.allSettled([getAccount(base), getGrants(base)]).then(([ar, gr]) => {
+      if (mine !== seq.current) return;
+      setRefreshing(false);
+      const aErr = ar.status === "rejected" ? "network" : ar.value.error;
+      const gErr = gr.status === "rejected" ? "network" : gr.value.error;
+      if (aErr === "no_session" || gErr === "no_session") {
         // Signed out (or switched): nothing from the previous account stays in state, and the shared session cache is dropped.
         clearSessionCache();
-        setAcct(null); setGrants([]); setCodes(null); setConfirm(null); setError("no_session");
-      } else if (a.error) setError("failed");
-      else { setAcct(a); setError(""); }
-    }).catch(() => setError("network"));
-    getGrants(base).then((g) => {
-      if (g.error === "no_session") setGrants([]);
-      else if (g.error) setGrantsFailed(true);
-      else { setGrants(g.grants ?? []); setGrantsLoaded(true); setGrantsFailed(false); }
-    }).catch(() => setGrantsFailed(true));
+        resetAccountState(); setError("no_session");
+        return;
+      }
+      if (aErr || ar.status === "rejected") { setError(aErr === "network" ? "network" : "failed"); return; }
+      const a = ar.value;
+      const prev = acctRef.current;
+      // No stable account id comes back, so a changed name or CSRF token is treated as maybe-another-account: the previous
+      // one's grants/codes/dialog must not survive next to it (a revoke would POST the new CSRF with the old client id).
+      if (!prev || prev.username !== a.username || prev.displayName !== a.displayName || prev.avatarUrl !== a.avatarUrl || prev.csrf !== a.csrf) resetAccountState();
+      setAcct(a); setError("");
+      if (gErr || gr.status === "rejected") setGrantsFailed(true);
+      else { setGrants(gr.value.grants ?? []); setGrantsLoaded(true); }
+    });
   }
   useEffect(reload, [base]);
+
+  // bfcache restore may show a page from before a sign-out/switch: drop everything shown and ask the server again.
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => { if (e.persisted) { resetAccountState(); setError(""); reloadRef.current(); } };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
   // Back from "sign in again" (/login?reauth=delete → /account?reauth=delete): reopen the dialog once, then drop the marker.
   useEffect(() => {
@@ -140,7 +182,7 @@ export default function AccountSettings({ base }: { base: string }) {
   if (error === "no_session") return <Alert variant="error">please <a href="/login">sign in</a> to manage your account.</Alert>;
   if (!acct && (error === "failed" || error === "network")) {
     return (
-      <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>
+      <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>
         {error === "network" ? "can't reach the account service." : "couldn't load your account."}
       </StatusLine>
     );
@@ -151,7 +193,7 @@ export default function AccountSettings({ base }: { base: string }) {
     <div className="mw-stack">
       <h1>account</h1>
       {(error === "failed" || error === "network") && (
-        <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>
+        <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>
           {error === "network" ? "can't reach the account service." : "couldn't refresh your account."} showing what we last loaded.
         </StatusLine>
       )}
@@ -179,7 +221,7 @@ export default function AccountSettings({ base }: { base: string }) {
       )}
 
       <Card title="connected apps">
-        {!grantsLoaded ? (grantsFailed ? <p className="mw-muted">couldn't load your connected apps. <Button size="sm" variant="secondary" onClick={reload}>try again</Button></p> : <div role="status" aria-label="loading connected apps"><Skeleton height={ROW_H} /></div>) : grants.length === 0 ? <p className="mw-muted" style={{ minHeight: ROW_H, margin: 0 }}>no apps have access.</p> : (
+        {!grantsLoaded ? (grantsFailed ? <p className="mw-muted">couldn't load your connected apps. <Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button></p> : <div role="status" aria-label="loading connected apps"><Skeleton height={ROW_H} /></div>) : grants.length === 0 ? <p className="mw-muted" style={{ minHeight: ROW_H, margin: 0 }}>no apps have access.</p> : (
           <div className="mw-stack">
             {grants.map((g) => (
               <div key={g.clientId} className="mw-row">
@@ -194,7 +236,7 @@ export default function AccountSettings({ base }: { base: string }) {
         )}
       </Card>
 
-      {grantsFailed && grantsLoaded && <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>couldn't refresh your connected apps.</StatusLine>}
+      {grantsFailed && grantsLoaded && <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>couldn't refresh your connected apps.</StatusLine>}
       <Card title="recovery codes">
         <p>{acct.recoveryRemaining} unused. <Button size="sm" variant="secondary" onClick={() => setConfirm({ kind: "regen" })}>regenerate</Button></p>
         {codes && <div style={{ marginTop: "var(--gap-md)" }}><p className="mw-muted">new codes (shown once — save them):</p><RecoveryCodes codes={codes} /></div>}

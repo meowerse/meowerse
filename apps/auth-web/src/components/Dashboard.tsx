@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Field, Card, Checkbox, RadioGroup, Code, Alert, ConfirmDialog, useToast, Skeleton, StatusLine, clearSessionCache } from "@meowerse/ui";
 import { listClients, createClient, deleteClient, rotateClientSecret, updateClient, postManagementToken, type ClientSummary } from "../lib/authApi";
 
@@ -29,17 +29,41 @@ export default function Dashboard({ base }: { base: string }) {
   const [offline, setOffline] = useState(false);
   const [scopes, setScopes] = useState<string[]>(["openid", "profile"]);
 
+  const seq = useRef(0); // reload counter: only the latest request's answer may change state (a late 200 must not undo a newer 401)
+  const loadedRef = useRef(false);
+  loadedRef.current = loaded;
+  const [refreshing, setRefreshing] = useState(false);
+
+  /** Everything that belongs to the signed-in account: dropped when it is gone or may be a different one. */
+  function resetAccountState() {
+    setClients([]); setCsrf(""); setCreated(null); setRotated(null); setMgmtToken(null); setToDelete(null); setLoaded(false);
+  }
+
   function reload() {
+    const mine = ++seq.current;
+    setRefreshing(true);
+    if (!loadedRef.current) setLoadError(false); // a refresh keeps the apps (and any error banner) on screen until the new answer arrives
     listClients(base).then((r) => {
+      if (mine !== seq.current) return;
+      setRefreshing(false);
       if (r.error === "no_session") {
         // Signed out (or switched): nothing from the previous account stays on screen, and the shared session cache is dropped.
         clearSessionCache();
-        setClients([]); setCsrf(""); setCreated(null); setRotated(null); setMgmtToken(null); setLoaded(false); setSignedOut(true);
+        resetAccountState(); setSignedOut(true);
       } else if (r.error) setLoadError(true);
       else { setClients(r.clients ?? []); setCsrf(r.csrf ?? ""); setLoaded(true); setLoadError(false); setSignedOut(false); }
-    }).catch(() => setLoadError(true));
+    }).catch(() => { if (mine === seq.current) { setRefreshing(false); setLoadError(true); } });
   }
   useEffect(reload, [base]);
+
+  // bfcache restore may show a page from before a sign-out/switch: drop everything shown and ask the server again.
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => { if (e.persisted) { resetAccountState(); setLoadError(false); setSignedOut(false); reloadRef.current(); } };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
   function toggleScope(s: string) { setScopes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s])); }
 
@@ -77,7 +101,7 @@ export default function Dashboard({ base }: { base: string }) {
   if (signedOut) return <Alert variant="error">please <a href="/login?next=%2Fdevelopers">sign in</a> to manage your apps.</Alert>;
   if (!loaded && loadError) {
     return (
-      <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>couldn't load your apps.</StatusLine>
+      <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>couldn't load your apps.</StatusLine>
     );
   }
 
@@ -94,10 +118,11 @@ export default function Dashboard({ base }: { base: string }) {
       {rotated && <Card title="new secret"><p>for <code className="mono" data-case="preserve">{rotated.clientId}</code> (shown once): <Code value={rotated.secret} copy /></p></Card>}
 
       {loaded && loadError && (
-        <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>couldn't refresh your apps. showing what we last loaded.</StatusLine>
+        <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>couldn't refresh your apps. showing what we last loaded.</StatusLine>
       )}
       <Card title="your apps">
-        {!loaded ? <div role="status" aria-label="loading your apps" style={{ minHeight: APPS_ROW_MIN }}><Skeleton height={APPS_ROW_MIN} /></div> : clients.length === 0 ? <p className="mw-muted" style={{ minHeight: APPS_ROW_MIN, margin: 0 }}>no apps yet.</p> : (
+        <div className="mw-apps-slot">
+        {!loaded ? <div role="status" aria-label="loading your apps"><Skeleton height={APPS_ROW_MIN} /></div> : clients.length === 0 ? <p className="mw-muted" style={{ margin: 0 }}>no apps yet.</p> : (
           <div className="mw-stack">
             {clients.map((c) => (
               <div key={c.clientId} className="mw-row">
@@ -111,6 +136,7 @@ export default function Dashboard({ base }: { base: string }) {
             ))}
           </div>
         )}
+        </div>
       </Card>
 
       <Card title="register an app">

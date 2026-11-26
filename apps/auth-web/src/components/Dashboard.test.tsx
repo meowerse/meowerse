@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Same harness as AccountSettings.test.tsx (jsdom by pragma, explicit cleanup, plain existence checks).
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@meowerse/ui";
 import Dashboard from "./Dashboard";
@@ -59,6 +59,53 @@ describe("Dashboard stale-while-revalidate (PR-21)", () => {
     expect(await screen.findByText(/to manage your apps/)).not.toBeNull();
     expect(screen.queryByText("My App")).toBeNull();
     expect(sessionStorage.getItem("mw-session")).toBeNull();
+  });
+});
+
+describe("Dashboard ordering and restore (PR-21 review)", () => {
+  it("a late 200 from an older request never undoes a newer 401", async () => {
+    let n = 0;
+    let late!: (r: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "POST") return Promise.resolve(json({ ok: true, clientId: "mw_new" }));
+      const i = n++;
+      return i === 0 ? Promise.resolve(json({ clients: [CLIENT], csrf: "c" })) : i === 1 ? new Promise<Response>((r) => { late = r; }) : Promise.resolve(json({}, 401));
+    });
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    await screen.findByText("My App");
+    await createApp(); // reload #1 (stays pending)
+    await waitFor(() => expect(n).toBe(2));
+    await createApp(); // reload #2 -> 401
+    expect(await screen.findByText(/to manage your apps/)).not.toBeNull();
+    late(json({ clients: [CLIENT], csrf: "c" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("My App")).toBeNull();
+    expect(screen.getByText(/to manage your apps/)).not.toBeNull();
+  });
+
+  it("'try again' is disabled while a refresh is running", async () => {
+    let n = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "POST") return Promise.resolve(json({ ok: true, clientId: "mw_new" }));
+      return n++ === 0 ? Promise.resolve(json({ clients: [CLIENT], csrf: "c" })) : n === 2 ? Promise.resolve(json({ error: "x" }, 500)) : new Promise<Response>(() => {});
+    });
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    await screen.findByText("My App");
+    await createApp();
+    const retry = await screen.findByRole("button", { name: "try again" });
+    fireEvent.click(retry);
+    await waitFor(() => expect((screen.getByRole("button", { name: "try again" }) as HTMLButtonElement).disabled).toBe(true));
+  });
+
+  it("a bfcache restore drops the shown apps at once and re-checks the session", async () => {
+    let signedOut = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => signedOut ? json({}, 401) : json({ clients: [CLIENT], csrf: "c" }));
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    await screen.findByText("My App");
+    signedOut = true;
+    act(() => { window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); });
+    expect(screen.queryByText("My App")).toBeNull();
+    expect(await screen.findByText(/to manage your apps/)).not.toBeNull();
   });
 });
 

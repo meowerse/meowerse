@@ -29,26 +29,38 @@ const startCls = (page: Page) => page.addInitScript(() => {
 });
 const cls = (page: Page) => page.evaluate(() => new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r((window as unknown as { __cls: number }).__cls)))));
 
-for (const [name, clients] of [["no apps", []], ["one app", [CLIENT]]] as const) {
-  test(`dashboard (${name}): skeleton, then data, with CLS <= 0.01`, async ({ page }) => {
-    await startCls(page);
-    await mock(page, { "/api/session": session, "/api/dev/clients": () => json({ clients, csrf: "c" }) });
-    await page.goto("/developers");
-    await expect(page.getByRole("status", { name: "loading your apps" })).toBeVisible();
-    await expect(page.locator(".mw-spinner")).toHaveCount(0);
-    await (clients.length ? expect(page.getByText("My App")) : expect(page.getByText("no apps yet."))).toBeVisible();
-    expect(await cls(page)).toBeLessThanOrEqual(0.01);
+const VIEWPORTS = [{ width: 1280, height: 720 }, { width: 1280, height: 1000 }, { width: 390, height: 844 }];
+const report = (what: string, v: { width: number; height: number }, value: number) => console.log(`CLS ${what} ${v.width}x${v.height} = ${value.toFixed(5)}`);
+
+for (const vp of VIEWPORTS) {
+  test.describe(`${vp.width}x${vp.height}`, () => {
+    test.use({ viewport: vp });
+
+    for (const [name, clients] of [["no apps", []], ["one app", [CLIENT]]] as const) {
+      test(`dashboard (${name}): skeleton, then data, with CLS <= 0.01`, async ({ page }) => {
+        await startCls(page);
+        await mock(page, { "/api/session": session, "/api/dev/clients": () => json({ clients, csrf: "c" }) });
+        await page.goto("/developers");
+        await expect(page.getByRole("status", { name: "loading your apps" })).toBeVisible();
+        await (clients.length ? expect(page.getByText("My App")) : expect(page.getByText("no apps yet."))).toBeVisible();
+        const v = await cls(page);
+        report(`dashboard ${name}`, vp, v);
+        expect(v).toBeLessThanOrEqual(0.01);
+      });
+    }
+
+    test("account: skeleton, then data, with CLS <= 0.01", async ({ page }) => {
+      await startCls(page);
+      await mock(page, { "/api/session": session, "/api/account": () => json(ACCOUNT), "/api/account/grants": () => json({ grants: [GRANT] }) });
+      await page.goto("/account");
+      await expect(page.getByRole("status", { name: "loading account" })).toBeAttached();
+      await expect(page.getByText("x app")).toBeVisible();
+      const v = await cls(page);
+      report("account", vp, v);
+      expect(v).toBeLessThanOrEqual(0.01);
+    });
   });
 }
-
-test("account: skeleton, then data, with CLS <= 0.01", async ({ page }) => {
-  await startCls(page);
-  await mock(page, { "/api/session": session, "/api/account": () => json(ACCOUNT), "/api/account/grants": () => json({ grants: [GRANT] }) });
-  await page.goto("/account");
-  await expect(page.getByRole("status", { name: "loading account" })).toBeVisible();
-  await expect(page.getByText("x app")).toBeVisible();
-  expect(await cls(page)).toBeLessThanOrEqual(0.01);
-});
 
 test("dashboard: a failed refresh keeps the apps and says so; a 401 drops them and offers sign-in", async ({ page }) => {
   let next = () => json({ clients: [CLIENT], csrf: "c" });

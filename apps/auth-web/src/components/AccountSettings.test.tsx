@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Same harness as DevelopersPage.test.tsx: jsdom by pragma, explicit cleanup, plain existence checks.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@meowerse/ui";
 import AccountSettings, { CONNECTED_SERVICES_NOTICE } from "./AccountSettings";
@@ -257,5 +257,72 @@ describe("AccountSettings stale-while-revalidate (PR-21)", () => {
     expect(screen.queryByText("alxnko")).toBeNull();
     expect(screen.queryByText("x app")).toBeNull();
     expect(sessionStorage.getItem("mw-session")).toBeNull();
+  });
+});
+
+describe("AccountSettings identity, ordering and restore (PR-21 review)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  /** Loads account A with one grant, then a successful unlink triggers reload() whose GETs answer with `after`. */
+  async function revalidateWith(after: (url: string) => Response | Promise<Response>) {
+    let revalidating = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { revalidating = true; return json({ ok: true }); }
+      if (revalidating) return after(u);
+      return u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "unlink" })).at(-1)!);
+  }
+
+  it("a different account whose grants fail to load shows none of the previous account's apps (no revoke for them)", async () => {
+    await revalidateWith((u) => u.endsWith("/grants") ? json({ error: "boom" }, 500) : json({ ...LINKED, username: "bob", csrf: "c2" }));
+    expect(await screen.findByText("bob")).not.toBeNull();
+    expect(screen.queryByText("a app")).toBeNull();
+    expect(screen.queryByRole("button", { name: "revoke" })).toBeNull();
+    expect(screen.getByText(/couldn't load your connected apps/)).not.toBeNull();
+  });
+
+  it("the same account whose grants fail to refresh keeps its apps", async () => {
+    await revalidateWith((u) => u.endsWith("/grants") ? json({ error: "boom" }, 500) : json(LINKED));
+    expect(await screen.findByText(/couldn't refresh your connected apps/)).not.toBeNull();
+    expect(screen.getByText("a app")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "revoke" })).not.toBeNull();
+  });
+
+  it("a grants-only sign-out is a sign-out: sign-in alert, no endless skeleton, no false 'no apps have access'", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({}, 401) : json(ACCOUNT));
+    page();
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("no apps have access.")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("'try again' on a failed grants load clears the failure while refetching, and is disabled while a refresh runs", async () => {
+    let fail = true;
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => String(url).endsWith("/grants")
+      ? (fail ? Promise.resolve(json({ error: "x" }, 500)) : new Promise<Response>(() => {}))
+      : Promise.resolve(json(ACCOUNT)));
+    page();
+    const retry = await screen.findByRole("button", { name: "try again" });
+    fail = false;
+    fireEvent.click(retry);
+    expect(await screen.findByRole("status", { name: "loading connected apps" })).not.toBeNull();
+    expect(screen.queryByText(/couldn't load your connected apps/)).toBeNull();
+  });
+
+  it("a bfcache restore drops the shown account at once and re-checks the session", async () => {
+    let signedOut = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => signedOut ? json({}, 401) : String(url).endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(ACCOUNT));
+    page();
+    await screen.findByText("a app");
+    signedOut = true;
+    act(() => { window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); });
+    expect(screen.queryByText("a app")).toBeNull();
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
   });
 });
