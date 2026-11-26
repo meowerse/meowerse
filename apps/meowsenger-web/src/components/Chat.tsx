@@ -748,7 +748,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // Latest closures, read through stable wrappers so memoised rows/sidebar never see a new callback.
   const L = useRef({ onSaveEdit, sendDelete, toggleSelect, openEmoji, sendReact, jumpToMessage, retrySend, discardFailedSend, openSearchResult, refreshChats });
-  L.current = { onSaveEdit, sendDelete, toggleSelect, openEmoji, sendReact, jumpToMessage, retrySend, discardFailedSend, openSearchResult, refreshChats };
+  // Layout effect (not render-time): runs before any event handler and never writes a ref from a discarded render.
+  useLayoutEffect(() => { L.current = { onSaveEdit, sendDelete, toggleSelect, openEmoji, sendReact, jumpToMessage, retrySend, discardFailedSend, openSearchResult, refreshChats }; });
   const rowH = useMemo(() => ({
     onReply: (m: Bubble) => setReplyingTo(m),
     onStartEdit: (m: Bubble) => setEditingId(m.id),
@@ -908,7 +909,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                   </span>
                   <span className="mw-chat__headcol">
                     <span className="mw-chat__peer" data-case="preserve">{peerName}</span>
-                    <PeerStatus typing={peerTyping} away={peerAway} online={peerOnline} lastSeenAt={activeChat.peerLastSeenAt} />
+                    <PeerStatus typing={peerTyping} away={peerAway} online={peerOnline} lastSeenAt={activeChat.peerLastSeenAt} now={now} />
                   </span>
                 </>
               )}

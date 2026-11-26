@@ -326,6 +326,27 @@ describe("Chat island — render isolation (N6/N7)", () => {
   });
 });
 
+describe("Chat island — last-seen label", () => {
+  it("refreshes on the one-minute clock with no other state change", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); // Date only: waitFor keeps its real timers
+    try {
+      vi.setSystemTime(1_000_000_000);
+      H.chats = [dm({ peerLastSeenAt: 1_000_000_000 - 30_000 })];
+      const tick: Array<() => void> = [];
+      const real = window.setInterval.bind(window);
+      vi.spyOn(window, "setInterval").mockImplementation(((fn: () => void, ms?: number) => { if (ms === 60_000) tick.push(fn); return real(fn, ms); }) as typeof window.setInterval);
+      await mountOpen();
+      await waitFor(() => expect(screen.getByText("last seen just now")).toBeTruthy());
+      vi.setSystemTime(1_000_000_000 + 61_000);
+      act(() => tick.forEach((f) => f()));
+      await waitFor(() => expect(screen.getByText("last seen 1m ago")).toBeTruthy());
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("Chat island — error frame", () => {
   it("surfaces a mapped toast for a server error frame", async () => {
     const ws = await mountOpen();
