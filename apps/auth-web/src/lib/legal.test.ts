@@ -63,14 +63,14 @@ describe("shared privacy page copy", () => {
       "Turso point-in-time, 1 day",
       "up to 15 minutes at services that check them offline",
       "Meowsenger sessions can stay valid for up to 7 days",
-      "does NOT delete your Meowsenger data or the messages you sent",
-      "Delete your Meowsenger data first",
+      "does NOT delete anything in the services you signed in to with it",
+      "Delete your data in each service first",
       "username may be released to a new owner",
       "account.delete_stepup_fail",
     ]) expect(privacy, t).toContain(t);
     expect(privacy).toMatch(/<code[^>]*>account\.delete<\/code>/);
     expect(terms).toContain("delete your meowerse account yourself");
-    expect(terms).toContain("does not delete your Meowsenger data");
+    expect(terms).toContain("does not delete your data or messages in the services you signed in to with it");
     expect(`${privacy}${terms}`).not.toMatch(/meowverse/i);
   });
   it("lists the role addresses and no personal email address", () => {

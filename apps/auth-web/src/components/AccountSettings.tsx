@@ -3,11 +3,12 @@ import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToa
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
 /**
- * What auth deletion does NOT do to Meowsenger (nothing links them: Meowsenger keeps its own copy keyed by the old
- * account id). Shown in the danger zone and in the confirm dialog. Keep in sync with privacy.astro.
+ * What auth deletion does NOT do to the services you signed in to with meowerse (Meowsenger and any other app): nothing
+ * links them, each keeps its own copy keyed by the old account id. Shown in the danger zone and in the confirm dialog.
+ * Keep in sync with privacy.astro.
  */
-export const MEOWSENGER_NOTICE =
-  "this does not delete anything in meowsenger: messages you sent stay in their chats, and your meowsenger profile, memberships and notification subscriptions stay until you delete them in meowsenger (settings → danger zone → delete my meowsenger data). do that first: once your meowerse account is deleted you can't sign back in to meowsenger to remove them. even then, messages you already sent are not deleted.";
+export const CONNECTED_SERVICES_NOTICE =
+  "this does not delete anything in the services you signed in to with meowerse (meowsenger or any other app): what you created there, like messages you sent, stays, and your profile, memberships and notification subscriptions there stay until you delete them in that service (in meowsenger: settings → danger zone → delete my meowsenger data). do that first: once your meowerse account is deleted you can't sign back in to those services to remove them. even then, content you already shared, like messages you sent, is not deleted.";
 
 export default function AccountSettings({ base }: { base: string }) {
   const toast = useToast();
@@ -168,7 +169,7 @@ export default function AccountSettings({ base }: { base: string }) {
         {acct.deleteEnabled ? (
           <>
             <p className="mw-muted">deleting your meowerse account is permanent. it erases your meowerse login methods, sessions, app permissions and tokens.</p>
-            <p className="mw-muted" data-testid="delete-meowsenger-notice">{MEOWSENGER_NOTICE}</p>
+            <p className="mw-muted" data-testid="delete-services-notice">{CONNECTED_SERVICES_NOTICE}</p>
             <Button variant="danger" onClick={() => setConfirm({ kind: "delete" })}>delete account</Button>
             {needTelegram && (
               <Alert variant="error">
@@ -193,7 +194,7 @@ export default function AccountSettings({ base }: { base: string }) {
         title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
         <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
-          title="delete your account?" description={`this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. ${MEOWSENGER_NOTICE}`}
+          title="delete your account?" description={`this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. ${CONNECTED_SERVICES_NOTICE}`}
           confirmLabel="delete account" variant="danger" confirmPhrase={acct.username ?? acct.displayName ?? ""} loading={busy} />
       )}
     </div>

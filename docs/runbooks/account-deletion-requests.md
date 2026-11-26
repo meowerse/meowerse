@@ -22,8 +22,8 @@ acknowledgment below is drafted either way.
    - we received the request;
    - deletion is self-service: from inside their account settings, after they sign in again and confirm (if they cannot
      sign in, we can only point them at regaining access; nothing is deleted from an email);
-   - they should delete Meowsenger data first (Meowsenger settings, danger zone), because deletion of the meowerse account
-     does not delete it;
+   - they should delete their data in each service they signed in to with meowerse first (e.g. Meowsenger settings,
+     danger zone), because deletion of the meowerse account does not delete it and they cannot sign in afterwards;
    - never send recovery codes, passwords or Telegram login codes by email; we will never ask for them.
 2. Record the request in the private tracker: date received, the username they gave (if any), the services they
    mention, and status `received`. Do not look up or copy any other account data into the tracker.
