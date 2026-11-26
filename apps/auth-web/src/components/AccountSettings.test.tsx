@@ -216,3 +216,46 @@ describe("AccountSettings", () => {
     expect(bodies[1]!.current_password).toBe("hunter2hunter2");
   });
 });
+
+describe("AccountSettings stale-while-revalidate (PR-21)", () => {
+  const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
+  /** Loads the page, then triggers a revalidate (a successful unlink calls reload()) whose GETs answer with `after`. */
+  async function revalidateWith(after: (url: string) => Response | Promise<Response>) {
+    let revalidating = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { revalidating = true; return json({ ok: true }); }
+      if (revalidating) return after(u);
+      return u.endsWith("/grants") ? json({ grants: [{ clientId: "mw_x", displayName: "x app", approvedScopes: ["openid"], updatedAt: null }] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("x app");
+    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "unlink" })).at(-1)!);
+  }
+
+  it("shows a skeleton (not the loaded page, not a spinner) until the account arrives", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+    const { container } = page();
+    expect(screen.getByRole("status", { name: "loading account" })).not.toBeNull();
+    expect(container.querySelector(".mw-spinner")).toBeNull();
+    expect(container.querySelectorAll(".mw-skeleton").length).toBeGreaterThan(0);
+  });
+
+  it("a failed revalidate keeps the account and grants and says so; retry heals it", async () => {
+    await revalidateWith(() => json({ error: "boom" }, 500));
+    expect(await screen.findByText(/couldn't refresh your account/)).not.toBeNull();
+    expect(screen.getByText("alxnko")).not.toBeNull();
+    expect(screen.getByText("x app")).not.toBeNull();
+    expect(screen.queryByText("couldn't load your account.")).toBeNull();
+  });
+
+  it("a signed-out answer on revalidate drops the previous account's data and clears the session cache", async () => {
+    sessionStorage.setItem("mw-session", "stale");
+    await revalidateWith(() => json({}, 401));
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.queryByText("x app")).toBeNull();
+    expect(sessionStorage.getItem("mw-session")).toBeNull();
+  });
+});

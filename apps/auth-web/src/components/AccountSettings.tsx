@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Spinner, StatusLine, clearSessionCache } from "@meowerse/ui";
+import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Skeleton, StatusLine, clearSessionCache } from "@meowerse/ui";
 import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
 /**
@@ -10,10 +10,28 @@ import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram
 export const CONNECTED_SERVICES_NOTICE =
   "this does not delete anything in the services you signed in to with meowerse (meowsenger or any other app): what you created there, like messages you sent, stays, and your profile, memberships and notification subscriptions there stay until you delete them in that service (in meowsenger: settings → danger zone → delete my meowsenger data). do that first: once your meowerse account is deleted you can't sign back in to those services to remove them. even then, content you already shared, like messages you sent, is not deleted.";
 
+const ROW_H = 36; // the small buttons set a row's height; skeletons and one-line states reserve the same
+
+/** The account page's shape while nothing is loaded (same cards and order as the loaded page for a password account; the deletion section is below the fold and appears with the data). */
+function AccountSkeleton() {
+  return (
+    <div className="mw-stack" role="status" aria-label="loading account">
+      <h1>account</h1>
+      <Skeleton width="40%" height={ROW_H} />
+      <Card title="telegram"><Skeleton height={ROW_H} /></Card>
+      <Card title="change password"><div className="mw-stack"><Skeleton height="var(--control-height)" /><Skeleton height="var(--control-height)" /><Skeleton height="var(--control-height)" /></div></Card>
+      <Card title="connected apps"><Skeleton height={ROW_H} /></Card>
+      <Card title="recovery codes"><Skeleton height={ROW_H} /></Card>
+    </div>
+  );
+}
+
 export default function AccountSettings({ base }: { base: string }) {
   const toast = useToast();
   const [acct, setAcct] = useState<AccountInfo | null>(null);
   const [grants, setGrants] = useState<Grant[]>([]);
+  const [grantsLoaded, setGrantsLoaded] = useState(false); // false until the first answer: "no apps have access" is only said when we know
+  const [grantsFailed, setGrantsFailed] = useState(false); // the last grants (re)load failed; any loaded list stays on screen
   const [error, setError] = useState("");
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
@@ -24,12 +42,23 @@ export default function AccountSettings({ base }: { base: string }) {
   const [needTelegram, setNeedTelegram] = useState(false); // stale login on a Telegram-only account: sign in again
 
   function reload() {
-    setError("");
+    if (!acct) setError(""); // a refresh keeps the account on screen (and any error banner) until the new answer arrives
     // Any other failure (a 404 once the account behind a live session is gone, a 5xx) comes back as
     // `{ error }` with none of the account's fields: it's an error to show, never an account to render
     // (`acct.telegram.linked` on it threw and blanked the whole page).
-    getAccount(base).then((a) => { if (a.error) setError(a.error === "no_session" ? "no_session" : "failed"); else setAcct(a); }).catch(() => setError("network"));
-    getGrants(base).then((g) => setGrants(g.grants ?? [])).catch(() => {});
+    getAccount(base).then((a) => {
+      if (a.error === "no_session") {
+        // Signed out (or switched): nothing from the previous account stays in state, and the shared session cache is dropped.
+        clearSessionCache();
+        setAcct(null); setGrants([]); setCodes(null); setConfirm(null); setError("no_session");
+      } else if (a.error) setError("failed");
+      else { setAcct(a); setError(""); }
+    }).catch(() => setError("network"));
+    getGrants(base).then((g) => {
+      if (g.error === "no_session") setGrants([]);
+      else if (g.error) setGrantsFailed(true);
+      else { setGrants(g.grants ?? []); setGrantsLoaded(true); setGrantsFailed(false); }
+    }).catch(() => setGrantsFailed(true));
   }
   useEffect(reload, [base]);
 
@@ -109,18 +138,23 @@ export default function AccountSettings({ base }: { base: string }) {
   }
 
   if (error === "no_session") return <Alert variant="error">please <a href="/login">sign in</a> to manage your account.</Alert>;
-  if (error === "failed" || error === "network") {
+  if (!acct && (error === "failed" || error === "network")) {
     return (
       <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>
         {error === "network" ? "can't reach the account service." : "couldn't load your account."}
       </StatusLine>
     );
   }
-  if (!acct) return <div className="mw-stack"><Spinner label="loading account" /></div>;
+  if (!acct) return <AccountSkeleton />;
 
   return (
     <div className="mw-stack">
       <h1>account</h1>
+      {(error === "failed" || error === "network") && (
+        <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>
+          {error === "network" ? "can't reach the account service." : "couldn't refresh your account."} showing what we last loaded.
+        </StatusLine>
+      )}
       <p style={{ display: "flex", alignItems: "center", gap: "var(--gap-sm)", flexWrap: "wrap" }}>
         <strong>{acct.username ?? acct.displayName ?? "telegram account"}</strong>
         {acct.verified ? <Badge variant="verified" icon="rosette-discount-check">verified</Badge> : <Badge>unverified</Badge>}
@@ -145,7 +179,7 @@ export default function AccountSettings({ base }: { base: string }) {
       )}
 
       <Card title="connected apps">
-        {grants.length === 0 ? <p className="mw-muted">no apps have access.</p> : (
+        {!grantsLoaded ? (grantsFailed ? <p className="mw-muted">couldn't load your connected apps. <Button size="sm" variant="secondary" onClick={reload}>try again</Button></p> : <div role="status" aria-label="loading connected apps"><Skeleton height={ROW_H} /></div>) : grants.length === 0 ? <p className="mw-muted" style={{ minHeight: ROW_H, margin: 0 }}>no apps have access.</p> : (
           <div className="mw-stack">
             {grants.map((g) => (
               <div key={g.clientId} className="mw-row">
@@ -160,6 +194,7 @@ export default function AccountSettings({ base }: { base: string }) {
         )}
       </Card>
 
+      {grantsFailed && grantsLoaded && <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload}>try again</Button>}>couldn't refresh your connected apps.</StatusLine>}
       <Card title="recovery codes">
         <p>{acct.recoveryRemaining} unused. <Button size="sm" variant="secondary" onClick={() => setConfirm({ kind: "regen" })}>regenerate</Button></p>
         {codes && <div style={{ marginTop: "var(--gap-md)" }}><p className="mw-muted">new codes (shown once — save them):</p><RecoveryCodes codes={codes} /></div>}

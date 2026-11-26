@@ -45,3 +45,7 @@ main { padding-block: clamp(1.75rem, 5vw, 3.25rem); }
   @keyframes mw-vt-out { to { opacity: 0; } }
   @keyframes mw-vt-in { from { opacity: 0; } }
 }
+
+/* PR-21: the session check (AuthGate) holds a full viewport, so the footer starts below the fold and never visibly
+   jumps when the gated page replaces the loader (CLS). */
+.mw-gate { min-height: 100svh; }
