@@ -31,6 +31,9 @@ interface Attach { userId?: string; sid?: string; checkedAt?: number; missed?: t
 /** A session read slower than this counts as "unavailable" (stale window applies): a hung D1
  *  must not freeze the delivery line (and the Conversation fan-out awaiting /notify). */
 const READ_TIMEOUT_MS = 2_500;
+/** After a read comes back "unavailable", further reads for that sid are skipped this long, so a
+ *  burst of frames does not each re-hit a down D1 and wait READ_TIMEOUT_MS. */
+const UNAVAILABLE_BACKOFF_MS = 3_000;
 
 export class UserInbox extends DurableObject<Env> {
   /** sid -> the ONE in-flight D1 read for that session. Inside the serialised `tail` there is
@@ -38,6 +41,8 @@ export class UserInbox extends DurableObject<Env> {
    *  ordering test proves the combination (it fails only when BOTH are removed). */
   private warnedNoSid = false;
   private pending = new Map<string, Promise<boolean | "unavailable">>();
+  /** sid -> no D1 read before this time. In-memory only: a wake after hibernation just retries. */
+  private unavailableUntil = new Map<string, number>();
   /** Delivery tail: /notify calls are processed strictly in arrival order, so a slow session
    *  read can never let a later delta overtake an earlier one (the client keeps the last one). */
   private tail: Promise<unknown> = Promise.resolve();
@@ -76,8 +81,14 @@ export class UserInbox extends DurableObject<Env> {
     if (!a.sid || !a.userId) return true;
     const last = a.checkedAt ?? 0;
     if (Date.now() - last < SESSION_TTL_MS) return true;
+    if (Date.now() < (this.unavailableUntil.get(a.sid) ?? 0)) return Date.now() - last < SESSION_STALE_MS;
     const verdict = await this.read(a.sid, a.userId);
-    if (verdict === "unavailable") return Date.now() - last < SESSION_STALE_MS;
+    if (verdict === "unavailable") {
+      this.unavailableUntil.set(a.sid, Date.now() + UNAVAILABLE_BACKOFF_MS);
+      // Recovery after missed deltas needs a new delta (or invalidate): nothing replays them.
+      return Date.now() - last < SESSION_STALE_MS;
+    }
+    this.unavailableUntil.delete(a.sid);
     if (!verdict) { try { ws.close(4001, "revoked"); } catch { /* already closing */ } return false; }
     // The verdict is per SESSION: stamp every tab that shares it so they don't each re-read.
     const now = Date.now();
@@ -101,9 +112,11 @@ export class UserInbox extends DurableObject<Env> {
       try {
         const cur = ws.deserializeAttachment() as Attach | null;
         if (cur?.missed) {
-          if (typeof chatId === "string") ws.send(JSON.stringify({ type: "chat_update", chatId, invalidate: true }));
-          const { missed: _m, ...rest } = cur;
-          ws.serializeAttachment(rest);
+          if (typeof chatId === "string") {
+            ws.send(JSON.stringify({ type: "chat_update", chatId, invalidate: true }));
+            const { missed: _m, ...rest } = cur;
+            ws.serializeAttachment(rest); // keep `missed` until a frame that can carry the invalidate
+          }
         }
         ws.send(frame);
       } catch { /* socket closed underneath us — drop the frame */ }

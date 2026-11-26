@@ -1787,6 +1787,20 @@ describe("Conversation DO: security-review fixes", () => {
     });
   });
 
+  it("typing: closing the last socket of a typing user tells peers typing is off (no stuck indicator)", async () => {
+    await seedChat("ctyp3");
+    const wa = await connect("ctyp3", "u1");
+    const wb = await connect("ctyp3", "u2");
+    const frames: string[] = [];
+    wb.addEventListener("message", (e: MessageEvent) => { if (String(e.data).includes('"typing"')) frames.push(String(e.data)); });
+    wa.send(JSON.stringify({ type: "typing", on: true }));
+    await vi.waitFor(() => expect(frames).toHaveLength(1), { timeout: 5000 });
+    wa.close();
+    await vi.waitFor(() => expect(frames).toHaveLength(2), { timeout: 5000 });
+    expect(JSON.parse(frames[1]!)).toMatchObject({ type: "typing", userId: "u1", on: false });
+    wb.close();
+  });
+
   it("typing: a quick follow-up 'on' after an 'off' always reaches peers; floods are capped separately", async () => {
     await seedChat("ctyp2");
     const wa = await connect("ctyp2", "u1");

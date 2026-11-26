@@ -151,6 +151,31 @@ describe("UserInbox DO", () => {
       await got;
       expect(await checkedAtOf("iu6")).toBe(before);
     });
+    it("D1 outage: after one failed read, a burst of deltas does not re-read D1 per frame (back-off)", async () => {
+      await seedSession("isid-bo", "iu8", FAR);
+      const ws = await open("iu8", "isid-bo");
+      await instrument("iu8", { fail: true });
+      await age("iu8", 60_000); // inside the stale window: deltas still delivered
+      for (const p of ["b1", "b2", "b3"]) { const g = nextFrame(ws, (t) => t.includes(p)); await notify(stub("iu8"), p); await g; }
+      expect(reads("iu8")).toBe(1);
+    });
+    it("a delta without a chat id withholds nothing it cannot repair: `missed` survives until a frame with a chat id carries the invalidate", async () => {
+      await seedSession("isid-ms2", "iu20", FAR);
+      const ws = await open("iu20", "isid-ms2");
+      await instrument("iu20", { fail: true });
+      await age("iu20", 200_000); // past stale: the next delta is withheld and `missed` is set
+      await notify(stub("iu20"), "lost");
+      await age("iu20", 0);
+      const frames: string[] = [];
+      ws.addEventListener("message", (e: MessageEvent) => frames.push(String(e.data)));
+      await stub("iu20").fetch("https://do/notify", { method: "POST", body: JSON.stringify({ preview: "no-chat", at: 1 }) });
+      await vi.waitFor(() => expect(frames.some((f) => f.includes("no-chat"))).toBe(true));
+      const missed = await runInDurableObject(stub("iu20"), async (inst: UserInbox) => (socketsOf(inst)[0]!.deserializeAttachment() as { missed?: true }).missed);
+      expect(missed).toBe(true);
+      await notify(stub("iu20"), "after");
+      await vi.waitFor(() => expect(frames.some((f) => f.includes("after"))).toBe(true));
+      expect(frames.some((f) => f.includes('"invalidate":true'))).toBe(true);
+    });
     it("normal flow: a fresh checkedAt (set at open) means NO D1 read per delta; a lapsed one reads once then refreshes", async () => {
       await seedSession("isid-n", "iu7", FAR);
       const ws = await open("iu7", "isid-n");
@@ -217,6 +242,7 @@ describe("UserInbox DO", () => {
       await age("iu13", 200_000);
       await notify(stub("iu13"), "withheld");
       await instrument("iu13"); // D1 healthy again
+      await runInDurableObject(stub("iu13"), async (inst: UserInbox) => { (inst as unknown as { unavailableUntil: Map<string, number> }).unavailableUntil.clear(); }); // back-off elapsed
       await notify(stub("iu13"), "delivered");
       await new Promise((r) => setTimeout(r, 50));
       const cu = frames.filter((f) => f.type === "chat_update");

@@ -1482,6 +1482,9 @@ export class Conversation extends DurableObject<Env> {
     if (att?.userId) this.flushRead(att.userId); // don't lose the final cursor of a closing tab
     if (att?.userId && !this.onlineUsers(ws).includes(att.userId)) {
       this.broadcast({ type: "presence", userId: att.userId, online: false }, ws);
+      // A closed socket must not leave peers showing "typing"; drop the state (bounds the map too).
+      if (this.typingState.get(att.userId)?.on) this.broadcast({ type: "typing", userId: att.userId, on: false }, ws);
+      this.typingState.delete(att.userId);
       const nowMs = Date.now();
       if (nowMs - (this.lastSeenStamp.get(att.userId) ?? 0) >= 60_000) {
         this.lastSeenStamp.set(att.userId, nowMs);
