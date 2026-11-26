@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config";
 // are checked by astro check + astro build (honest-90, same as auth-web).
 export default defineConfig({
   test: {
+    // Upper bound only (must exceed the 10 s asyncUtilTimeout in src/test/rtl.tsx): the default 5 s
+    // killed healthy tests on a saturated machine.
+    testTimeout: 30_000,
     coverage: {
       provider: "v8",
       include: ["src/lib/**", "src/hooks/**"],
