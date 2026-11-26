@@ -8,8 +8,8 @@
  * fails these.
  */
 import { useState } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act, fireEvent, within, MockWebSocket, setVisibility } from "../test/rtl";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, act, fireEvent, cleanup, within, MockWebSocket, setVisibility } from "../test/rtl";
 import type { RequestResult } from "@meowerse/ui";
 import type { ChatSummary, Message, Member } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
@@ -76,7 +76,7 @@ vi.mock("../lib/push", async (importActual) => ({
 import Chat from "./Chat";
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
-import { listChats } from "../lib/chat";
+import { listChats, loadHistory, resolveChat } from "../lib/chat";
 import { conversationCache, getEpoch, setScope, clearAll } from "../lib/store";
 
 /** Chat now receives the session user + first list from AppShell (one source of truth). */
@@ -1094,5 +1094,136 @@ describe("Chat island — session ended (real Chat under AppShell)", () => {
     fireEvent.click(await screen.findByText("Carol"));
     await screen.findByText(/your session ended/);
     expect(document.body.textContent).not.toContain("hello there");
+  });
+});
+
+describe("Chat island — phone Back navigation", () => {
+  const mm = window.matchMedia;
+  const mobile = (on: boolean) => { window.matchMedia = ((q: string) => ({ matches: on && q.includes("max-width"), media: q, addEventListener() {}, removeEventListener() {} })) as never; };
+  const popTo = (path: string) => { window.history.replaceState({}, "", path); act(() => { window.dispatchEvent(new PopStateEvent("popstate")); }); };
+  const shell = () => document.querySelector(".mw-chat") as HTMLElement;
+  afterEach(() => { window.matchMedia = mm; vi.restoreAllMocks(); });
+
+  it("phone: opening a chat pushes ONE entry; popstate returns to the list; forward reopens", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    const push = vi.spyOn(window.history, "pushState");
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(window.location.search).toBe("?chat=c1");
+    popTo("/app"); // phone Back
+    await waitFor(() => expect(shell().dataset.open).toBe("0"));
+    expect(push).toHaveBeenCalledTimes(1); // no push loop
+    popTo("/app?chat=c1"); // Forward
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("phone: restores the list scroll when Back shows the list again", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    const list = () => document.querySelector(".mw-chat__list") as HTMLElement;
+    await screen.findByRole("button", { name: /bob/i });
+    list().scrollTop = 120;
+    fireEvent.click(screen.getByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    list().scrollTop = 0; // display:none resets it in a real browser
+    popTo("/app");
+    await waitFor(() => expect(list().scrollTop).toBe(120));
+  });
+
+  it("desktop keeps replaceState (no history entry per chat)", async () => {
+    mobile(false);
+    render(<ChatBoot />);
+    const push = vi.spyOn(window.history, "pushState");
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(window.location.search).toBe("?chat=c1"));
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("phone deep link does not push (Back would re-open it: a trap)", async () => {
+    mobile(true);
+    const push = vi.spyOn(window.history, "pushState");
+    await mountOpen();
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("phone deep link with ?m= (and with a slug) does not push: close stays in one entry", async () => {
+    mobile(true);
+    const push = vi.spyOn(window.history, "pushState");
+    const back = vi.spyOn(window.history, "back");
+    setUrl("/app?chat=c1&m=m1");
+    render(<ChatBoot />);
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    await waitFor(() => expect(window.location.search).toBe("?chat=c1"));
+    expect(push).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "back to chats" }));
+    await waitFor(() => expect(shell().dataset.open).toBe("0"));
+    expect(back).not.toHaveBeenCalled();
+    cleanup();
+    vi.mocked(resolveChat).mockResolvedValueOnce({ id: "c1", isMember: true } as never);
+    setUrl("/app?chat=bobslug");
+    render(<ChatBoot />);
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    await waitFor(() => expect(window.location.search).toBe("?chat=c1"));
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("popstate to a chat no longer in the list shows the list and loads nothing for it", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    const list = () => document.querySelector(".mw-chat__list") as HTMLElement;
+    popTo("/app");
+    await waitFor(() => expect(shell().dataset.open).toBe("0"));
+    list().scrollTop = 77;
+    vi.mocked(loadHistory).mockClear();
+    popTo("/app?chat=ghost"); // Forward to a purged chat
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(shell().dataset.open).toBe("0");
+    expect(vi.mocked(loadHistory).mock.calls.some((c) => c[1] === "ghost")).toBe(false);
+  });
+
+  it("a double tap on back pops history once", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const btn = screen.getByRole("button", { name: "back to chats" });
+    fireEvent.click(btn); fireEvent.click(btn);
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("a revoke closes the chat at once, pops the pushed entry, and the later popstate reopens nothing", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(MockWebSocket.room).toBeTruthy());
+    const ws = MockWebSocket.room;
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    open(ws); emit(ws, { type: "revoked" });
+    await waitFor(() => expect(shell().dataset.open).toBe("0"));
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(window.location.search).toBe("?chat=c1"); // the marked entry is left alone until the pop
+    popTo("/app");
+    expect(shell().dataset.open).toBe("0");
+  });
+
+  it("resizing past the breakpoint with a marked entry open: close still pops it, no stray entry", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    mobile(false);
+    const push = vi.spyOn(window.history, "pushState");
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "back to chats" }));
+    expect(back).toHaveBeenCalledTimes(1);
+    popTo("/app");
+    expect(shell().dataset.open).toBe("0");
+    expect(push).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,9 @@
     "build": "astro build && bun scripts/postbuild.ts",
     "lint": "astro check",
     "test": "vitest run --coverage",
-    "perf:baseline": "bun perf/run.ts"
+    "perf:baseline": "bun perf/run.ts",
+    "perf:nav": "bun perf/nav-check.ts",
+    "perf:panels": "bun perf/panels-check.ts"
   },
   "dependencies": {
     "@meowerse/ui": "workspace:*",
