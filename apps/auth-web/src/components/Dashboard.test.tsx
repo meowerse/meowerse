@@ -154,6 +154,28 @@ describe("Dashboard one-time secrets, mutations and timeouts (PR-21 review 2)", 
     expect(screen.getByRole("button", { name: "refresh tokens: off" })).not.toBeNull();
   });
 
+  it("a failed delete (401) neither shows success nor supersedes the pending reload: the page ends signed out", async () => {
+    let n = 0;
+    let late!: (r: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation((u, init) => {
+      if (init?.method === "POST") return Promise.resolve(String(u).endsWith("/clients/delete") ? json({ error: "no_session" }, 401) : json({ ok: true, clientId: "mw_new" }));
+      const i = n++;
+      return i === 0 ? Promise.resolve(json({ clients: [CLIENT], csrf: "c" })) : i === 1 ? new Promise<Response>((r) => { late = r; }) : Promise.resolve(json({}, 401));
+    });
+    render(<ToastProvider><Dashboard base="https://api" /></ToastProvider>);
+    await screen.findByText("My App");
+    await createApp(); // reload pending
+    await waitFor(() => expect(n).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "delete" }));
+    fireEvent.change((await screen.findAllByRole("textbox")).at(-1)!, { target: { value: "my-app" } });
+    fireEvent.click(screen.getByRole("button", { name: "delete app" }));
+    expect(await screen.findByText(/to manage your apps/)).not.toBeNull();
+    late(json({ clients: [CLIENT], csrf: "c" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("app deleted")).toBeNull();
+    expect(screen.queryByText("My App")).toBeNull();
+  });
+
   it("a hung request ends in an honest error with 'try again' enabled", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {

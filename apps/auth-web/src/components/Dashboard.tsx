@@ -90,7 +90,11 @@ export default function Dashboard({ base }: { base: string }) {
   async function doDelete() {
     if (!toDelete) return;
     setBusy(true);
-    try { await deleteClient(base, csrf, toDelete.clientId); supersedeReloads(); setClients((c) => c.filter((x) => x.clientId !== toDelete.clientId)); toast({ message: "app deleted", variant: "success" }); }
+    try {
+      const r = await deleteClient(base, csrf, toDelete.clientId);
+      if (r.ok) { supersedeReloads(); setClients((c) => c.filter((x) => x.clientId !== toDelete.clientId)); toast({ message: "app deleted", variant: "success" }); }
+      else { toast({ message: "could not delete the app", variant: "error" }); reload(); } // a 401 here ends in the same signed-out handling as any reload
+    }
     finally { setBusy(false); setToDelete(null); }
   }
 

@@ -171,10 +171,12 @@ export default function AccountSettings({ base }: { base: string }) {
     };
     try {
       if (confirm.kind === "revoke" && confirm.clientId) {
-        await revokeGrant(base, acct.csrf, confirm.clientId);
-        supersedeReloads();
-        setGrants((g) => g.filter((x) => x.clientId !== confirm.clientId));
-        toast({ message: "access revoked", variant: "success" });
+        const r = await revokeGrant(base, acct.csrf, confirm.clientId);
+        if (r.ok) {
+          supersedeReloads();
+          setGrants((g) => g.filter((x) => x.clientId !== confirm.clientId));
+          toast({ message: "access revoked", variant: "success" });
+        } else { toast({ message: "could not revoke access", variant: "error" }); reload(); } // a 401 here ends in the same signed-out handling as any reload
       } else if (confirm.kind === "unlink") {
         const r = await unlinkTelegram(base, acct.csrf, password);
         if (r.ok) { clearSessionCache(); toast({ message: "telegram unlinked", variant: "success" }); reload(); }

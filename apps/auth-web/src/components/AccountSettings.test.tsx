@@ -400,4 +400,21 @@ describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText("a app")).toBeNull();
   });
+
+  it("a failed revoke (401) neither shows success nor leaves signed-out data: the page ends signed out", async () => {
+    let signedOut = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { signedOut = true; return json({ error: "no_session" }, 401); }
+      if (signedOut) return json({}, 401);
+      return u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED);
+    });
+    page();
+    await screen.findByText("a app");
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    await confirmLast("revoke access");
+    expect(await screen.findByText(/to manage your account/)).not.toBeNull();
+    expect(screen.queryByText("access revoked")).toBeNull();
+    expect(screen.queryByText("a app")).toBeNull();
+  });
 });
