@@ -16,7 +16,7 @@ import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/pushLazy";
-import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch, begin, memberCache } from "../lib/store";
+import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch, begin, isCurrent, registerCache, memberCache } from "../lib/store";
 import { createListGate, watchResume } from "../lib/store/chatList";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
@@ -143,7 +143,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const peerName = activeChat ? (activeChat.peerUsername ? shownName(activeChat.peerDisplayName, activeChat.peerUsername) : (activeChat.peerDisplayName || activeChat.name || "direct message")) : "";
 
   // Resolve a sender id → a human name for the backgrounded-message notification: a
-  // group/channel uses the roster (falling back to the raw id), a DM uses the peer
+  // group/channel uses the roster (an unknown sender shows as UNKNOWN_SENDER, never the raw id), a DM uses the peer
   // name (Slice 9). Fed into the hook, which mirrors it so its stable applyFrame reads
   // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
   const resolveSenderName = (senderId: string): string =>
@@ -320,7 +320,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // count + earliest retry time per chat (exponential backoff for the background tick).
   const rosterFlight = useRef(new Map<string, object>());
   const rosterRetry = useRef(new Map<string, { fails: number; at: number }>());
-  const loadMembers = useCallback(async (chatId: string, force = false) => {
+  // Both maps die with the account (clearAll / switch): a backoff or flight must not outlive its epoch.
+  useEffect(() => registerCache(() => { rosterFlight.current.clear(); rosterRetry.current.clear(); }), []);
+  const loadMembers = useCallback(async (chatId: string, force = false, retry = true): Promise<void> => {
     // force (after a drawer change): keep the roster on screen, but a fetch that started before can't store.
     if (force) memberCache.markStale(chatId);
     else if (memberCache.isFresh(chatId) || rosterFlight.current.has(chatId)) return;
@@ -336,12 +338,15 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     if (isForbidden(res)) { onRevoked(chatId); return; }
     if (!res.ok) { // keep the last known roster; never blank it on a failed fetch
       const f = (rosterRetry.current.get(chatId)?.fails ?? 0) + 1;
-      rosterRetry.current.set(chatId, { fails: f, at: Date.now() + Math.min(60_000 * 2 ** f, 5 * 60_000) });
+      if (isCurrent(tok.epoch)) rosterRetry.current.set(chatId, { fails: f, at: Date.now() + Math.min(60_000 * 2 ** f, 5 * 60_000) });
       return;
     }
     rosterRetry.current.delete(chatId);
     // Dropped if the account changed or the roster was invalidated/purged mid-fetch.
-    memberCache.put(chatId, res.data, tok.epoch, gen);
+    if (memberCache.put(chatId, res.data, tok.epoch, gen)) return;
+    // Discarded only because the counter moved (a role change during a first fetch has no cached
+    // roster to age out): refetch once now instead of showing 'someone' until the 60 s tick. Bounded: no loop.
+    if (retry && isCurrent(tok.epoch) && chatsRef.current.some((c) => c.id === chatId)) await loadMembers(chatId, false, false);
   }, [base, onRevoked]);
 
   // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the
@@ -500,9 +505,9 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Pill activation. The focused button unmounts with the count, so focus the log (never the
   // textarea: that would open the on-screen keyboard on touch). preventScroll keeps the smooth scroll ours.
   const toNewest = () => {
-    if (!scrollToTail()) return; // an older page is prepending: keep the pill (and its count) for the retry
-    logRef.current?.focus({ preventScroll: true });
-    setNewCount(0);
+    // An older page is prepending: the pill (and its count) stay until the hook replays the tap and calls back.
+    const started = () => { logRef.current?.focus({ preventScroll: true }); setNewCount(0); };
+    if (scrollToTail(started)) started();
   };
   useEffect(() => { if (hasNewer) setNewCount(0); }, [hasNewer]); // a jumped window has no live tail to count
 

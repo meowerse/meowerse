@@ -394,8 +394,8 @@ export interface UseConversation {
   /** True while the log is at (or near) the live tail; the view reads it for the new-messages pill. */
   atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
-  /** Returns false (does nothing) while an older page is prepending. One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
-  scrollToTail: () => boolean;
+  /** Returns false while an older page is prepending (the tap is remembered and replayed once the prepend settles, unless the reader scrolls first). Otherwise one scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
+  scrollToTail: (onStart?: () => void) => boolean;
   /** End a scrollToTail in flight (user input, scrollend): atBottom is recomputed from the REAL distance. */
   endTail: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
@@ -483,6 +483,9 @@ export function useConversation(input: UseConversationInput): UseConversation {
   const activeRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const prependingRef = useRef(false);
+  const tailWantedRef = useRef<{ onStart?: () => void } | null>(null); // pill tapped mid-prepend: scroll to the tail once it settles (unless the reader scrolls first)
+  const prependRestoreRef = useRef<{ chatId: string; prevHeight: number; anchor: ScrollAnchor | null; done: () => void } | null>(null); // the reader's position when an older page lands: restored in the commit's layout effect
+  const scrollToTailRef = useRef<(onStart?: () => void) => boolean>(() => false);
   const reconnectRef = useRef<{ timer: number | null; attempts: number }>({ timer: null, attempts: 0 });
   const closingRef = useRef(false);
   const typingTimerRef = useRef<number | null>(null);
@@ -727,8 +730,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, [view.chatId]);
 
   // A fetch commit made while the user is scrolled up re-applies their anchor before paint
-  // (rows inserted above it must not move the reader). A prepend keeps its own height-diff
-  // restore, and a user scroll since the commit wins.
+  // (rows inserted above it must not move the reader). A prepend is skipped here: it has its own
+  // restore (the layout effect below: anchor row first, height diff only without an anchor).
   useLayoutEffect(() => {
     const r = restoreRef.current;
     if (!r) return;
@@ -737,6 +740,22 @@ export function useConversation(input: UseConversationInput): UseConversation {
     // anchorRef is the reader's CURRENT position (computeAnchor runs synchronously in
     // onLogScroll), so it is always restored: `userScrolledRef` is also set by non-user scrolls.
     applyScroll(r);
+  }, [view.log, applyScroll]);
+
+  // An older page landed: put the reader back BEFORE paint. A restore left to the next rAF can run
+  // after a frame already showed the prepended rows at scrollTop 0 (every row shifts: CLS 0.27+).
+  useLayoutEffect(() => {
+    const r = prependRestoreRef.current;
+    const el = logRef.current;
+    if (!r || !el) return;
+    prependRestoreRef.current = null;
+    r.done();
+    if (r.chatId !== activeRef.current) return; // the chat switched between the commit and this render: never apply the old chat's anchor
+    // Anchor row first: live rows appended while the page was in flight make a height diff overshoot.
+    if (r.anchor) { applyScroll(r.anchor); return; }
+    programmaticRef.current = true; // a scroll event from our own write is not the reader's
+    requestAnimationFrame(() => { programmaticRef.current = false; });
+    el.scrollTop = el.scrollHeight - r.prevHeight;
   }, [view.log, applyScroll]);
 
   // Send a `read` receipt for the newest message, if we haven't already and the
@@ -779,6 +798,11 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   // Infinite scroll up: load an older page via before=<oldestId> and prepend it,
   // preserving the visual scroll position.
+  const settlePrepend = () => {
+    prependingRef.current = false;
+    const w = tailWantedRef.current;
+    if (w) { tailWantedRef.current = null; if (scrollToTailRef.current()) w.onStart?.(); }
+  };
   const loadOlder = useCallback(async () => {
     const el = logRef.current;
     const chatId = activeRef.current;
@@ -791,10 +815,10 @@ export function useConversation(input: UseConversationInput): UseConversation {
     let prevHeight = el.scrollHeight;
     for (let tries = 0; tries < OLDER_CURSOR_TRIES; tries++) {
       const oldest = cursorRow(logStateRef.current);
-      if (!oldest) { prependingRef.current = false; return; }
+      if (!oldest) { settlePrepend(); return; }
       prevHeight = el.scrollHeight;
       const res = await loadHistory(base, chatId, oldest.id);
-      if (activeRef.current !== chatId) { prependingRef.current = false; return; }
+      if (activeRef.current !== chatId) { tailWantedRef.current = null; settlePrepend(); return; }
       if (res.ok && res.unknown) {
         commitLog(chatId, (prev) => prev.filter((b) => b.id !== oldest.id), { src: "local" });
         continue;
@@ -804,24 +828,46 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
     if (!olderRes) {
       // Every tried cursor was unknown: never merge (the empty answer is not "start of chat").
-      prependingRef.current = false;
+      settlePrepend();
       setOlderError(true);
       return;
     }
     if (!olderRes.ok) {
-      if (isForbidden(olderRes)) { prependingRef.current = false; onRevokedRef.current(chatId); return; }
+      if (isForbidden(olderRes)) { settlePrepend(); onRevokedRef.current(chatId); return; }
       // Keep paging possible + show a retry row; never treat a failure as "start of chat".
-      prependingRef.current = false;
+      settlePrepend();
       setOlderError(true);
       return;
     }
     setOlderError(false);
     const older = olderRes.data;
-    commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
+    let committed!: () => void;
+    const landed = new Promise<void>((r) => { committed = r; });
+    prependRestoreRef.current = { chatId, prevHeight, anchor: computeAnchor(el, false), done: committed };
+    const before = logStateRef.current;
+    const after = commitLog(chatId, (prev) => mergeRows(prev, older, "prepend"), { src: "fetch", hasMore: older.length >= 50 });
+    if (after === null) return; // the chat switched: the entry effect already reset the prepend state
+    if (after === before) {
+      // An empty older page leaves the log unchanged, so no layout effect will run: nothing to restore, settle now.
+      prependRestoreRef.current = null;
+      settlePrepend();
+      return;
+    }
+    // React may render the commit AFTER the next frame under load: wait for it (the layout effect restores before
+    // paint), else a frame-time restore would run against the old height and the rows would jump. Bounded.
+    await Promise.race([landed, new Promise<void>((r) => setTimeout(r, 500))]);
+    if (activeRef.current !== chatId) return;
     await new Promise<void>((resolve) => requestAnimationFrame(() => {
       const now = logRef.current;
-      if (now) now.scrollTop = now.scrollHeight - prevHeight;
-      prependingRef.current = false;
+      const r = prependRestoreRef.current;
+      // Fallback when the commit has not rendered yet. With an anchor the DOM is uncommitted (a height diff would be ~0), so
+      // leave the restore pending for the late commit's layout effect (it is chat-guarded and cleared on chat switch);
+      // only the anchor-less height diff is applied here.
+      if (r && !r.anchor && r.chatId === chatId && activeRef.current === chatId) {
+        if (now) now.scrollTop = now.scrollHeight - r.prevHeight;
+        prependRestoreRef.current = null;
+      }
+      if (activeRef.current === chatId) settlePrepend();
       resolve();
     }));
   }, [base, commitLog]);
@@ -858,21 +904,24 @@ export function useConversation(input: UseConversationInput): UseConversation {
   }, [base, markAttached, commitLog]);
 
   const endTail = useCallback(() => {
+    if (!programmaticRef.current) tailWantedRef.current = null; // user input / the reader's scrollend voids a deferred tap; our own restore's scrollend does not
     if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     if (tailUntilRef.current === 0) return;
     tailUntilRef.current = 0;
     const el = logRef.current;
     if (!el) return;
+    if (el.scrollTop < 60) void loadOlder(); // a near-top scroll event during the window was refused
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     atBottomRef.current = atBottom;
     anchorRef.current = computeAnchor(el, atBottom);
     if (atBottom && !hasNewerRef.current) sendRead(logStateRef.current);
-  }, [sendRead]);
+  }, [loadOlder, sendRead]);
 
-  const scrollToTail = useCallback((): boolean => {
+  const scrollToTail = useCallback((onStart?: () => void): boolean => {
     const el = logRef.current;
     // A prepend restore would cancel the scroll and skip the pin, so a message acked mid-flight would go unseen.
-    if (!el || prependingRef.current) return false;
+    if (!el) return false;
+    if (prependingRef.current) { tailWantedRef.current = { onStart }; return false; }
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
     lastTopRef.current = el.scrollTop;
@@ -887,6 +936,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (reduce && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX && !hasNewerRef.current) sendRead(logStateRef.current);
     return true;
   }, [endTail, sendRead]);
+  scrollToTailRef.current = scrollToTail;
   useEffect(() => () => { if (tailTimerRef.current != null) clearTimeout(tailTimerRef.current); }, []);
 
   const onLogScroll = useCallback(() => {
@@ -901,7 +951,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
       if (tailTimerRef.current != null) { clearTimeout(tailTimerRef.current); tailTimerRef.current = null; }
     }
     const toTail = tailUntilRef.current !== 0;
-    if (!programmaticRef.current && !toTail) userScrolledRef.current = true;
+    if (!programmaticRef.current && !toTail) { userScrolledRef.current = true; tailWantedRef.current = null; }
     if (el.scrollTop < 60) void loadOlder();
     if (dist < 120 && hasNewerRef.current) void loadNewer();
     const nearBottom = dist < NEAR_BOTTOM_PX;
@@ -1155,6 +1205,8 @@ export function useConversation(input: UseConversationInput): UseConversation {
     setConnected(false);
     loadingNewerRef.current = false;
     prependingRef.current = false;
+    tailWantedRef.current = null;
+    prependRestoreRef.current = null;
     const loadStartSeq = liveSeqRef.current; // live frames stamped after this beat the fetched rows
     const E = entryRef.current; // the cache as it was at entry (warm), or null (cold)
     // ---- revalidation (a warm entry) -----------------------------------------------------
@@ -1637,6 +1689,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
     if (!around.hasNewer) { setSentUnseen(false); flushOutbox(); }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
+    tailWantedRef.current = null; // a tail tap recorded during the jump's window must not replay later
     prependingRef.current = false;
     flashRow(id);
   }

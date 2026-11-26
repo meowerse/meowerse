@@ -1155,6 +1155,79 @@ describe("Chat island — roster cache + role from the summary", () => {
     clearAll();
   });
 
+  it("a role change landing during the FIRST roster fetch retries once at once (no 'someone' for a minute)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    H.members = { c1: roster };
+    let release!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true as const, status: 200, data: roster } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    act(() => { window.dispatchEvent(new Event("focus")); }); // markStale with no cached roster: only bumps the counter
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy());
+    await act(async () => { release(); }); // the first fetch is discarded...
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // ...and retried immediately
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    clearAll();
+  });
+
+  it("the roster retry backoff is wiped by clearAll (account switch)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "team msg" })] };
+    vi.mocked(getMembers).mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "network" as const } } as never));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1); // backing off
+    clearAll(); setScope("u1");
+    H.members = { c1: roster };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // backoff gone with the account
+    clearAll();
+  });
+
+  it("no roster retry for a chat that left the list meanwhile (no roster returns for a purged chat)", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    const other = dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" });
+    H.chats = [grp(), other];
+    H.members = { c1: roster };
+    let release!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true as const, status: 200, data: roster } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    memberCache.invalidate("c1"); // purge == invalidate: bumps the counter
+    H.chats = [other];
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(screen.queryByText("team")).toBeNull());
+    await act(async () => { release(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    expect(memberCache.get("c1")).toBeUndefined();
+    clearAll();
+  });
+
+  it("a roster failure that lands AFTER clearAll/account switch writes no backoff", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u1", body: "team msg" })] };
+    let fail!: () => void;
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise((r) => { fail = () => r({ ok: false as const, error: { kind: "network" as const } } as never); }));
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    clearAll(); setScope("u1"); // the in-flight fetch now belongs to a dead epoch
+    await act(async () => { fail(); });
+    H.members = { c1: roster };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2)); // not held back by the dead epoch's backoff
+    clearAll();
+  });
+
   const staleNow = () => { const real = Date.now; return vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000); };
   const setVis = (v: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
   const mountGroupWithBob = async () => {
@@ -1761,6 +1834,81 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
       expect(reads(ws) - before).toBe(0); // nothing acked unseen
       await act(async () => { release(); });
       await waitFor(() => expect(within(logEl()).getByText("older peer line")).toBeTruthy());
+    });
+
+    /** 50 rows at the top with an older page pending behind a gate; scrolled up 300px with a pill. */
+    async function pendingOlderWithPill() {
+      H.history = { c1: Array.from({ length: 50 }, (_, i) => msg({ id: `h${i + 1}`, body: `row ${i + 1}`, createdAt: 1000 + i })) };
+      H.older = [msg({ id: "old1", senderId: "u2", body: "older peer line", createdAt: 900 })];
+      let release!: () => void;
+      H.olderGate = new Promise<void>((r) => { release = r; });
+      const ws = await mountOpen();
+      await waitFor(() => expect(within(logEl()).getByText("row 50")).toBeTruthy());
+      open(ws);
+      act(() => { fireEvent.scroll(logEl()); });
+      const s = scrolledUp(300); live(ws, "p1");
+      const pill = await screen.findByRole("button", { name: /1 new message/ });
+      return { ws, s, pill, release };
+    }
+
+    it("pill tapped while an older page loads: the tail scroll runs once the prepend settles", async () => {
+      const { s, pill, release } = await pendingOlderWithPill();
+      act(() => fireEvent.click(pill));
+      expect(s.scrollTo).not.toHaveBeenCalled();
+      await act(async () => { release(); });
+      await waitFor(() => expect(s.scrollTo).toHaveBeenCalledTimes(1));
+      expect(s.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 1000 }));
+      await waitFor(() => expect(screen.queryByText(/new message/)).toBeNull()); // the replay clears the count (not the tap)
+      expect(document.activeElement).toBe(logEl());
+    });
+
+    it("pill tapped while an older page loads, then the reader scrolls: no deferred tail scroll", async () => {
+      const { s, pill, release } = await pendingOlderWithPill();
+      act(() => fireEvent.click(pill));
+      act(() => { fireEvent.wheel(logEl()); });
+      await act(async () => { release(); });
+      await waitFor(() => expect(within(logEl()).getByText("older peer line")).toBeTruthy());
+      expect(s.scrollTo).not.toHaveBeenCalled();
+    });
+
+    describe("loadOlder vs the tail window", () => {
+      async function topWindow() {
+        H.history = { c1: Array.from({ length: 50 }, (_, i) => msg({ id: `h${i + 1}`, body: `row ${i + 1}`, createdAt: 1000 + i })) };
+        H.older = [msg({ id: "old1", senderId: "u2", body: "older peer line", createdAt: 900 })];
+        const ws = await mountOpen();
+        await waitFor(() => expect(within(logEl()).getByText("row 50")).toBeTruthy());
+        open(ws);
+        const s = scrolledUp(300); live(ws, "t1"); // scrollTop 300: no older fetch yet
+        const pill = await screen.findByRole("button", { name: /1 new message/ });
+        s.silent(560); // scrollTop 40 (near the top) without an event: the next frame does not move up
+        fake();
+        act(() => fireEvent.click(pill)); // tail window open
+        act(() => { fireEvent.scroll(logEl()); }); // near the top while the window is open
+        return { s };
+      }
+      const olderShown = () => within(logEl()).queryByText("older peer line");
+
+      it("refuses to start while the tail window is open", async () => {
+        await topWindow();
+        await act(async () => { await Promise.resolve(); });
+        expect(olderShown()).toBeNull();
+      });
+
+      it("retries on the next scroll event near the top once the window has ended", async () => {
+        const { s } = await topWindow();
+        s.silent(500); // scrollTop 100: the window ends here without a load (>= 60)
+        act(() => { fireEvent(logEl(), new Event("scrollend")); });
+        await act(async () => { await Promise.resolve(); });
+        expect(olderShown()).toBeNull();
+        s.at(560); // scrollTop 40: loads now
+        await waitFor(() => expect(olderShown()).toBeTruthy());
+      });
+
+      it("endTail loads the older page itself when it ends the window near the top", async () => {
+        await topWindow();
+        act(() => { fireEvent.wheel(logEl()); }); // user input ends the window at scrollTop 40
+        await waitFor(() => expect(olderShown()).toBeTruthy());
+      });
     });
 
     it("a chat switch inside the window does not leak it: the new chat is not forced to bottom and not acked", async () => {

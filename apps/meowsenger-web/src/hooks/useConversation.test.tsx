@@ -673,6 +673,83 @@ describe("useConversation — switched-away race safety", () => {
     expect(s.result.current.messages.some((m) => m.id === "stale")).toBe(false); // guard held
   });
 
+  it("an older page restores the reader's position in the commit itself, before any animation frame (no one-frame shift)", async () => {
+    const first = Array.from({ length: 50 }, (_, i) => msg({ id: `m${i}`, createdAt: 1000 + i }));
+    H.older = [msg({ id: "old1", createdAt: 1 })];
+    const { result } = await open(first);
+    const el = fakeLog(0, 1000) as { scrollTop: number; scrollHeight: number };
+    act(() => { result.current.logRef.current = el as unknown as HTMLDivElement; });
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => { frames.push(cb); return frames.length; });
+    vi.mocked(loadHistory).mockImplementationOnce(async () => { el.scrollHeight = 3000; return { ok: true as const, status: 200, data: H.older } as never; }); // the page lands: 2000px taller
+    let p!: Promise<void>;
+    act(() => { p = result.current.retryOlder() as unknown as Promise<void>; });
+    await waitFor(() => expect(result.current.messages[0].id).toBe("old1"));
+    expect(el.scrollTop).toBe(2000); // restored by the layout effect; the rAF has NOT run
+    await act(async () => { for (let i = 0; i < 3; i++) { frames.splice(0).forEach((f) => f(0)); await Promise.resolve(); } await p; });
+    raf.mockRestore();
+    expect(el.scrollTop).toBe(2000);
+  });
+
+  it("an empty older page leaves no pending restore: settles at once, a pill tap is not deferred, nothing replays later", async () => {
+    const first = Array.from({ length: 50 }, (_, i) => msg({ id: `m${i}`, createdAt: 1000 + i }));
+    const { result, ws } = await open(first);
+    const scrollTo = vi.fn();
+    const el = Object.assign(fakeLog(0, 1000), { scrollTo }) as unknown as { scrollTop: number; scrollHeight: number } & HTMLDivElement;
+    act(() => { result.current.logRef.current = el; });
+    vi.mocked(loadHistory).mockImplementationOnce(async () => ({ ok: true as const, status: 200, data: [] }) as never);
+    const t0 = performance.now();
+    await act(async () => { await result.current.retryOlder(); });
+    expect(performance.now() - t0).toBeLessThan(400); // no 500 ms wait for a layout effect that never comes
+    act(() => { expect(result.current.scrollToTail()).toBe(true); }); // not deferred behind a stale prepend
+    // A later commit must not replay a stale height-diff restore.
+    el.scrollTop = 123; el.scrollHeight = 5000;
+    act(() => ws.mockEmit({ type: "message", message: msg({ id: "late", createdAt: 9000 }) }));
+    expect(el.scrollTop).not.toBe(5000 - 1000);
+  });
+
+  it("a chat switch between the older page's commit and its render never applies the old anchor to the new chat", async () => {
+    const first = Array.from({ length: 50 }, (_, i) => msg({ id: `m${i}`, createdAt: 1000 + i }));
+    H.history["c2"] = [msg({ id: "n1", chatId: "c2", createdAt: 5000 })];
+    const s = await open(first);
+    const el = fakeLog(0, 1000) as unknown as { scrollTop: number; scrollHeight: number } & HTMLDivElement;
+    const writes: number[] = [];
+    let top = 0;
+    Object.defineProperty(el, "scrollTop", { get: () => top, set: (v: number) => { writes.push(v); top = v; }, configurable: true });
+    act(() => { s.result.current.logRef.current = el; });
+    const d = deferred<Message[]>();
+    vi.mocked(loadHistory).mockReturnValueOnce(d.promise.then((data) => ({ ok: true as const, status: 200, data })));
+    act(() => { void s.result.current.retryOlder(); }); // loadOlder awaits d
+    el.scrollHeight = 3000; // the page makes the log 2000px taller
+    await act(async () => {
+      d.resolve([msg({ id: "old1", createdAt: 1 })]);
+      await new Promise((r) => setTimeout(r, 0)); // loadOlder commits (render still queued in act)
+      s.rerender({ activeId: "c2" }); // switch before that commit renders
+    });
+    await waitFor(() => expect(s.result.current.messages.some((m) => m.id === "n1")).toBe(true));
+    expect(writes).not.toContain(2000); // the old chat's height-diff restore (3000 - 1000) must not touch the new chat
+  });
+
+  it("a tail tap recorded during a jump's window is dropped, never replayed by a later prepend", async () => {
+    H.around = { found: true, messages: [msg({ id: "mOld", body: "back then", createdAt: 100 })], hasOlder: true, hasNewer: true };
+    const { result } = await open([msg({ id: "m1", createdAt: 1000 })]);
+    const scrollTo = vi.fn();
+    const el = Object.assign(fakeLog(300), { scrollTo });
+    act(() => { result.current.logRef.current = el; });
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => { frames.push(cb); return frames.length; });
+    let jump!: Promise<void>;
+    await act(async () => { jump = result.current.jumpToMessage("mOld"); await waitFor(() => expect(frames.length).toBeGreaterThan(0)); });
+    act(() => { expect(result.current.scrollToTail()).toBe(false); }); // mid-window: recorded, not run
+    for (let i = 0; i < 4; i++) await act(async () => { frames.splice(0).forEach((f) => f(0)); await Promise.resolve(); });
+    await act(async () => { await jump; });
+    raf.mockRestore();
+    await act(async () => { await result.current.retryOlder(); }); // a later older-page load settles
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(vi.mocked(loadHistory)).toHaveBeenCalledWith(expect.anything(), "c1", "mOld"); // the later prepend really ran
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("jumpToMessage drops its window if the chat switched away mid-fetch", async () => {
     H.history["c1"] = [msg({ id: "m1", createdAt: 1000 })];
     H.history["c2"] = [msg({ id: "n1", chatId: "c2", createdAt: 5000 })];

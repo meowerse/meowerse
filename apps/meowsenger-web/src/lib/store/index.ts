@@ -11,7 +11,7 @@ export function purgeChat(chatId: string): void {
 // A chat that disappears from an applied list is purged everywhere.
 subscribeRemoved(purgeChat);
 
-export { setScope, clearAll, begin, isCurrent, getScope, getEpoch, pendingWork, subscribe, useStore, type Token } from "./scope";
+export { setScope, clearAll, begin, registerCache, isCurrent, getScope, getEpoch, pendingWork, subscribe, useStore, type Token } from "./scope";
 export { installAuthChannel, broadcastLogout } from "./authChannel";
 export * as conversationCache from "./conversationCache";
 export * as memberCache from "./memberCache";
