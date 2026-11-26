@@ -1,16 +1,22 @@
 import type { Env } from "./types";
 
 /** Allowlist used when CORS_ORIGINS is unset, mirroring the Go api default. */
-export const DEFAULT_ORIGINS = "https://meow.alxnko.dev,https://meow.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meow.alxnko.dev,https://meow.alxnko.eu.org";
 
+// Fail closed: a non-https entry (e.g. a dashboard-set http://localhost) is ignored unless the dev flag is on.
+function devCors(env: Env): boolean {
+  return env.ALLOW_LOCALHOST_CORS === "1" || env.ALLOW_LOCALHOST_CORS === "true";
+}
 function allowlist(env: Env): string[] {
   const raw = (env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS;
-  return raw.split(",").map((o) => o.trim()).filter(Boolean);
+  return raw.split(",").map((o) => o.trim()).filter((o) => o && (o.startsWith("https://") || devCors(env)));
 }
 
 function isOriginAllowed(origin: string | null, env: Env): boolean {
   if (!origin) return false;
   if (allowlist(env).includes(origin)) return true;
+  // Localhost/.local is a DEV convenience: off unless ALLOW_LOCALHOST_CORS is set (.dev.vars only).
+  if (!devCors(env)) return false;
   try {
     const u = new URL(origin);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {

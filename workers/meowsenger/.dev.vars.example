@@ -4,3 +4,5 @@ OIDC_CLIENT_SECRET=
 # DEV ONLY. "1"/"true" also allows any localhost/.local origin through CORS (default off;
 # never set this in production, where only WEB_ORIGIN / CORS_ORIGINS are allowed).
 ALLOW_LOCALHOST_CORS=1
+# Production wrangler.jsonc CORS_ORIGINS is https-only; ALLOW_LOCALHOST_CORS above is what lets
+# localhost:4321 / 127.0.0.1:8787 work locally (a config test enforces this).

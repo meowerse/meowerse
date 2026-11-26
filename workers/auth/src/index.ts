@@ -13,8 +13,8 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
-import { issueSession, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
+import { issueSession, mintSessionIds, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
 import { refreshTokenInsert, rotateRefresh, revokeFamilyWithRetry, REVOKE_BACKGROUND_BACKOFF_MS } from "./refresh";
@@ -356,7 +356,7 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
   if (!next) return accountGone(cors);
   await recordAudit(deps, req, { event: "signup", accountId: res.accountId });
-  return json({ ok: true, recoveryCodes: res.recoveryCodes, csrf: sess.csrf, next }, 200, {
+  return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
     "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
@@ -1208,6 +1208,8 @@ async function stepUpAllowed(db: ReturnType<Deps["getDb"]>, accountId: string, t
 
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
+  // Recovery codes were removed 2026-11-26; answer old open tabs cleanly (before session/CSRF).
+  if (sub === "recovery-codes") return json({ error: "gone", message: "Recovery codes were removed. Add a second sign-in method (password and Telegram) instead." }, 410, { ...cors, ...securityHeaders() });
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
   const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
@@ -1215,7 +1217,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   const accountId = session.accountId;
 
   if (sub === "" && req.method === "GET") {
-    const detail = await getAccountDetail(db, accountId); // profile + verified + telegram + recovery in ONE query
+    const detail = await getAccountDetail(db, accountId); // profile + verified + telegram in ONE query
     if (!detail) return json({ error: "not_found" }, 404, cors);
     return json({ ...detail, csrf: session.csrf, deleteEnabled: accountDeleteEnabled(env) }, 200, { ...cors, ...securityHeaders() });
   }
@@ -1229,9 +1231,18 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   if (sub === "password") {
     // Same per-account bucket as the step-up: the current-password check must not be an unthrottled oracle.
     if (!(await stepUpAllowed(db, accountId, now(deps)))) return tooMany("rate_limited", 900, cors);
-    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", keepSessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? "") });
+    // Rotate the CURRENT session too: the cookie that was used to change the password may be the stolen one.
+    const fresh = await mintSessionIds();
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", sessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? ""), newSession: { idHash: fresh.idHash, csrf: fresh.csrf, now: now(deps) } });
+    if (r.error === "account_gone") return json({ error: "account_gone" }, 401, { ...cors, ...securityHeaders(), "Set-Cookie": clearHostCookie(SESS_COOKIE) });
+    // Lost a race (someone changed the password first) or the session was revoked meanwhile: nothing was written.
+    if (r.error === "conflict") return json({ error: "conflict" }, 409, { ...cors, ...securityHeaders() });
+    if (r.error === "no_session") return json({ error: "no_session" }, 401, { ...cors, ...securityHeaders() });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
-    return r.ok ? json({ ok: true }, 200, cors) : json({ error: r.error }, 400, cors);
+    // csrf is additive: an old client that ignores it still sees ok:true.
+    return r.ok
+      ? json({ ok: true, csrf: fresh.csrf }, 200, { ...cors, ...securityHeaders(), "Set-Cookie": hostCookie(SESS_COOKIE, fresh.rawId, { maxAge: 30 * 24 * 3600 }) })
+      : json({ error: r.error }, 400, cors);
   }
   if (sub === "grants/revoke") {
     const revoked = await revokeGrant(db, accountId, p.client_id ?? "");
@@ -1247,17 +1258,6 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     await unlinkTelegram(db, accountId);
     await recordAudit(deps, req, { event: "telegram.unlink", accountId });
     return json({ ok: true }, 200, cors);
-  }
-  if (sub === "recovery-codes") {
-    // Regenerating recovery codes replaces account-recovery credentials: fresh authentication required.
-    const info = await getAccountInfo(db, accountId);
-    if (!info) return accountGone(cors);
-    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
-    if (stale) return stale;
-    const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
-    if (!recoveryCodes) return accountGone(cors);
-    await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
-    return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "delete/start") {
     if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row

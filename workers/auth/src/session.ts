@@ -19,6 +19,12 @@ export interface IssuedSession {
   idHash: string;
 }
 
+/** Fresh session ids: the raw cookie value (never stored), its SHA-256 (the stored key) and a CSRF token. */
+export async function mintSessionIds(): Promise<IssuedSession> {
+  const rawId = randomId(32);
+  return { rawId, idHash: await sha256Hex(rawId), csrf: randomId(24) };
+}
+
 /**
  * Issue a session: a 256-bit opaque id (cookie) whose SHA-256 is the stored key.
  * The insert is conditional on the account still existing (checked inside the
@@ -26,9 +32,7 @@ export interface IssuedSession {
  * account is gone and nothing was written.
  */
 export async function issueSession(db: DbClient, input: IssueInput): Promise<IssuedSession | null> {
-  const rawId = randomId(32);
-  const idHash = await sha256Hex(rawId);
-  const csrf = randomId(24);
+  const { rawId, idHash, csrf } = await mintSessionIds();
   const exists = accountPresent(input.accountId);
   const res = await db.execute({
     sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
@@ -161,9 +165,7 @@ export async function rotateSession(
   // The old-row revoke and the new-row insert are both known up front (no
   // read-decide-write), so fire them as ONE batch instead of two round-trips.
   const oldHash = await sha256Hex(oldRawId);
-  const rawId = randomId(32);
-  const idHash = await sha256Hex(rawId);
-  const csrf = randomId(24);
+  const { rawId, idHash, csrf } = await mintSessionIds();
   const exists = accountPresent(view.accountId);
   const res = await db.batch(
     [

@@ -4,7 +4,7 @@ import { test, expect, type Page } from "@playwright/test";
 // answers, so loading moves nothing (CLS <= 0.01), and a failed refresh keeps the shown data. The API is mocked
 // (same-origin /api/*), with a delay so the skeleton is really on screen before the data lands.
 const CLIENT = { clientId: "mw_1", name: "my-app", displayName: "My App", clientType: "public", allowedScopes: ["openid"], verifiedOnly: false, allowOfflineAccess: false, status: "active" };
-const ACCOUNT = { username: "alxnko", displayName: null, avatarUrl: null, verified: true, hasPassword: true, deleteEnabled: true, telegram: { linked: true, username: "tg" }, recoveryRemaining: 8, csrf: "c" };
+const ACCOUNT = { username: "alxnko", displayName: null, avatarUrl: null, verified: true, hasPassword: true, deleteEnabled: true, telegram: { linked: true, username: "tg" }, csrf: "c" };
 const GRANT = { clientId: "mw_x", displayName: "x app", approvedScopes: ["openid"], updatedAt: null };
 const DELAY = 700;
 

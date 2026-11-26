@@ -28,11 +28,11 @@ async function setup(envExtra: Record<string, string> = { ACCOUNT_DELETE_ENABLED
   const keys = await genSigningKeys();
   const env = { AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web", ...envExtra };
   let clock = T0;
-  let beforeBatch: ((stmts: { sql: string }[]) => Promise<void>) | null = null;
+  let beforeBatch: ((stmts: Parameters<DbClient["batch"]>[0]) => Promise<void>) | null = null;
   const wrapped: DbClient = {
     execute: (s) => db.execute(s),
     batch: async (stmts, mode) => {
-      if (beforeBatch && stmts.some((s) => /account_delete_confirmations SET used_at/.test(s.sql))) {
+      if (beforeBatch && stmts.some((s) => /account_delete_confirmations SET used_at/.test(typeof s === "string" ? s : s.sql))) {
         const h = beforeBatch;
         beforeBatch = null;
         await h(stmts);

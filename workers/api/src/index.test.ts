@@ -1,9 +1,11 @@
+import { at } from "../test/at";
 import { describe, it, expect, beforeEach } from "vitest";
 import { handle } from "./index";
 import type { Env, DbClient, Meow } from "./types";
 
 const env: Env = {
   CORS_ORIGINS: "https://meow.alxnko.eu.org,http://localhost:4321",
+  ALLOW_LOCALHOST_CORS: "1",
   API_TOKEN: "s3cret",
   DATABASE_URL: "libsql://x",
   DATABASE_AUTH_TOKEN: "tok",
@@ -179,8 +181,8 @@ describe("POST /api/batch", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { results: { status: number }[] };
     expect(body.results).toHaveLength(2);
-    expect(body.results[0].status).toBe(201);
-    expect(body.results[1].status).toBe(201);
+    expect(at(body.results, 0).status).toBe(201);
+    expect(at(body.results, 1).status).toBe(201);
   });
 
   it("maps a MIXED batch back in order (valid → 201 with its row, invalid → 400)", async () => {
@@ -192,8 +194,8 @@ describe("POST /api/batch", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { results: { status: number; meow?: { text: string }; error?: string }[] };
     expect(body.results.map((r) => r.status)).toEqual([201, 400, 201]);
-    expect(body.results[0].meow?.text).toBe("keep");
-    expect(body.results[2].meow?.text).toBe("also"); // the invalid op didn't consume a batch row
+    expect(at(body.results, 0).meow?.text).toBe("keep");
+    expect(at(body.results, 2).meow?.text).toBe("also"); // the invalid op didn't consume a batch row
   });
 
   it("reports per-op 400 for an invalid op without failing the batch", async () => {
@@ -204,8 +206,8 @@ describe("POST /api/batch", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { results: { status: number }[] };
-    expect(body.results[0].status).toBe(400);
-    expect(body.results[1].status).toBe(400);
+    expect(at(body.results, 0).status).toBe(400);
+    expect(at(body.results, 1).status).toBe(400);
   });
 
   it("rejects more than 25 ops with 400", async () => {

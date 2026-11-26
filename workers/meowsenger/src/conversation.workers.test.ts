@@ -1,4 +1,5 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
+import { at } from "../test/at";
 import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import type { Conversation } from "./conversation";
@@ -153,8 +154,8 @@ describe("Conversation DO", () => {
     expect(around.found).toBe(true);
     // 25 older-or-equal (m6..m30) + 25 strictly-newer (m31..m55), ascending, incl. anchor.
     expect(around.messages.length).toBe(50);
-    expect(around.messages[0].id).toBe("m6");
-    expect(around.messages[around.messages.length - 1].id).toBe("m55");
+    expect(at(around.messages, 0).id).toBe("m6");
+    expect(at(around.messages, around.messages.length - 1).id).toBe("m55");
     expect(around.messages.some((m) => m.id === "m30")).toBe(true);
     const times = around.messages.map((m) => m.createdAt);
     expect(times).toEqual([...times].sort((a, b) => a - b)); // strictly ascending
@@ -173,7 +174,7 @@ describe("Conversation DO", () => {
     const around = await s.historyAround("caround2", "n10");
     expect(around.found).toBe(true);
     expect(around.hasNewer).toBe(false);
-    expect(around.messages[around.messages.length - 1].id).toBe("n10");
+    expect(at(around.messages, around.messages.length - 1).id).toBe("n10");
   });
 
   it("historyAfter: a forward page of strictly-newer messages, ascending; unknown id → []", async () => {

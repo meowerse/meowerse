@@ -1,3 +1,4 @@
+import { at } from "../test/at";
 import { describe, it, expect } from "vitest";
 import {
   createOrGetDirect,
@@ -186,24 +187,24 @@ describe("unread (derived, no per-member counter)", () => {
     const { db } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
     // Fresh DM: last_activity == joined_at → nobody unread.
-    expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
+    expect(at(await listChats(db, "u2"), 0).unreadCount).toBe(0);
     // A message bumps last_activity → the non-reader (u2) is now unread.
     await syncLastMessage(db, a.id, "hi", "u1", 3000);
-    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
+    expect(at(await listChats(db, "u2"), 0).unreadCount).toBe(1);
     // u2 reads up to the message → back to read; a later message re-flags it.
     await markRead(db, a.id, "u2", 3000);
-    expect((await listChats(db, "u2"))[0].unreadCount).toBe(0);
+    expect(at(await listChats(db, "u2"), 0).unreadCount).toBe(0);
     await syncLastMessage(db, a.id, "again", "u1", 4000);
-    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
+    expect(at(await listChats(db, "u2"), 0).unreadCount).toBe(1);
   });
   it("sender's own message does not mark unread for the sender", async () => {
     const { db } = memDb();
     const a = await createOrGetDirect(db, "u1", "u2", 1000);
     await syncLastMessage(db, a.id, "hi", "u1", 3000);
     // u1 was the sender: unreadCount MUST be 0 for u1!
-    expect((await listChats(db, "u1"))[0].unreadCount).toBe(0);
+    expect(at(await listChats(db, "u1"), 0).unreadCount).toBe(0);
     // u2 was the recipient: unreadCount is 1 for u2
-    expect((await listChats(db, "u2"))[0].unreadCount).toBe(1);
+    expect(at(await listChats(db, "u2"), 0).unreadCount).toBe(1);
   });
 });
 describe("listChats", () => {
@@ -220,15 +221,15 @@ describe("listChats", () => {
     });
     await createOrGetDirect(db, "u1", "u2", 1000);
     const forAlice = await listChats(db, "u1");
-    expect(forAlice[0].peerId).toBe("u2");
-    expect(forAlice[0].peerUsername).toBe("bob");
-    expect(forAlice[0].peerDisplayName).toBe("Bob");
-    expect(forAlice[0].peerAvatarUrl).toBeNull();
+    expect(at(forAlice, 0).peerId).toBe("u2");
+    expect(at(forAlice, 0).peerUsername).toBe("bob");
+    expect(at(forAlice, 0).peerDisplayName).toBe("Bob");
+    expect(at(forAlice, 0).peerAvatarUrl).toBeNull();
     // From bob's side the peer is alice — order-independent.
     const forBob = await listChats(db, "u2");
-    expect(forBob[0].peerId).toBe("u1");
-    expect(forBob[0].peerUsername).toBe("alice");
-    expect(forBob[0].peerAvatarUrl).toBe("https://a/1");
+    expect(at(forBob, 0).peerId).toBe("u1");
+    expect(at(forBob, 0).peerUsername).toBe("alice");
+    expect(at(forBob, 0).peerAvatarUrl).toBe("https://a/1");
   });
 });
 
@@ -694,11 +695,11 @@ describe("requestJoin", () => {
     const { db, joinRequests } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    await rejectRequest(db, r.id, joinRequests[0].id, "o");
-    expect(joinRequests[0].status).toBe("rejected");
+    await rejectRequest(db, r.id, at(joinRequests, 0).id, "o");
+    expect(at(joinRequests, 0).status).toBe("rejected");
     expect(await requestJoin(db, r.id, "stranger", 300)).toEqual({ ok: true, status: "pending" });
     expect(joinRequests).toHaveLength(1);
-    expect(joinRequests[0].status).toBe("pending");
+    expect(at(joinRequests, 0).status).toBe("pending");
   });
   it("an already-member cannot request → already_member", async () => {
     const { db } = groupDb();
@@ -774,18 +775,18 @@ describe("approveRequest", () => {
     const { db, joinRequests, members } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    const reqId = joinRequests[0].id;
+    const reqId = at(joinRequests, 0).id;
     const res = await approveRequest(db, r.id, reqId, "o", 500);
     expect(res).toEqual({ ok: true, userId: "stranger" });
     expect(await getRole(db, r.id, "stranger")).toBe("member");
     expect(members.filter((m) => m.chat_id === r.id && m.user_id === "stranger")).toHaveLength(1); // exactly once
-    expect(joinRequests[0].status).toBe("approved");
+    expect(at(joinRequests, 0).status).toBe("approved");
   });
   it("approving an already-decided request → request_not_found (can't double-approve)", async () => {
     const { db, joinRequests, members } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    const reqId = joinRequests[0].id;
+    const reqId = at(joinRequests, 0).id;
     await approveRequest(db, r.id, reqId, "o", 500);
     // A second approve is a no-op (status no longer pending) → still exactly one member.
     expect(await approveRequest(db, r.id, reqId, "o", 600)).toEqual({ ok: false, error: "request_not_found" });
@@ -795,7 +796,7 @@ describe("approveRequest", () => {
     const { db, joinRequests } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    expect(await approveRequest(db, r.id, joinRequests[0].id, "mem", 500)).toEqual({ ok: false, error: "forbidden" });
+    expect(await approveRequest(db, r.id, at(joinRequests, 0).id, "mem", 500)).toEqual({ ok: false, error: "forbidden" });
     expect(await getRole(db, r.id, "stranger")).toBeNull();
   });
   it("an unknown request id → request_not_found", async () => {
@@ -810,15 +811,15 @@ describe("rejectRequest", () => {
     const { db, joinRequests } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: [], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    expect(await rejectRequest(db, r.id, joinRequests[0].id, "o")).toEqual({ ok: true });
-    expect(joinRequests[0].status).toBe("rejected");
+    expect(await rejectRequest(db, r.id, at(joinRequests, 0).id, "o")).toEqual({ ok: true });
+    expect(at(joinRequests, 0).status).toBe("rejected");
     expect(await getRole(db, r.id, "stranger")).toBeNull();
   });
   it("a plain member CANNOT reject → forbidden", async () => {
     const { db, joinRequests } = groupDb();
     const r = await createGroup(db, { name: "Gated", creatorId: "o", memberIds: ["mem"], slug: "gated" }, 1) as { id: string };
     await requestJoin(db, r.id, "stranger", 100);
-    expect(await rejectRequest(db, r.id, joinRequests[0].id, "mem")).toEqual({ ok: false, error: "forbidden" });
+    expect(await rejectRequest(db, r.id, at(joinRequests, 0).id, "mem")).toEqual({ ok: false, error: "forbidden" });
   });
   it("an unknown request id → request_not_found", async () => {
     const { db } = groupDb();

@@ -1,10 +1,10 @@
 import { test, expect } from "vitest";
-import { signup, loginVerify, deriveVerified, changePassword, getAccountInfo, countRecoveryCodes, deleteAccount } from "../src/accounts";
+import { signup, loginVerify, deriveVerified, changePassword, getAccountInfo, deleteAccount } from "../src/accounts";
 import { hashPassword } from "../src/crypto";
 import { routedDb, type Route } from "./helpers";
 
 const FAST = { rounds: 1, iter: 500 };
-const OPTS = { pbkdf2: FAST, recoveryParams: FAST };
+const OPTS = { pbkdf2: FAST };
 
 test("signup rejects bad username / weak password before any write", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
@@ -22,16 +22,16 @@ test("signup on taken username returns generic 'unavailable'", async () => {
   expect(res).toEqual({ ok: false, error: "unavailable" });
 });
 
-test("successful signup writes account+credential+8 codes and returns codes once", async () => {
+test("successful signup writes account+credential and NO recovery codes", async () => {
   const log: { sql: string; args: unknown[] }[] = [];
   const db = routedDb([[/SELECT id FROM accounts WHERE username/, () => ({ rows: [] })]], log);
   const res = await signup(db, { username: "neko_dev", password: "abcdefghijkl" }, OPTS);
   expect(res.ok).toBe(true);
   if (!res.ok) return;
-  expect(res.recoveryCodes.length).toBe(8);
+  expect(res).not.toHaveProperty("recoveryCodes");
   expect(log.filter((c) => c.sql.includes("INSERT INTO accounts")).length).toBe(1);
   expect(log.filter((c) => c.sql.includes("INSERT INTO password_credentials")).length).toBe(1);
-  expect(log.filter((c) => c.sql.includes("INSERT INTO recovery_codes")).length).toBe(8);
+  expect(log.filter((c) => c.sql.includes("INSERT INTO recovery_codes")).length).toBe(0);
 });
 
 test("loginVerify: correct password ok; wrong password not ok", async () => {
@@ -87,29 +87,32 @@ test("signup and loginVerify tolerate a missing username field", async () => {
   expect((await loginVerify(db, { password: "abcdefghijkl" } as never, { dummyPhc: phc })).ok).toBe(false);
 });
 
+// Session fields changePassword requires; the early-return cases below never reach them.
+const SESSION = { sessionIdHash: "sh", newSession: { idHash: "h", csrf: "c", now: 1000 } };
+
 test("changePassword: no password row → no_password; wrong current → wrong_password; weak new → policy error; ok → updates", async () => {
   const noPw = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [] })]]);
-  expect(await changePassword(noPw, { accountId: "a", currentPassword: "x", newPassword: "y".repeat(12), pbkdf2: FAST })).toEqual({ ok: false, error: "no_password" });
+  expect(await changePassword(noPw, { accountId: "a", currentPassword: "x", newPassword: "y".repeat(12), pbkdf2: FAST, ...SESSION })).toEqual({ ok: false, error: "no_password" });
 
   const phc = await hashPassword("currentpass12", FAST);
   const has = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]]);
-  expect((await changePassword(has, { accountId: "a", currentPassword: "WRONG", newPassword: "newpass123456", pbkdf2: FAST })).error).toBe("wrong_password");
-  expect((await changePassword(has, { accountId: "a", currentPassword: "currentpass12", newPassword: "short", pbkdf2: FAST })).ok).toBe(false);
+  expect((await changePassword(has, { accountId: "a", currentPassword: "WRONG", newPassword: "newpass123456", pbkdf2: FAST, ...SESSION })).error).toBe("wrong_password");
+  expect((await changePassword(has, { accountId: "a", currentPassword: "currentpass12", newPassword: "short", pbkdf2: FAST, ...SESSION })).ok).toBe(false);
 
   const log: { sql: string; args: unknown[] }[] = [];
-  const db = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })]], log);
-  expect((await changePassword(db, { accountId: "a", currentPassword: "currentpass12", newPassword: "newpass123456", pbkdf2: FAST })).ok).toBe(true);
+  const db = routedDb([[/SELECT phc FROM password_credentials/, () => ({ rows: [{ phc }] })], [/UPDATE password_credentials SET phc/, () => ({ rows: [], rowsAffected: 1 })]], log);
+  expect((await changePassword(db, { accountId: "a", currentPassword: "currentpass12", newPassword: "newpass123456", pbkdf2: FAST, sessionIdHash: "sh", newSession: { idHash: "h", csrf: "c", now: 1000 } })).ok).toBe(true);
   expect(log.some((c) => c.sql.includes("UPDATE password_credentials SET phc"))).toBe(true);
+  expect(log.some((c) => c.sql.includes("INSERT INTO sessions"))).toBe(true);
 });
 
-test("getAccountInfo + countRecoveryCodes", async () => {
+test("getAccountInfo", async () => {
   // getAccountInfo now folds the password-existence check into one query (has_password).
   const db = routedDb([
     [/SELECT username, display_name, avatar_url/, () => ({ rows: [{ username: "neko", display_name: "Neko", avatar_url: null, has_password: 1 }] })],
   ]);
   expect(await getAccountInfo(db, "a")).toEqual({ username: "neko", displayName: "Neko", avatarUrl: null, hasPassword: true });
   expect(await getAccountInfo(routedDb([[/FROM accounts WHERE id/, () => ({ rows: [] })]]), "ghost")).toBeNull();
-  expect(await countRecoveryCodes(routedDb([[/COUNT/, () => ({ rows: [{ n: 5 }] })]]), "a")).toBe(5);
 });
 
 test("deriveVerified reflects a live telegram link", async () => {

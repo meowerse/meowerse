@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Button, Field, Card, Badge, Alert, RecoveryCodes, ConfirmDialog, useToast, Skeleton, StatusLine, clearSessionCache } from "@meowerse/ui";
-import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, regenerateRecoveryCodes, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
+import { Button, Field, Card, Badge, Alert, ConfirmDialog, useToast, Skeleton, StatusLine, clearSessionCache } from "@meowerse/ui";
+import { getAccount, postAccountPassword, getGrants, revokeGrant, unlinkTelegram, deleteAccount, startAccountDelete, wantsDeleteReauth, type AccountInfo, type Grant } from "../lib/authApi";
 
 /**
  * What auth deletion does NOT do to the services you signed in to with meowerse (Meowsenger and any other app): nothing
@@ -32,7 +32,6 @@ function AccountSkeleton() {
         </div>
       </Card>
       <Card title="connected apps"><Skeleton height={ROW_H} /></Card>
-      <Card title="recovery codes"><Skeleton height={ROW_H} /></Card>
     </div>
   );
 }
@@ -46,25 +45,23 @@ export default function AccountSettings({ base }: { base: string }) {
   const [error, setError] = useState("");
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
-  const [codes, setCodes] = useState<string[] | null>(null);
-  const [confirm, setConfirm] = useState<null | { kind: "revoke" | "unlink" | "regen" | "delete"; clientId?: string }>(null);
+  const [confirm, setConfirm] = useState<null | { kind: "revoke" | "unlink" | "delete"; clientId?: string }>(null);
   const [busy, setBusy] = useState(false);
   const [needPassword, setNeedPassword] = useState(false); // server said our login is stale and this account has a password
   const [needTelegram, setNeedTelegram] = useState(false); // stale login on a Telegram-only account: sign in again
 
+  const [pwBusy, setPwBusy] = useState(false);
   const seq = useRef(0); // reload counter: only the latest request's answer may change state (a late 200 must not undo a newer 401)
   const acctRef = useRef(acct);
   acctRef.current = acct;
   const [refreshing, setRefreshing] = useState(false);
-  const codesRef = useRef(codes);
-  codesRef.current = codes;
 
   /** A successful mutation is newer than any reload still in flight: that reload's (older) answer must not overwrite it. */
   function supersedeReloads() { seq.current++; setRefreshing(false); }
 
   /** Everything that belongs to one account: dropped whenever the account is gone or may be a different one. */
   function resetAccountState() {
-    setAcct(null); setGrants([]); setGrantsLoaded(false); setGrantsFailed(false); setCodes(null); setConfirm(null);
+    setAcct(null); setGrants([]); setGrantsLoaded(false); setGrantsFailed(false); setConfirm(null);
     setNeedPassword(false); setNeedTelegram(false); setCur(""); setNext("");
   }
 
@@ -91,9 +88,8 @@ export default function AccountSettings({ base }: { base: string }) {
       const a = ar.value;
       const prev = acctRef.current;
       // No stable account id comes back, so a changed name or CSRF token is treated as maybe-another-account: the previous
-      // one's grants/codes/dialog must not survive next to it (a revoke would POST the new CSRF with the old client id).
+      // one's grants/dialog must not survive next to it (a revoke would POST the new CSRF with the old client id).
       if (!prev || prev.username !== a.username || prev.displayName !== a.displayName || prev.avatarUrl !== a.avatarUrl || prev.csrf !== a.csrf) {
-        if (prev && codesRef.current) toast({ message: "your session changed; recovery codes were hidden — regenerate them", variant: "error" });
         resetAccountState();
       }
       setAcct(a); setError("");
@@ -121,9 +117,18 @@ export default function AccountSettings({ base }: { base: string }) {
 
   async function changePassword(e: FormEvent) {
     e.preventDefault();
-    if (!acct) return;
-    const r = await postAccountPassword(base, acct.csrf, cur, next);
-    if (r.ok) { toast({ message: "password changed", variant: "success" }); setCur(""); setNext(""); }
+    if (!acct || pwBusy) return;
+    setPwBusy(true);
+    let r: Awaited<ReturnType<typeof postAccountPassword>>;
+    try { r = await postAccountPassword(base, acct.csrf, cur, next); } catch { r = { error: "network" }; } finally { setPwBusy(false); }
+    if (r.ok) {
+      supersedeReloads(); // an account read that started before the rotation would bring back the old csrf
+      // The server rotated this session: adopt its CSRF token in place (acctRef too, so the csrf-changed reset in reload() doesn't fire).
+      const cur0 = acctRef.current; // not the submit-time `acct`: a reload may have landed during the request
+      if (r.csrf && cur0) { const a = { ...cur0, csrf: r.csrf }; acctRef.current = a; setAcct(a); }
+      toast({ message: "password changed. you were signed out everywhere else.", variant: "success" }); setCur(""); setNext("");
+    }
+    else if (r.error === "conflict" || r.error === "no_session") toast({ message: "your password may have been changed from somewhere else or your session ended. reload the page and sign in again if needed.", variant: "error" });
     else toast({ message: r.error === "wrong_password" ? "current password is wrong" : "could not change password", variant: "error" });
   }
 
@@ -182,10 +187,6 @@ export default function AccountSettings({ base }: { base: string }) {
         if (r.ok) { clearSessionCache(); toast({ message: "telegram unlinked", variant: "success" }); reload(); }
         else if (stepUp(r.error, r.reauth)) { /* handled */ }
         else toast({ message: "set a password first — unlinking would lock you out", variant: "error" });
-      } else if (confirm.kind === "regen") {
-        const r = await regenerateRecoveryCodes(base, acct.csrf, password);
-        if (r.recoveryCodes) { setCodes(r.recoveryCodes); toast({ message: "recovery codes regenerated", variant: "success" }); }
-        else stepUp(r.error, r.reauth);
       }
     } finally { setBusy(false); if (close) { setConfirm(null); setNeedPassword(false); } }
   }
@@ -226,7 +227,7 @@ export default function AccountSettings({ base }: { base: string }) {
           <form onSubmit={changePassword} className="mw-stack">
             <Field label="current password" type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" required />
             <Field label="new password" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" minLength={12} required />
-            <Button variant="primary" type="submit">update password</Button>
+            <Button variant="primary" type="submit" disabled={pwBusy}>update password</Button>
           </form>
         </Card>
       )}
@@ -248,10 +249,11 @@ export default function AccountSettings({ base }: { base: string }) {
       </Card>
 
       {grantsFailed && grantsLoaded && <StatusLine state="fail" action={<Button size="sm" variant="secondary" onClick={reload} disabled={refreshing}>try again</Button>}>couldn't refresh your connected apps.</StatusLine>}
-      <Card title="recovery codes">
-        <p>{acct.recoveryRemaining} unused. <Button size="sm" variant="secondary" onClick={() => setConfirm({ kind: "regen" })}>regenerate</Button></p>
-        {codes && <div style={{ marginTop: "var(--gap-md)" }}><p className="mw-muted">new codes (shown once — save them):</p><RecoveryCodes codes={codes} /></div>}
-      </Card>
+      {acct.hasPassword !== acct.telegram.linked && (
+        <Alert variant="info">
+          {acct.hasPassword ? "this account has only one sign-in method. if you lose it, the account cannot be recovered. link telegram to add a second method." : "this account has only one sign-in method. if you lose it, the account cannot be recovered. adding a password to a telegram-only account is coming soon."}
+        </Alert>
+      )}
 
       <Card title="danger zone">
         {acct.deleteEnabled ? (
@@ -278,8 +280,6 @@ export default function AccountSettings({ base }: { base: string }) {
         confirmLabel="revoke access" variant="danger" loading={busy} />
       <ConfirmDialog open={confirm?.kind === "unlink"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
         title="unlink telegram?" description="you'll lose your verified status and telegram sign-in." confirmLabel="unlink" variant="danger" loading={busy} />
-      <ConfirmDialog open={confirm?.kind === "regen"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
-        title="regenerate recovery codes?" description="your current recovery codes stop working immediately." confirmLabel="regenerate" variant="danger" loading={busy} />
       {acct.deleteEnabled && (
         <ConfirmDialog open={confirm?.kind === "delete"} onCancel={() => { setConfirm(null); setNeedPassword(false); }} onConfirm={(r) => runConfirm(r.password)} requirePassword={needPassword}
           title="delete your account?" description={`this is permanent. your login methods, sessions, app permissions and tokens are erased. accounts with active apps can't be deleted until those apps are deleted in the developer dashboard. ${CONNECTED_SERVICES_NOTICE}`}

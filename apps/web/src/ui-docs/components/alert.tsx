@@ -6,7 +6,7 @@ export default {
   name: "Alert",
   summary: "A short message block for a success, an error or information, with an optional dismiss button.",
   examples: [
-    { title: "info", node: <Alert>your recovery codes were replaced. the old ones no longer work.</Alert>, html: true },
+    { title: "info", node: <Alert>your password was changed. the old one no longer works.</Alert>, html: true },
     { title: "success", node: <Alert variant="success">saved.</Alert>, html: true },
     { title: "error", node: <Alert variant="error">wrong password — try again or reset it.</Alert>, html: true },
     { title: "dismissible", node: <Alert variant="info" onDismiss={noop}>you can revoke an app's access any time.</Alert> },

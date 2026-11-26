@@ -41,8 +41,28 @@ export function cookieValue(setCookie: string | null, name: string): string | un
  * userinfo loop end-to-end without a real Turso. Handlers are written against
  * the worker's own SQL, so they track the real column order.
  */
-export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
-  const t: Record<string, Row[]> = {
+/** Every table the in-memory store models (a closed set so `tables.x` is never `undefined`). */
+export type TableName =
+  | "accounts"
+  | "password_credentials"
+  | "recovery_codes"
+  | "telegram_links"
+  | "sessions"
+  | "oauth_codes"
+  | "access_tokens"
+  | "refresh_tokens"
+  | "oauth_clients"
+  | "oauth_client_redirect_uris"
+  | "oauth_client_secrets"
+  | "consents"
+  | "rate_limits"
+  | "login_tickets"
+  | "login_ticket_ctx"
+  | "audit_log"
+  | "account_delete_confirmations";
+
+export function memStore(): { db: DbClient; tables: Record<TableName, Row[]> } {
+  const t: Record<TableName, Row[]> = {
     accounts: [],
     password_credentials: [],
     recovery_codes: [],
@@ -104,14 +124,12 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/UPDATE password_credentials SET phc/.test(sql)) {
         const row = t.password_credentials.find((r) => r.account_id === a[1]);
         if (row) row.phc = a[0];
-        return { rows: [] };
+        return { rows: [], rowsAffected: row ? 1 : 0 };
       }
       if (/DELETE FROM recovery_codes WHERE account_id/.test(sql)) {
         t.recovery_codes = t.recovery_codes.filter((r) => r.account_id !== a[0]);
         return { rows: [] };
       }
-      if (/SELECT COUNT\(\*\) AS n FROM recovery_codes/.test(sql))
-        return { rows: [{ n: t.recovery_codes.filter((r) => r.account_id === a[0] && r.used_at == null).length }] };
       if (/SELECT c\.client_id, c\.approved_scope_snapshot, c\.updated_at, o\.display_name FROM consents c/.test(sql))
         return { rows: t.consents.filter((r) => r.account_id === a[0]).map((r) => ({ client_id: r.client_id, approved_scope_snapshot: r.approved_scope_snapshot, updated_at: null, display_name: t.oauth_clients.find((o) => o.client_id === r.client_id)?.display_name ?? null })) };
       if (/DELETE FROM consents WHERE account_id/.test(sql)) {
@@ -296,8 +314,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
           ],
         };
       }
-      // getAccountDetail — collapsed: profile + password + telegram + verified + recovery count.
-      if (/AS recovery_remaining/.test(sql)) {
+      // getAccountDetail — collapsed: profile + password + telegram + verified.
+      if (/AS telegram_username/.test(sql)) {
         const acct = t.accounts.find((r) => r.id === a[0]);
         if (!acct) return { rows: [] };
         const tg = t.telegram_links.find((r) => r.account_id === acct.id);
@@ -310,7 +328,6 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
               has_password: t.password_credentials.some((r) => r.account_id === acct.id) ? 1 : 0,
               telegram_username: tg ? tg.telegram_username : null,
               verified: tg ? 1 : 0,
-              recovery_remaining: t.recovery_codes.filter((r) => r.account_id === acct.id && r.used_at == null).length,
             },
           ],
         };
@@ -322,18 +339,8 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.password_credentials.push({ account_id: a[0], phc: a[1] });
         return { rows: [] };
       }
-      if (/FROM password_credentials WHERE account_id/.test(sql))
+      if (/^SELECT phc FROM password_credentials WHERE account_id/.test(sql))
         return { rows: t.password_credentials.filter((r) => r.account_id === a[0]).map((r) => ({ phc: r.phc })) };
-      if (/INSERT INTO recovery_codes .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
-        // conditional on the account existing (a[2] = account id)
-        if (!t.accounts.some((r) => r.id === a[2])) return { rows: [], rowsAffected: 0 };
-        t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
-        return { rows: [], rowsAffected: 1 };
-      }
-      if (/INSERT INTO recovery_codes/.test(sql)) {
-        t.recovery_codes.push({ account_id: a[0], code_hash: a[1] });
-        return { rows: [] };
-      }
 
       // --- telegram ---
       if (/SELECT account_id FROM telegram_links WHERE telegram_id/.test(sql))
@@ -460,6 +467,10 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         const row = t.sessions.find((r) => r.id_hash === a[1]);
         if (row) row.idle_expires_at = a[0];
         return { rows: [], rowsAffected: row ? 1 : 0 };
+      }
+      if (/UPDATE sessions SET revoked_at .* WHERE account_id/.test(sql)) {
+        for (const r of t.sessions) if (r.account_id === a[0] && r.revoked_at == null) r.revoked_at = "revoked";
+        return { rows: [] };
       }
       if (/UPDATE sessions SET revoked_at/.test(sql)) {
         const row = t.sessions.find((r) => r.id_hash === a[0]);

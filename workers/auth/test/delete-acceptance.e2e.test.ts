@@ -112,7 +112,7 @@ async function stack(opts: { enabled?: boolean } = {}) {
   const keys = await genSigningKeys();
   const env = {
     AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", CORS_ORIGINS: "https://web",
-    STATE_SECRET: "s", TELEGRAM_BOT_TOKEN: BOT_TOKEN, RESOURCE_AUD: "https://api", SKIP_MIGRATIONS: "1",
+    TELEGRAM_BOT_TOKEN: BOT_TOKEN, RESOURCE_AUD: "https://api", SKIP_MIGRATIONS: "1",
     ...(opts.enabled === false ? {} : { ACCOUNT_DELETE_ENABLED: "1" }),
   };
   const deps = { getDb: () => db, clock: () => clock };

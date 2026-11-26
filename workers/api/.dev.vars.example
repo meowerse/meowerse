@@ -5,4 +5,6 @@ DATABASE_URL="libsql://your-db.turso.io"
 DATABASE_AUTH_TOKEN="your-turso-auth-token"
 API_TOKEN="set-a-long-random-bearer-token"
 # Optional override of the CORS allowlist (defaults baked into wrangler.jsonc):
-# CORS_ORIGINS="https://meow.alxnko.eu.org,http://localhost:4321"
+# Local dev ONLY: allow the Astro dev server (localhost/.local origins). NEVER set in production.
+ALLOW_LOCALHOST_CORS="1"
+# CORS_ORIGINS="https://meow.alxnko.eu.org"

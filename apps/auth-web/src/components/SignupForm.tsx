@@ -1,6 +1,6 @@
 import { useState, useRef, type FormEvent } from "react";
-import { Button, Field, Alert, Card, RecoveryCodes, clearSessionCache } from "@meowerse/ui";
-import { postSignup, nextLocation, type NextStep } from "../lib/authApi";
+import { Button, Field, Alert, clearSessionCache } from "@meowerse/ui";
+import { postSignup, nextLocation } from "../lib/authApi";
 import Turnstile, { type TurnstileRef } from "./Turnstile";
 
 export default function SignupForm({ base, turnstileSiteKey }: { base: string; turnstileSiteKey?: string }) {
@@ -8,8 +8,6 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [codes, setCodes] = useState<string[] | null>(null);
-  const [next, setNext] = useState<NextStep | undefined>(undefined);
   const [token, setToken] = useState("");
   const [turnstileError, setTurnstileError] = useState(false);
 
@@ -23,8 +21,8 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
     try {
       const res = await postSignup(base, username, password, activeToken || undefined);
       if (res.ok) {
-        setCodes(res.recoveryCodes ?? []);
-        setNext(res.next);
+        clearSessionCache();
+        window.location.href = nextLocation(res.next);
       } else {
         setError(errorText(res.error));
         // Single-use token was consumed by siteverify; reset for the next attempt
@@ -93,18 +91,6 @@ export default function SignupForm({ base, turnstileSiteKey }: { base: string; t
   }
 
   const isVerifying = busy && pendingSubmitRef.current;
-
-  if (codes) {
-    return (
-      <Card title="save your recovery codes" className="mw-narrow">
-        <p className="mw-muted">shown once. store them somewhere safe — each works a single time if you lose access.</p>
-        <RecoveryCodes codes={codes} />
-        <div style={{ marginTop: "var(--gap-lg)" }}>
-          <Button variant="primary" onClick={() => { clearSessionCache(); window.location.href = nextLocation(next); }}>i've saved them — continue</Button>
-        </div>
-      </Card>
-    );
-  }
 
   return (
     <form onSubmit={onSubmit} className="mw-stack mw-narrow">

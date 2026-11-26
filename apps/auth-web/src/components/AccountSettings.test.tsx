@@ -13,7 +13,7 @@ afterEach(() => {
 
 const ACCOUNT = {
   username: "alxnko", displayName: null, avatarUrl: null, verified: true, hasPassword: false,
-  telegram: { linked: false, username: null }, recoveryRemaining: 8, csrf: "c",
+  telegram: { linked: false, username: null }, csrf: "c",
 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const page = () => render(<ToastProvider><AccountSettings base="https://api" /></ToastProvider>);
@@ -188,32 +188,29 @@ describe("AccountSettings", () => {
     expect(window.location.search).toBe("");
   });
 
-  it("regenerating recovery codes on a stale login asks for the password and resends it", async () => {
-    const bodies: Record<string, unknown>[] = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      const u = String(url);
-      if (u.endsWith("/grants")) return json({ grants: [] });
-      if (u.endsWith("/api/account/recovery-codes")) {
-        const b = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        bodies.push(b);
-        return b.current_password ? json({ recoveryCodes: ["aaaa-bbbb"] }) : json({ error: "step_up_required", reauth: "password" }, 401);
-      }
-      return json({ ...ACCOUNT, hasPassword: true });
-    });
+  it("has no recovery-codes UI (even if an old server still sends recoveryRemaining)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+      String(url).endsWith("/grants") ? json({ grants: [] }) : json({ ...ACCOUNT, hasPassword: true, recoveryRemaining: 8 }));
     page();
     await screen.findByText("alxnko");
-    fireEvent.click(screen.getByRole("button", { name: "regenerate" })); // opens the confirm dialog
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "regenerate" }).length).toBeGreaterThan(1));
-    const confirmBtns = screen.getAllByRole("button", { name: "regenerate" });
-    fireEvent.click(confirmBtns[confirmBtns.length - 1]!); // the dialog's confirm
-    await waitFor(() => expect(bodies.length).toBe(1));
-    expect(bodies[0]!.current_password).toBeUndefined();
-    const pw = await screen.findByLabelText("your password");
-    fireEvent.change(pw, { target: { value: "hunter2hunter2" } });
-    const btns = screen.getAllByRole("button", { name: "regenerate" });
-    fireEvent.click(btns[btns.length - 1]!);
-    await waitFor(() => expect(bodies.length).toBe(2));
-    expect(bodies[1]!.current_password).toBe("hunter2hunter2");
+    expect(screen.queryByText(/recovery/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "regenerate" })).toBeNull();
+  });
+
+  it("shows the one-method notice for password-only and telegram-only accounts, not for both", async () => {
+    const load = async (acct: Record<string, unknown>) => {
+      cleanup(); vi.restoreAllMocks();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/grants") ? json({ grants: [] }) : json(acct));
+      page();
+      await screen.findByText("alxnko");
+    };
+    const notice = /only one sign-in method/;
+    await load({ ...ACCOUNT, hasPassword: true });
+    expect(screen.queryByText(notice)).not.toBeNull();
+    await load({ ...ACCOUNT, hasPassword: false, telegram: { linked: true, username: "tg" } });
+    expect(screen.queryByText(notice)).not.toBeNull();
+    await load({ ...ACCOUNT, hasPassword: true, telegram: { linked: true, username: "tg" } });
+    expect(screen.queryByText(notice)).toBeNull();
   });
 });
 
@@ -327,15 +324,127 @@ describe("AccountSettings identity, ordering and restore (PR-21 review)", () => 
   });
 });
 
-describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
+describe("AccountSettings password change rotates the session", () => {
+  const WITH_PW = { ...ACCOUNT, hasPassword: true };
+  const GRANT = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
+  function setup(pwResponse: unknown) {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, body: JSON.parse(String(init.body)) }); return u.endsWith("/password") ? json(pwResponse) : json({ ok: true }); }
+      return u.endsWith("/grants") ? json({ grants: [GRANT] }) : json(WITH_PW);
+    });
+    page();
+    return posts;
+  }
+  async function change() {
+    fireEvent.change(await screen.findByLabelText("current password"), { target: { value: "oldpassword12" } });
+    fireEvent.change(screen.getByLabelText("new password"), { target: { value: "newpassword123" } });
+    fireEvent.submit(screen.getByRole("button", { name: "update password" }).closest("form")!);
+  }
+
+  it("adopts the csrf from the response: the next action posts the NEW token and the page stays signed in", async () => {
+    const posts = setup({ ok: true, csrf: "c-new" });
+    await change();
+    await waitFor(() => expect(posts.map((p) => p.url)).toEqual(["https://api/api/account/password"]));
+    expect(posts[0]!.body.csrf).toBe("c");
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c-new");
+    expect(screen.queryByText(/to manage your account/)).toBeNull();
+  });
+
+  it("the submit button is disabled while the change is in flight: a double click posts once", async () => {
+    let release!: () => void;
+    const posts: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push(u); await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      return u.endsWith("/grants") ? json({ grants: [] }) : json(WITH_PW);
+    });
+    page();
+    await change();
+    const btn = screen.getByRole("button", { name: "update password" }) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(true));
+    fireEvent.submit(btn.closest("form")!);
+    expect(posts).toHaveLength(1);
+    release();
+    await waitFor(() => expect(btn.disabled).toBe(false));
+  });
+
+  it("a conflict answer is reported honestly (not 'could not change password' as if nothing happened), and the form re-enables", async () => {
+    setup({ error: "conflict" });
+    await change();
+    expect(await screen.findByText(/changed from somewhere else or your session ended/)).not.toBeNull();
+    expect((screen.getByRole("button", { name: "update password" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a reload that started BEFORE the change cannot revert the adopted csrf", async () => {
+    let late!: (r: Response) => void;
+    let accountGets = 0;
+    const posts: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, ...JSON.parse(String(init.body)) }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500); // leaves a "try again" that reloads WITHOUT resetting the form
+      return ++accountGets === 1 ? json(WITH_PW) : new Promise<Response>((r) => { late = r; });
+    });
+    page();
+    fireEvent.click(await screen.findByRole("button", { name: "try again" })); // reload in flight (answers with the OLD csrf)
+    await waitFor(() => expect(accountGets).toBe(2));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await screen.findByText(/password changed/);
+    late(json(WITH_PW)); // stale answer, csrf "c"
+    await new Promise((r) => setTimeout(r, 20));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.csrf).toBe("c-new");
+  });
+
+  it("a reload that LANDED during the request is not overwritten by the submit-time account (only csrf changes)", async () => {
+    let release!: () => void;
+    let accountGets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500);
+      return json(++accountGets === 1 ? WITH_PW : { ...WITH_PW, username: "renamed" });
+    });
+    page();
+    await screen.findByText("alxnko");
+    await change();
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "try again" }));
+    await screen.findByText("renamed");
+    release();
+    await screen.findByText(/password changed/);
+    expect(screen.queryByText("alxnko")).toBeNull();
+    expect(screen.getByText("renamed")).not.toBeNull();
+  });
+
+  it("an old worker answering { ok: true } without csrf still works (additive response)", async () => {
+    const posts = setup({ ok: true });
+    await change();
+    await screen.findByText(/password changed/);
+    fireEvent.click(screen.getByRole("button", { name: "revoke" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "revoke access" })).at(-1)!);
+    await waitFor(() => expect(posts.at(-1)!.url).toMatch(/grants\/revoke$/));
+    expect(posts.at(-1)!.body.csrf).toBe("c");
+  });
+});
+
+describe("AccountSettings ordering (PR-21 review 2)", () => {
   const LINKED = { ...ACCOUNT, telegram: { linked: true, username: "tg" } };
   const GRANT_A = { clientId: "mw_a", displayName: "a app", approvedScopes: ["openid"], updatedAt: null };
-  /** GETs: first pair answers normally; later ones go to `later(url)`. POSTs: recovery codes / ok. */
+  /** GETs: first pair answers normally; later ones go to `later(url)`. POSTs: ok. */
   function setup(later: (u: string) => Response | Promise<Response>) {
     let loaded = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const u = String(url);
-      if (init?.method === "POST") return u.endsWith("/recovery-codes") ? json({ recoveryCodes: ["code-aaaa"] }) : json({ ok: true });
+      if (init?.method === "POST") return json({ ok: true });
       if (!loaded) { if (u.endsWith("/account")) return json(LINKED); loaded = true; return json({ grants: [GRANT_A] }); }
       return later(u);
     });
@@ -356,33 +465,6 @@ describe("AccountSettings ordering and codes (PR-21 review 2)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText("alxnko")).toBeNull();
     expect(screen.getByText(/to manage your account/)).not.toBeNull();
-  });
-
-  it("the same account keeps its shown recovery codes across a refresh; a different one hides them with a notice", async () => {
-    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(LINKED));
-    await screen.findByText("a app");
-    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
-    await confirmLast("regenerate");
-    expect(await screen.findByText("code-aaaa")).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "unlink" })); // success -> reload() for the same account
-    await confirmLast("unlink");
-    await new Promise((r) => setTimeout(r, 30));
-    expect(screen.getByText("code-aaaa")).not.toBeNull();
-  });
-
-  it("an account change hides shown recovery codes and says so", async () => {
-    let who = LINKED;
-    setup((u) => u.endsWith("/grants") ? json({ grants: [GRANT_A] }) : json(who));
-    await screen.findByText("a app");
-    fireEvent.click(screen.getByRole("button", { name: "regenerate" }));
-    await confirmLast("regenerate");
-    await screen.findByText("code-aaaa");
-    who = { ...LINKED, username: "bob", csrf: "c2" };
-    fireEvent.click(screen.getByRole("button", { name: "unlink" }));
-    await confirmLast("unlink");
-    expect(await screen.findByText("bob")).not.toBeNull();
-    expect(screen.queryByText("code-aaaa")).toBeNull();
-    expect(await screen.findByText(/recovery codes were hidden/)).not.toBeNull();
   });
 
   it("a revoke wins over an older in-flight reload whose grants still list the app", async () => {

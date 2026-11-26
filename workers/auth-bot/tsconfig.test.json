@@ -1,0 +1,6 @@
+{
+  // Tests run in node (vitest node pool) or workerd; node:* imports need @types/node.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["@cloudflare/workers-types", "node"], "noEmit": true },
+  "include": ["src", "test"]
+}

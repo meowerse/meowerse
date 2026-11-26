@@ -13,7 +13,6 @@ export interface AuthResponse {
   ok?: boolean;
   csrf?: string;
   next?: NextStep;
-  recoveryCodes?: string[];
   error?: string;
 }
 
@@ -89,7 +88,6 @@ export interface AccountInfo {
   verified: boolean;
   hasPassword: boolean;
   telegram: { linked: boolean; username: string | null };
-  recoveryRemaining: number;
   csrf: string;
   deleteEnabled?: boolean;
   error?: string;
@@ -119,7 +117,7 @@ async function getJson<T>(url: string): Promise<T> {
 export function getAccount(base: string): Promise<AccountInfo> {
   return getJson<AccountInfo>(`${base}/api/account`);
 }
-export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; error?: string }> {
+export function postAccountPassword(base: string, csrf: string, current: string, next: string): Promise<{ ok?: boolean; csrf?: string; error?: string }> {
   return postJson(`${base}/api/account/password`, { csrf, current_password: current, new_password: next });
 }
 export function getGrants(base: string): Promise<{ grants?: Grant[]; error?: string }> {
@@ -144,10 +142,6 @@ export function revokeGrant(base: string, csrf: string, clientId: string): Promi
 export function unlinkTelegram(base: string, csrf: string, currentPassword?: string): Promise<{ ok?: boolean; error?: string; reauth?: string }> {
   return postJson(`${base}/api/account/telegram/unlink`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
 }
-export function regenerateRecoveryCodes(base: string, csrf: string, currentPassword?: string): Promise<{ recoveryCodes?: string[]; error?: string; reauth?: string }> {
-  return postJson(`${base}/api/account/recovery-codes`, { csrf, ...(currentPassword ? { current_password: currentPassword } : {}) });
-}
-
 // --- developer dashboard (mutations) ---
 export function deleteClient(base: string, csrf: string, clientId: string): Promise<{ ok?: boolean; error?: string }> {
   return postJson(`${base}/api/dev/clients/delete`, { csrf, client_id: clientId });

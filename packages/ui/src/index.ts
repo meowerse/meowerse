@@ -13,7 +13,6 @@ export { Avatar } from "./components/Avatar";
 export { Modal } from "./components/Modal";
 export { ConfirmDialog, type ConfirmResult } from "./components/ConfirmDialog";
 export { ToastProvider, useToast } from "./components/Toast";
-export { RecoveryCodes } from "./components/RecoveryCodes";
 export { ThemeToggle } from "./components/ThemeToggle";
 export { ContactLinks, DEFAULT_CONTACTS, type Contact } from "./components/ContactLinks";
 export { Footer } from "./components/Footer";

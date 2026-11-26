@@ -2,7 +2,7 @@ import { test, expect } from "vitest";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
 import { handle } from "../src/index";
-import { deleteAccount, regenerateRecoveryCodes } from "../src/accounts";
+import { deleteAccount } from "../src/accounts";
 import { issueSession, lookupSession, rotateSession } from "../src/session";
 import { createAuthCode } from "../src/token";
 import { grantConsent } from "../src/consent";
@@ -152,16 +152,6 @@ test("linkTelegramToAccount on a live account still links and verifies", async (
   expect(Number((await run(f.db, "SELECT verified FROM accounts WHERE id = ?", [f.accountId])).rows[0]!.verified)).toBe(1);
 });
 
-test("regenerateRecoveryCodes after deleteAccount -> null, no recovery_codes rows; live account gets a full set", async () => {
-  const f = await setup();
-  const codes = await regenerateRecoveryCodes(f.db, f.accountId);
-  expect(codes).toHaveLength(8);
-  expect(await count(f.db, "recovery_codes WHERE account_id = ?", [f.accountId])).toBe(8);
-  await f.deleteNow();
-  expect(await regenerateRecoveryCodes(f.db, f.accountId)).toBeNull();
-  expect(await count(f.db, "recovery_codes WHERE account_id = ?", [f.accountId])).toBe(0);
-});
-
 // ------------------------------------------------------------ handler level
 
 test("/authorize with a leftover session for a deleted account redirects to login (no code)", async () => {
@@ -199,15 +189,6 @@ test("/consent: session read valid, account deleted before the consent upsert ->
   expect(await r.json()).toEqual({ error: "account_gone" });
   expect(await count(f.db, "consents")).toBe(0);
   expect(await count(f.db, "oauth_codes")).toBe(0);
-});
-
-test("POST /api/account/recovery-codes: account deleted after the session read -> 401 account_gone, no rows", async () => {
-  const f = await setup();
-  f.onNextSessionRead(f.deleteNow);
-  const r = await f.call("/api/account/recovery-codes", { sess: f.sess, body: { csrf: f.csrf } });
-  expect(r.status).toBe(401);
-  expect(await r.json()).toEqual({ error: "account_gone" });
-  expect(await count(f.db, "recovery_codes WHERE account_id = ?", [f.accountId])).toBe(0);
 });
 
 test("POST /login: valid credentials but account deleted before the session insert -> 401 account_gone", async () => {

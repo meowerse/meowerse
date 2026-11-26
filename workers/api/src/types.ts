@@ -5,6 +5,8 @@
  */
 export interface Env {
   CORS_ORIGINS?: string;
+  /** "1"/"true" = also allow any localhost/.local origin (DEV only, via .dev.vars; never in wrangler.jsonc). */
+  ALLOW_LOCALHOST_CORS?: string;
   API_TOKEN?: string;
   DATABASE_URL?: string;
   DATABASE_AUTH_TOKEN?: string;

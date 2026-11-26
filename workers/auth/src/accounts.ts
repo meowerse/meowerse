@@ -1,7 +1,8 @@
-import { validatePassword, genRecoveryCodes, normalizeRecoveryCode } from "@meowerse/auth-shared";
-import { hashPassword, verifyPassword, DEFAULT_PBKDF2, CHEAP_PBKDF2, type Pbkdf2Params } from "./crypto";
+import { validatePassword } from "@meowerse/auth-shared";
+import { hashPassword, verifyPassword, DEFAULT_PBKDF2, type Pbkdf2Params } from "./crypto";
 import { randomId } from "./security";
-import { accountPresent, allOf, sessionLive, guardedInsert } from "./codeguard";
+import { IDLE_TTL, ABSOLUTE_TTL } from "./session";
+import { accountPresent, allOf, sessionLive, guardedInsert, type Guard } from "./codeguard";
 import type { DbClient } from "./types";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
@@ -11,18 +12,16 @@ export interface SignupInput {
   password: string;
   displayName?: string;
 }
-export type SignupResult = { ok: true; accountId: string; recoveryCodes: string[] } | { ok: false; error: string };
+export type SignupResult = { ok: true; accountId: string } | { ok: false; error: string };
 
 export interface SignupOpts {
   pbkdf2?: Pbkdf2Params;
-  recoveryParams?: Pbkdf2Params;
 }
 
 /**
  * Create a password account (spec §4, §7). Validates username + password, fails
  * with a generic "unavailable" if the username is taken, then writes the
- * account + PBKDF2 credential + 8 hashed recovery codes. Recovery codes are
- * returned ONCE (shown to the user, never stored in clear).
+ * account + PBKDF2 credential. (Recovery codes were removed 2026-11-26: none are generated.)
  */
 export async function signup(db: DbClient, input: SignupInput, opts: SignupOpts = {}): Promise<SignupResult> {
   const username = (input.username ?? "").trim();
@@ -47,17 +46,7 @@ export async function signup(db: DbClient, input: SignupInput, opts: SignupOpts 
     args: [accountId, phc],
   });
 
-  const codes = genRecoveryCodes();
-  // Hashes are independent + known up front → hash all, then write in ONE batch
-  // (was 8 sequential INSERT round-trips).
-  const inserts = await Promise.all(
-    codes.map(async (code) => ({
-      sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES (?, ?)",
-      args: [accountId, await hashPassword(normalizeRecoveryCode(code), opts.recoveryParams ?? CHEAP_PBKDF2)],
-    })),
-  );
-  await db.batch(inserts);
-  return { ok: true, accountId, recoveryCodes: codes };
+  return { ok: true, accountId };
 }
 
 /**
@@ -148,13 +137,12 @@ export async function getAccountInfo(db: DbClient, accountId: string): Promise<A
 export interface AccountDetail extends AccountInfo {
   verified: boolean;
   telegram: { linked: boolean; username: string | null };
-  recoveryRemaining: number;
 }
 
 /**
  * Everything the account page renders — profile + password/telegram/verified +
- * remaining recovery codes — in ONE query. Replaces getAccountInfo +
- * deriveVerified + getTelegramLink + countRecoveryCodes (4 hops). `verified` is
+ * in ONE query. Replaces getAccountInfo +
+ * deriveVerified + getTelegramLink (3 hops). `verified` is
  * the LIVE existence of a telegram link (never the accounts.verified mirror),
  * which is also exactly "telegram linked".
  */
@@ -163,8 +151,7 @@ export async function getAccountDetail(db: DbClient, accountId: string): Promise
     sql: `SELECT a.username, a.display_name, a.avatar_url,
                  EXISTS(SELECT 1 FROM password_credentials p WHERE p.account_id = a.id) AS has_password,
                  (SELECT telegram_username FROM telegram_links t WHERE t.account_id = a.id) AS telegram_username,
-                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified,
-                 (SELECT COUNT(*) FROM recovery_codes rc WHERE rc.account_id = a.id AND rc.used_at IS NULL) AS recovery_remaining
+                 EXISTS(SELECT 1 FROM telegram_links t WHERE t.account_id = a.id) AS verified
           FROM accounts a WHERE a.id = ?`,
     args: [accountId],
   });
@@ -178,65 +165,55 @@ export async function getAccountDetail(db: DbClient, accountId: string): Promise
     hasPassword: Number(row.has_password) === 1,
     verified,
     telegram: { linked: verified, username: row.telegram_username == null ? null : String(row.telegram_username) },
-    recoveryRemaining: Number(row.recovery_remaining),
   };
 }
 
 /** Change password — verify the current one, validate + hash the new one. */
 export async function changePassword(
   db: DbClient,
-  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; keepSessionIdHash?: string },
+  i: { accountId: string; currentPassword: string; newPassword: string; pbkdf2?: Pbkdf2Params; sessionIdHash: string; newSession: { idHash: string; csrf: string; now: number } },
 ): Promise<{ ok: boolean; error?: string }> {
   const cred = await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [i.accountId] });
   const row = cred.rows[0];
   if (!row) return { ok: false, error: "no_password" };
-  if (!(await verifyPassword(i.currentPassword, String(row.phc)))) return { ok: false, error: "wrong_password" };
+  const oldPhc = String(row.phc);
+  if (!(await verifyPassword(i.currentPassword, oldPhc))) return { ok: false, error: "wrong_password" };
   const pw = validatePassword(i.newPassword);
   if (!pw.ok) return { ok: false, error: pw.error };
   const phc = await hashPassword(pw.password, i.pbkdf2 ?? DEFAULT_PBKDF2);
-  // One batch: the new hash lands together with the revocation of every OTHER session and every
-  // refresh/access token of the account, so a stolen session or token cannot outlive the password change.
-  await db.batch(
+  const ns = i.newSession;
+  // The verify + hash above take ~1 s, so everything is re-checked INSIDE the batch. Statement 0 is the gate: it only
+  // writes while the credential is still the one we verified (no lost update between two submits) AND the calling session
+  // is still live (a session revoked meanwhile cannot mint a new one). Every later statement is guarded on OUR new hash
+  // being the current one (salted, so unique): a loser of the race changes nothing and can never revoke the winner's
+  // fresh session. Atomic: the user never ends with zero or two valid sessions.
+  const ours: Guard = { sql: "EXISTS (SELECT 1 FROM password_credentials WHERE account_id = ? AND phc = ?)", args: [i.accountId, phc] };
+  const gate = allOf({ sql: "phc = ?", args: [oldPhc] }, sessionLive(i.sessionIdHash, i.accountId, ns.now));
+  const res = await db.batch(
     [
-      { sql: "UPDATE password_credentials SET phc = ? WHERE account_id = ?", args: [phc, i.accountId] },
+      { sql: `UPDATE password_credentials SET phc = ? WHERE account_id = ? AND ${gate.sql}`, args: [phc, i.accountId, ...gate.args] },
+      { sql: `UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
       {
-        sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND id_hash IS NOT ?",
-        args: [i.accountId, i.keepSessionIdHash ?? null],
+        // auth_time = now / amr = pwd: the user just proved the password (same shape as rotateSession).
+        sql: `INSERT INTO sessions (id_hash, account_id, auth_time, amr, csrf_token, idle_expires_at, absolute_expires_at)
+              SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${accountPresent(i.accountId).sql} AND ${ours.sql}`,
+        args: [ns.idHash, i.accountId, ns.now, "pwd", ns.csrf, ns.now + IDLE_TTL, ns.now + ABSOLUTE_TTL, i.accountId, ...ours.args],
       },
       // DELETE (not "mark used"): a used row would make the holder's next refresh look like token REUSE and raise a
       // false token.reuse_detected audit. With no row it is a plain invalid_grant.
-      { sql: "DELETE FROM refresh_tokens WHERE account_id = ?", args: [i.accountId] },
-      { sql: "UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL", args: [i.accountId] },
+      { sql: `DELETE FROM refresh_tokens WHERE account_id = ? AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
+      { sql: `UPDATE access_tokens SET revoked_at = datetime('now') WHERE account_id = ? AND revoked_at IS NULL AND ${ours.sql}`, args: [i.accountId, ...ours.args] },
     ],
     "write",
   );
+  if ((res[0]?.rowsAffected ?? 0) !== 1) {
+    // Nothing was written. Say why (read-only): account deleted, session no longer live, or someone else changed the password first.
+    if (!(await accountExists(db, i.accountId))) return { ok: false, error: "account_gone" };
+    const live = await db.execute({ sql: `SELECT ${sessionLive(i.sessionIdHash, i.accountId, ns.now).sql} AS live`, args: sessionLive(i.sessionIdHash, i.accountId, ns.now).args });
+    return { ok: false, error: Number(live.rows[0]?.live) === 1 ? "conflict" : "no_session" };
+  }
+  if ((res[2]?.rowsAffected ?? 0) !== 1) return { ok: false, error: "account_gone" };
   return { ok: true };
-}
-
-/**
- * Replace all recovery codes; returns the new plaintext set ONCE, or null when
- * the account no longer exists (the inserts are conditional on it, inside one
- * write batch, so nothing is written for a deleted account).
- */
-export async function regenerateRecoveryCodes(db: DbClient, accountId: string, params?: Pbkdf2Params): Promise<string[] | null> {
-  await db.execute({ sql: "DELETE FROM recovery_codes WHERE account_id = ?", args: [accountId] });
-  const codes = genRecoveryCodes();
-  const exists = accountPresent(accountId);
-  const inserts = await Promise.all(
-    codes.map(async (code) => ({
-      sql: `INSERT INTO recovery_codes (account_id, code_hash) SELECT ?, ? WHERE ${exists.sql}`,
-      args: [accountId, await hashPassword(normalizeRecoveryCode(code), params ?? CHEAP_PBKDF2), ...exists.args],
-    })),
-  );
-  const res = await db.batch(inserts, "write");
-  if (res.some((r) => (r.rowsAffected ?? 0) !== 1)) return null;
-  return codes;
-}
-
-/** How many unused recovery codes remain. */
-export async function countRecoveryCodes(db: DbClient, accountId: string): Promise<number> {
-  const r = await db.execute({ sql: "SELECT COUNT(*) AS n FROM recovery_codes WHERE account_id = ? AND used_at IS NULL", args: [accountId] });
-  return Number(r.rows[0]?.n ?? 0);
 }
 
 /** The step-up confirmation that authorises ONE deletion: bound to the account, the session, and an expiry. */
@@ -305,7 +282,7 @@ export async function deleteConfirmationUsable(db: DbClient, accountId: string, 
  * serialized against it. The guarded token inserts (INSERT ... SELECT WHERE
  * EXISTS(code unconsumed / refresh unused)) cannot write from codes / refresh
  * tokens that existed at deletion, because this transaction removes those rows.
- * Fresh credential INSERTs (sessions, oauth_codes, consents, recovery codes, Telegram links, OAuth
+ * Fresh credential INSERTs (sessions, oauth_codes, consents, Telegram links, OAuth
  * clients + children, management tokens, access/refresh tokens) are guarded in-statement on the account
  * still existing (see codeguard.ts `accountPresent`), so none can be written after this commits. Owned-client
  * children are deleted via subqueries on `oauth_clients.owner_account_id`, so
@@ -352,6 +329,7 @@ export async function deleteAccount(
     { sql: `DELETE FROM consents WHERE client_id IN ${owned}`, args: [accountId] },
   );
   const accountKeyed = [
+    // recovery_codes: legacy table kept (phase 2 = owner-approved drop); rows of existing accounts still erased here.
     "recovery_codes", "password_credentials", "telegram_links", "sessions",
     "consents", "access_tokens", "refresh_tokens",
     "oauth_codes", "login_requests", "login_tickets", "account_delete_confirmations",

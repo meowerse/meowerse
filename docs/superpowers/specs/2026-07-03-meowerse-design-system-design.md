@@ -1,5 +1,7 @@
 # Meowerse Design System — Design Spec
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 Date: 2026-07-03
 Status: Approved (brainstorming), pending implementation plan
 Package: `@meowerse/ui`

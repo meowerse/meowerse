@@ -2,6 +2,7 @@ import { test, expect } from "vitest";
 import { handle, rlKey } from "../src/index";
 import { hmacSha256Hex, sha256Hex } from "../src/crypto";
 import { internalConfirmString } from "../src/telegram";
+import type { TableName } from "./helpers";
 import { genSigningKeys, memStore, cookieValue, botConfirm, tgVerify } from "./helpers";
 
 const enc = new TextEncoder();
@@ -145,7 +146,7 @@ async function confirmedTicket(clock: { t: number }) {
   const keys = await genSigningKeys();
   const env = {
     AUTH_SIGNING_KEYS: JSON.stringify(keys), STATE_SECRET: "s", ISSUER: "https://iss", WEB_ORIGIN: "https://web", RESOURCE_AUD: "https://api.meow",
-    STATE_SECRET: "s", CORS_ORIGINS: "https://web", BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+    CORS_ORIGINS: "https://web", BOT_USERNAME: "meow_bot", INTERNAL_HMAC_KEY: "ikey", TELEGRAM_BOT_TOKEN: BOT_TOKEN,
   };
   const deps = { getDb: () => store.db, clock: () => clock.t };
   const start = await handle(new Request("https://iss/tg/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env as never, deps as never);
@@ -231,8 +232,8 @@ async function accountWithSession(env: unknown, deps: unknown, username: string)
   const csrf = ((await su.json()) as { csrf: string }).csrf;
   return { csrf, sess: cookieValue(su.headers.get("Set-Cookie"), "__Host-mw_sess")! };
 }
-const ctxRow = (tables: Record<string, Row[]>, id: string) => tables.login_ticket_ctx.find((r) => r.ticket_id === id)!;
-const ticketRow = (tables: Record<string, Row[]>, id: string) => tables.login_tickets.find((r) => r.ticket_id === id)!;
+const ctxRow = (tables: Record<TableName, Row[]>, id: string) => tables.login_ticket_ctx.find((r) => r.ticket_id === id)!;
+const ticketRow = (tables: Record<TableName, Row[]>, id: string) => tables.login_tickets.find((r) => r.ticket_id === id)!;
 
 test("link ticket: a revoked session cannot complete the link and no attempt is spent (401 no_session)", async () => {
   const { env, deps, tables } = await fixture();

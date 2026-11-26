@@ -14,7 +14,7 @@ export type AuditEvent =
   | "login.fail"
   | "logout"
   | "password.change"
-  | "recovery.regenerate"
+  | "recovery.regenerate" // historic: no longer emitted (removed 2026-11-26); rows stay readable
   | "telegram.login"
   | "telegram.link"
   | "telegram.unlink"

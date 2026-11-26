@@ -42,7 +42,8 @@ test("max_age / prompt=login with a live session route to /login; prompt=none an
   f.setNow(5000); // session auth_time is 1000 → 4000 s old
   const get = (extra: Record<string, string>) => handle(new Request(authorizeUrl(extra), { headers: { Cookie: `__Host-mw_sess=${sess}` } }), f.env as never, f.deps as never);
 
-  for (const extra of [{ max_age: "0" }, { max_age: "100" }, { prompt: "login" }]) {
+  const cases: Record<string, string>[] = [{ max_age: "0" }, { max_age: "100" }, { prompt: "login" }];
+  for (const extra of cases) {
     const r = await get(extra);
     expect(r.status, JSON.stringify(extra)).toBe(302);
     expect(r.headers.get("Location")).toBe("https://web/login");
@@ -60,7 +61,7 @@ test("a refresh-grant id_token reports the original login time as auth_time, not
   const f = await setup();
   const { code } = await firstLogin(f);
   const r4 = await handle(tokenReq({ grant_type: "authorization_code", code, code_verifier: VERIFIER, client_id: "mw_demo", redirect_uri: REDIRECT }), f.env as never, f.deps as never);
-  const b4 = (await r4.json()) as Record<string, string>;
+  const b4 = (await r4.json()) as { refresh_token: string; id_token: string };
   expect(r4.status).toBe(200);
   expect(b4.refresh_token).toBeTruthy();
   const id1 = await verifyJwt(b4.id_token, f.jwks, { iss: "https://iss", aud: "mw_demo", now: 1000 });
@@ -68,7 +69,7 @@ test("a refresh-grant id_token reports the original login time as auth_time, not
 
   f.setNow(9000);
   const r5 = await handle(tokenReq({ grant_type: "refresh_token", refresh_token: b4.refresh_token, client_id: "mw_demo" }), f.env as never, f.deps as never);
-  const b5 = (await r5.json()) as Record<string, string>;
+  const b5 = (await r5.json()) as { refresh_token: string; id_token: string };
   expect(r5.status).toBe(200);
   const id2 = await verifyJwt(b5.id_token, f.jwks, { iss: "https://iss", aud: "mw_demo", now: 9000 });
   expect(id2.payload.auth_time).toBe(1000);
@@ -76,7 +77,7 @@ test("a refresh-grant id_token reports the original login time as auth_time, not
   // …and it survives a second rotation
   f.setNow(12000);
   const r6 = await handle(tokenReq({ grant_type: "refresh_token", refresh_token: b5.refresh_token, client_id: "mw_demo" }), f.env as never, f.deps as never);
-  const id3 = await verifyJwt(((await r6.json()) as Record<string, string>).id_token, f.jwks, { iss: "https://iss", aud: "mw_demo", now: 12000 });
+  const id3 = await verifyJwt(((await r6.json()) as { id_token: string }).id_token, f.jwks, { iss: "https://iss", aud: "mw_demo", now: 12000 });
   expect(id3.payload.auth_time).toBe(1000);
 });
 

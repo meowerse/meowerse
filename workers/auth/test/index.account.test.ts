@@ -26,26 +26,33 @@ function get(env: unknown, deps: unknown, path: string, sess?: string) {
   return handle(new Request(`https://iss${path}`, { headers: sess ? { Cookie: `__Host-mw_sess=${sess}` } : {} }), env as never, deps as never);
 }
 
-test("GET /api/account returns profile + verified + telegram + recovery count + csrf", async () => {
+test("GET /api/account returns profile + verified + telegram + csrf (no recovery count)", async () => {
   const { env, deps, sess } = await loggedIn("neko_acct");
   const r = await get(env, deps, "/api/account", sess);
   const b = (await r.json()) as Record<string, unknown>;
   expect(r.status).toBe(200);
-  expect(b).toMatchObject({ username: "neko_acct", verified: false, hasPassword: true, recoveryRemaining: 8 });
+  expect(b).toMatchObject({ username: "neko_acct", verified: false, hasPassword: true });
+  expect(b).not.toHaveProperty("recoveryRemaining");
   expect((b.telegram as { linked: boolean }).linked).toBe(false);
   expect(b.csrf).toBeTruthy();
   // no session → 401
   expect((await get(env, deps, "/api/account")).status).toBe(401);
 });
 
-test("change password: bad csrf 403, wrong current 400, correct 200; recovery regen returns 8 new codes", async () => {
+test("change password: bad csrf 403, wrong current 400, correct 200; old recovery-codes path is 410 Gone", async () => {
   const { env, deps, sess, csrf } = await loggedIn("neko_pw");
   expect((await post(env, deps, "/api/account/password", sess, { csrf: "WRONG", current_password: "accttest1234", new_password: "newpass123456" })).status).toBe(403);
   expect((await post(env, deps, "/api/account/password", sess, { csrf, current_password: "nope", new_password: "newpass123456" })).status).toBe(400);
-  expect((await post(env, deps, "/api/account/password", sess, { csrf, current_password: "accttest1234", new_password: "newpass123456" })).status).toBe(200);
+  const ok = await post(env, deps, "/api/account/password", sess, { csrf, current_password: "accttest1234", new_password: "newpass123456" });
+  expect(ok.status).toBe(200);
+  // the session was rotated: the old cookie is dead, the new cookie + csrf from the response carry on
+  expect((await get(env, deps, "/api/account", sess)).status).toBe(401);
+  const sess2 = cookieValue(ok.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  const csrf2 = ((await ok.json()) as { csrf: string }).csrf;
 
-  const rc = await post(env, deps, "/api/account/recovery-codes", sess, { csrf });
-  expect(((await rc.json()) as { recoveryCodes: string[] }).recoveryCodes.length).toBe(8);
+  const rc = await post(env, deps, "/api/account/recovery-codes", sess2, { csrf: csrf2 });
+  expect(rc.status).toBe(410);
+  expect(await rc.json()).toMatchObject({ error: "gone" });
 });
 
 test("grants: list + revoke; telegram unlink guarded by a password fallback", async () => {
@@ -135,7 +142,8 @@ test("GET /api/account reports deleteEnabled true only for flag \"1\"/\"true\"",
 }, 20000); // heavy: many real PBKDF2 (600k) logins; >5s on loaded CI runners (flaked 3x). Assertions unchanged.
 
 test("POST /api/account/delete with the flag off/unset → 503 deletion_unavailable, nothing changes, no audit row", async () => {
-  for (const extra of [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }]) {
+  const offFlags: Record<string, string>[] = [{}, { ACCOUNT_DELETE_ENABLED: "0" }, { ACCOUNT_DELETE_ENABLED: "off" }];
+  for (const extra of offFlags) {
     const { store, env, deps, sess, csrf, accountId } = await loggedIn(`neko_off_${Object.values(extra)[0] ?? "unset"}`, extra);
     const before = JSON.stringify(store.tables);
     const auditBefore = (store.tables.audit_log ?? []).length;

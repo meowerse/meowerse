@@ -343,10 +343,17 @@ describe("Origin guard (CSRF / cross-site WebSocket hijack)", () => {
     expect((await call("GET", "/ws?chat=c1", "https://evil.example")).status).toBe(403);
     expect((await call("GET", "/inbox/ws", "null")).status).toBe(403);
   });
-  it("allows allowlisted / same-origin / absent Origin (non-browser)", async () => {
+  it("allows allowlisted / same-origin Origin", async () => {
     expect((await call("POST", "/api/chats", "https://meowsenger.alxnko.dev")).status).toBe(401);
-    expect((await call("POST", "/api/chats")).status).toBe(401);
-    expect((await call("GET", "/ws?chat=c1")).status).toBe(426); // reached handleWs (no Upgrade header in this helper)
+    expect((await call("GET", "/ws?chat=c1", "https://meowsenger.alxnko.dev")).status).toBe(426); // reached handleWs (no Upgrade header in this helper)
+  });
+  it("rejects state-changing requests and WS upgrades with NO Origin (all are cookie-authenticated; browsers always send Origin)", async () => {
+    for (const [m, p] of [["POST", "/api/chats"], ["PUT", "/api/chats"], ["PATCH", "/api/chats/c1"], ["DELETE", "/api/chats/c1/members/u2"], ["POST", "/auth/logout"], ["POST", "/api/account/delete"], ["GET", "/ws?chat=c1"], ["GET", "/inbox/ws"]] as const)
+      expect((await call(m, p)).status, `${m} ${p}`).toBe(403);
+  });
+  it("still serves origin-less reads and health (no ambient-cookie write possible)", async () => {
+    expect((await call("GET", "/api/chats")).status).toBe(401);
+    expect((await call("GET", "/health")).status).toBe(200);
   });
   it("does not gate plain GETs (reads carry no side effect)", async () => {
     expect((await call("GET", "/api/chats", "https://evil.example")).status).toBe(401);

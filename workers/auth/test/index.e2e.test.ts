@@ -49,7 +49,7 @@ test("full loop: signup → authorize → consent → token → userinfo, then r
   const tkt = cookieValue(r1.headers.get("Set-Cookie"), "__Host-mw_tkt");
   expect(tkt).toBeTruthy();
 
-  // 2. signup carrying the tkt → account+session, next=consent, recovery codes once
+  // 2. signup carrying the tkt → account+session, next=consent (no recovery codes)
   const r2 = await handle(
     new Request("https://iss/signup", {
       method: "POST",
@@ -61,7 +61,7 @@ test("full loop: signup → authorize → consent → token → userinfo, then r
   );
   const b2 = (await r2.json()) as Record<string, unknown>;
   expect(r2.status).toBe(200);
-  expect((b2.recoveryCodes as string[]).length).toBe(8);
+  expect(b2).not.toHaveProperty("recoveryCodes");
   expect((b2.next as { action: string }).action).toBe("consent");
   const sess = cookieValue(r2.headers.get("Set-Cookie"), "__Host-mw_sess");
   const csrf = b2.csrf as string;
@@ -95,7 +95,7 @@ test("full loop: signup → authorize → consent → token → userinfo, then r
     env,
     deps,
   );
-  const b4 = (await r4.json()) as Record<string, string>;
+  const b4 = (await r4.json()) as { token_type: string; scope: string; id_token: string; access_token: string };
   expect(r4.status).toBe(200);
   expect(r4.headers.get("Cache-Control")).toContain("no-store");
   expect(b4.token_type).toBe("Bearer");

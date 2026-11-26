@@ -1,3 +1,4 @@
+import { at } from "../test/at";
 import { describe, it, expect, vi } from "vitest";
 import {
   handleListChats,
@@ -161,7 +162,7 @@ describe("handleListChats", () => {
     const body = (await res.json()) as { viewerId: string; chats: Array<{ id: string }> };
     expect(body.viewerId).toBe("u1");
     expect(body.chats).toHaveLength(1);
-    expect(body.chats[0].id).toBe("c1");
+    expect(at(body.chats, 0).id).toBe("c1");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });
@@ -1222,7 +1223,7 @@ describe("GET /api/chats/:id/requests + approve/reject", () => {
     const res = await handleRejectRequest(cookieReq("https://x/api/chats/g1/requests/r1/reject", "s1", { method: "POST" }), db, now, "g1", "r1", cors);
     expect(res.status).toBe(200);
     expect(members.some((m) => m.user_id === "req")).toBe(false);
-    expect(joinRequests[0].status).toBe("rejected");
+    expect(at(joinRequests, 0).status).toBe("rejected");
   });
   it("404 request_not_found for an unknown request id", async () => {
     const { db } = groupApiDb({ session: validSession("own"), members: grp("own", "owner"), ...seedGated() });
@@ -1704,7 +1705,7 @@ function pushHandlerDb(uid: string, subs: Array<{ endpoint: string; user_id: str
         const [endpoint, user_id, p256dh] = p as [string, string, unknown];
         const i = subs.findIndex((x) => x.endpoint === endpoint);
         if (i < 0) subs.push({ endpoint, user_id, p256dh });
-        else if (/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) ? subs[i].user_id === user_id : true) subs[i] = { endpoint, user_id, p256dh };
+        else if (/WHERE push_subscriptions\.user_id = excluded\.user_id/.test(sql) ? at(subs, i).user_id === user_id : true) subs[i] = { endpoint, user_id, p256dh };
       } else if (sql.includes("NOT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = ?)")) {
         const [endpoint, p256dh, , , prev, user_id, newEp] = p as [string, unknown, unknown, number, string, string, string];
         const i = subs.findIndex((x) => x.endpoint === prev && x.user_id === user_id);
@@ -1813,8 +1814,8 @@ describe("Web Push endpoints", () => {
     const res = await handlePushUnsubscribe(cookieReq("https://x/api/push/unsubscribe", "s1", { method: "POST", body: JSON.stringify({ endpoint: "https://push/e1" }) }), spy, now, cors);
     expect(res.status).toBe(200);
     expect(runs).toHaveLength(1);
-    expect(runs[0].sql).toContain("user_id = ?");
-    expect(runs[0].p).toEqual(["https://push/e1", "u1"]);
+    expect(at(runs, 0).sql).toContain("user_id = ?");
+    expect(at(runs, 0).p).toEqual(["https://push/e1", "u1"]);
   });
   it("POST /api/push/unsubscribe → 200 (idempotent) for a member", async () => {
     const { db } = memDb({ session: validSession("u1") });

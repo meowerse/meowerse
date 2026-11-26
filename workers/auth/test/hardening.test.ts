@@ -45,13 +45,15 @@ test("M10: rate-limit buckets are keyed by HMAC, not unsalted sha256(IP|tag)", a
 
 test("M4: login/signup reject a foreign, opaque or cross-site Origin; same-origin, UI origin and no Origin pass the guard", async () => {
   for (const path of ["/login", "/signup"]) {
-    for (const h of [{ Origin: "https://evil.example" }, { Origin: "null" }, { "Sec-Fetch-Site": "cross-site" }, { Origin: "http://localhost:9999" }]) {
+    const bad: Record<string, string>[] = [{ Origin: "https://evil.example" }, { Origin: "null" }, { "Sec-Fetch-Site": "cross-site" }, { Origin: "http://localhost:9999" }];
+    for (const h of bad) {
       const { env, deps } = await fx();
       const r = await handle(login(path, h), env as never, deps as never);
       expect(r.status, `${path} ${JSON.stringify(h)}`).toBe(403);
       expect(((await r.json()) as { error: string }).error).toBe("bad_origin");
     }
-    for (const h of [{ Origin: "https://iss" }, { Origin: "https://web" }, {}]) {
+    const good: Record<string, string>[] = [{ Origin: "https://iss" }, { Origin: "https://web" }, {}];
+    for (const h of good) {
       const { env, deps } = await fx();
       const r = await handle(login(path, h), env as never, deps as never);
       expect(r.status, `${path} ${JSON.stringify(h)}`).not.toBe(403);

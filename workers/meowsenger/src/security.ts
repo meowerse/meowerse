@@ -1,14 +1,18 @@
 import type { Env } from "./types";
-export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org,http://localhost:4321";
+export const DEFAULT_ORIGINS = "https://meowsenger.alxnko.dev,https://meowsenger.alxnko.eu.org";
+function devCors(env: Env): boolean {
+  return env.ALLOW_LOCALHOST_CORS === "1" || env.ALLOW_LOCALHOST_CORS === "true";
+}
+// Fail closed: a non-https entry (e.g. a dashboard-set http://localhost) is ignored unless the dev flag is on.
 function allowlist(env: Env): string[] {
-  return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter(Boolean);
+  return ((env.CORS_ORIGINS ?? "").trim() || DEFAULT_ORIGINS).split(",").map((o) => o.trim()).filter((o) => o && (o.startsWith("https://") || devCors(env)));
 }
 export function isOriginAllowed(origin: string | null, env: Env): boolean {
   if (!origin) return false;
   if (allowlist(env).includes(origin)) return true;
   // Blanket localhost/.local allowance is a DEV convenience: off unless ALLOW_LOCALHOST_CORS is
   // set (e.g. in .dev.vars). Prod relies on the explicit allowlist only.
-  if (env.ALLOW_LOCALHOST_CORS !== "1" && env.ALLOW_LOCALHOST_CORS !== "true") return false;
+  if (!devCors(env)) return false;
   try {
     const u = new URL(origin);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.endsWith(".localhost") || u.hostname.endsWith(".local")) {
@@ -23,11 +27,12 @@ export function isOriginAllowed(origin: string | null, env: Env): boolean {
 /**
  * CSRF/CSWSH guard for state-changing requests and WebSocket upgrades. A browser always
  * sends `Origin` on those, so: present + (same origin as this request OR allowlisted) -> ok;
- * present + anything else (including the literal "null") -> reject; ABSENT -> allowed
- * (non-browser clients such as curl/native apps; they can't ride a victim's cookie).
+ * present + anything else (including the literal "null") -> reject; ABSENT -> reject too.
+ * Every state-changing route here is cookie-authenticated and there is no documented non-browser
+ * client (no HMAC/internal routes), so a missing Origin is never legitimate; browsers always send it.
  */
 export function originPermitted(origin: string | null, selfOrigin: string, env: Env): boolean {
-  if (origin === null) return true;
+  if (origin === null) return false;
   return origin === selfOrigin || isOriginAllowed(origin, env);
 }
 
@@ -89,7 +94,7 @@ export function randomId(len = 12): string {
   const bytes = new Uint8Array(len);
   crypto.getRandomValues(bytes);
   let out = "";
-  for (let i = 0; i < len; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  for (let i = 0; i < len; i++) out += CODE_ALPHABET[(bytes[i] ?? 0) % CODE_ALPHABET.length];
   return out;
 }
 
