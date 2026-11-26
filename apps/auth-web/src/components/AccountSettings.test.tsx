@@ -359,6 +359,54 @@ describe("AccountSettings password change rotates the session", () => {
     expect(screen.queryByText(/to manage your account/)).toBeNull();
   });
 
+  it("the submit button is disabled while the change is in flight: a double click posts once", async () => {
+    let release!: () => void;
+    const posts: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push(u); await new Promise<void>((r) => { release = r; }); return json({ ok: true, csrf: "c-new" }); }
+      return u.endsWith("/grants") ? json({ grants: [] }) : json(WITH_PW);
+    });
+    page();
+    await change();
+    const btn = screen.getByRole("button", { name: "update password" }) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(true));
+    fireEvent.submit(btn.closest("form")!);
+    expect(posts).toHaveLength(1);
+    release();
+    await waitFor(() => expect(btn.disabled).toBe(false));
+  });
+
+  it("a conflict answer is reported honestly (not 'could not change password' as if nothing happened), and the form re-enables", async () => {
+    setup({ error: "conflict" });
+    await change();
+    expect(await screen.findByText(/changed from somewhere else or your session ended/)).not.toBeNull();
+    expect((screen.getByRole("button", { name: "update password" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a reload that started BEFORE the change cannot revert the adopted csrf", async () => {
+    let late!: (r: Response) => void;
+    let accountGets = 0;
+    const posts: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST") { posts.push({ url: u, ...JSON.parse(String(init.body)) }); return json({ ok: true, csrf: "c-new" }); }
+      if (u.endsWith("/grants")) return json({ error: "boom" }, 500); // leaves a "try again" that reloads WITHOUT resetting the form
+      return ++accountGets === 1 ? json(WITH_PW) : new Promise<Response>((r) => { late = r; });
+    });
+    page();
+    fireEvent.click(await screen.findByRole("button", { name: "try again" })); // reload in flight (answers with the OLD csrf)
+    await waitFor(() => expect(accountGets).toBe(2));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await screen.findByText(/password changed/);
+    late(json(WITH_PW)); // stale answer, csrf "c"
+    await new Promise((r) => setTimeout(r, 20));
+    await change();
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.csrf).toBe("c-new");
+  });
+
   it("an old worker answering { ok: true } without csrf still works (additive response)", async () => {
     const posts = setup({ ok: true });
     await change();

@@ -104,7 +104,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
       if (/UPDATE password_credentials SET phc/.test(sql)) {
         const row = t.password_credentials.find((r) => r.account_id === a[1]);
         if (row) row.phc = a[0];
-        return { rows: [] };
+        return { rows: [], rowsAffected: row ? 1 : 0 };
       }
       if (/DELETE FROM recovery_codes WHERE account_id/.test(sql)) {
         t.recovery_codes = t.recovery_codes.filter((r) => r.account_id !== a[0]);
@@ -322,7 +322,7 @@ export function memStore(): { db: DbClient; tables: Record<string, Row[]> } {
         t.password_credentials.push({ account_id: a[0], phc: a[1] });
         return { rows: [] };
       }
-      if (/FROM password_credentials WHERE account_id/.test(sql))
+      if (/^SELECT phc FROM password_credentials WHERE account_id/.test(sql))
         return { rows: t.password_credentials.filter((r) => r.account_id === a[0]).map((r) => ({ phc: r.phc })) };
       if (/INSERT INTO recovery_codes .* SELECT .* WHERE EXISTS \(SELECT 1 FROM accounts WHERE id = \?\)/.test(sql)) {
         // conditional on the account existing (a[2] = account id)

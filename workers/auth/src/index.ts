@@ -1231,8 +1231,11 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     if (!(await stepUpAllowed(db, accountId, now(deps)))) return tooMany("rate_limited", 900, cors);
     // Rotate the CURRENT session too: the cookie that was used to change the password may be the stolen one.
     const fresh = await mintSessionIds();
-    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", newSession: { idHash: fresh.idHash, csrf: fresh.csrf, now: now(deps) } });
-    if (r.error === "account_gone") return json({ error: "account_gone" }, 401, { ...cors, "Set-Cookie": clearHostCookie(SESS_COOKIE) });
+    const r = await changePassword(db, { accountId, currentPassword: p.current_password ?? "", newPassword: p.new_password ?? "", sessionIdHash: await sha256Hex(cookies[`__Host-${SESS_COOKIE}`] ?? ""), newSession: { idHash: fresh.idHash, csrf: fresh.csrf, now: now(deps) } });
+    if (r.error === "account_gone") return json({ error: "account_gone" }, 401, { ...cors, ...securityHeaders(), "Set-Cookie": clearHostCookie(SESS_COOKIE) });
+    // Lost a race (someone changed the password first) or the session was revoked meanwhile: nothing was written.
+    if (r.error === "conflict") return json({ error: "conflict" }, 409, { ...cors, ...securityHeaders() });
+    if (r.error === "no_session") return json({ error: "no_session" }, 401, { ...cors, ...securityHeaders() });
     if (r.ok) await recordAudit(deps, req, { event: "password.change", accountId });
     // csrf is additive: an old client that ignores it still sees ok:true.
     return r.ok

@@ -1,6 +1,8 @@
 import { test, expect } from "vitest";
 import { handle } from "../src/index";
 import { issueSession, lookupSession } from "../src/session";
+import { changePassword } from "../src/accounts";
+import { sha256Hex } from "../src/crypto";
 import { createRefreshToken, rotateRefresh } from "../src/refresh";
 import { createClient } from "@libsql/client";
 import { SCHEMA, SEED } from "../src/db";
@@ -118,12 +120,10 @@ test("a failed change (wrong current password / policy) writes nothing: old sess
 
 test("atomicity: if the batch fails mid-way (new id_hash collides) NOTHING is applied: old session intact, old password still valid", async () => {
   const { store, s1, accountId } = await setup("neko_rot_atomic");
-  const { changePassword } = await import("../src/accounts");
-  const { sha256Hex } = await import("../src/crypto");
   const oldHash = await sha256Hex(s1);
   const before = String((await store.db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] })).rows[0]!.phc);
   await expect(
-    changePassword(store.db, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: { rounds: 1, iter: 500 }, newSession: { idHash: oldHash, csrf: "c", now: 1000 } }),
+    changePassword(store.db, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: { rounds: 1, iter: 500 }, sessionIdHash: oldHash, newSession: { idHash: oldHash, csrf: "c", now: 1000 } }),
   ).rejects.toThrow();
   expect(await lookupSession(store.db, s1, 1000)).not.toBeNull(); // the revoke was rolled back
   const after = String((await store.db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] })).rows[0]!.phc);
@@ -131,8 +131,7 @@ test("atomicity: if the batch fails mid-way (new id_hash collides) NOTHING is ap
 });
 
 test("account deleted mid-change: account_gone, no live session, no new cookie value", async () => {
-  const { store, accountId } = await setup("neko_rot_gone");
-  const { changePassword } = await import("../src/accounts");
+  const { store, accountId, s1: s1g } = await setup("neko_rot_gone");
   // The guard (accountPresent) runs inside the batch; make the account vanish after the credential check by dropping accounts' row only.
   await store.db.execute("PRAGMA foreign_keys = OFF");
   const origBatch = store.db.batch.bind(store.db);
@@ -140,21 +139,77 @@ test("account deleted mid-change: account_gone, no live session, no new cookie v
     await store.db.execute({ sql: "DELETE FROM accounts WHERE id = ?", args: [accountId] });
     return origBatch(stmts, mode);
   }) as never;
-  const r = await changePassword(store.db, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: { rounds: 1, iter: 500 }, newSession: { idHash: "h_new", csrf: "c", now: 1000 } });
+  const r = await changePassword(store.db, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: { rounds: 1, iter: 500 }, sessionIdHash: await sha256Hex(s1g), newSession: { idHash: "h_new", csrf: "c", now: 1000 } });
   expect(r).toEqual({ ok: false, error: "account_gone" });
-  const live = await store.db.execute({ sql: "SELECT COUNT(*) AS n FROM sessions WHERE account_id = ? AND revoked_at IS NULL", args: [accountId] });
-  expect(Number(live.rows[0]!.n)).toBe(0);
+  expect(await lookupSession(store.db, s1g, 1000)).toBeNull(); // account gone: no usable session
+  const n = await store.db.execute({ sql: "SELECT COUNT(*) AS n FROM sessions WHERE id_hash = 'h_new'", args: [] });
+  expect(Number(n.rows[0]!.n)).toBe(0);
 });
 
-test("concurrent double submit: exactly one valid session survives, and it belongs to a response the client got", async () => {
+test("concurrent double submit: exactly ONE request wins (200), the other writes nothing; the live session is the winner's cookie", async () => {
   const { store, s1, csrf, change, accountId } = await setup("neko_rot_conc");
-  const [a, b] = await Promise.all([change(s1, csrf, "newpass123456"), change(s1, csrf, "otherpass1234")]);
-  const sessions = [a, b].filter((r) => r.status === 200).map((r) => cookieValue(r.headers.get("Set-Cookie"), "__Host-mw_sess")!);
-  expect(sessions.length).toBeGreaterThan(0);
-  const live = await store.db.execute({ sql: "SELECT COUNT(*) AS n FROM sessions WHERE account_id = ? AND revoked_at IS NULL", args: [accountId] });
-  expect(Number(live.rows[0]!.n)).toBe(1); // last batch revoked the other's fresh session
+  const rs = await Promise.all([change(s1, csrf, "newpass123456"), change(s1, csrf, "otherpass1234")]);
+  expect(rs.map((r) => r.status).sort()).toEqual([200, 401]);
+  const win = rs.find((r) => r.status === 200)!;
+  const lose = rs.find((r) => r.status === 401)!;
+  expect(lose.headers.get("Set-Cookie")).toBeNull();
+  expect(((await lose.json()) as { error: string }).error).toBe("no_session"); // the winner revoked the loser's (shared) session first
+  const cookie = cookieValue(win.headers.get("Set-Cookie"), "__Host-mw_sess")!;
+  const live = await store.db.execute({ sql: "SELECT id_hash FROM sessions WHERE account_id = ? AND revoked_at IS NULL", args: [accountId] });
+  expect(live.rows.map((r) => String(r.id_hash))).toEqual([await sha256Hex(cookie)]);
   expect(await lookupSession(store.db, s1, 1000)).toBeNull();
 }, 30000);
+
+const FASTP = { rounds: 1, iter: 500 };
+const livePhc = async (db: DbClient, accountId: string) => String((await db.execute({ sql: "SELECT phc FROM password_credentials WHERE account_id = ?", args: [accountId] })).rows[0]!.phc);
+
+test("scenario A (lost update): a stale-read second change with the SAME old password loses; the winner's password + session survive untouched", async () => {
+  const { store, s1, accountId } = await setup("neko_rot_a");
+  const oldPhc = await livePhc(store.db, accountId);
+  const hA = await sha256Hex(s1);
+  const winner = { idHash: "h_winner", csrf: "cw", now: 1000 };
+  expect(await changePassword(store.db, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: FASTP, sessionIdHash: hA, newSession: winner })).toEqual({ ok: true });
+  const winPhc = await livePhc(store.db, accountId);
+  await store.db.execute({ sql: "INSERT INTO refresh_tokens (token_hash, account_id, client_id, scope, family_id, idle_expires_at, absolute_expires_at) VALUES ('rt_after', ?, 'c1', 'openid', 'f', 99999, 99999)", args: [accountId] });
+  // the loser read the OLD hash before the winner committed (and holds a still-live session, as an attacker with the stolen cookie would)
+  const stale: DbClient = { execute: async (st) => (typeof st !== "string" && /SELECT phc FROM password_credentials/.test(st.sql) ? { rows: [{ phc: oldPhc }] } : store.db.execute(st)), batch: (x: never, m: never) => store.db.batch(x, m) } as unknown as DbClient;
+  const r = await changePassword(stale, { accountId, currentPassword: "accttest1234", newPassword: "attackerpass12", pbkdf2: FASTP, sessionIdHash: "h_winner", newSession: { idHash: "h_loser", csrf: "cl", now: 1000 } });
+  expect(r.ok).toBe(false);
+  expect(r.error).toBe("conflict");
+  expect(await livePhc(store.db, accountId)).toBe(winPhc);
+  const live = await store.db.execute({ sql: "SELECT id_hash FROM sessions WHERE account_id = ? AND revoked_at IS NULL", args: [accountId] });
+  expect(live.rows.map((x) => String(x.id_hash))).toEqual(["h_winner"]); // winner's session not revoked, loser's never inserted
+  const rt = await store.db.execute({ sql: "SELECT COUNT(*) AS n FROM refresh_tokens WHERE token_hash = 'rt_after'", args: [] });
+  expect(Number(rt.rows[0]!.n)).toBe(1); // loser deleted nothing
+}, 30000);
+
+test("scenario B: the session was revoked after lookup but before the commit: change refused, nothing written, no new session", async () => {
+  const { store, s1, accountId } = await setup("neko_rot_b");
+  const before = await livePhc(store.db, accountId);
+  const hA = await sha256Hex(s1);
+  const racing: DbClient = {
+    execute: (st: never) => store.db.execute(st),
+    batch: async (stmts: never, mode: never) => {
+      await store.db.execute({ sql: "UPDATE sessions SET revoked_at = datetime('now') WHERE id_hash = ?", args: [hA] }); // logout / sign-out-everywhere lands first
+      return store.db.batch(stmts, mode);
+    },
+  } as unknown as DbClient;
+  const r = await changePassword(racing, { accountId, currentPassword: "accttest1234", newPassword: "newpass123456", pbkdf2: FASTP, sessionIdHash: hA, newSession: { idHash: "h_new", csrf: "c", now: 1000 } });
+  expect(r.ok).toBe(false);
+  expect(await livePhc(store.db, accountId)).toBe(before);
+  const n = await store.db.execute({ sql: "SELECT COUNT(*) AS n FROM sessions WHERE id_hash = 'h_new'", args: [] });
+  expect(Number(n.rows[0]!.n)).toBe(0);
+}, 30000);
+
+test("pins today's behaviour: an OIDC access token / Meowsenger-side session derived from this account survives only as far as token revocation reaches; a downstream session that is NOT an auth session is untouched (back-channel logout, WP3, is the fix)", async () => {
+  // changePassword revokes auth sessions + refresh + access tokens, and nothing else: a relying party's OWN cookie session
+  // (Meowsenger), minted from a past OIDC login, has no row here to revoke and lives to its own expiry.
+  const { store, accountId, s1, csrf, change } = await setup("neko_rot_rp");
+  await store.db.execute({ sql: "INSERT INTO consents (account_id, client_id, scope_set_max, approved_scope_snapshot) VALUES (?, 'mw_demo', '[\"openid\"]', '[\"openid\"]')", args: [accountId] });
+  expect((await change(s1, csrf)).status).toBe(200);
+  const tables = await store.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%logout%'");
+  expect(tables.rows).toHaveLength(0); // no back-channel logout machinery exists yet: RP sessions are not notified
+});
 
 test("OAuth grants/consents are untouched by a password change (only sessions + tokens are revoked)", async () => {
   const { store, accountId, s1, csrf, change } = await setup("neko_rot_consent");
