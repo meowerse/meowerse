@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MenuItem } from "./MessageMenu";
 import { LazyPanel, panels, prefetchPanels, preload } from "./LazyPanel";
 import { ConfirmDialog, Icon, type RequestResult } from "@meowerse/ui";
@@ -60,6 +60,11 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  // Phone: opening a chat pushes one history entry (marked) so Back returns to the list.
+  // Every UI/purge close pops that entry instead of leaving a dead one behind.
+  const closeChat = useCallback(() => { if (window.history.state?.mwc) window.history.back(); else setActiveId(null); }, []);
+  const listScrollRef = useRef(0);
+  const listEl = () => document.querySelector<HTMLElement>(".mw-chat__list");
   const deepLinkDoneRef = useRef(false);
   const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
   // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
@@ -216,10 +221,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     // late revoke for a chat they already left must not close the chat they just opened.
     if (activeIdRef.current === gone) {
       showToast("you're no longer a member of this chat");
-      setActiveId(null);
+      closeChat();
     }
     void refreshChats();
-  }, [showToast, refreshChats]);
+  }, [closeChat, showToast, refreshChats]);
 
   // Apply one realtime sidebar update: move the chat to the top, refresh its preview +
   // activity, and set unread (0 when it's the chat you're viewing, else a has-unread
@@ -381,8 +386,15 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   }, []);
 
   // Keep the address bar in sync with the open chat, so a reload / copied link
-  // returns here. replaceState (not push) — chat switches aren't history entries.
+  // returns here. Desktop: replaceState. Phone: opening from the list pushes (Back = list).
   const urlSyncReadyRef = useRef(false);
+  useEffect(() => {
+    const onPop = () => setActiveId(new URLSearchParams(window.location.search).get("chat"));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  // Back to the list: the hidden list lost its scrollTop (display:none), put it back.
+  useLayoutEffect(() => { const l = listEl(); if (l && !activeId) l.scrollTop = listScrollRef.current; }, [activeId]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     // Skip the FIRST run: on mount activeId is null and the deep-link (?chat/?m) is
@@ -393,7 +405,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     if (activeId) url.searchParams.set("chat", activeId);
     else url.searchParams.delete("chat");
     url.searchParams.delete("m"); // the message anchor is one-shot (consumed on open)
-    window.history.replaceState({}, "", url.pathname + url.search);
+    const next = url.pathname + url.search;
+    if (next === window.location.pathname + window.location.search) return; // popstate / deep link: already there
+    if (activeId && !window.history.state?.mwc && window.matchMedia?.("(max-width: 719px)").matches) window.history.pushState({ mwc: 1 }, "", next);
+    else window.history.replaceState(window.history.state, "", next);
   }, [activeId]);
 
   // Warm the on-demand panel chunks once the browser is idle after first paint.
@@ -642,7 +657,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     const left = activeRef.current;
     if (left) purgeChat(left);
     setDrawerOpen(false);
-    setActiveId(null);
+    closeChat();
     if (left) setChats((prev) => prev.filter((c) => c.id !== left));
     void refreshChats();
   }
@@ -670,7 +685,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const groupName = activeChat?.name || (isChannel ? "channel" : "group");
   const memberCount = memberMap.size || activeChat?.memberCount || 0;
   const onlineCount = isMembered ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
-  const open = activeId != null;
+  const open = activeChat != null; // a popstate to a chat no longer in the list shows the list
   // The "seen" tick shows on MY most-recent message once the peer has read up to it.
   const myLastId = (() => {
     for (let i = messages.length - 1; i >= 0; i--) if (me && messages[i].senderId === me.id) return messages[i].tempId ?? messages[i].id;
@@ -704,7 +719,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         meId={me?.id}
         me={me}
         base={base}
-        onSelect={setActiveId}
+        onSelect={(id) => { listScrollRef.current = listEl()?.scrollTop ?? 0; setActiveId(id); }}
         onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
         onSettingsClick={() => setSettingsOpen(true)}
@@ -726,7 +741,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
             <header className="mw-chat__head">
               <button
                 className="mw-btn mw-btn--ghost mw-btn--sm mw-chat__back"
-                onClick={() => setActiveId(null)}
+                onClick={closeChat}
                 aria-label="back to chats"
               >
                 <Icon name="arrow-left" size={18} />

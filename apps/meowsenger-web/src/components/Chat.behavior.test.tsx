@@ -8,7 +8,7 @@
  * fails these.
  */
 import { useState } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act, fireEvent, within, MockWebSocket, setVisibility } from "../test/rtl";
 import type { RequestResult } from "@meowerse/ui";
 import type { ChatSummary, Message, Member } from "../lib/chat";
@@ -1094,5 +1094,69 @@ describe("Chat island — session ended (real Chat under AppShell)", () => {
     fireEvent.click(await screen.findByText("Carol"));
     await screen.findByText(/your session ended/);
     expect(document.body.textContent).not.toContain("hello there");
+  });
+});
+
+describe("Chat island — phone Back navigation", () => {
+  const mm = window.matchMedia;
+  const mobile = (on: boolean) => { window.matchMedia = ((q: string) => ({ matches: on && q.includes("max-width"), media: q, addEventListener() {}, removeEventListener() {} })) as never; };
+  const popTo = (path: string) => { window.history.replaceState({}, "", path); act(() => { window.dispatchEvent(new PopStateEvent("popstate")); }); };
+  const shell = () => document.querySelector(".mw-chat") as HTMLElement;
+  afterEach(() => { window.matchMedia = mm; vi.restoreAllMocks(); });
+
+  it("phone: opening a chat pushes ONE entry; popstate returns to the list; forward reopens", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    const push = vi.spyOn(window.history, "pushState");
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(window.location.search).toBe("?chat=c1");
+    popTo("/app"); // phone Back
+    await waitFor(() => expect(shell().dataset.open).toBe("0"));
+    expect(push).toHaveBeenCalledTimes(1); // no push loop
+    popTo("/app?chat=c1"); // Forward
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("phone: restores the list scroll when Back shows the list again", async () => {
+    mobile(true);
+    render(<ChatBoot />);
+    const list = () => document.querySelector(".mw-chat__list") as HTMLElement;
+    await screen.findByRole("button", { name: /bob/i });
+    list().scrollTop = 120;
+    fireEvent.click(screen.getByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(shell().dataset.open).toBe("1"));
+    list().scrollTop = 0; // display:none resets it in a real browser
+    popTo("/app");
+    await waitFor(() => expect(list().scrollTop).toBe(120));
+  });
+
+  it("desktop keeps replaceState (no history entry per chat)", async () => {
+    mobile(false);
+    render(<ChatBoot />);
+    const push = vi.spyOn(window.history, "pushState");
+    fireEvent.click(await screen.findByRole("button", { name: /bob/i }));
+    await waitFor(() => expect(window.location.search).toBe("?chat=c1"));
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("phone deep link does not push (Back would re-open it: a trap)", async () => {
+    mobile(true);
+    const push = vi.spyOn(window.history, "pushState");
+    await mountOpen();
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("phone: the in-app back button and a revoke pop the pushed entry instead of leaving a dead one", async () => {
+    mobile(true);
+    const ws0 = (async () => { render(<ChatBoot />); fireEvent.click(await screen.findByRole("button", { name: /bob/i })); await waitFor(() => expect(MockWebSocket.room).toBeTruthy()); return MockWebSocket.room; })();
+    const ws = await ws0;
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "back to chats" }));
+    expect(back).toHaveBeenCalledTimes(1);
+    open(ws); emit(ws, { type: "revoked" });
+    await waitFor(() => expect(back).toHaveBeenCalledTimes(2));
   });
 });
