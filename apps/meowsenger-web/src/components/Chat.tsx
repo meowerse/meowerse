@@ -62,9 +62,18 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   activeIdRef.current = activeId;
   // Phone: opening a chat pushes one history entry (marked) so Back returns to the list.
   // Every UI/purge close pops that entry instead of leaving a dead one behind.
-  const closeChat = useCallback(() => { if (window.history.state?.mwc) window.history.back(); else setActiveId(null); }, []);
+  // Closes at once (optimistic) and pops once; a double tap must not pop past the list.
+  const closingRef = useRef(false);
+  const closeChat = useCallback(() => {
+    if (window.history.state?.mwc && !closingRef.current) { closingRef.current = true; window.history.back(); }
+    setActiveId(null);
+  }, []);
   const listScrollRef = useRef(0);
   const listEl = () => document.querySelector<HTMLElement>(".mw-chat__list");
+  // Only a user-chosen open (not a deep link / resolve) may push a history entry.
+  const userOpenRef = useRef(false);
+  const selectChat = (id: string) => { listScrollRef.current = listEl()?.scrollTop ?? 0; userOpenRef.current = true; closingRef.current = false; setActiveId(id); };
+  const chatsRef = useRef<ChatSummary[]>([]);
   const deepLinkDoneRef = useRef(false);
   const deepLinkRef = useRef<(cs: ChatSummary[]) => void>(() => {});
   // Unsent composer text, memory only (read by the session-ended banner via sessionEnded).
@@ -388,8 +397,16 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Keep the address bar in sync with the open chat, so a reload / copied link
   // returns here. Desktop: replaceState. Phone: opening from the list pushes (Back = list).
   const urlSyncReadyRef = useRef(false);
+  chatsRef.current = chats;
   useEffect(() => {
-    const onPop = () => setActiveId(new URLSearchParams(window.location.search).get("chat"));
+    const onPop = () => {
+      closingRef.current = false;
+      const u = new URL(window.location.href);
+      const id = u.searchParams.get("chat");
+      const ok = chatsRef.current.some((c) => c.id === id);
+      if (id && !ok) { u.searchParams.delete("chat"); window.history.replaceState(window.history.state, "", u.pathname + u.search); } // purged chat: show the list
+      setActiveId(ok ? id : null);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -401,13 +418,16 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     // still being read asynchronously (after listChats resolves). Stripping the params
     // here would clobber the link before it's consumed — the bug that broke deep-links.
     if (!urlSyncReadyRef.current) { urlSyncReadyRef.current = true; return; }
+    const user = userOpenRef.current;
+    userOpenRef.current = false;
+    if (closingRef.current) return; // history.back() is about to move us; leave the marked entry alone
     const url = new URL(window.location.href);
     if (activeId) url.searchParams.set("chat", activeId);
     else url.searchParams.delete("chat");
     url.searchParams.delete("m"); // the message anchor is one-shot (consumed on open)
     const next = url.pathname + url.search;
     if (next === window.location.pathname + window.location.search) return; // popstate / deep link: already there
-    if (activeId && !window.history.state?.mwc && window.matchMedia?.("(max-width: 719px)").matches) window.history.pushState({ mwc: 1 }, "", next);
+    if (activeId && user && !window.history.state?.mwc && window.matchMedia?.("(max-width: 719px)").matches) window.history.pushState({ mwc: 1 }, "", next);
     else window.history.replaceState(window.history.state, "", next);
   }, [activeId]);
 
@@ -531,7 +551,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   function openSearchResult(chatId: string, msgId: string) {
     if (chatId === activeRef.current) { void jumpToMessage(msgId); return; }
     armJump(msgId);
-    setActiveId(chatId);
+    selectChat(chatId);
   }
 
   // ---- selection / multi-select action bar ----
@@ -631,14 +651,14 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
       return copy[r.error ?? ""] ?? "could not start chat";
     }
     await refreshChats();
-    setActiveId(r.chatId);
+    selectChat(r.chatId);
     return null;
   }
 
   // After the modal creates a group: refresh the sidebar + select the new chat.
   async function onCreatedGroup(chatId: string) {
     await refreshChats();
-    setActiveId(chatId);
+    selectChat(chatId);
   }
 
   // Refresh the sidebar list + (if the active chat is a group/channel) its roster
@@ -719,7 +739,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
         meId={me?.id}
         me={me}
         base={base}
-        onSelect={(id) => { listScrollRef.current = listEl()?.scrollTop ?? 0; setActiveId(id); }}
+        onSelect={selectChat}
         onOpenResult={openSearchResult}
         onNewChatClick={() => setNewChatOpen(true)}
         onSettingsClick={() => setSettingsOpen(true)}

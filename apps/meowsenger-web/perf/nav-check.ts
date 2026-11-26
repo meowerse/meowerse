@@ -48,8 +48,9 @@ try {
   await p2.locator(".mw-chatrow").first().tap();
   await p2.locator(".mw-chat__log").waitFor();
   const deep = p2.url();
-  await p2.goto(deep);
+  await p2.goto(`${deep}&m=nope`); // the one-shot m= is stripped: must still REPLACE, not push
   await p2.locator(".mw-chat__log").waitFor({ timeout: 20000 });
+  await p2.waitForFunction((d) => location.href === d, deep);
   const before = await p2.evaluate(() => history.length);
   check(before >= 1 && p2.url() === deep, `deep link opens (${deep})`);
   await p2.getByRole("button", { name: "back to chats" }).tap();
