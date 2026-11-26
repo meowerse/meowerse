@@ -1479,7 +1479,10 @@ describe("Chat island — phone Back navigation", () => {
 
 describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
   const mm = window.matchMedia;
-  afterEach(() => { window.matchMedia = mm; vi.restoreAllMocks(); });
+  afterEach(() => {
+    window.matchMedia = mm; vi.restoreAllMocks();
+    delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
+  });
   /** Make the log look scrolled `up` px from the tail; counts scrollTop WRITES. */
   function scrolledUp(up: number) {
     const el = logEl();
@@ -1554,6 +1557,47 @@ describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
     act(() => fireEvent.click(screen.getByText("Bob")));
     await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
     expect(anim).toHaveBeenCalledTimes(1);
-    delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
+  });
+
+  it("keyboard activation keeps focus on the log (not <body>); the accessible name omits the arrow", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    scrolledUp(300); live(ws, "f1");
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    pill.focus();
+    act(() => fireEvent.click(pill)); // Enter/Space on a <button> dispatch click
+    expect(screen.queryByText(/new message/)).toBeNull();
+    expect(document.activeElement).toBe(logEl());
+    expect(document.activeElement).not.toBe(screen.getByLabelText("message")); // never the textarea (touch keyboard)
+  });
+
+  it("mid-flight smooth scroll to the tail: a message arriving does not re-bump the count", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    const s = scrolledUp(300); live(ws, "g1");
+    const pill = await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(pill));
+    s.at(200); // an intermediate frame of the smooth scroll: still far from the tail
+    live(ws, "g2");
+    expect(screen.queryByText(/new message/)).toBeNull();
+  });
+
+  it("entering a detached window (jump to a reply target) clears a stale pill count", async () => {
+    H.history = { c1: [msg({ id: "m50", body: "recent tail", createdAt: 5000 }), msg({ id: "m51", body: "re: old", createdAt: 5100, replyTo: { id: "mOld", senderId: "u2", body: "quoted old" } })] };
+    H.around = { found: true, messages: [msg({ id: "mOld", body: "way back when", createdAt: 100 })], hasOlder: false, hasNewer: true };
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("re: old")).toBeTruthy());
+    open(ws);
+    scrolledUp(300); live(ws, "h1");
+    await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(screen.getByText("quoted old")));
+    await waitFor(() => expect(screen.getByLabelText("jump to latest messages")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    H.around = null;
+    act(() => fireEvent.click(screen.getByLabelText("jump to latest messages")));
+    await waitFor(() => expect(screen.queryByLabelText("jump to latest messages")).toBeNull());
+    expect(screen.queryByText(/new message/)).toBeNull(); // not resurrected with the old count
   });
 });

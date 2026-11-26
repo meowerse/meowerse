@@ -891,13 +891,17 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   border: 0; border-radius: var(--radius-pill); cursor: pointer;
   box-shadow: var(--shadow-md);
 }
+.mw-chat__logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mw-chat__log:focus { outline: none; } /* programmatic focus target only */
+/* Anchored to the log's own bottom edge, so a taller composer / reply bar can never overlap it. */
 .mw-chat__newpill {
   position: absolute; left: 50%; transform: translateX(-50%); z-index: 5;
-  bottom: calc(84px + env(safe-area-inset-bottom));
+  bottom: var(--space-3);
   padding: 6px 14px; min-height: 32px; font-size: var(--text-sm); font-weight: 600;
   color: var(--mw-on-green); background: var(--mw-green);
   border: 0; border-radius: var(--radius-pill); cursor: pointer; box-shadow: var(--shadow-md);
 }
+.mw-chat__newpill::before { content: ""; position: absolute; inset: -6px -8px; } /* >= 44px hit area, visual size unchanged */
 .mw-chat__tolatest:hover { filter: brightness(1.05); }
 .mw-chat__sentnote {
   position: absolute; left: 50%; transform: translateX(-50%); bottom: 124px; z-index: 5;

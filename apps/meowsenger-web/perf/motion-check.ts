@@ -61,5 +61,31 @@ try {
         void chatId;
         await ctx.close();
       }
+  // 320x568, tall multi-line composer: the pill (anchored to the log's bottom) must not overlap the composer.
+  {
+    await post("/__mock/reset", {});
+    const ctx = await browser.newContext({ viewport: { width: 320, height: 568 }, hasTouch: true, isMobile: true, serviceWorkers: "block", baseURL: mock.url });
+    const page = await ctx.newPage();
+    await page.goto("/app");
+    await page.locator(".mw-chatrow").first().waitFor({ timeout: 20000 });
+    await page.locator(".mw-chatrow").first().evaluate((el) => (el as HTMLElement).click());
+    await page.locator(".mw-chat__log .mw-msg").first().waitFor({ timeout: 20000 });
+    const chat = new URL(page.url()).searchParams.get("chat")!;
+    const ta = page.getByRole("textbox", { name: "message", exact: true });
+    await ta.fill("one\ntwo\nthree\nfour\nfive"); // grows the composer
+    await page.waitForTimeout(300);
+    await page.locator(".mw-chat__log").evaluate((el) => { el.scrollTop = 0; });
+    await page.waitForTimeout(300);
+    await post("/__mock/push", { chat, body: "overlap probe" });
+    const pill = page.locator(".mw-chat__newpill");
+    await pill.waitFor({ timeout: 5000 });
+    const r = await page.evaluate(() => {
+      const b = (s: string) => document.querySelector(s)!.getBoundingClientRect();
+      return { pillBottom: b(".mw-chat__newpill").bottom, composerTop: b(".mw-composer").top, logBottom: b(".mw-chat__log").bottom, h: b(".mw-chat__newpill").height };
+    });
+    check(r.pillBottom <= r.composerTop + 0.5, `320x568 multi-line composer: pill bottom ${r.pillBottom.toFixed(1)} <= composer top ${r.composerTop.toFixed(1)}`);
+    if (shots) await page.screenshot({ path: join(shots, "pill-320x568-multiline.png") });
+    await ctx.close();
+  }
 } finally { await browser.close(); mock.stop(); }
 process.exit(bad ? 1 : 0);

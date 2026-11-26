@@ -300,7 +300,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // The realtime engine for the active chat (socket + history + presence + actions).
   const {
     messages, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, atBottomRef, onLogScroll, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, scrollToTail, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   } = useConversation({ base, activeId, me, resolveSenderName, onToast: showToast, onActiveRead, onActiveMessage, onIncoming, onMessageDeleted, consumeReply, onRevoked });
@@ -506,14 +506,14 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     el.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 120, easing: "ease-out" });
   }, [activeId, logRef]);
 
-  // Pill activation: ONE scroll to the tail (smooth only under no-preference).
+  // Pill activation. The focused button unmounts with the count, so focus the log (never the
+  // textarea: that would open the on-screen keyboard on touch). preventScroll keeps the smooth scroll ours.
   const toNewest = () => {
-    const el = logRef.current;
+    logRef.current?.focus({ preventScroll: true });
     setNewCount(0);
-    if (!el) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
+    scrollToTail();
   };
+  useEffect(() => { if (hasNewer) setNewCount(0); }, [hasNewer]); // a jumped window has no live tail to count
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).
@@ -922,7 +922,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
               />
             )}
 
-            <div className="mw-chat__log" ref={logRef} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
+            <div className="mw-chat__logwrap">
+            <div className="mw-chat__log" tabIndex={-1} ref={logRef} onScroll={() => { onLogScroll(); if (atBottomRef.current) setNewCount(0); }} onPointerEnter={preload("menu", "emoji", "forward")}>
               {loadingHistory && messages.length === 0 && (
                 <div className="mw-skel-log" aria-hidden="true">
                   {[62, 40, 74, 52, 46].map((w, i) => (
@@ -1015,17 +1016,17 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 );
               })}
             </div>
+            {newCount > 0 && !hasNewer && (
+              <button className="mw-chat__newpill" onClick={toNewest}>
+                {newCount} new message{newCount === 1 ? "" : "s"} <span aria-hidden="true">↓</span>
+              </button>
+            )}
+            </div>
 
             {hasNewer && (
               // Viewing a detached window (jumped to an old message) — a way back to live.
               <button className="mw-chat__tolatest" onClick={() => void jumpToLatest()} aria-label="jump to latest messages">
                 jump to latest ↓
-              </button>
-            )}
-
-            {newCount > 0 && !hasNewer && (
-              <button className="mw-chat__newpill" onClick={toNewest}>
-                {newCount} new message{newCount === 1 ? "" : "s"} ↓
               </button>
             )}
 

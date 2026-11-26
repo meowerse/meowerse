@@ -394,6 +394,8 @@ export interface UseConversation {
   /** True while the log is at (or near) the live tail; the view reads it for the new-messages pill. */
   atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
+  /** One scroll to the live tail (smooth under no-preference). Our own scroll: not the user's, and the tail stays "bottom" while it runs. */
+  scrollToTail: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
   /** Read-only mirror of the active chat id, for the view's own async guards. */
   activeRef: RefObject<string | null>;
@@ -501,6 +503,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   // A scroll position to re-apply in a layout phase (entry restore / preserved across a fetch).
   const restoreRef = useRef<ScrollAnchor | "bottom" | null>(null);
   const programmaticRef = useRef(false); // our own scroll writes are not the user's
+  const tailUntilRef = useRef(0); // a smooth scrollToTail is in flight until this time (ms)
   const userScrolledRef = useRef(false);
   // Revalidation generation, shared by every entry: bumped by each run and by the socket
   // effect's cleanup, so a run that was superseded (or whose chat was left) can never commit.
@@ -848,14 +851,24 @@ export function useConversation(input: UseConversationInput): UseConversation {
     }
   }, [base, markAttached, commitLog]);
 
+  const scrollToTail = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    tailUntilRef.current = performance.now() + (reduce ? 0 : 600); // shortcut: 600 ms cap on the smooth scroll
+    atBottomRef.current = true; // like send()/jumpToLatest: a message landing mid-flight pins instead of counting
+    el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
+  }, []);
+
   const onLogScroll = useCallback(() => {
     const el = logRef.current;
     if (!el) return;
-    if (!programmaticRef.current) userScrolledRef.current = true;
+    const toTail = performance.now() < tailUntilRef.current;
+    if (!programmaticRef.current && !toTail) userScrolledRef.current = true;
     if (el.scrollTop < 60) void loadOlder();
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (dist < 120 && hasNewerRef.current) void loadNewer();
-    const atBottom = dist < NEAR_BOTTOM_PX;
+    const atBottom = dist < NEAR_BOTTOM_PX || toTail; // mid-flight frames are not "scrolled up"
     atBottomRef.current = atBottom;
     // TODO(perf, review 5): this measures the DOM on every scroll event. Kept synchronous on purpose:
     // the leave-save reads it in a layout cleanup, where a throttled/rAF value could be stale or
@@ -1701,7 +1714,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   return {
     messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, atBottomRef, onLogScroll, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, scrollToTail, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };
