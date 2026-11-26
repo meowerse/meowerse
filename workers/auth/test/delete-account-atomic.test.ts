@@ -75,6 +75,15 @@ test("(a) deleteAccount empties every table for the account; other accounts unto
   expect(await count(db, "audit_log WHERE account_id = 'acct_v' AND event = 'account.delete'")).toBe(1);
 });
 
+test("(a2) new accounts have NO recovery_codes rows: deletion still succeeds (rows present case is (a))", async () => {
+  const db = await twoAccounts();
+  await db.execute("DELETE FROM recovery_codes WHERE account_id = 'acct_v'");
+  expect(await count(db, "recovery_codes WHERE account_id = 'acct_v'")).toBe(0);
+  await deleteAccountForTest(db, "acct_v");
+  expect(await count(db, "accounts WHERE id = 'acct_v'")).toBe(0);
+  expect(await count(db, "audit_log WHERE account_id = 'acct_v' AND event = 'account.delete'")).toBe(1);
+});
+
 test("(b) a failing DELETE inside the batch rolls everything back and throws", async () => {
   const db = await twoAccounts();
   await db.execute("CREATE TRIGGER boom BEFORE DELETE ON refresh_tokens BEGIN SELECT RAISE(ABORT, 'boom'); END");

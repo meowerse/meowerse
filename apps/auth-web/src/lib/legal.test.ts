@@ -39,7 +39,7 @@ describe("shared privacy page copy", () => {
     expect(rendered).not.toMatch(/Google Analytics/i);
   });
   it("carries the version, the retention rules and the deletion text with its KEEP IN SYNC marker", () => {
-    expect(POLICY_VERSION).toBe("v4, 2026-10-31");
+    expect(POLICY_VERSION).toBe("v5, 2026-11-26");
     expect(privacy).toContain("365 days");
     expect(privacy).toContain("30 days after they expire");
     expect(privacy).toContain("KEEP IN SYNC");
@@ -57,7 +57,7 @@ describe("shared privacy page copy", () => {
       "delete your meowerse account yourself",
       "fresh confirmation with your password or Telegram",
       "single-use confirmation",
-      "recovery codes, sessions, app consents, access and refresh tokens and login codes at once",
+      "any old recovery-code hashes, sessions, app consents, access and refresh tokens and login codes at once",
       "deleted after 365 days",
       "ages out in about 7 days",
       "Turso point-in-time, 1 day",
@@ -72,6 +72,15 @@ describe("shared privacy page copy", () => {
     expect(terms).toContain("delete your meowerse account yourself");
     expect(terms).toContain("does not delete your data or messages in the services you signed in to with it");
     expect(`${privacy}${terms}`).not.toMatch(/meowverse/i);
+  });
+  it("recovery codes are no longer offered as a feature; the honest no-recovery statement is present", () => {
+    const about = page("about.astro");
+    expect(about).not.toMatch(/recovery code/i);
+    expect(terms).not.toMatch(/recovery codes safe/i);
+    for (const doc of [terms, privacy]) expect(doc).toMatch(/cannot be recovered/);
+    // no promise of a recovery mechanism or manual help (owner decision 2026-11-26: no recovery path, no admin bypass)
+    for (const doc of [terms, privacy]) expect(doc).not.toMatch(/recovery codes or Telegram|help you regain access|will help you regain/i);
+    expect(privacy).toMatch(/Recovery codes were removed/);
   });
   it("lists the role addresses and no personal email address", () => {
     expect(CONTACTS).toEqual({ privacy: "privacy@alxnko.dev", security: "security@alxnko.dev", general: "contact@alxnko.dev" });

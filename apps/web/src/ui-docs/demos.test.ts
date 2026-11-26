@@ -4,7 +4,7 @@ import { COMPONENT_PAGES } from "./registry";
 
 describe("interactive demos", () => {
   it("exist for exactly these components", () =>
-    expect(DEMO_SLUGS).toEqual(["app-header", "auth-gate", "code", "confirm-dialog", "modal", "prompt", "radio-group", "recovery-codes", "theme-toggle", "toast-provider"]));
+    expect(DEMO_SLUGS).toEqual(["app-header", "auth-gate", "code", "confirm-dialog", "modal", "prompt", "radio-group", "theme-toggle", "toast-provider"]));
   it("cover every component that has nothing to show without interaction", () => {
     for (const p of COMPONENT_PAGES.filter((x) => x.interactiveOnly)) expect(DEMO_SLUGS, p.name).toContain(p.slug);
   });

@@ -1,5 +1,7 @@
 # @meowerse/ui Package Implementation Plan
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `@meowerse/ui` — the shared design-system package (tokens, fonts, theme, accessible React primitives) that every meowerse frontend consumes as source.

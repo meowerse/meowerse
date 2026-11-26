@@ -1,5 +1,7 @@
 # Auth with Meowerse — OIDC Identity Provider Design
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 **Status:** v1 design, ready to slice. **Issuer:** `https://auth.alxnko.eu.org`. **API host:** `https://auth-api.alxnko.eu.org`.
 **Constraint:** free tier only, no credit card. **Pattern source of truth:** `workers/api` (DI router, `ensureSchema` memoization, `constantTimeEqual`, exact-origin credentialed CORS, Cache-API purge-on-write).
 

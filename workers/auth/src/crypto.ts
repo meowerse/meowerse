@@ -16,7 +16,7 @@ export interface Pbkdf2Params {
   iter: number;
 }
 export const DEFAULT_PBKDF2: Pbkdf2Params = { rounds: 6, iter: 100_000 };
-/** Cheap params for high-entropy inputs (recovery codes, secrets) — no stretch needed. */
+/** Cheap params for high-entropy inputs (secrets) — no stretch needed. */
 export const CHEAP_PBKDF2: Pbkdf2Params = { rounds: 1, iter: 10_000 };
 
 async function deriveOnce(passwordBytes: Uint8Array, salt: Uint8Array, iter: number): Promise<Uint8Array<ArrayBuffer>> {

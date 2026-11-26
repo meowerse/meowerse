@@ -18,7 +18,6 @@ import {
   getGrants,
   revokeGrant,
   unlinkTelegram,
-  regenerateRecoveryCodes,
   deleteClient,
   rotateClientSecret,
   postManagementToken,
@@ -36,14 +35,14 @@ function mockJson(value: unknown, init?: ResponseInit) {
 }
 
 test("postSignup POSTs credentialed JSON and parses", async () => {
-  const fetchMock = mockJson({ ok: true, recoveryCodes: ["A", "B"], csrf: "c", next: { action: "consent" } });
+  const fetchMock = mockJson({ ok: true, csrf: "c", next: { action: "consent" } });
   const out = await postSignup("http://x", "neko", "password1234");
   const [url, opts] = fetchMock.mock.calls[0];
   expect(url).toBe("http://x/signup");
   expect(opts.method).toBe("POST");
   expect(opts.credentials).toBe("include");
   expect(JSON.parse(opts.body)).toEqual({ username: "neko", password: "password1234" });
-  expect(out.recoveryCodes).toEqual(["A", "B"]);
+  expect(out).not.toHaveProperty("recoveryCodes");
 });
 
 test("postLogin and postConsent hit the right endpoints", async () => {
@@ -102,7 +101,7 @@ test("listClients GETs and createClient POSTs the manifest", async () => {
 });
 
 test("account helpers hit the right endpoints", async () => {
-  const a = mockJson({ username: "neko", verified: false, hasPassword: true, telegram: { linked: false, username: null }, recoveryRemaining: 8, csrf: "c" });
+  const a = mockJson({ username: "neko", verified: false, hasPassword: true, telegram: { linked: false, username: null }, csrf: "c" });
   expect((await getAccount("http://x")).username).toBe("neko");
   expect(a.mock.calls[0][0]).toBe("http://x/api/account");
 
@@ -122,10 +121,6 @@ test("account helpers hit the right endpoints", async () => {
   const ul = mockJson({ ok: true });
   await unlinkTelegram("http://x", "c");
   expect(ul.mock.calls[0][0]).toBe("http://x/api/account/telegram/unlink");
-
-  const rc = mockJson({ recoveryCodes: ["A", "B"] });
-  expect((await regenerateRecoveryCodes("http://x", "c")).recoveryCodes?.length).toBe(2);
-  expect(rc.mock.calls[0][0]).toBe("http://x/api/account/recovery-codes");
 });
 
 test("dashboard mutation helpers + tg kind + granular consent scopes", async () => {

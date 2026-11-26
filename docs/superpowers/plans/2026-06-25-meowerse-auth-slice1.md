@@ -1,5 +1,7 @@
 # Auth with Meowerse — Slice 1 Implementation Plan
 
+> **Note (removed 2026-11-26):** recovery codes were removed from meowerse auth (phase 1: no codes are issued or shown, the regenerate endpoint answers 410, the `RecoveryCodes` UI component is gone). Mentions below are historical. The `recovery_codes` table and its erase-on-account-deletion statement remain until the owner-approved phase 2.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (inline) or superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the smallest real end-to-end OIDC loop: discovery/JWKS → `/authorize` (state-preserving, non-writing pre-auth) → username/password signup+login → consent → `/token` (authorization_code + PKCE) → `/userinfo`, with `__Host-` sessions, all on Cloudflare Workers + Turso, free-tier, mirroring `workers/api` patterns.

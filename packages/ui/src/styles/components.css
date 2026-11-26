@@ -158,10 +158,6 @@
 .mw-toast--success { border-color: var(--c-ok); }
 .mw-toast--error { border-color: var(--c-danger); }
 
-.mw-recovery { border: 1px solid var(--c-line); border-radius: var(--r-m); padding: var(--sp-3); }
-.mw-recovery__grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
-.mw-recovery__grid li { font-family: var(--font-mono); font-size: var(--fs-3); }
-.mw-recovery__actions { margin-top: var(--sp-3); }
 
 .mw-themetoggle { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 0; background: transparent; border: 1px solid var(--c-line); border-radius: var(--r-m); color: var(--c-fg-muted); cursor: pointer; }
 .mw-themetoggle:hover { background: var(--c-surface); color: var(--c-fg); }

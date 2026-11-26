@@ -131,10 +131,10 @@ test("userinfoClaims: one query yields scope-filtered profile + telegram + live 
   expect(min.ok && min.claims).toEqual({ sub: "acct_u" });
 });
 
-test("getAccountDetail: one query returns profile + password + telegram + verified + recovery count", async () => {
+test("getAccountDetail: one query returns profile + password + telegram + verified (no recovery count)", async () => {
   const db = await freshDb();
   await db.execute({ sql: "INSERT INTO accounts (id, username, display_name) VALUES ('acct_d','deet','Deet')", args: [] });
-  // no password, no telegram, no recovery codes yet
+  // no password, no telegram
   expect(await getAccountDetail(db, "acct_d")).toEqual({
     username: "deet",
     displayName: "Deet",
@@ -142,21 +142,19 @@ test("getAccountDetail: one query returns profile + password + telegram + verifi
     hasPassword: false,
     verified: false,
     telegram: { linked: false, username: null },
-    recoveryRemaining: 0,
   });
 
   await db.execute({ sql: "INSERT INTO password_credentials (account_id, phc) VALUES ('acct_d','x')", args: [] });
   await db.execute({ sql: "INSERT INTO telegram_links (telegram_id, account_id, telegram_username) VALUES (88,'acct_d','deet_tg')", args: [] });
-  await db.execute({ sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES ('acct_d','h1'),('acct_d','h2')", args: [] });
-  await db.execute({ sql: "UPDATE recovery_codes SET used_at = datetime('now') WHERE account_id='acct_d' AND code_hash='h1'", args: [] });
+  await db.execute({ sql: "INSERT INTO recovery_codes (account_id, code_hash) VALUES ('acct_d','h1')", args: [] }); // legacy row: must not leak into the response
 
   const d = await getAccountDetail(db, "acct_d");
   expect(d).toMatchObject({
     hasPassword: true,
     verified: true,
     telegram: { linked: true, username: "deet_tg" },
-    recoveryRemaining: 1, // one of two codes used
   });
+  expect(d).not.toHaveProperty("recoveryRemaining");
   expect(await getAccountDetail(db, "missing")).toBeNull();
 });
 
@@ -172,7 +170,6 @@ test("null profile fields survive the collapses (all-null account)", async () =>
     hasPassword: false,
     verified: false,
     telegram: { linked: false, username: null },
-    recoveryRemaining: 0,
   });
 
   const ui = await userinfoClaims(db, {

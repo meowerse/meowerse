@@ -13,7 +13,7 @@ import {
   verifyRequest,
   type AuthorizeRequest,
 } from "./authorize";
-import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, regenerateRecoveryCodes, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
+import { signup, loginVerify, deriveVerified, DEFAULT_DUMMY_PHC, getAccountInfo, getAccountDetail, changePassword, deleteAccount, ownsActiveClients, accountExists, verifyAccountPassword, DELETE_CONFIRM_TTL, issueDeleteConfirmation, deleteConfirmationUsable } from "./accounts";
 import { issueSession, mintSessionIds, lookupSession, rotateSession, revokeSession, whoami, rollIdle } from "./session";
 import { consentDecision, getConsent, grantConsent, listGrants, revokeGrant } from "./consent";
 import { createAuthCode, exchangeCode, mintTokens, accessTokenInsert, revokeAccessToken, introspect } from "./token";
@@ -356,7 +356,7 @@ async function handleSignup(req: Request, env: Env, deps: Deps, cors: Record<str
   const next = await resolveNext(deps, env, cookies[`__Host-${TKT_COOKIE}`], res.accountId, sess.idHash, now(deps));
   if (!next) return accountGone(cors);
   await recordAudit(deps, req, { event: "signup", accountId: res.accountId });
-  return json({ ok: true, recoveryCodes: res.recoveryCodes, csrf: sess.csrf, next }, 200, {
+  return json({ ok: true, csrf: sess.csrf, next }, 200, {
     ...cors,
     ...securityHeaders(),
     "Set-Cookie": hostCookie(SESS_COOKIE, sess.rawId, { maxAge: 30 * 24 * 3600 }),
@@ -1208,6 +1208,8 @@ async function stepUpAllowed(db: ReturnType<Deps["getDb"]>, accountId: string, t
 
 /** End-user account self-service (session+CSRF authed, owner = the session). Spec R14. */
 async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<string, string>, sub: string, ctx?: ExecutionContext): Promise<Response> {
+  // Recovery codes were removed 2026-11-26; answer old open tabs cleanly (before session/CSRF).
+  if (sub === "recovery-codes") return json({ error: "gone", message: "Recovery codes were removed. Add a second sign-in method (password and Telegram) instead." }, 410, { ...cors, ...securityHeaders() });
   const db = deps.getDb();
   const cookies = parseCookies(req.headers.get("Cookie"));
   const session = await lookupSession(db, cookies[`__Host-${SESS_COOKIE}`], now(deps), ctx);
@@ -1215,7 +1217,7 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
   const accountId = session.accountId;
 
   if (sub === "" && req.method === "GET") {
-    const detail = await getAccountDetail(db, accountId); // profile + verified + telegram + recovery in ONE query
+    const detail = await getAccountDetail(db, accountId); // profile + verified + telegram in ONE query
     if (!detail) return json({ error: "not_found" }, 404, cors);
     return json({ ...detail, csrf: session.csrf, deleteEnabled: accountDeleteEnabled(env) }, 200, { ...cors, ...securityHeaders() });
   }
@@ -1256,17 +1258,6 @@ async function handleAccount(req: Request, env: Env, deps: Deps, cors: Record<st
     await unlinkTelegram(db, accountId);
     await recordAudit(deps, req, { event: "telegram.unlink", accountId });
     return json({ ok: true }, 200, cors);
-  }
-  if (sub === "recovery-codes") {
-    // Regenerating recovery codes replaces account-recovery credentials: fresh authentication required.
-    const info = await getAccountInfo(db, accountId);
-    if (!info) return accountGone(cors);
-    const stale = await requireFreshAuth(req, deps, cors, session, accountId, info, p.current_password ?? "");
-    if (stale) return stale;
-    const recoveryCodes = await regenerateRecoveryCodes(db, accountId);
-    if (!recoveryCodes) return accountGone(cors);
-    await recordAudit(deps, req, { event: "recovery.regenerate", accountId });
-    return json({ recoveryCodes }, 200, { ...cors, ...securityHeaders() });
   }
   if (sub === "delete/start") {
     if (!accountDeleteEnabled(env)) return json({ error: "deletion_unavailable" }, 503, cors); // before any account read or write; no audit row
