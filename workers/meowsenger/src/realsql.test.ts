@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { joinPublic, createOrGetDirect, createGroup, syncLastMessage } from "./chats";
+import { joinPublic, createOrGetDirect, createGroup, syncLastMessage, listChats } from "./chats";
 import { leave, reconcileOwnership } from "./members";
 import type { DbClient, Row } from "./types";
 
@@ -185,5 +185,19 @@ describe("chats SQL on the real engine", () => {
     expect(lost).toEqual({ error: "slug_taken" });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM chats").get()).toEqual({ n: 1 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM chat_members WHERE user_id IN ('u3','u4')").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("listChats myRole (real SQL)", () => {
+  it("returns the caller's own membership role per row; a non-member chat is not listed", async () => {
+    const { db, seedChat } = realDb();
+    seedChat("g1", [["own", "owner", 1], ["adm", "admin", 2], ["mem", "member", 3]]);
+    seedChat("g2", [["own", "owner", 1]]);
+    const { id: dm } = await createOrGetDirect(db, "mem", "adm", 10);
+    const role = async (u: string) => Object.fromEntries((await listChats(db, u)).map((c) => [c.id, c.myRole]));
+    expect(await role("own")).toEqual({ g1: "owner", g2: "owner" });
+    expect(await role("adm")).toEqual({ g1: "admin", [dm]: "member" });
+    expect(await role("mem")).toEqual({ g1: "member", [dm]: "member" });
+    expect(await role("stranger")).toEqual({});
   });
 });

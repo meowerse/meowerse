@@ -67,6 +67,11 @@ vi.mock("../lib/chat", async (importActual) => {
   };
 });
 
+// The real drawer needs a full mutation flow; a stub that reports a change is enough here.
+vi.mock("./MemberDrawer", () => ({
+  MemberDrawer: ({ onChanged }: { onChanged: () => void }) => <button onClick={onChanged}>drawer-changed</button>,
+}));
+
 vi.mock("../lib/push", async (importActual) => ({
   ...(await importActual<typeof import("../lib/push")>()),
   syncPushSubscription: vi.fn(async () => false),
@@ -85,7 +90,7 @@ import Chat from "./Chat";
 import AppShell from "./AppShell";
 import { notifySessionEnded, resetSessionEnded } from "../lib/sessionEnded";
 import { listChats, loadHistory, resolveChat } from "../lib/chat";
-import { conversationCache, getEpoch, setScope, clearAll } from "../lib/store";
+import { conversationCache, memberCache, getEpoch, setScope, clearAll } from "../lib/store";
 
 /** Chat now receives the session user + first list from AppShell (one source of truth). */
 function ChatBoot() {
@@ -1011,6 +1016,147 @@ describe("Chat island — a members 403 purges that chat", () => {
     await waitFor(() => expect(conversationCache.peek("c1")).toBeUndefined());
     expect(screen.getByText("carol msg")).toBeTruthy(); // the chat they opened stays open
     expect(screen.queryByText("you're no longer a member of this chat")).toBeNull();
+    clearAll();
+  });
+});
+
+describe("Chat island — roster cache + role from the summary", () => {
+  const grp = (over: Partial<ChatSummary> = {}) => dm({ id: "c1", type: "group", name: "team", peerId: null, peerUsername: null, peerDisplayName: null, ...over });
+  const roster = [{ userId: "u1", username: "alice", displayName: "Alice", avatarUrl: null, role: "member" as const, joinedAt: 1 }];
+
+  it("re-entering a group within the TTL makes no member request", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+    H.history = { c1: [msg({ id: "m1", body: "team msg" })], c2: [msg({ id: "m2", chatId: "c2", body: "carol msg" })] };
+    H.members = { c1: roster };
+    await mountOpen();
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    act(() => fireEvent.click(screen.getByText("Carol")));
+    await screen.findByText("carol msg");
+    act(() => fireEvent.click(screen.getByText("team")));
+    await screen.findByText("team msg");
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    clearAll();
+  });
+
+  it("a channel admin gets the composer from the summary while the roster is still loading; a member gets the note", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise(() => {}));
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    await mountOpen();
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy());
+    expect(screen.queryByText(/only admins post/)).toBeNull();
+    clearAll();
+  });
+
+  const bob = { userId: "u2", username: "bob", displayName: "Bob", avatarUrl: null, role: "member" as const, joinedAt: 1 };
+
+  it("past the TTL with the chat open: names stay, one background revalidation, count follows a removal", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u2", body: "team msg" })] };
+    H.members = { c1: [...roster, bob] };
+    await mountOpen();
+    await screen.findByText("2 members");
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0);
+    const real = Date.now;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000);
+    H.members = { c1: roster }; // bob was removed meanwhile
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // never blank while revalidating
+    await screen.findByText("1 member");
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2); // fresh again: no more requests
+    spy.mockRestore();
+    clearAll();
+  });
+
+  it("a role change in a refreshed list drives the composer from the summary and revalidates the roster", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    H.members = { c1: roster }; // cached roster says member
+    await mountOpen();
+    await screen.findByText(/only admins post/);
+    await waitFor(() => expect(memberCache.get("c1")).toBeDefined());
+    expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(1);
+    H.chats = [grp({ type: "channel", myRole: "admin" })];
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(document.querySelector("textarea")).toBeTruthy()); // summary wins over the stale 'member' roster
+    await waitFor(() => expect(vi.mocked(getMembers)).toHaveBeenCalledTimes(2));
+    H.chats = [grp({ type: "channel", myRole: "member" })]; // demoted
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/only admins post/);
+    expect(document.querySelector("textarea")).toBeNull();
+    clearAll();
+  });
+
+  const staleNow = () => { const real = Date.now; return vi.spyOn(Date, "now").mockImplementation(() => real() + 6 * 60_000); };
+  const setVis = (v: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => v });
+  const mountGroupWithBob = async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockClear();
+    H.chats = [grp()];
+    H.history = { c1: [msg({ id: "m1", senderId: "u2", body: "team msg" })] };
+    H.members = { c1: [...roster, bob] };
+    await mountOpen();
+    await screen.findByText("2 members");
+    return vi.mocked(getMembers);
+  };
+
+  it("a drawer change keeps the names on screen while the roster refetches, then replaces them", async () => {
+    const gm = await mountGroupWithBob();
+    let release!: (v: unknown) => void;
+    gm.mockImplementationOnce(() => new Promise((r) => { release = r; }) as never);
+    act(() => fireEvent.click(screen.getByLabelText("group members")));
+    const changed = await screen.findByText("drawer-changed");
+    act(() => fireEvent.click(changed));
+    await waitFor(() => expect(gm).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // not blanked to the placeholder
+    expect(screen.queryByText("someone")).toBeNull();
+    await act(async () => { release({ ok: true, status: 200, data: [...roster, { ...bob, displayName: "Robert" }] }); });
+    await waitFor(() => expect(screen.getAllByText("Robert").length).toBeGreaterThan(0));
+    clearAll();
+  });
+
+  it("a hidden tab never revalidates; returning to visible does, once, with no overlapping requests", async () => {
+    const gm = await mountGroupWithBob();
+    const spy = staleNow();
+    setVis("hidden");
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(1);
+    setVis("visible");
+    gm.mockImplementationOnce(() => new Promise(() => {}) as never); // stays in flight
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(2);
+    spy.mockRestore(); clearAll();
+  });
+
+  it("a failing revalidation backs off: the next ticks inside the backoff make no request", async () => {
+    const gm = await mountGroupWithBob();
+    const spy = staleNow();
+    gm.mockImplementationOnce(async () => ({ ok: false as const, error: { kind: "network" as const } }) as never);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(gm).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(gm).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByText("Bob").length).toBeGreaterThan(0); // still showing the last roster
+    spy.mockRestore(); clearAll();
+  });
+
+  it("a channel member sees the read-only note with no roster", async () => {
+    const { getMembers } = await import("../lib/chat");
+    vi.mocked(getMembers).mockImplementationOnce(() => new Promise(() => {}));
+    H.chats = [grp({ type: "channel", myRole: "member" })];
+    await mountOpen();
+    await screen.findByText(/only admins post/);
+    expect(document.querySelector("textarea")).toBeNull();
     clearAll();
   });
 });

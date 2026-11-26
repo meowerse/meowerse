@@ -107,6 +107,7 @@ export const summary = (c: ChatFx, order: number) => {
     id: c.id, type: c.type, name: c.name, lastMessage: last.body, lastSenderId: last.senderId,
     lastActivity: EPOCH + 1_000_000_000 - order * 60_000, unreadCount: c.unread ? 1 : 0, memberCount: c.memberCount,
     peerId: c.peerId, peerUsername: c.peerUsername, peerDisplayName: c.peerDisplayName, peerAvatarUrl: null,
+    myRole: c.members.find((m) => m.userId === ME.id)?.role ?? "member",
   };
 };
 

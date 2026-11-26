@@ -15,10 +15,12 @@ import { MessageItem, type Bubble } from "./MessageItem";
 import { Avatar } from "./Avatar";
 import { setSnapshotSource } from "../lib/sessionEnded";
 import { syncPushSubscription, disablePush } from "../lib/pushLazy";
-import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch } from "../lib/store";
+import { setScope, clearAll, purgeChat, broadcastLogout, getEpoch, begin, memberCache } from "../lib/store";
 import { createListGate, watchResume } from "../lib/store/chatList";
 
 /** A group sender's resolved identity, keyed by userId (for per-sender rendering). */
+// Neutral name for a sender not (yet) in the roster; never a raw id.
+const UNKNOWN_SENDER = "someone";
 type SenderInfo = { name: string; avatarUrl: string | null; role: string };
 
 // Own-message action windows (UX gating only — the server enforces both, §7).
@@ -109,7 +111,13 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // Browser connectivity, for the header connection dot (offline=red vs reconnecting=amber).
   const [netOnline, setNetOnline] = useState(true);
   // Resolved per-sender identity for the ACTIVE group, keyed by userId. Empty for DMs.
-  const [memberMap, setMemberMap] = useState<Map<string, SenderInfo>>(new Map());
+  // Read from the account-scoped roster cache (5-min TTL), so re-entering a chat renders it at once.
+  const roster = memberCache.useMembers(activeId);
+  const memberMap = useMemo(() => {
+    const map = new Map<string, SenderInfo>();
+    for (const m of roster ?? []) map.set(m.userId, { name: shownName(m.displayName, m.username), avatarUrl: m.avatarUrl, role: m.role });
+    return map;
+  }, [roster]);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -125,11 +133,12 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const isMembered = isGroup || isChannel;
   // The caller's own role in the active membered chat (owner|admin|member); undefined
   // for DMs / before the roster loads.
-  const myRole = me ? memberMap.get(me.id)?.role : undefined;
+  // The summary is the fresher source; the roster role only backs up an older worker that omits it.
+  const myRole = activeChat?.myRole ?? (me ? memberMap.get(me.id)?.role : undefined);
   // Has the active channel's roster loaded yet? Until it has we can't know the role,
   // so we DON'T flash the Composer (a member would see it briefly before the read-
   // only note replaces it) — the input area stays empty meanwhile.
-  const channelRoleKnown = memberMap.size > 0;
+  const channelRoleKnown = myRole !== undefined;
   // A channel is broadcast: only owner/admin post. A plain member sees a read-only note.
   const channelReadOnly = isChannel && myRole === "member";
   // Suppress the Composer on a channel until the role is known (avoids the flash).
@@ -142,7 +151,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   // name (Slice 9). Fed into the hook, which mirrors it so its stable applyFrame reads
   // the current roster/peer. Recomputed each render (cheap; the hook re-mirrors it).
   const resolveSenderName = (senderId: string): string =>
-    isMembered ? (memberMap.get(senderId)?.name ?? senderId) : (peerName || "new message");
+    isMembered ? (memberMap.get(senderId)?.name ?? UNKNOWN_SENDER) : (peerName || "new message");
   // Mirror into refs so the stable `onIncoming` reads the current resolver + user id.
   resolveNameRef.current = resolveSenderName;
   meIdRef.current = me?.id ?? null;
@@ -186,6 +195,8 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setChatsError(false);
     const act = activeRef.current;
     const cs = res.data;
+    // A role change in the refreshed list: keep showing the roster but revalidate it.
+    for (const c of cs) { const o = chatsRef.current.find((x) => x.id === c.id); if (o && o.myRole !== c.myRole) memberCache.markStale(c.id); }
     // The ?chat=/?m= deep link runs ONCE, on the FIRST successful list (initial load,
     // a sidebar retry or a poll) — a failed first load must not drop it for good.
     if (!deepLinkDoneRef.current) { deepLinkDoneRef.current = true; deepLinkRef.current(cs); }
@@ -312,20 +323,33 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // Fetch + index the active group's roster into a userId→{name,avatar,role} map so
   // MessageItem can render each sender's identity. No-op for DMs.
-  const loadMembers = useCallback(async (chatId: string) => {
-    const res = await getMembers(base, chatId);
+  // In-flight roster fetches per chat (no overlapping requests) and the consecutive-failure
+  // count + earliest retry time per chat (exponential backoff for the background tick).
+  const rosterFlight = useRef(new Map<string, object>());
+  const rosterRetry = useRef(new Map<string, { fails: number; at: number }>());
+  const loadMembers = useCallback(async (chatId: string, force = false) => {
+    // force (after a drawer change): keep the roster on screen, but a fetch that started before can't store.
+    if (force) memberCache.markStale(chatId);
+    else if (memberCache.isFresh(chatId) || rosterFlight.current.has(chatId)) return;
+    const tok = begin();
+    const mine = {};
+    rosterFlight.current.set(chatId, mine);
+    const gen = memberCache.generation(chatId);
+    const res = await getMembers(base, chatId, { signal: tok.signal });
+    tok.done();
+    if (rosterFlight.current.get(chatId) === mine) rosterFlight.current.delete(chatId);
     // A 403 means we're no longer a member: handled like a revoke (purge that chat from
     // every cache, and close it only if it's still open), even if we switched away.
     if (isForbidden(res)) { onRevoked(chatId); return; }
-    if (activeRef.current !== chatId) return; // switched away mid-fetch
-    if (!res.ok) return; // keep the last known roster; never blank it on a failed fetch
-    const list: Member[] = res.data;
-    const map = new Map<string, SenderInfo>();
-    for (const m of list) {
-      map.set(m.userId, { name: shownName(m.displayName, m.username), avatarUrl: m.avatarUrl, role: m.role });
+    if (!res.ok) { // keep the last known roster; never blank it on a failed fetch
+      const f = (rosterRetry.current.get(chatId)?.fails ?? 0) + 1;
+      rosterRetry.current.set(chatId, { fails: f, at: Date.now() + Math.min(60_000 * 2 ** f, 5 * 60_000) });
+      return;
     }
-    setMemberMap(map);
-  }, [base, activeRef, onRevoked]);
+    rosterRetry.current.delete(chatId);
+    // Dropped if the account changed or the roster was invalidated/purged mid-fetch.
+    memberCache.put(chatId, res.data, tok.epoch, gen);
+  }, [base, onRevoked]);
 
   // Honor a deep-link in the URL: /app?chat=<idOrSlug>[&m=<messageId>]. Runs on the
   // FIRST successful chat list (see applyChatList). The URL is kept in sync with the
@@ -461,7 +485,6 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     setForwardBodies(null);
     setEmojiFor(null);
     setSearchOpen(false);
-    setMemberMap(new Map());
     setConfirmBulk(false);
     // The SR announcer starts empty for the next chat (#7).
     setAnnouncements([]);
@@ -469,9 +492,19 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
 
   // When the active chat is a group OR channel, (re)load its roster into the sender
   // map (channels need it to render per-sender identity and derive the caller's role).
+  // `rosterStale` (past TTL / marked stale) re-runs it; the interval + visibility return
+  // revalidate an expired roster while the chat stays open (it keeps showing meanwhile).
+  const rosterStale = memberCache.useStale(activeId);
   useEffect(() => {
-    if (activeId && isMembered) void loadMembers(activeId);
-  }, [activeId, isMembered, loadMembers]);
+    if (!activeId || !isMembered) return;
+    // A failing chat waits out its backoff; a hidden tab never polls.
+    const attempt = () => { if (Date.now() >= (rosterRetry.current.get(activeId)?.at ?? 0)) void loadMembers(activeId); };
+    const tick = () => { if (document.visibilityState === "visible") attempt(); };
+    attempt();
+    const iv = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", tick); };
+  }, [activeId, isMembered, loadMembers, rosterStale]);
 
   // Live-ish sidebar safety net: a tab return (focus + visibilitychange merged, 250 ms) and a
   // 45 s poll, both soft (rate-limited); the poll is skipped while the inbox socket is open
@@ -647,7 +680,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
     const act = activeRef.current;
     if (!cs) return;
     const actType = act ? cs.find((c) => c.id === act)?.type : undefined;
-    if (act && (actType === "group" || actType === "channel")) void loadMembers(act);
+    if (act && (actType === "group" || actType === "channel")) void loadMembers(act, true);
   }
 
   // The caller left the active group: close the drawer, drop it from the list, and
@@ -682,6 +715,7 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
   const peerAway = peerOnline && peerId != null && away.has(peerId);
   // Membered-chat header derivations.
   const groupName = activeChat?.name || (isChannel ? "channel" : "group");
+  // Known limit: a member removed by another admin stays counted until the roster revalidates (<= TTL + 1 min).
   const memberCount = memberMap.size || activeChat?.memberCount || 0;
   const onlineCount = isMembered ? [...memberMap.keys()].filter((id) => online.has(id)).length : 0;
   const open = activeChat != null; // a popstate to a chat no longer in the list shows the list
@@ -910,10 +944,10 @@ export default function Chat({ base, user, initialChats }: { base: string; user:
                 // Resolve the sender's name + avatar (groups/channels look up the map,
                 // falling back to the raw id; DMs keep the peer shortcut).
                 const sender = isMembered
-                  ? (memberMap.get(m.senderId) ?? { name: m.senderId, avatarUrl: null })
+                  ? (memberMap.get(m.senderId) ?? { name: UNKNOWN_SENDER, avatarUrl: null })
                   : { name: peerName, avatarUrl: activeChat.peerAvatarUrl };
                 const replyName = isMembered && m.replyTo
-                  ? (memberMap.get(m.replyTo.senderId)?.name ?? m.replyTo.senderId)
+                  ? (memberMap.get(m.replyTo.senderId)?.name ?? UNKNOWN_SENDER)
                   : peerName;
                 return (
                   <Fragment key={key}>
