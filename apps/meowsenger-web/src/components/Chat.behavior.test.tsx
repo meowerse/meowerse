@@ -1476,3 +1476,84 @@ describe("Chat island — phone Back navigation", () => {
     expect(push).not.toHaveBeenCalled();
   });
 });
+
+describe("Chat island — new-messages pill + switch fade (PR-17b)", () => {
+  const mm = window.matchMedia;
+  afterEach(() => { window.matchMedia = mm; vi.restoreAllMocks(); });
+  /** Make the log look scrolled `up` px from the tail; counts scrollTop WRITES. */
+  function scrolledUp(up: number) {
+    const el = logEl();
+    let top = 1000 - 400 - up;
+    const writes = vi.fn();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { writes(v); top = v; } });
+    const scrollTo = vi.fn();
+    (el as unknown as { scrollTo: unknown }).scrollTo = scrollTo;
+    act(() => { fireEvent.scroll(el); });
+    return { writes, scrollTo, at: (u: number) => { top = 600 - u; act(() => { fireEvent.scroll(el); }); } };
+  }
+  const live = (ws: MockWebSocket, id: string) => emit(ws, { type: "message", message: msg({ id, senderId: "u2", body: `line ${id}`, createdAt: 2000 }) });
+
+  it("no pill at the bottom; scrolled up it counts live messages from others, never writes scrollTop, and activating scrolls once", async () => {
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    live(ws, "a1");
+    await waitFor(() => expect(within(logEl()).getByText("line a1")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    const s = scrolledUp(300);
+    s.writes.mockClear();
+    live(ws, "a2"); live(ws, "a3");
+    const pill = await screen.findByRole("button", { name: /2 new messages/ });
+    expect(s.writes).not.toHaveBeenCalled(); // the reader is never teleported
+    act(() => fireEvent.click(pill));
+    expect(s.scrollTo).toHaveBeenCalledTimes(1);
+    expect(s.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+    expect(screen.queryByText(/new message/)).toBeNull();
+  });
+
+  it("reduced motion scrolls instantly; reaching the bottom hides the pill", async () => {
+    window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    const s = scrolledUp(300);
+    live(ws, "b1");
+    const pill = await screen.findByRole("button", { name: /1 new message/ });
+    s.at(0); // user scrolls to the tail themselves
+    await waitFor(() => expect(screen.queryByText(/new message/)).toBeNull());
+    live(ws, "b2"); // at the bottom again: no pill
+    expect(screen.queryByText(/new message/)).toBeNull();
+    s.at(300); live(ws, "b3");
+    const pill2 = await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(pill2));
+    expect(s.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+    void pill;
+  });
+
+  it("a chat switch clears the pill and fades the log 120 ms; reduced motion => no animation", async () => {
+    H.chats = [dm(), dm({ id: "c2", peerId: "u3", peerUsername: "carol", peerDisplayName: "Carol", lastMessage: "yo" })];
+    H.history = { c1: [msg()], c2: [msg({ id: "n1", chatId: "c2", senderId: "u3", body: "carol says hi", createdAt: 1500 })] };
+    const anim = vi.fn();
+    (HTMLElement.prototype as unknown as { animate: unknown }).animate = anim;
+    const ws = await mountOpen();
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    open(ws);
+    anim.mockClear();
+    scrolledUp(300); live(ws, "c1x");
+    await screen.findByRole("button", { name: /1 new message/ });
+    act(() => fireEvent.click(screen.getByText("Carol")));
+    await waitFor(() => expect(screen.getByText("carol says hi")).toBeTruthy());
+    expect(screen.queryByText(/new message/)).toBeNull();
+    expect(anim).toHaveBeenCalledTimes(1);
+    expect(anim.mock.calls[0][0]).toEqual([{ opacity: 0.3 }, { opacity: 1 }]);
+    expect(anim.mock.calls[0][1]).toMatchObject({ duration: 120 });
+    // back to c1 under reduced motion: no further animation
+    window.matchMedia = ((q: string) => ({ matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
+    act(() => fireEvent.click(screen.getByText("Bob")));
+    await waitFor(() => expect(screen.getByText("hello there")).toBeTruthy());
+    expect(anim).toHaveBeenCalledTimes(1);
+    delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
+  });
+});

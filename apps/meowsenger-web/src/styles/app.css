@@ -891,6 +891,13 @@ input.mw-input:focus { outline: none; border-color: color-mix(in srgb, var(--mw-
   border: 0; border-radius: var(--radius-pill); cursor: pointer;
   box-shadow: var(--shadow-md);
 }
+.mw-chat__newpill {
+  position: absolute; left: 50%; transform: translateX(-50%); z-index: 5;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  padding: 6px 14px; min-height: 32px; font-size: var(--text-sm); font-weight: 600;
+  color: var(--mw-on-green); background: var(--mw-green);
+  border: 0; border-radius: var(--radius-pill); cursor: pointer; box-shadow: var(--shadow-md);
+}
 .mw-chat__tolatest:hover { filter: brightness(1.05); }
 .mw-chat__sentnote {
   position: absolute; left: 50%; transform: translateX(-50%); bottom: 124px; z-index: 5;

@@ -391,6 +391,8 @@ export interface UseConversation {
   peerTyping: boolean;
   peerLastReadAt: number;
   logRef: RefObject<HTMLDivElement | null>;
+  /** True while the log is at (or near) the live tail; the view reads it for the new-messages pill. */
+  atBottomRef: RefObject<boolean>;
   onLogScroll: () => void;
   registerRow: (id: string, el: HTMLDivElement | null) => void;
   /** Read-only mirror of the active chat id, for the view's own async guards. */
@@ -1699,7 +1701,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
 
   return {
     messages: shown, connected, loadingHistory, historyError, olderError, retryHistory, retryOlder: loadOlder, hasNewer, online, away, peerTyping, peerLastReadAt,
-    logRef, onLogScroll, registerRow, activeRef,
+    logRef, atBottomRef, onLogScroll, registerRow, activeRef,
     send, sendEdit, retrySend, discardFailedSend, sendDelete, sendDeleteMany, queuedByChat, sentUnseen, queuedCount, sendReact, sendTyping,
     jumpToMessage, jumpToLatest, armJump,
   };
