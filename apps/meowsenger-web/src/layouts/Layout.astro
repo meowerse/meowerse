@@ -46,6 +46,7 @@ const footerLinks = [
     <main class="mw-container">
       <slot />
     </main>
+    {bodyClass === "app-page" && <script>import { trackVisualViewport } from "../lib/vvh"; trackVisualViewport();</script>}
     {footer && <Footer links={footerLinks} legal="meowsenger — a personal project by alxnko" />}
   </body>
 </html>
