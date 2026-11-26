@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { loadHistory, loadHistoryAround, loadHistoryAfter, wsUrl, applyReaction, type Message } from "../lib/chat";
 import type { SessionUser } from "../lib/meowsengerApi";
 import type { Bubble } from "../components/MessageItem";
-import { pushConfirmedFor } from "../lib/push";
+import { pushConfirmedFor } from "../lib/pushLazy";
 import { retryDelay } from "../lib/backoff";
 import { PROBE_AFTER_FAILED_OPENS, probeSession, startHeartbeat } from "../lib/socketHealth";
 import { hasSessionEnded, notifySessionEnded, subscribeSessionEnded } from "../lib/sessionEnded";
