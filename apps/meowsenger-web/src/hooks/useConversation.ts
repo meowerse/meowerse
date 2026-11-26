@@ -180,6 +180,11 @@ function saveOnLeave(s: LeaveSnapshot): void {
   });
 }
 
+/** Scroll to the bottom unless already there: a redundant scrollTop write cancels iOS momentum. */
+function pinBottom(el: HTMLElement): void {
+  if (!(el.scrollHeight - el.clientHeight - el.scrollTop < 1)) el.scrollTop = el.scrollHeight; // NaN (non-DOM stand-in) writes
+}
+
 /** DOM-based scroll anchor (never `rowsRef`): the first message row still visible. */
 function computeAnchor(el: HTMLElement, atBottom: boolean): ScrollAnchor | null {
   if (typeof el.querySelectorAll !== "function") return null; // a non-DOM stand-in (tests)
@@ -654,13 +659,14 @@ export function useConversation(input: UseConversationInput): UseConversation {
       const esc = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(a.messageId) : a.messageId.replace(/["\\]/g, "\\$&");
       const rowEl = el.querySelector<HTMLElement>(`[data-mid="${esc}"]`);
       if (rowEl) {
-        el.scrollTop += (rowEl.getBoundingClientRect().top - el.getBoundingClientRect().top) - a.offsetPx;
+        const delta = (rowEl.getBoundingClientRect().top - el.getBoundingClientRect().top) - a.offsetPx;
+        if (Math.abs(delta) >= 1) el.scrollTop += delta; // a no-op write still cancels iOS momentum
         atBottomRef.current = false;
         anchorRef.current = a;
         return;
       }
     }
-    el.scrollTop = el.scrollHeight;
+    pinBottom(el);
     atBottomRef.current = true;
     anchorRef.current = null;
   }, []);
@@ -748,7 +754,7 @@ export function useConversation(input: UseConversationInput): UseConversation {
   useEffect(() => {
     if (prependingRef.current || hasNewerRef.current || !atBottomRef.current) return;
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) pinBottom(el);
   }, [messages]);
 
   // The view is (back) on the live tail: clear detached state and flush anything held.

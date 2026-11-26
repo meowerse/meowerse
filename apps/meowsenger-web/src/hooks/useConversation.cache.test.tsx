@@ -45,7 +45,7 @@ vi.mock("../lib/chat", async (importActual) => {
 
 import { useConversation } from "./useConversation";
 import { clearAll, setScope, purgeChat, getEpoch, pendingWork, conversationCache as cc, conversationTokens as tk } from "../lib/store";
-import { mergeRange } from "./useConversation";
+import { mergeRange, upsertById } from "./useConversation";
 import { retryDelay } from "../lib/backoff";
 import { loadHistoryAround } from "../lib/chat";
 
@@ -996,5 +996,75 @@ describe("PR-7b deep link + anchor", () => {
       await waitFor(() => expect(document.querySelector('[data-mid="r1"]')).toBeNull());
       expect(Math.abs(rowTop("r20") - before)).toBeLessThanOrEqual(40);
     });
+
+    /** Count scrollTop WRITES on the log (a write kills iOS momentum even when the value is unchanged). */
+    const countWrites = () => {
+      const w = { n: 0 };
+      Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get(this: HTMLElement) { return top.get(this) ?? 0; }, set(this: HTMLElement, v: number) { w.n++; top.set(this, v); } });
+      return w;
+    };
+
+    it("PR-7b minor a: a revalidation that moves nothing above the reader issues NO scrollTop write (zero delta)", async () => {
+      warm("c1", cache, { scrollAnchor: { messageId: "r30", offsetPx: -12, atBottom: false } });
+      const d = deferred<Res>();
+      const srv = server(() => cache);
+      H.handler = (c, b) => (b ? srv(c, b) : d.promise);
+      render(<Harness activeId="c1" />);
+      await act(async () => { await new Promise((r) => setTimeout(r, 60)); }); // our own restore settled
+      const w = countWrites();
+      await act(async () => { d.resolve(await srv("c1", undefined)); });
+      await flush();
+      expect(w.n).toBe(0);
+    });
+
+    it("PR-7b minor a: a new tail row while already at the bottom does not re-write scrollTop", async () => {
+      warm("c1", cache);
+      const d = deferred<Res>();
+      const srv = server(() => [...cache, row("n1", 1400)]);
+      H.handler = (c, b) => (b ? srv(c, b) : d.promise);
+      render(<Harness activeId="c1" />);
+      await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+      act(() => { logEl().scrollTop = 5000 - 400; fireEvent.scroll(logEl()); });
+      const w = countWrites();
+      await act(async () => { d.resolve(await srv("c1", undefined)); });
+      await waitFor(() => expect(document.querySelector('[data-mid="n1"]')).toBeTruthy());
+      expect(w.n).toBe(0);
+    });
+  });
+});
+
+describe("PR-7b minors: jump-during-sweep, own-ack row, keepLocalOwn", () => {
+  it("minor c: leaving the chat while its sweep is in flight never marks it verified from the late partial result", async () => {
+    const all = rows("e", 120);
+    warm("c1", all);
+    warm("c2", rows("b", 2, "c2"));
+    const srv = server(() => all);
+    const gate = deferred<void>();
+    H.handler = async (c, b) => { if (c === "c2") return okp(rows("b", 2, "c2")); if (b) await gate.promise; return srv(c, b); };
+    const m = mount("c1");
+    await waitFor(() => expect(H.calls.some((c) => c.startsWith("c1:e"))).toBe(true)); // P0 landed; sweep page in flight
+    m.rerender({ activeId: "c2" });
+    await act(async () => { gate.resolve(); });
+    await flush(); await flush();
+    expect(cc.peek("c1")?.fetchedAt).toBe(1); // untouched: a verified commit would stamp Date.now()
+  });
+
+  it("minor b: an ack replaces the optimistic own row in place by tempId (one row, same slot)", () => {
+    const opt = { ...row("t-1", 2000, { senderId: "u1" }), tempId: "t-1", pending: true } as never;
+    const out = upsertById([row("a", 1000), opt, row("z", 3000)] as never, row("srv-1", 2000, { senderId: "u1" }), "t-1");
+    expect(out.map((b) => b.id)).toEqual(["a", "srv-1", "z"]);
+    expect(out[1].tempId).toBe("t-1");
+    expect((out[1] as { pending?: boolean }).pending).toBeUndefined();
+  });
+
+  it("minor d: mergeRange keeps unsent own rows (pending, sendFailed, queued) that a revalidation page lacks", () => {
+    const live = { isLive: () => false, wasDeleted: () => false };
+    const cur = [
+      { ...row("p", 9000), tempId: "p", pending: true },
+      { ...row("f", 9001), tempId: "f", sendFailed: true },
+      { ...row("q", 9002), queued: true },
+    ] as never[];
+    const out = mergeRange(cur, [row("s", 5000)], 4000, 5000, live, null).map((b) => b.id);
+    expect(out).toEqual(expect.arrayContaining(["p", "f", "q", "s"]));
   });
 });
